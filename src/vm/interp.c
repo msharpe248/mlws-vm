@@ -851,13 +851,19 @@ int interp_run(Process *p, uint32_t budget) {
             gc_collect(p);
         }
         Frame *fr = c.fr;
+        if (vm->hook && vm->hook(p, fr->pc)) return SLICE_BREAK; /* debugger stop: pc not advanced */
         const Insn *in = &fr->fn->code[fr->pc++];
         const Operand *ops = in->ops;
         MlwsType T = (MlwsType)in->type;
         p->insns++;
         switch ((Opcode)in->op) {
         case OP_NOP:
-        case OP_BREAK:
+            break;
+        case OP_BREAK: /* a debugger stops here; without one it is a no-op */
+            if (vm->hook) {
+                vm->stopped = p;
+                return SLICE_BREAK;
+            }
             break;
         case OP_HALT:
             p->exit_code = in->nops ? rd(&c, &ops[0], T_I64).i : 0;

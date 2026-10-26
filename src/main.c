@@ -11,8 +11,14 @@ static void usage(FILE *f) {
     fputs("usage: mlwsvm <command> [options]\n"
           "\n"
           "commands:\n"
-          "  run  [-L dir] [--stats] [--gc-stress] [--stack-words N] file.(masm|mlwso)\n"
-          "                                                               run a program's main\n"
+          "  run   [options] file.(masm|mlwso)      run a program's main\n"
+          "        --stats                         resource summary on exit\n"
+          "        --profile [--flame FILE]        hot functions, lines and opcodes; collapsed stacks\n"
+          "        --trace FILE|- [--trace-limit N] log every instruction\n"
+          "        --monitor [HOST:]PORT [--hold]  serve the web dashboard and /api while running\n"
+          "        --gc-stress  --stack-words N\n"
+          "  debug [-L dir] file.(masm|mlwso)      interactive debugger (type 'help')\n"
+          "  top   [HOST:PORT] [--once]            live process table of a VM run with --monitor\n"
           "  asm  [-L dir] [-o out.mlwso] [-E] file.masm                   assemble (-E: preprocess only)\n"
           "  dis  [-L dir] file.(masm|mlwso)                               disassemble\n"
           "  test [-L dir] [-v] [paths...]                               run assembly tests (default: tests/)\n"
@@ -80,10 +86,18 @@ static void print_error(const MlwsError *e) {
 
 static int cmd_run(int argc, char **argv) {
     const char *file = NULL;
-    bool stats = false, gc_stress = false;
+    bool stats = false, gc_stress = false, profile = false, hold = false;
+    const char *trace = NULL, *flame = NULL, *monitor = NULL;
+    uint64_t trace_limit = 0;
     uint32_t stack_words = 0;
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--stats")) stats = true;
+        else if (!strcmp(argv[i], "--profile")) profile = true;
+        else if (!strcmp(argv[i], "--hold")) hold = true;
+        else if (!strcmp(argv[i], "--flame") && i + 1 < argc) flame = argv[++i], profile = true;
+        else if (!strcmp(argv[i], "--trace") && i + 1 < argc) trace = argv[++i];
+        else if (!strcmp(argv[i], "--trace-limit") && i + 1 < argc) trace_limit = strtoull(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor = argv[++i];
         else if (!strcmp(argv[i], "--gc-stress")) gc_stress = true;
         else if (!strcmp(argv[i], "--stack-words") && i + 1 < argc) stack_words = (uint32_t)strtoul(argv[++i], NULL, 10);
         else if (!file) file = argv[i];
@@ -99,6 +113,23 @@ static int cmd_run(int argc, char **argv) {
     VM *vm = vm_new();
     if (stack_words) vm->stack_words = stack_words;
     if (gc_stress) vm->gc_stress = true;
+    if (trace && !tools_trace(vm, trace, trace_limit)) {
+        fprintf(stderr, "mlwsvm run: cannot write trace file %s\n", trace);
+        vm_free(vm);
+        return 1;
+    }
+    if (profile) tools_profile(vm);
+    if (monitor) {
+        char err[256];
+        if (!tools_monitor(vm, monitor, err, sizeof err)) {
+            fprintf(stderr, "mlwsvm run: %s\n", err);
+            vm_free(vm);
+            return 1;
+        }
+        fprintf(stderr, "mlwsvm: monitor at http://%s/  (or: mlwsvm top %s)\n", tools_monitor_addr(vm),
+                tools_monitor_addr(vm));
+        vm->hold = hold;
+    }
     char *dir = path_dirname(file);
     vm_add_libpath(vm, dir);
     free(dir);
@@ -142,7 +173,45 @@ static int cmd_run(int argc, char **argv) {
                 (unsigned long long)r.gc_count, (double)r.gc_ns / 1e6, (unsigned long long)r.spawned,
                 (unsigned long long)r.max_live, (unsigned long long)r.slices, (unsigned long long)r.total_insns);
     }
+    if (profile && r.status != RUN_LOAD_ERROR) tools_profile_report(vm, stderr, flame);
     run_result_free(&r);
+    vm_free(vm);
+    return rc;
+}
+
+static bool stdin_line(void *ctx, char *buf, size_t n) {
+    (void)ctx;
+    return fgets(buf, (int)n, stdin) != NULL;
+}
+
+static void stdout_out(void *ctx, const char *s, size_t n) {
+    (void)ctx;
+    fwrite(s, 1, n, stdout);
+    fflush(stdout);
+}
+
+static int cmd_debug(int argc, char **argv) {
+    if (argc != 1) {
+        usage(stderr);
+        return 2;
+    }
+    VM *vm = vm_new();
+    char *dir = path_dirname(argv[0]);
+    vm_add_libpath(vm, dir);
+    free(dir);
+    tool_env_libpaths(&g_env, vm);
+    MlwsError err = {{0}, {0}};
+    LModule *root = vm_load_root(vm, argv[0], &err);
+    Function *main_fn = root ? vm_find_main(root, &err) : NULL;
+    if (!main_fn) {
+        print_error(&err);
+        vm_free(vm);
+        return 65;
+    }
+    vm->out = stdout_out;
+    bool tty = plat_is_tty();
+    DebugIO io = {stdout_out, NULL, stdin_line, NULL, true, !tty};
+    int rc = debugger_run(vm, root, main_fn, &io);
     vm_free(vm);
     return rc;
 }
@@ -260,6 +329,8 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "asm")) rc = cmd_asm(n, args);
     else if (!strcmp(cmd, "dis")) rc = cmd_dis(n, args);
     else if (!strcmp(cmd, "test")) rc = tool_test(n, args, &g_env);
+    else if (!strcmp(cmd, "debug")) rc = cmd_debug(n, args);
+    else if (!strcmp(cmd, "top")) rc = tool_top(n, args);
     else if (!strcmp(cmd, "doc")) rc = tool_doc(n, args);
     else if (!strcmp(cmd, "version") || !strcmp(cmd, "--version")) {
         printf("mlwsvm %s\n", MLWSVM_VERSION);

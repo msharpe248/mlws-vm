@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MLWSVM Monitor</title>
+<!-- Served by `mlwsvm run --monitor HOST:PORT`. Self-contained: no external assets.
+     Polls /api/vm, /api/procs and /api/exits once a second. -->
+<style>
+:root {
+  color-scheme: light;
+  --surface-0: #f5f5f3;
+  --surface-1: #fcfcfb;
+  --border: #e2e1dc;
+  --grid: #ecebe7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7a7974;
+  --series-1: #2a78d6;
+  --series-1-fill: rgba(42, 120, 214, 0.10);
+  --good: #0ca30c;
+  --critical: #d03b3b;
+  --warning: #fab219;
+  --row-hover: #f0efec;
+  --selected: #e4eefb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-0: #121211;
+    --surface-1: #1a1a19;
+    --border: #2f2f2c;
+    --grid: #262624;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --text-muted: #8f8e86;
+    --series-1: #3987e5;
+    --series-1-fill: rgba(57, 135, 229, 0.16);
+    --row-hover: #232321;
+    --selected: #1d2c40;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #121211;
+  --surface-1: #1a1a19;
+  --border: #2f2f2c;
+  --grid: #262624;
+  --text-primary: #f0efec;
+  --text-secondary: #c3c2b7;
+  --text-muted: #8f8e86;
+  --series-1: #3987e5;
+  --series-1-fill: rgba(57, 135, 229, 0.16);
+  --row-hover: #232321;
+  --selected: #1d2c40;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--surface-0); color: var(--text-primary);
+  font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--surface-1);
+}
+h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
+h2 { font-size: 13px; margin: 0 0 10px; font-weight: 600; color: var(--text-secondary); }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
+.dot.good { background: var(--good); }
+.dot.critical { background: var(--critical); }
+.spacer { flex: 1; }
+button.theme {
+  font: inherit; font-size: 12px; color: var(--text-secondary); background: transparent;
+  border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; cursor: pointer;
+}
+main { padding: 16px; max-width: 1400px; margin: 0 auto; display: grid; gap: 16px; }
+.tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.tile, .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.tile .label { font-size: 12px; color: var(--text-secondary); }
+.tile .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.tile .sub { font-size: 11px; color: var(--text-muted); }
+.charts { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.chart { position: relative; height: 160px; }
+.chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.chart .tip {
+  position: absolute; pointer-events: none; background: var(--surface-1); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px;
+  font-variant-numeric: tabular-nums; white-space: nowrap; display: none; box-shadow: 0 2px 8px rgba(0,0,0,.08);
+}
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { font-size: 12px; font-weight: 600; color: var(--text-secondary); cursor: pointer; user-select: none; }
+th.text, td.text { text-align: left; }
+th .arrow { color: var(--text-muted); font-size: 10px; margin-left: 2px; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--row-hover); }
+tbody tr.selected { background: var(--selected); }
+td.fn { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--text-secondary); }
+.state { display: inline-flex; align-items: center; gap: 6px; }
+.empty { color: var(--text-muted); padding: 12px 0; }
+.detail { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.detail pre {
+  margin: 0; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-all;
+}
+dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+dt { color: var(--text-secondary); }
+dd { margin: 0; font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) { .tile .value { font-size: 20px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>MLWSVM monitor</h1>
+  <span class="pill"><span class="dot" id="conn-dot"></span><span id="conn">connecting…</span></span>
+  <span class="pill" id="uptime"></span>
+  <span class="spacer"></span>
+  <button class="theme" id="theme" type="button">Theme</button>
+</header>
+<main>
+  <section class="tiles" aria-label="Summary">
+    <div class="tile"><div class="label">Live processes</div><div class="value" id="k-procs">–</div><div class="sub" id="k-procs-sub"></div></div>
+    <div class="tile"><div class="label">Instructions / s</div><div class="value" id="k-ips">–</div><div class="sub" id="k-insns"></div></div>
+    <div class="tile"><div class="label">Heap (all processes)</div><div class="value" id="k-heap">–</div><div class="sub" id="k-raw"></div></div>
+    <div class="tile"><div class="label">Time slices / s</div><div class="value" id="k-slices">–</div><div class="sub">2,000 instructions each</div></div>
+  </section>
+  <section class="charts">
+    <div class="card"><h2>Instructions per second</h2><div class="chart" id="c-ips"></div></div>
+    <div class="card"><h2>Heap bytes, all processes</h2><div class="chart" id="c-heap"></div></div>
+  </section>
+  <section class="card">
+    <h2>Processes</h2>
+    <div class="table-wrap"><table id="procs"><thead></thead><tbody></tbody></table></div>
+    <div class="empty" id="procs-empty" hidden>No live processes.</div>
+  </section>
+  <section class="card" id="detail-card" hidden>
+    <h2 id="detail-title">Process</h2>
+    <div class="detail">
+      <div><dl id="detail-stats"></dl></div>
+      <div><h2>Backtrace</h2><pre id="detail-bt"></pre></div>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Recent exits</h2>
+    <div class="table-wrap"><table id="exits"><thead><tr>
+      <th class="text">PID</th><th class="text">Entry</th><th class="text">Result</th><th>Instructions</th><th>CPU</th><th>Ended</th>
+    </tr></thead><tbody></tbody></table></div>
+    <div class="empty" id="exits-empty">No process has finished yet.</div>
+  </section>
+</main>
+<script>
+"use strict";
+const HISTORY = 120;                      // samples kept for the charts (two minutes)
+const $ = (id) => document.getElementById(id);
+const history = { t: [], ips: [], heap: [] };
+let prev = null;                          // previous /api/vm sample, for rates
+let prevCpu = new Map();                  // pid -> cpu_ns at the previous sample
+let prevT = 0;
+let procs = [];
+let sortKey = "cpu", sortDir = -1, selectedPid = null;
+
+function human(v, unit = "") {
+  if (v == null || !isFinite(v)) return "–";
+  const a = Math.abs(v);
+  const [d, s] = a >= 1e9 ? [1e9, "G"] : a >= 1e6 ? [1e6, "M"] : a >= 1e3 ? [1e3, "K"] : [1, ""];
+  const x = v / d;
+  return (s ? x.toFixed(x >= 100 ? 0 : 1) : Math.round(x).toString()) + s + unit;
+}
+function bytes(v) { return human(v, "B"); }
+function ms(ns) { return ns >= 1e9 ? (ns / 1e9).toFixed(1) + " s" : (ns / 1e6).toFixed(1) + " ms"; }
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+// ---- theme toggle -----------------------------------------------------------
+(function () {
+  let saved = null;
+  try { saved = localStorage.getItem("mlwsvm-theme"); } catch (e) {}
+  if (saved) document.documentElement.dataset.theme = saved;
+  $("theme").addEventListener("click", () => {
+    const dark = getComputedStyle(document.documentElement).colorScheme === "dark";
+    const next = dark ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("mlwsvm-theme", next); } catch (e) {}
+    drawCharts();
+  });
+})();
+
+// ---- line chart (SVG, one series, crosshair + tooltip) ------------------------
+function lineChart(el, xs, ys, fmt) {
+  const w = el.clientWidth || 400, h = el.clientHeight || 160;
+  const pad = { l: 52, r: 8, t: 8, b: 20 };
+  const max = Math.max(1, ...ys) * 1.1;
+  const n = ys.length;
+  // Sample i of n sits in history slot HISTORY - n + i, so the newest is always at "now".
+  const x = (i) => pad.l + ((HISTORY - n + i) / (HISTORY - 1)) * (w - pad.l - pad.r);
+  const y = (v) => h - pad.b - (v / max) * (h - pad.t - pad.b);
+  let grid = "", labels = "";
+  for (let k = 0; k <= 3; k++) {
+    const v = (max / 3) * k, yy = y(v);
+    grid += `<line x1="${pad.l}" x2="${w - pad.r}" y1="${yy}" y2="${yy}" stroke="var(--grid)" stroke-width="1"/>`;
+    labels += `<text x="${pad.l - 6}" y="${yy + 4}" text-anchor="end" font-size="11" fill="var(--text-muted)">${fmt(v)}</text>`;
+  }
+  let path = "", area = "";
+  if (n > 0) {
+    path = ys.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+    area = `${path}L${x(n - 1).toFixed(1)},${y(0)}L${x(0).toFixed(1)},${y(0)}Z`;
+  }
+  const last = n ? `<circle cx="${x(n - 1)}" cy="${y(ys[n - 1])}" r="4" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2"/>` : "";
+  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(el.parentElement.querySelector("h2").textContent)}">
+      ${grid}${labels}
+      <text x="${pad.l}" y="${h - 4}" font-size="11" fill="var(--text-muted)">−2 min</text>
+      <text x="${w - pad.r}" y="${h - 4}" font-size="11" text-anchor="end" fill="var(--text-muted)">now</text>
+      <path d="${area}" fill="var(--series-1-fill)"/>
+      <path d="${path}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${last}
+      <line class="xh" y1="${pad.t}" y2="${h - pad.b}" stroke="var(--text-muted)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>
+      <circle class="xp" r="4" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" visibility="hidden"/>
+      <rect x="${pad.l}" y="0" width="${w - pad.l - pad.r}" height="${h}" fill="transparent" class="hit"/>
+    </svg><div class="tip"></div>`;
+  const svg = el.querySelector("svg"), tip = el.querySelector(".tip");
+  const xh = svg.querySelector(".xh"), xp = svg.querySelector(".xp");
+  svg.querySelector(".hit").addEventListener("mousemove", (ev) => {
+    if (!n) return;
+    const r = svg.getBoundingClientRect(), px = ((ev.clientX - r.left) / r.width) * w;
+    let best = 0;
+    for (let i = 1; i < n; i++) if (Math.abs(x(i) - px) < Math.abs(x(best) - px)) best = i;
+    xh.setAttribute("x1", x(best)); xh.setAttribute("x2", x(best)); xh.setAttribute("visibility", "visible");
+    xp.setAttribute("cx", x(best)); xp.setAttribute("cy", y(ys[best])); xp.setAttribute("visibility", "visible");
+    const ago = Math.round((xs[n - 1] - xs[best]) / 1000);
+    tip.textContent = `${fmt(ys[best])}  ·  ${ago ? ago + " s ago" : "now"}`;
+    tip.style.display = "block";
+    const tx = (x(best) / w) * r.width;
+    tip.style.left = Math.min(Math.max(0, tx - tip.offsetWidth / 2), r.width - tip.offsetWidth) + "px";
+    tip.style.top = Math.max(0, (y(ys[best]) / h) * r.height - 34) + "px";
+  });
+  svg.querySelector(".hit").addEventListener("mouseleave", () => {
+    tip.style.display = "none"; xh.setAttribute("visibility", "hidden"); xp.setAttribute("visibility", "hidden");
+  });
+}
+function drawCharts() {
+  lineChart($("c-ips"), history.t, history.ips, (v) => human(v) + "/s");
+  lineChart($("c-heap"), history.t, history.heap, bytes);
+}
+window.addEventListener("resize", drawCharts);
+
+// ---- process table ------------------------------------------------------------
+const COLS = [
+  ["pid", "PID", "text"], ["state", "State", "text"], ["cpu", "CPU %"], ["insns", "Instructions"],
+  ["heap_bytes", "Heap"], ["raw_bytes", "Raw"], ["stack_bytes", "Stack"], ["mailbox", "Mailbox"],
+  ["msgs", "Msgs in / out"], ["gc_count", "GCs"], ["function", "Current function", "text"],
+];
+function stateCell(s) {
+  const cls = s === "failed" ? "critical" : s === "done" ? "good" : "";
+  return `<span class="state"><span class="dot ${cls}"></span>${esc(s)}</span>`;
+}
+function renderProcs() {
+  const thead = $("procs").querySelector("thead"), tbody = $("procs").querySelector("tbody");
+  thead.innerHTML = "<tr>" + COLS.map(([k, label, cls]) =>
+    `<th class="${cls || ""}" data-k="${k}">${label}${k === sortKey ? `<span class="arrow">${sortDir < 0 ? "▼" : "▲"}</span>` : ""}</th>`).join("") + "</tr>";
+  thead.querySelectorAll("th").forEach((th) => th.addEventListener("click", () => {
+    const k = th.dataset.k;
+    if (k === sortKey) sortDir = -sortDir; else { sortKey = k; sortDir = k === "pid" || k === "function" ? 1 : -1; }
+    renderProcs();
+  }));
+  const val = (p) => sortKey === "msgs" ? p.msgs_received + p.msgs_sent : p[sortKey];
+  const rows = procs.slice().sort((a, b) => {
+    const x = val(a), y = val(b);
+    return (typeof x === "string" ? x.localeCompare(y) : x - y) * sortDir;
+  });
+  tbody.innerHTML = rows.map((p) => `<tr data-pid="${p.pid}" class="${p.pid === selectedPid ? "selected" : ""}">
+      <td class="text">${p.pid}</td><td class="text">${stateCell(p.state)}</td>
+      <td>${p.cpu.toFixed(1)}</td><td>${human(p.insns)}</td><td>${bytes(p.heap_bytes)}</td>
+      <td>${bytes(p.raw_bytes)}</td><td>${bytes(p.stack_bytes)}</td><td>${p.mailbox}</td>
+      <td>${human(p.msgs_received)} / ${human(p.msgs_sent)}</td><td>${p.gc_count}</td>
+      <td class="text fn">${esc(p.function || "–")}${p.line ? ":" + p.line : ""}</td></tr>`).join("");
+  tbody.querySelectorAll("tr").forEach((tr) => tr.addEventListener("click", () => {
+    selectedPid = Number(tr.dataset.pid); renderProcs(); loadDetail();
+  }));
+  $("procs-empty").hidden = procs.length > 0;
+}
+
+async function loadDetail() {
+  if (selectedPid == null) return;
+  const card = $("detail-card");
+  try {
+    const r = await fetch(`/api/proc/${selectedPid}`);
+    if (!r.ok) { $("detail-title").textContent = `Process ${selectedPid} has finished`; $("detail-stats").innerHTML = ""; $("detail-bt").textContent = ""; return; }
+    const p = await r.json();
+    card.hidden = false;
+    $("detail-title").textContent = `Process ${p.pid} · ${p.entry}`;
+    const q = (v, f) => v == null ? "unlimited" : f(v);
+    const rows = [
+      ["State", p.state], ["Instructions", human(p.insns)], ["CPU time", ms(p.cpu_ns)],
+      ["Heap", `${bytes(p.heap_bytes)} (peak ${bytes(p.heap_peak)}, ${human(p.objects)} objects)`],
+      ["Raw memory", bytes(p.raw_bytes)], ["Stack", bytes(p.stack_bytes) + `, ${p.depth} frames`],
+      ["Mailbox", `${p.mailbox} waiting · ${human(p.msgs_received)} received · ${human(p.msgs_sent)} sent`],
+      ["GC", `${p.gc_count} collections, ${ms(p.gc_ns)}`], ["Exceptions thrown", p.exceptions],
+      ["Links", p.links.join(", ") || "none"], ["Monitored by", p.monitors.join(", ") || "none"],
+      ["Quotas", `heap ${q(p.quota.heap, bytes)} · raw ${q(p.quota.raw, bytes)} · mailbox ${q(p.quota.mailbox, String)} · insns ${q(p.quota.insns, human)}`],
+    ];
+    $("detail-stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
+    $("detail-bt").textContent = p.backtrace.join("\n") || "(no frames)";
+  } catch (e) { /* connection problems are shown in the header */ }
+}
+
+function renderExits(exits) {
+  const tbody = $("exits").querySelector("tbody");
+  tbody.innerHTML = exits.slice(0, 20).map((e) => `<tr>
+      <td class="text">${e.pid}</td><td class="text">${esc(e.entry)}</td>
+      <td class="text">${e.failed ? `<span class="state"><span class="dot critical"></span>failed ${esc(e.code)}</span>`
+                                  : `<span class="state"><span class="dot good"></span>exit ${e.exit}</span>`}</td>
+      <td>${human(e.insns)}</td><td>${ms(e.cpu_ns)}</td><td>${Math.round(e.ago_ns / 1e9)} s ago</td></tr>`).join("");
+  $("exits-empty").hidden = exits.length > 0;
+}
+
+// ---- polling -------------------------------------------------------------------
+async function tick() {
+  try {
+    const [vm, ps, exits] = await Promise.all(["/api/vm", "/api/procs", "/api/exits"].map((u) => fetch(u).then((r) => r.json())));
+    const now = performance.now();
+    const dt = prev ? (vm.uptime_ns - prev.uptime_ns) / 1e9 : 0;
+    const ips = dt > 0 ? (vm.insns - prev.insns) / dt : 0;
+    const sps = dt > 0 ? (vm.slices - prev.slices) / dt : 0;
+    const cpuNow = new Map();
+    procs = ps.map((p) => {
+      const before = prevCpu.get(p.pid);
+      p.cpu = dt > 0 && before != null ? Math.min(100, (100 * (p.cpu_ns - before)) / (dt * 1e9)) : 0;
+      cpuNow.set(p.pid, p.cpu_ns);
+      return p;
+    });
+    prevCpu = cpuNow;
+    prev = vm;
+    if (dt > 0) { /* the first sample has no rate yet; don't plot a false zero */
+      history.t.push(now); history.ips.push(ips); history.heap.push(vm.heap_bytes);
+    }
+    for (const k in history) if (history[k].length > HISTORY) history[k].shift();
+    $("conn").textContent = "live"; $("conn-dot").className = "dot good";
+    $("uptime").textContent = `up ${(vm.uptime_ns / 1e9).toFixed(0)} s · ${vm.modules} modules`;
+    $("k-procs").textContent = vm.processes;
+    $("k-procs-sub").textContent = `${vm.spawned} spawned · max ${vm.max_live} at once`;
+    $("k-ips").textContent = human(ips);
+    $("k-insns").textContent = `${human(vm.insns)} total`;
+    $("k-heap").textContent = bytes(vm.heap_bytes);
+    $("k-raw").textContent = `raw ${bytes(vm.raw_bytes)}`;
+    $("k-slices").textContent = human(sps);
+    drawCharts(); renderProcs(); renderExits(exits); loadDetail();
+  } catch (e) {
+    $("conn").textContent = "disconnected (has the program finished?)"; $("conn-dot").className = "dot critical";
+  }
+}
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

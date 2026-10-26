@@ -276,7 +276,10 @@ end:
 |---|---|
 | `mlwsvm asm -E out.masm` | See the source after macro expansion, with line numbers |
 | `mlwsvm dis out.masm` | See exactly what was encoded: types, operand forms, register windows |
-| `mlwsvm run --stats out.masm` | Instruction count, speed, call depth, stack peak, raw heap use |
+| `mlwsvm run --stats out.masm` | Instruction count, speed, call depth, stack peak, heap and GC use, processes |
+| `mlwsvm run --profile out.masm` | Which generated functions, lines and opcodes dominate (exact counts) |
+| `mlwsvm run --trace - --trace-limit N out.masm` | Every executed instruction, to compare against what the compiler meant |
+| `mlwsvm debug out.masm` | Breakpoints on generated functions or lines, stepping, registers, objects, processes |
 | `mlwsvm test dir/` | Golden tests: put `; expect-stdout:` lines in the generated files |
 
 Every error has a stable code ([ERRORS.md](ERRORS.md)), so compiler tests can assert
@@ -291,6 +294,5 @@ planned, and will only be *additions*:
 
 | Milestone | Adds |
 |---|---|
-| M7 | Tooling: `mlwsvm top`, `mlwsvm debug`, `--trace`, `--profile`, web dashboard |
 | M8 | Closures, BigInt (`.big`), decimal (`.dec`) |
 | M9 | Performance: computed-goto dispatch, multi-threaded scheduler, generational GC |

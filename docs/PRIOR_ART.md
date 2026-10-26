@@ -82,6 +82,8 @@ encoding.
 | Load-time verifier; constant pools; per-module import and export tables | **JVM** class verification and constant pool; **WebAssembly** validation | Verification includes calls *across modules* against callee signatures, and field types after linking. |
 | Binary format with LEB128 integers, branch targets as instruction indices | **WebAssembly**, DWARF (LEB128) | Branch targets are indices rather than byte offsets, so code can be re-encoded freely. |
 | One opcode table that generates the assembler, disassembler, verifier and docs | X-macro tables (LLVM's TableGen in spirit) | |
+| Debugger (`break`/`step`/`next`/`finish`/`bt`), profiler, tracer | **gdb**; flame graphs and the collapsed-stack format (Brendan Gregg); pprof-style hot lists | Breakpoints and stepping are per instruction across many processes; debugger sessions are scriptable from test files (`; debug-script:`) |
+| Live monitor, web dashboard, `top` | **Erlang's observer** and `etop`; Unix `top`; JVM JMX/VisualVM | Served from inside the single-threaded scheduler by polling a socket between time slices, so no extra thread or locks; plain JSON plus a text view |
 | Tests written in the VM's own assembly, with `; expect-*` comments | LLVM `lit`/FileCheck-style golden tests | Also run with a collection at every allocation (`make check-gc`) and under ASan/UBSan. |
 
 ---
@@ -133,6 +135,7 @@ two-process ping-pong.
 | M4 | Mark-sweep GC (Jones and Lins), BEAM-style per-process heaps, CPython compact dict, JVM/Dalvik field and array access (here as operands) |
 | M5 | JVM exception tables, Itanium zero-cost exceptions, Java/Erlang error values |
 | M6 | Erlang/BEAM processes, mailboxes, links and monitors; Go's main-ends-program rule and deadlock detection; `setrlimit`-style quotas |
+| M7 | gdb's command set; Brendan Gregg's collapsed stacks for flame graphs; Erlang observer/etop and Unix top for the monitor |
 
 ## References
 

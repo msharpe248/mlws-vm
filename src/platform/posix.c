@@ -4,7 +4,14 @@
 #define _DARWIN_C_SOURCE
 #include "platform.h"
 
+#include <arpa/inet.h>
 #include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/socket.h>
 #include <limits.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -73,6 +80,82 @@ char *plat_exe_path(const char *argv0) {
 }
 
 char plat_path_sep(void) { return ':'; }
+
+int plat_tcp_listen(const char *host, int port, char *err, size_t errlen) {
+    signal(SIGPIPE, SIG_IGN); /* a client that disconnects must not kill the VM */
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &a.sin_addr) != 1) {
+        snprintf(err, errlen, "bad IPv4 address '%s'", host);
+        return -1;
+    }
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        snprintf(err, errlen, "socket: %s", strerror(errno));
+        return -1;
+    }
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    if (bind(fd, (struct sockaddr *)&a, sizeof a) != 0 || listen(fd, 16) != 0) {
+        snprintf(err, errlen, "cannot listen on %s:%d: %s", host, port, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    return fd;
+}
+
+int plat_tcp_accept(int listen_fd) {
+    int c = accept(listen_fd, NULL, NULL);
+    if (c < 0) return -1;
+    fcntl(c, F_SETFL, fcntl(c, F_GETFL) & ~O_NONBLOCK);
+    return c;
+}
+
+int plat_tcp_connect(const char *host, int port) {
+    signal(SIGPIPE, SIG_IGN);
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &a.sin_addr) != 1) return -1;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    if (connect(fd, (struct sockaddr *)&a, sizeof a) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+bool plat_wait_readable(int fd, uint64_t timeout_ns) {
+    struct pollfd pf = {fd, POLLIN, 0};
+    int ms = (int)((timeout_ns + 999999) / 1000000);
+    return poll(&pf, 1, ms) > 0;
+}
+
+long plat_sock_read(int fd, void *buf, size_t n, uint64_t timeout_ns) {
+    if (!plat_wait_readable(fd, timeout_ns)) return -1;
+    ssize_t r = recv(fd, buf, n, 0);
+    return r < 0 ? -1 : (long)r;
+}
+
+bool plat_sock_write_all(int fd, const void *buf, size_t n) {
+    const char *p = buf;
+    while (n) {
+        ssize_t w = send(fd, p, n, 0);
+        if (w <= 0) return false;
+        p += w;
+        n -= (size_t)w;
+    }
+    return true;
+}
+
+void plat_sock_close(int fd) { close(fd); }
+
+bool plat_is_tty(void) { return isatty(1); }
 #else
 typedef int mlwsvm_posix_unused; /* ISO C forbids an empty translation unit */
 #endif

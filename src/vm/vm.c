@@ -1,6 +1,8 @@
 /* vm.c - VM lifetime, library path, natives registry, output. */
 #include "vm.h"
 
+#include "../platform/platform.h"
+
 static void default_out(void *ctx, const char *s, size_t n) {
     (void)ctx;
     fwrite(s, 1, n, stdout);
@@ -37,6 +39,7 @@ VM *vm_new(void) {
     vm->max_frames = 100000;
     vm->next_pid = 1;
     vm->slice_insns = 2000;
+    vm->start_ns = plat_now_ns();
     for (int i = 0; i < QUOTA__COUNT; i++) vm->default_quota[i] = UINT64_MAX;
     const char *stress = getenv("MLWSVM_GC_STRESS");
     vm->gc_stress = stress && *stress && strcmp(stress, "0") != 0;
@@ -52,6 +55,8 @@ static void lmodule_free(LModule *lm) {
             Function *f = &lm->funcs[i];
             for (uint32_t k = 0; k < f->ncode; k++) insn_free(&f->code[k]);
             free(f->code);
+            free(f->bp);
+            free(f->prof);
         }
         free(lm->funcs);
     }
@@ -71,6 +76,7 @@ static void lmodule_free(LModule *lm) {
 
 void vm_free(VM *vm) {
     if (!vm) return;
+    if (vm->tools_free) vm->tools_free(vm);
     for (size_t i = 0; i < vm->mods.n; i++) lmodule_free(vm->mods.v[i]);
     VEC_FREE(vm->mods);
     smap_free(&vm->modmap);
@@ -82,6 +88,7 @@ void vm_free(VM *vm) {
     VEC_FREE(vm->procs);
     VEC_FREE(vm->runq);
     VEC_FREE(vm->timers);
+    VEC_FREE(vm->exits);
     copy_state_free(vm);
     smap_free(&vm->natives);
     free(vm);

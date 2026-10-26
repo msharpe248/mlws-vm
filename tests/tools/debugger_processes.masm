@@ -1,0 +1,44 @@
+; The debugger with several processes: a `break` instruction stops in a child,
+; `procs` lists processes, `process` switches the one being inspected, and a
+; failing program is reported with its error and backtrace.
+;
+; debug-script: run
+; debug-script: procs
+; debug-script: print PID
+; debug-script: process 1
+; debug-script: bt
+; debug-script: continue
+; debug-script: quit
+;
+; expect-stdout: MLWSVM debugger. Type 'help' for commands.
+; expect-stdout: (mdb) run
+; expect-stdout: process 2 at debugger_processes.worker+1 (tests/tools/debugger_processes.masm:34)
+; expect-stdout: =>    1  line 34    send I0, 42
+; expect-stdout: (mdb) procs
+; expect-stdout:   PID  STATE     INSNS       MAILBOX  FUNCTION
+; expect-stdout:     1  waiting   1           0        debugger_processes.main
+; expect-stdout: *   2  ready     1           0        debugger_processes.worker
+; expect-stdout: (mdb) print PID
+; expect-stdout: PID = 2
+; expect-stdout: (mdb) process 1
+; expect-stdout: Inspecting process 1.
+; expect-stdout: (mdb) bt
+; expect-stdout: #0  debugger_processes.main+1 (tests/tools/debugger_processes.masm:40)
+; expect-stdout: (mdb) continue
+; expect-stdout: Program failed: [E_DIV_ZERO] integer division by zero
+; expect-stdout:   at debugger_processes.main (tests/tools/debugger_processes.masm:42)
+; expect-stdout: (mdb) quit
+
+.func worker(i64 parent)
+    break                          ; the debugger stops here
+    send parent, 42
+    ret
+.endf
+
+.func main
+    spawn worker (PID) -> (I0)
+    recv I1
+    mov I3, 0
+    div I2, I1, I3                 ; fails: E_DIV_ZERO
+    ret 0
+.endf

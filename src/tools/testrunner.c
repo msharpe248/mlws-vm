@@ -5,6 +5,8 @@
  *   ; expect-exit: <n>                               (default 0)
  *   ; expect-error: <E_CODE>                         (assembler, loader or trap)
  *   ; skip: <reason>
+ *   ; debug-script: <debugger command>                (repeatable: run under
+ *                                                       `mlwsvm debug`; stdout is the transcript)
  *
  * Directories whose name starts with '_' hold helper modules and are skipped. */
 #include "tools.h"
@@ -20,9 +22,37 @@ typedef struct {
     int64_t exit_want;
     char error_want[32];
     char *skip;
+    StrVec script; /* debugger commands */
 } Expect;
 
 static void capture(void *ctx, const char *s, size_t n) { sb_putn(ctx, s, n); }
+
+typedef struct {
+    StrVec *lines;
+    size_t next;
+} Script;
+
+static bool script_line(void *ctx, char *buf, size_t n) {
+    Script *s = ctx;
+    if (s->next >= s->lines->n) return false;
+    snprintf(buf, n, "%s\n", s->lines->v[s->next++]);
+    return true;
+}
+
+/* Run the test under the debugger with its scripted commands. */
+static void run_debug_script(VM *vm, const char *path, Expect *e, StrBuf *out, RunResult *r) {
+    memset(r, 0, sizeof *r);
+    LModule *root = vm_load_root(vm, path, &r->err);
+    Function *main_fn = root ? vm_find_main(root, &r->err) : NULL;
+    if (!main_fn) {
+        r->status = RUN_LOAD_ERROR;
+        return;
+    }
+    Script sc = {&e->script, 0};
+    DebugIO io = {capture, out, script_line, &sc, true, true};
+    debugger_run(vm, root, main_fn, &io);
+    r->status = RUN_OK;
+}
 
 static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
@@ -80,6 +110,8 @@ static void parse_expect(const char *text, Expect *e) {
             snprintf(e->error_want, sizeof e->error_want, "%s", v);
             char *s = e->error_want + strlen(e->error_want);
             while (s > e->error_want && isspace((unsigned char)s[-1])) *--s = 0;
+        } else if ((v = after_key(line, "debug-script:"))) {
+            VEC_PUSH(e->script, xstrdup(v));
         } else if ((v = after_key(line, "skip:"))) {
             free(e->skip);
             e->skip = xstrdup(v);
@@ -130,7 +162,8 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         free(dir);
         tool_env_libpaths(env, vm);
         RunResult r;
-        vm_run_file(vm, path, &r);
+        if (e.script.n) run_debug_script(vm, path, &e, &out, &r);
+        else vm_run_file(vm, path, &r);
         StrBuf why = {0};
         const char *got_code = r.status == RUN_OK ? "" : r.err.code;
         if (e.error_want[0]) {
@@ -157,6 +190,8 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         sb_free(&why);
         sb_free(&out);
         sb_free(&errs);
+        for (size_t k = 0; k < e.script.n; k++) free(e.script.v[k]);
+        VEC_FREE(e.script);
         sb_free(&e.stdout_want);
         run_result_free(&r);
         vm_free(vm);

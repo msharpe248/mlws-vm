@@ -53,6 +53,9 @@ base:
   per-process quotas on heap, raw memory, mailbox size and CPU.
 * **Structured exceptions**: `.try` regions, `throw`/`catch`, and zero cost until
   something is thrown. Every runtime fault is catchable as an `Error`.
+* **Tooling**: a gdb-style debugger (`mlwsvm debug`), an exact profiler with
+  flame-graph output, an instruction tracer, and a live monitor with a web
+  dashboard, JSON API and `mlwsvm top`.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
 * **Tested in its own assembly**: 100+ test programs, also run under
@@ -64,10 +67,14 @@ base:
 make                         # builds ./mlwsvm (needs only a C11 compiler)
 make test                    # runs tests/ and examples/
 make check-gc                # the same, collecting garbage at every allocation
+make check-tools             # smoke-test the monitor, top, profiler and tracer
 make check-asan              # both of the above, under AddressSanitizer + UBSan
 
 ./mlwsvm run examples/hello.masm
 ./mlwsvm run --stats examples/fib.masm
+./mlwsvm run --profile examples/fib.masm
+./mlwsvm debug examples/fib.masm          # then: break fib, run, bt, print I0, ...
+./mlwsvm run --monitor 7070 --hold examples/workers.masm   # open http://127.0.0.1:7070/
 ./mlwsvm asm prog.masm -o prog.mlwso && ./mlwsvm run prog.mlwso
 ./mlwsvm dis prog.mlwso          # disassemble
 ./mlwsvm asm -E prog.masm      # show the source after macro expansion
@@ -87,6 +94,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/NATIVES.md](docs/NATIVES.md) | Host functions (generated) |
 | [docs/ERRORS.md](docs/ERRORS.md) | Error codes |
 | [docs/BINARY_FORMAT.md](docs/BINARY_FORMAT.md) | The `.mlwso` file and instruction encoding |
+| [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard and `top` |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
@@ -98,7 +106,8 @@ src/loader/     .mlwso reader/writer
 src/vm/         loader/linker, verifier, processes and memory, interpreter, run helper
 src/heap/       garbage collector and heap objects (strings, bytes, arrays, structs, lists, maps)
 src/native/     built-in native functions
-src/tools/      test runner, doc generator
+src/tools/      test runner, doc generator, debugger, profiler/tracer, monitor, top
+web/            the monitor's dashboard (compiled into the binary)
 src/platform/   the only OS-specific code (POSIX and Windows)
 lib/std/        standard library and macro files, written in MLWSVM assembly
 tests/          the test suite, in MLWSVM assembly
@@ -119,6 +128,6 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M4 GC heap: strings, byte buffers, arrays, structs, lists, maps, handles | done |
 | M5 Structured exceptions | done |
 | M6 Many concurrent isolated processes: scheduler, messages, quotas, accounting | done |
-| M7 Tooling: `mlwsvm top`, debugger, trace/profiler, web dashboard | next |
-| M8 Closures, BigInt, decimal | planned |
+| M7 Tooling: `mlwsvm top`, debugger, trace/profiler, web dashboard | done |
+| M8 Closures, BigInt, decimal | next |
 | M9 Performance: computed-goto dispatch, multi-threaded scheduler, generational GC | planned |

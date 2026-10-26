@@ -153,9 +153,29 @@ void sched_kill(VM *vm, Process *target, const char *code, const char *msg) {
     sched_finish(vm, target, true);
 }
 
+static void record_exit(VM *vm, Process *p, bool failed) {
+    ExitRecord r;
+    memset(&r, 0, sizeof r);
+    r.pid = p->pid;
+    r.entry = p->entry ? p->entry->name : "?";
+    r.failed = failed;
+    if (failed) snprintf(r.code, sizeof r.code, "%s", p->err.code);
+    r.exit_code = p->exit_code;
+    r.insns = p->insns;
+    r.cpu_ns = p->cpu_ns;
+    r.ended_ns = plat_now_ns();
+    if (vm->exits.n < 64) {
+        VEC_PUSH(vm->exits, r);
+    } else {
+        vm->exits.v[vm->exits_next] = r;
+        vm->exits_next = (vm->exits_next + 1) % vm->exits.n;
+    }
+}
+
 void sched_finish(VM *vm, Process *p, bool failed) {
     p->state = failed ? PROC_FAILED : PROC_DONE;
     vm->live--;
+    record_exit(vm, p, failed);
     for (size_t i = 0; i < p->monitors.n; i++) {
         Process *w = vm_process(vm, p->monitors.v[i]);
         if (w) send_down(vm, w, p, failed);
@@ -186,15 +206,30 @@ void sched_finish(VM *vm, Process *p, bool failed) {
 
 static bool finished(const Process *p) { return p->state == PROC_DONE || p->state == PROC_FAILED; }
 
-void sched_run(VM *vm, Process *main) {
+bool sched_run(VM *vm, Process *main) {
     if (!vm->slice_insns) vm->slice_insns = 2000;
+    uint64_t last_poll = 0;
     while (!finished(main)) {
-        uint64_t next_timer = vm->timers.n ? wake_due(vm, plat_now_ns()) : 0;
-        Process *p = runq_pop(vm);
+        uint64_t now0 = plat_now_ns();
+        if (vm->poll && now0 - last_poll > 1000000) { /* service tools about once a millisecond */
+            vm->poll(vm, 0);
+            last_poll = now0;
+        }
+        uint64_t next_timer = vm->timers.n ? wake_due(vm, now0) : 0;
+        Process *p = vm->stopped; /* a process stopped by a tool resumes first */
+        if (p) {
+            vm->stopped = NULL;
+            if (p->state != PROC_READY) p = NULL;
+            else if (p->in_runq) p = NULL; /* already queued; take it in order */
+        }
+        if (!p) p = runq_pop(vm);
         if (!p) {
             if (next_timer) { /* only sleepers: wait for the earliest */
                 uint64_t now = plat_now_ns();
-                if (next_timer > now) plat_sleep_ns(next_timer - now);
+                if (next_timer > now) {
+                    if (vm->poll) vm->poll(vm, next_timer - now); /* idle: let tools wait for requests */
+                    else plat_sleep_ns(next_timer - now);
+                }
                 continue;
             }
             /* Nothing can ever run again: main is waiting with no possible sender. */
@@ -220,9 +255,14 @@ void sched_run(VM *vm, Process *main) {
             sched_add_timer(vm, p);
             break;
         case SLICE_DONE: sched_finish(vm, p, false); break;
+        case SLICE_BREAK:
+            p->state = PROC_READY;
+            vm->stopped = p;
+            return true;
         default: sched_finish(vm, p, true); break;
         }
     }
+    return false;
 }
 
 /* Kill every remaining process except `keep` (the main process). */

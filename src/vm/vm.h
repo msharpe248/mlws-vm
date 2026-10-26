@@ -41,6 +41,8 @@ typedef struct Function {
     Insn *code;
     uint32_t ncode;
     struct Function *target; /* itself, or the resolved import */
+    uint8_t *bp;             /* debugger breakpoints per instruction (tools), or NULL */
+    uint64_t *prof;          /* profiler counts per instruction (tools), or NULL */
 } Function;
 
 enum { LM_LOADING = 1, LM_READY = 2 };
@@ -72,6 +74,25 @@ typedef struct LModule {
 } LModule;
 
 typedef void (*OutputFn)(void *ctx, const char *s, size_t n);
+
+struct VM;
+
+/* A process that has finished, kept for the monitor's "recent exits". */
+typedef struct {
+    uint64_t pid;
+    const char *entry;
+    bool failed;
+    char code[32];
+    int64_t exit_code;
+    uint64_t insns, cpu_ns, ended_ns;
+} ExitRecord;
+
+/* Called before every instruction while a tool (debugger, trace, profiler) is
+ * active; returning true stops the scheduler before the instruction runs. */
+typedef bool (*InsnHook)(struct Process *p, uint32_t pc);
+/* Called by the scheduler between time slices (e.g. to serve the monitor);
+ * `wait_ns` > 0 means the VM is idle and may block for that long. */
+typedef void (*PollHook)(struct VM *vm, uint64_t wait_ns);
 
 /* Per-process resource limits (the `quota` instruction kinds). */
 enum { QUOTA_HEAP = 0, QUOTA_RAW = 1, QUOTA_MAILBOX = 2, QUOTA_INSNS = 3, QUOTA__COUNT };
@@ -109,6 +130,16 @@ typedef struct VM {
     uint64_t default_quota[QUOTA__COUNT];
     OutputFn err_out;            /* crash reports of unobserved processes */
     void *err_ctx;
+    /* tools */
+    InsnHook hook;
+    PollHook poll;
+    void *tools;                 /* tool state, owned by src/tools */
+    void (*tools_free)(struct VM *vm);
+    struct Process *stopped;     /* stopped by the hook; resumes first */
+    VEC(ExitRecord) exits;       /* ring of recent exits */
+    size_t exits_next;
+    uint64_t start_ns;
+    bool hold;                   /* --hold: keep serving the monitor after main ends */
 } VM;
 
 /* ---- processes ------------------------------------------------------------- */
@@ -146,7 +177,7 @@ typedef struct {
 enum { PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED };
 
 /* How a time slice ended. */
-enum { SLICE_YIELD = 0, SLICE_BLOCK, SLICE_SLEEP, SLICE_DONE, SLICE_FAILED };
+enum { SLICE_YIELD = 0, SLICE_BLOCK, SLICE_SLEEP, SLICE_DONE, SLICE_FAILED, SLICE_BREAK };
 
 typedef struct {
     Word v;
@@ -245,8 +276,9 @@ int interp_run(Process *p, uint32_t budget); /* SLICE_* */
 /* sched.c */
 void sched_ready(VM *vm, Process *p);
 void sched_add_timer(VM *vm, Process *p);
-/* Run the scheduler until `main` finishes; other processes are then killed. */
-void sched_run(VM *vm, Process *main);
+/* Run the scheduler until `main` finishes (returns false) or a tool hook
+ * stops it (returns true; call again to resume). */
+bool sched_run(VM *vm, Process *main);
 void sched_finish(VM *vm, Process *p, bool failed); /* notify links/monitors; frees non-main */
 void sched_kill(VM *vm, Process *target, const char *code, const char *msg);
 void sched_shutdown(VM *vm, Process *keep);

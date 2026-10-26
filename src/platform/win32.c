@@ -4,6 +4,9 @@
 #include "platform.h"
 
 #include <sys/stat.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <io.h>
 #include <windows.h>
 
 char *plat_realpath(const char *path) {
@@ -59,6 +62,81 @@ char *plat_exe_path(const char *argv0) {
 }
 
 char plat_path_sep(void) { return ';'; }
+
+static void wsa_init(void) {
+    static bool done;
+    if (!done) {
+        WSADATA w;
+        WSAStartup(MAKEWORD(2, 2), &w);
+        done = true;
+    }
+}
+
+int plat_tcp_listen(const char *host, int port, char *err, size_t errlen) {
+    wsa_init();
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons((u_short)port);
+    if (inet_pton(AF_INET, host, &a.sin_addr) != 1) {
+        snprintf(err, errlen, "bad IPv4 address '%s'", host);
+        return -1;
+    }
+    SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET || bind(s, (struct sockaddr *)&a, sizeof a) != 0 || listen(s, 16) != 0) {
+        snprintf(err, errlen, "cannot listen on %s:%d", host, port);
+        return -1;
+    }
+    u_long nb = 1;
+    ioctlsocket(s, FIONBIO, &nb);
+    return (int)s;
+}
+
+int plat_tcp_accept(int listen_fd) {
+    SOCKET c = accept((SOCKET)listen_fd, NULL, NULL);
+    if (c == INVALID_SOCKET) return -1;
+    u_long nb = 0;
+    ioctlsocket(c, FIONBIO, &nb);
+    return (int)c;
+}
+
+int plat_tcp_connect(const char *host, int port) {
+    wsa_init();
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons((u_short)port);
+    if (inet_pton(AF_INET, host, &a.sin_addr) != 1) return -1;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET || connect(s, (struct sockaddr *)&a, sizeof a) != 0) return -1;
+    return (int)s;
+}
+
+bool plat_wait_readable(int fd, uint64_t timeout_ns) {
+    WSAPOLLFD pf = {(SOCKET)fd, POLLRDNORM, 0};
+    return WSAPoll(&pf, 1, (INT)((timeout_ns + 999999) / 1000000)) > 0;
+}
+
+long plat_sock_read(int fd, void *buf, size_t n, uint64_t timeout_ns) {
+    if (!plat_wait_readable(fd, timeout_ns)) return -1;
+    int r = recv((SOCKET)fd, buf, (int)n, 0);
+    return r < 0 ? -1 : (long)r;
+}
+
+bool plat_sock_write_all(int fd, const void *buf, size_t n) {
+    const char *p = buf;
+    while (n) {
+        int w = send((SOCKET)fd, p, (int)n, 0);
+        if (w <= 0) return false;
+        p += w;
+        n -= (size_t)w;
+    }
+    return true;
+}
+
+void plat_sock_close(int fd) { closesocket((SOCKET)fd); }
+
+bool plat_is_tty(void) { return _isatty(1) != 0; }
 #else
 typedef int mlwsvm_win32_unused; /* ISO C forbids an empty translation unit */
 #endif

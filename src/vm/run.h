@@ -21,6 +21,7 @@ typedef struct {
 } RunResult;
 
 bool vm_run_file(VM *vm, const char *path, RunResult *res);
+Function *vm_find_main(LModule *root, MlwsError *err);
 void run_result_free(RunResult *res);
 
 #endif

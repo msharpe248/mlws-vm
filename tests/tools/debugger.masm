@@ -1,0 +1,95 @@
+; The debugger: breakpoints by function and line, backtraces, registers,
+; objects, the data stack, stepping, and finishing. The test runner drives it
+; with the debug-script lines below and compares the transcript.
+;
+; debug-script: break fact
+; debug-script: run
+; debug-script: bt
+; debug-script: print I0
+; debug-script: continue
+; debug-script: bt
+; debug-script: info break
+; debug-script: delete
+; debug-script: break 92
+; debug-script: continue
+; debug-script: print R0
+; debug-script: print I3
+; debug-script: stack 2
+; debug-script: next
+; debug-script: print R1
+; debug-script: step
+; debug-script: print R1
+; debug-script: finish
+; debug-script: quit
+;
+; expect-stdout: MLWSVM debugger. Type 'help' for commands.
+; expect-stdout: (mdb) break fact
+; expect-stdout: Breakpoint 1 at debugger.fact+0 (tests/tools/debugger.masm:79)
+; expect-stdout: (mdb) run
+; expect-stdout: Breakpoint 1, process 1 at debugger.fact+0 (tests/tools/debugger.masm:79)
+; expect-stdout: =>    0  line 79    ble.i64 I0, 1, .L5
+; expect-stdout: (mdb) bt
+; expect-stdout: #0  debugger.fact+0 (tests/tools/debugger.masm:79)
+; expect-stdout: #1  debugger.main+3 (tests/tools/debugger.masm:91)
+; expect-stdout: (mdb) print I0
+; expect-stdout: I0 = 4
+; expect-stdout: (mdb) continue
+; expect-stdout: Breakpoint 1, process 1 at debugger.fact+0 (tests/tools/debugger.masm:79)
+; expect-stdout: =>    0  line 79    ble.i64 I0, 1, .L5
+; expect-stdout: (mdb) bt
+; expect-stdout: #0  debugger.fact+0 (tests/tools/debugger.masm:79)
+; expect-stdout: #1  debugger.fact+2 (tests/tools/debugger.masm:81)
+; expect-stdout: #2  debugger.main+3 (tests/tools/debugger.masm:91)
+; expect-stdout: (mdb) info break
+; expect-stdout:   1  fact                 debugger.fact+0 (tests/tools/debugger.masm:79)  hits 2
+; expect-stdout: (mdb) delete
+; expect-stdout: Deleted all breakpoints.
+; expect-stdout: (mdb) break 92
+; expect-stdout: Breakpoint 2 at debugger.main+4 (tests/tools/debugger.masm:92)
+; expect-stdout: (mdb) continue
+; expect-stdout: Breakpoint 2, process 1 at debugger.main+4 (tests/tools/debugger.masm:92)
+; expect-stdout: =>    4  line 92    lnew R1
+; expect-stdout: (mdb) print R0
+; expect-stdout: R0 = Point {x: 1.5, y: 0}
+; expect-stdout: (mdb) print I3
+; expect-stdout: I3 = 24  (0x18)
+; expect-stdout: (mdb) stack 2
+; expect-stdout: SP[0] = "seven"  (r)
+; expect-stdout: SP[1] = 7  (i64)
+; expect-stdout: (mdb) next
+; expect-stdout: process 1 at debugger.main+5 (tests/tools/debugger.masm:93)
+; expect-stdout: =>    5  line 93    lpush R1, 1, "two", R0
+; expect-stdout: (mdb) print R1
+; expect-stdout: R1 = list(0) []
+; expect-stdout: (mdb) step
+; expect-stdout: process 1 at debugger.main+6 (tests/tools/debugger.masm:94)
+; expect-stdout: =>    6  line 94    ret 0
+; expect-stdout: (mdb) print R1
+; expect-stdout: R1 = list(3) [1, "two", Point {x: 1.5, y: 0}]
+; expect-stdout: (mdb) finish
+; expect-stdout: Program exited with code 0.
+; expect-stdout: (mdb) quit
+
+.struct Point
+    x: f64
+    y: f64
+.ends
+
+.func fact(i64 n) -> i64
+    ble n, 1, 1f
+    sub I1, n, 1
+    call fact (I1) -> (I2)
+    mul I0, n, I2
+    ret I0
+1:  ret 1
+.endf
+
+.func main
+    new R0, Point
+    mov R0->Point.x, 1.5
+    push 7, "seven"
+    call fact (4) -> (I3)
+    lnew R1
+    lpush R1, 1, "two", R0
+    ret 0
+.endf

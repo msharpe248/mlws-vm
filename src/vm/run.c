@@ -10,18 +10,8 @@ bool vm_run_file(VM *vm, const char *path, RunResult *res) {
         res->status = RUN_LOAD_ERROR;
         return false;
     }
-    Function *main_fn = NULL;
-    for (uint32_t i = 0; i < root->m->nfuncs; i++) {
-        Function *f = &root->funcs[i];
-        if (f->target == f && !strcmp(f->name, "main")) main_fn = f;
-    }
+    Function *main_fn = vm_find_main(root, &res->err);
     if (!main_fn) {
-        mlws_err(&res->err, "E_LINK_NO_MAIN", "%s: no function named main", path);
-        res->status = RUN_LOAD_ERROR;
-        return false;
-    }
-    if (main_fn->mf->nparams != 0) {
-        mlws_err(&res->err, "E_LINK_NO_MAIN", "%s: main must not take parameters", path);
         res->status = RUN_LOAD_ERROR;
         return false;
     }
@@ -29,7 +19,7 @@ bool vm_run_file(VM *vm, const char *path, RunResult *res) {
     vm->main_pid = p->pid;
     proc_start(p, main_fn, NULL, 0);
     uint64_t t0 = plat_now_ns();
-    sched_run(vm, p);
+    while (sched_run(vm, p)) {} /* a `break` with tools active stops; just resume */
     bool ok = p->state == PROC_DONE;
     res->wall_ns = plat_now_ns() - t0;
     res->insns = p->insns;
@@ -56,10 +46,31 @@ bool vm_run_file(VM *vm, const char *path, RunResult *res) {
         res->err = p->err;
         res->backtrace = xstrdup(p->backtrace.s ? p->backtrace.s : "");
     }
+    if (vm->hold && vm->poll) { /* keep serving the monitor's final picture until interrupted */
+        fprintf(stderr, "mlwsvm: main has finished; still serving the monitor (Ctrl-C to quit)\n");
+        for (;;) vm->poll(vm, 200000000);
+    }
     sched_shutdown(vm, p); /* the program ends with main; stop everything else */
     res->total_insns = vm->insns_retired + p->insns;
     proc_free(p);
     return ok;
+}
+
+Function *vm_find_main(LModule *root, MlwsError *err) {
+    Function *main_fn = NULL;
+    for (uint32_t i = 0; i < root->m->nfuncs; i++) {
+        Function *f = &root->funcs[i];
+        if (f->target == f && !strcmp(f->name, "main")) main_fn = f;
+    }
+    if (!main_fn) {
+        mlws_err(err, "E_LINK_NO_MAIN", "%s: no function named main", root->path);
+        return NULL;
+    }
+    if (main_fn->mf->nparams != 0) {
+        mlws_err(err, "E_LINK_NO_MAIN", "%s: main must not take parameters", root->path);
+        return NULL;
+    }
+    return main_fn;
 }
 
 void run_result_free(RunResult *res) {

@@ -2,6 +2,7 @@
 #
 #   make              build ./mlwsvm
 #   make test         run the assembly test suite and the examples
+#   make check-tools  smoke-test --monitor, top, --profile and --trace
 #   make check-gc     run the tests with a garbage collection at every allocation
 #   make check-asan   build with AddressSanitizer + UBSan and run the tests (normal and GC stress)
 #   make docs         regenerate docs/ISA.md and docs/NATIVES.md from the code
@@ -20,9 +21,9 @@ ASAN_ENV := ASAN_OPTIONS=detect_leaks=1
 else
 ASAN_ENV :=
 endif
-OBJ := $(SRC:%.c=$(BUILD)/%.o)
+OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: all test check-gc check-asan docs clean
+.PHONY: all test check-gc check-tools check-asan docs clean
 
 all: $(BIN)
 
@@ -33,10 +34,25 @@ $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(WARN) $(CFLAGS) -MMD -MP -c $< -o $@
 
+# The web dashboard is compiled into the binary (served by --monitor).
+$(BUILD)/embed: build-tools/embed.c
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -o $@ $<
+
+$(BUILD)/gen/dashboard.c: web/dashboard.html $(BUILD)/embed
+	@mkdir -p $(dir $@)
+	$(BUILD)/embed web/dashboard.html DASHBOARD_HTML > $@
+
+$(BUILD)/gen/dashboard.o: $(BUILD)/gen/dashboard.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
 -include $(OBJ:.o=.d)
 
 test: $(BIN)
 	./$(BIN) test tests examples
+
+check-tools: $(BIN)
+	sh tests/tools/check_tools.sh ./$(BIN)
 
 check-gc: $(BIN)
 	MLWSVM_GC_STRESS=1 ./$(BIN) test tests examples
