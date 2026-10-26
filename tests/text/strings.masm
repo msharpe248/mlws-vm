@@ -1,0 +1,78 @@
+; String utilities and UTF-8: split/join/trim/find/replace/slice/case,
+; character iteration, validation, and invalid bytes as U+FFFD.
+.include "std/test.inc"
+.macro SEQ a, b
+    strcmp I9, \a, \b
+    ASSERT_EQ I9, 0
+.endm
+.func main
+    ncall "text.split" ("a,b,,c", ",") -> (R0)
+    len I0, R0
+    ASSERT_EQ I0, 4
+    ncall "text.split" ("  one   two three ", "") -> (R0)  ; on whitespace
+    len I0, R0
+    ASSERT_EQ I0, 3
+    ncall "text.join" (R0, "-") -> (R1)
+    SEQ R1, "one-two-three"
+    lnew R2
+    lpush R2, 1, "x", 2.5
+    ncall "text.join" (R2, ", ") -> (R1)                 ; any values
+    SEQ R1, "1, x, 2.5"
+    ncall "text.trim" ("  \t hi \n") -> (R1)
+    SEQ R1, "hi"
+    ncall "text.trim_start" ("  hi ") -> (R1)
+    SEQ R1, "hi "
+    ncall "text.find" ("hello hello", "llo", 0) -> (I1)
+    ASSERT_EQ I1, 2
+    ncall "text.find" ("hello hello", "llo", 3) -> (I1)
+    ASSERT_EQ I1, 8
+    ncall "text.find" ("hello", "z", 0) -> (I1)
+    ASSERT_EQ I1, -1
+    ncall "text.replace" ("a.b.c", ".", "::") -> (R1)
+    SEQ R1, "a::b::c"
+    ncall "text.starts_with" ("prefix", "pre") -> (I2)
+    ASSERT_TRUE I2
+    ncall "text.ends_with" ("prefix", "pre") -> (I2)
+    ASSERT_FALSE I2
+    ncall "text.slice" ("hello", 1, 3) -> (R1)
+    SEQ R1, "el"
+    ncall "text.slice" ("hello", -3, 100) -> (R1)        ; from the end; clamped
+    SEQ R1, "llo"
+    ncall "text.upper" ("MixEd 1") -> (R1)
+    SEQ R1, "MIXED 1"
+    ncall "text.lower" ("MixEd 1") -> (R1)
+    SEQ R1, "mixed 1"
+    ncall "text.repeat" ("ab", 3) -> (R1)
+    SEQ R1, "ababab"
+    ncall "text.lines" ("a\r\nb\nc") -> (R0)
+    len I0, R0
+    ASSERT_EQ I0, 3
+
+    ncall "text.length" ("héllo, 世界") -> (I3)           ; characters, not bytes
+    ASSERT_EQ I3, 9
+    len I4, "héllo, 世界"
+    ASSERT_EQ I4, 14
+    ncall "text.chars" ("a世") -> (R0)
+    mov.c I5, R0[1]
+    ASSERT_EQ I5, 0x4E16
+    mov I6, 0                                            ; iterate with text.next
+    mov I7, 0
+1:  ncall "text.next" ("a世b", I6) -> (I8, I6)
+    blt I6, 0, 2f
+    inc I7
+    jmp 1b
+2:  ASSERT_EQ I7, 3
+    ncall "text.from_chars" (R0) -> (R1)
+    SEQ R1, "a世"
+    ncall "text.valid" ("ok 世界") -> (I2)
+    ASSERT_TRUE I2
+    bufnew R3, 2                                         ; 0xC3 0x28: invalid
+    mov R3[0], 0xC3
+    mov R3[1], 0x28
+    ncall "text.valid" (R3) -> (I2)
+    ASSERT_FALSE I2
+    ncall "text.chars" (R3) -> (R0)
+    mov.c I5, R0[0]
+    ASSERT_EQ I5, 0xFFFD
+    ret 0
+.endf

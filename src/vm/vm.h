@@ -450,6 +450,9 @@ void native_run_blocking(Process *p);
 /* osio.c: std.fs and std.os */
 void natives_register_os(VM *vm);
 const NativeDef *natives_os_table(size_t *n);
+/* text.c: std.text and std.json */
+void natives_register_text(VM *vm);
+const NativeDef *natives_text_table(size_t *n);
 /* sched.c: os.exit: end the whole program now with this exit code. */
 void sched_request_exit(VM *vm, int64_t code);
 /* Inside a foreign call: fail it (raised when the call returns). */

@@ -249,7 +249,7 @@ int proc_run_slice(Process *p, uint32_t budget) {
         return SLICE_FAILED;
     }
     uint64_t left = p->quota[QUOTA_INSNS] - p->insns;
-    if (left < budget) budget = (uint32_t)left;
+    volatile uint32_t slice = left < budget ? (uint32_t)left : budget; /* live across setjmp */
     p->jb = &jb;
     if (VM_SETJMP(jb)) { /* every throw and trap lands here */
         p->jb = NULL;
@@ -261,7 +261,7 @@ int proc_run_slice(Process *p, uint32_t budget) {
         describe_uncaught(p);
         return SLICE_FAILED;
     }
-    int r = interp_run(p, budget);
+    int r = interp_run(p, slice);
     p->jb = NULL;
     return r;
 }

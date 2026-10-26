@@ -58,6 +58,8 @@ base:
   waits in `recv`, holding no thread, so 10,000 open connections are 10,000 small
   processes. File I/O runs on a thread pool. Sandboxes can deny OS access with a
   quota.
+* **Text and JSON**: a typed, safe `text.format` (`{:>8.2f}`), string utilities,
+  UTF-8 iteration, and JSON that maps onto maps and lists with exact integers.
 * **Calling C**: native extensions written against a small, versioned C API
   (`include/mlwsvm/mlwsvm.h`), and a declarative FFI (`.extern`, via libffi) that
   calls C functions directly. Blocking and non-thread-safe code is declared as
@@ -158,4 +160,5 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M11 Linux and CI | done (GitHub Actions: Linux GCC/Clang, macOS) |
 | M12 I/O core, files and the OS (`std.fs`, `std.os`) | done ([STDLIB.md](docs/STDLIB.md)) |
 | M13 networking (`std.net`: TCP, UDP, DNS; handle transfer between processes) | done |
-| M14 text and JSON · M15 supervised HTTP server · M16 embedding API | planned ([ROADMAP.md](docs/ROADMAP.md#next-milestones)) |
+| M14 text and JSON (`text.format`, string utilities, UTF-8, `json.*`) | done |
+| M15 supervised HTTP server · M16 embedding API | planned ([ROADMAP.md](docs/ROADMAP.md#next-milestones)) |

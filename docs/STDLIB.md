@@ -12,7 +12,7 @@ restricts them.
 | `fs` | M12 | files, standard streams, directories, metadata |
 | `os` | M12 | arguments, the environment, exit, running commands |
 | `net` | M13 | TCP, UDP, DNS |
-| `text`, `json` | M14 (planned) | formatting, UTF-8, JSON |
+| `text`, `json` | M14 | formatting, string utilities, UTF-8, JSON |
 
 ## How I/O waits
 
@@ -101,6 +101,74 @@ A ticket cannot usefully be guessed, and one never taken is closed when the VM
 ends. This works for files and pipes too. A handle with read-ahead input
 buffered, or a write in progress, cannot be given.
 
+## Text and JSON
+
+### `text.format`
+
+```asm
+    lnew R0
+    lpush R0, name, score, ratio
+    ncall "text.format" ("{} scored {:>4} ({:.1f}%)", R0) -> (R1)
+```
+
+`{}` takes the next argument from the list, and `{2}` a given one. `{{` and
+`}}` are literal braces. A spec follows a colon, `{:[[fill]align][+][0][width][.precision][type]}`,
+as in Python and Rust:
+
+| Part | Meaning |
+|---|---|
+| align `<` `>` `^` | left, right, centre; with an optional fill character first (`{:*^9}`) |
+| `+` | show the sign of positive numbers |
+| `0` | pad numbers with zeros after the sign |
+| width | the minimum width, in characters |
+| `.precision` | digits after the point for floats; the maximum characters for text |
+| type `d` `x` `X` `o` `b` | integers in decimal, hex, octal or binary |
+| type `f` `e` `g` | floats (integers and BigInt/decimal are converted) |
+| type `s` | the value's text (the default) |
+| type `q` | a string quoted, with escapes |
+
+Without a type, every value has a natural form: integers in decimal, floats
+in the shortest form that round-trips, `true`/`false`, characters as
+themselves, BigInts and decimals exactly, and other objects as a description.
+The arguments are typed list elements, so a mismatch (`{:x}` of a string, a
+missing argument) is an error (`E_TYPE`, `E_BOUNDS`), never a crash. This
+makes it the safe alternative to C's `printf`.
+
+### Strings and UTF-8
+
+Strings are bytes, by convention UTF-8. `text.find` and `text.slice` use byte
+offsets, so they are fast and never split anything unexpectedly. Work on
+characters goes through `text.next` (iterate without allocating),
+`text.chars`, `text.length` and `text.from_chars`; these read an invalid byte
+as one U+FFFD. `text.valid` checks a whole string. `text.upper` and `text.lower`
+change ASCII letters only (full Unicode case mapping needs tables, and is
+planned). `text.split` with an empty separator splits on whitespace;
+`text.join` accepts lists of any values.
+
+### JSON
+
+| JSON | MLWSVM |
+|---|---|
+| object | map with string keys, in the order written (a repeated key: the last wins) |
+| array | list |
+| string | string (escapes, including `\u` surrogate pairs, decoded) |
+| integer | `i64`, or a BigInt if it does not fit: integers are never rounded |
+| other numbers | `f64` |
+| `true`, `false` | bool |
+| `null` | null |
+
+`json.parse` accepts a document whose top level is an object or array (the
+usual case). `json.parse_any` accepts any value and returns it as the only
+element of a list, so a top-level number or boolean keeps its type. Errors are
+`E_JSON` with the line and column. Nesting deeper than 256 levels is refused,
+so hostile input cannot exhaust the stack.
+
+`json.stringify(value, indent)` writes maps (string or integer keys), lists,
+typed arrays, structs (as objects of their fields), strings, numbers,
+BigInts and decimals (exactly), booleans and null. `indent` 0 gives compact
+output, and n > 0 indents by n spaces per level. NaN, infinity, non-UTF-8 text
+and cycles are refused with `E_JSON`.
+
 ## Errors
 
 Every failure raises an ordinary, catchable `Error`. The message names the call
@@ -119,7 +187,8 @@ and the path, and gives the OS's description:
 | `E_ADDR_IN_USE` | `net.listen` on a port already in use |
 | `E_RESOURCES` | out of descriptors, memory or disk space |
 | `E_IO` | any other OS error |
-| `E_TYPE` | a wrong argument (a handle of another kind, a bad mode) |
+| `E_TYPE` | a wrong argument (a handle of another kind, a bad mode or format spec) |
+| `E_JSON` | malformed JSON (with line and column), or a value with no JSON form |
 
 ## Commands
 

@@ -79,6 +79,7 @@ status 70.
 | `E_DEADLOCK` | `recv` in `main` while every process is waiting, so no message can ever arrive |
 | `E_QUOTA` | A heap, raw-memory, mailbox or foreign-call quota was exceeded (catchable), or the instruction quota (the process is stopped) |
 | `E_NOT_FOUND`, `E_EXISTS`, `E_PERMISSION`, `E_IS_DIR`, `E_NOT_DIR`, `E_CLOSED`, `E_TIMEOUT`, `E_RESET`, `E_REFUSED`, `E_ADDR_IN_USE`, `E_RESOURCES`, `E_IO` | Files, commands, sockets and other OS calls ([STDLIB.md](STDLIB.md#errors)) |
+| `E_JSON` | `json.parse` of malformed JSON (the message gives line and column), or `json.stringify` of a value with no JSON form |
 | `E_NATIVE` | An extension reported an error without giving a code (extensions normally use their own codes, such as `E_DEMO`) |
 | `E_KILLED` | The process was killed with `kill` |
 | `E_LINKED` | A process linked to this one failed |

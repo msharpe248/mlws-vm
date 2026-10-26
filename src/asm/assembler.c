@@ -1827,9 +1827,9 @@ static Module *finish(Asm *A) {
     A->externs.n = 0;
     m->gsize = (uint32_t)A->gdata.n;
     m->gdata = xcalloc(m->gsize + 1, 1);
-    memcpy(m->gdata, A->gdata.b, m->gsize);
+    if (m->gsize) memcpy(m->gdata, A->gdata.b, m->gsize); /* (no globals: the source pointer is NULL) */
     m->gtags = xcalloc(m->gsize / 8 + 1, 1);
-    memcpy(m->gtags, A->gtags.v, m->gsize / 8);
+    if (m->gsize) memcpy(m->gtags, A->gtags.v, m->gsize / 8);
     return m;
 }
 

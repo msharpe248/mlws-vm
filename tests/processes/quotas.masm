@@ -24,7 +24,7 @@ h:  catch R1
 .endf
 
 .func sleeper
-    recv I0
+    sleep 60000                        ; never takes a message, so its mailbox only fills
     ret
 .endf
 

@@ -89,3 +89,33 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `net.udp` | r, i64 | r | A UDP socket bound to a host ("" = any) and port (0 = any). |
 | `net.send_to` | r, r, i64, r | - | Send a datagram (a string or byte buffer) to a host and port. |
 | `net.recv_from` | r | r, r, i64 | Wait for a datagram: its bytes, and the sender's address and port. |
+
+## Text and JSON (`text.*`, `json.*`)
+
+> Generated from `src/native/text.c`. See [STDLIB.md](STDLIB.md#text-and-json).
+
+| Name | Parameters | Results | Description |
+|---|---|---|---|
+| `text.format` | r, r | r | Format with {} placeholders: text.format("{} is {:>5.1f}", [name, x]). Spec: [[fill]align][+][0][width][.precision][type]; types d x X o b f e g s q (quoted). |
+| `text.split` | r, r | r | Split on a separator, as a list of strings; an empty separator splits on runs of whitespace. |
+| `text.join` | r, r | r | Join a list's elements (any values) with a separator. |
+| `text.trim` | r | r | Remove whitespace from both ends. |
+| `text.trim_start` | r | r | Remove whitespace from the start. |
+| `text.trim_end` | r | r | Remove whitespace from the end. |
+| `text.find` | r, r, i64 | i64 | The byte offset of the first occurrence at or after an offset, or -1. |
+| `text.replace` | r, r, r | r | Replace every occurrence. |
+| `text.starts_with` | r, r | b | Whether a string starts with a prefix. |
+| `text.ends_with` | r, r | b | Whether a string ends with a suffix. |
+| `text.slice` | r, i64, i64 | r | The bytes [start, end) as a string; negative offsets count from the end; clamped to the string. |
+| `text.upper` | r | r | ASCII letters to upper case. |
+| `text.lower` | r | r | ASCII letters to lower case. |
+| `text.repeat` | r, i64 | r | A string repeated n times. |
+| `text.lines` | r | r | Split into lines (\n or \r\n), as a list of strings. |
+| `text.valid` | r | b | Whether a string or byte buffer is valid UTF-8. |
+| `text.length` | r | i64 | The number of characters (an invalid byte counts as one). |
+| `text.chars` | r | r | The characters, as a list of chars (invalid bytes: U+FFFD). |
+| `text.next` | r, i64 | c, i64 | The character at a byte offset and the offset of the next one (-1 at the end), for iterating. |
+| `text.from_chars` | r | r | A string from a list of characters (or code points). |
+| `json.parse` | r | r | Parse JSON whose top level is an object (a map) or array (a list). Integers are i64 (BigInt if larger), fractions f64, true/false bool, null null. |
+| `json.parse_any` | r | r | Parse any JSON value, returned as the only element of a list (so numbers and booleans keep their types). |
+| `json.stringify` | r, i64 | r | JSON for a map, list, array, struct (an object of its fields), string, number or null; indent 0 is compact. |

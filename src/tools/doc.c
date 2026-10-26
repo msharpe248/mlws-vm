@@ -108,8 +108,8 @@ static void native_rows(StrBuf *b, const NativeDef *t, size_t n) {
 }
 
 static void gen_natives(StrBuf *b) {
-    size_t n, nos;
-    const NativeDef *t = natives_builtin_table(&n), *os = natives_os_table(&nos);
+    size_t n, nos, ntext;
+    const NativeDef *t = natives_builtin_table(&n), *os = natives_os_table(&nos), *text = natives_text_table(&ntext);
     sb_puts(b, "# MLWSVM Built-in Natives\n\n"
                "> Generated from `src/native/natives.c` by `mlwsvm doc natives`. Do not edit by hand.\n\n"
                "Natives are host functions called with `ncall \"name\" (args...) -> (results...)`.\n"
@@ -123,6 +123,10 @@ static void gen_natives(StrBuf *b) {
                "> their errors, and the OS-call quota (kind 5).\n\n"
                "| Name | Parameters | Results | Description |\n|---|---|---|---|\n");
     native_rows(b, os, nos);
+    sb_puts(b, "\n## Text and JSON (`text.*`, `json.*`)\n\n"
+               "> Generated from `src/native/text.c`. See [STDLIB.md](STDLIB.md#text-and-json).\n\n"
+               "| Name | Parameters | Results | Description |\n|---|---|---|---|\n");
+    native_rows(b, text, ntext);
 }
 
 int tool_doc(int argc, char **argv) {

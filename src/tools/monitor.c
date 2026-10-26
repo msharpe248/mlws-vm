@@ -13,7 +13,7 @@ extern const size_t DASHBOARD_HTML_LEN;
 
 typedef struct Monitor {
     int fd;
-    char addr[64];
+    char addr[96]; /* HOST:PORT */
     /* previous /top sample, to turn cumulative CPU time into a percentage */
     VEC(uint64_t) last_cpu;
     uint64_t last_top_ns;

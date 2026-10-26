@@ -1,0 +1,86 @@
+; JSON: objects are maps, arrays lists; integers stay exact (BigInt past
+; i64); escapes and Unicode; structs become objects; round trips.
+; expect-stdout: {"name":"MLWSVM","tags":["vm","fast"],"n":3,"pi":3.25,"ok":true,"none":null}
+; expect-stdout: {
+; expect-stdout:   "a": [
+; expect-stdout:     1,
+; expect-stdout:     2
+; expect-stdout:   ]
+; expect-stdout: }
+; expect-stdout: {"x":1.5,"y":-2,"label":"p\n\"q\""}
+.include "std/test.inc"
+.include "std/io.inc"
+.struct Point
+    x: f64
+    y: i64
+    label: ref
+.ends
+.func main
+    ncall "json.parse" ("{\"name\": \"MLWSVM\", \"tags\": [\"vm\", \"fast\"], \"n\": 3, \"pi\": 3.25, \"ok\": true, \"none\": null}") -> (R0)
+    mget R1, R0, "name"
+    strcmp I0, R1, "MLWSVM"
+    ASSERT_EQ I0, 0
+    mget I1, R0, "n"
+    ASSERT_EQ I1, 3
+    mget F0, R0, "pi"
+    ASSERT_EQ F0, 3.25
+    mget.b I2, R0, "ok"
+    ASSERT_TRUE I2
+    ncall "json.stringify" (R0, 0) -> (R2)      ; keys keep their order
+    PRINTLN_S R2
+
+    ncall "json.parse" ("{\"a\":[1,2]}") -> (R0)
+    ncall "json.stringify" (R0, 2) -> (R2)      ; pretty-printed
+    PRINTLN_S R2
+
+    ncall "json.parse" ("[12345678901234567890123, -9223372036854775808, 1e2, \"\\u00e9\\ud83d\\ude00\\n\"]") -> (R0)
+    mov R3, R0[0]
+    typeof I3, R3
+    ASSERT_EQ I3, 8                             ; a BigInt: too big for i64
+    mov I4, R0[1]
+    ASSERT_EQ I4, -9223372036854775808
+    mov F1, R0[2]
+    ASSERT_EQ F1, 100.0
+    mov R4, R0[3]
+    strcmp I5, R4, "é😀\n"
+    ASSERT_EQ I5, 0
+
+    ncall "json.parse_any" ("42") -> (R5)       ; a top-level scalar, in a list
+    mov I6, R5[0]
+    ASSERT_EQ I6, 42
+
+    new R6, Point
+    mov R6->Point.x, 1.5
+    mov R6->Point.y, -2
+    mov R6->Point.label, "p\n\"q\""
+    ncall "json.stringify" (R6, 0) -> (R2)
+    PRINTLN_S R2
+
+.try h1
+    ncall "json.parse" ("{\"a\": [1, 2,]}") -> (R0)
+.endtry
+    FAIL "parsed a trailing comma"
+h1: catch R7
+    strcmp I7, R7->Error.code, "E_JSON"
+    ASSERT_EQ I7, 0
+    ncall "text.find" (R7->Error.message, "line 1 column 13", 0) -> (I8)
+    ASSERT_GE I8, 0
+.try h2
+    ncall "text.repeat" ("[", 1000) -> (R8)     ; deeper than the limit
+    ncall "json.parse" (R8) -> (R0)
+.endtry
+    FAIL "parsed 1000 levels of nesting"
+h2: catch R7
+    strcmp I7, R7->Error.code, "E_JSON"
+    ASSERT_EQ I7, 0
+.try h3
+    lnew R9
+    lpush R9, R9                                ; a cycle
+    ncall "json.stringify" (R9, 0) -> (R2)
+.endtry
+    FAIL "stringified a cycle"
+h3: catch R7
+    strcmp I7, R7->Error.code, "E_JSON"
+    ASSERT_EQ I7, 0
+    ret 0
+.endf

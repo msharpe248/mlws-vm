@@ -4,7 +4,7 @@
 .include "std/test.inc"
 .const HEAP = 0
 .func sleeper
-    recv I0
+    sleep 60000                        ; never takes a message, so its mailbox only fills
     ret
 .endf
 .func hog -> i64

@@ -1,0 +1,35 @@
+; text.format: {} placeholders, explicit indexes, and specs for alignment,
+; width, fill, zero padding, sign, precision and type.
+; expect-stdout: [x=42 | y=-7 | pi=3.14 | name=bob]
+; expect-stdout: [  right|left   | mid  |0042|+5|ff|FF|52|101010]
+; expect-stdout: [1.50|1.500e+00|"q\"uote"|tr|second first|{literal}]
+; expect-stdout: [**ab**|true|x|123456789012345678901234567890|<list len=1>]
+.include "std/io.inc"
+.func main
+    lnew R0
+    lpush R0, 42, -7, 3.14159, "bob"
+    ncall "text.format" ("[x={} | y={} | pi={:.2} | name={}]", R0) -> (R1)
+    PRINTLN_S R1
+
+    lnew R0
+    lpush R0, "right", "left", "mid", 42, 5, 255, 255, 42, 42
+    ncall "text.format" ("[{:>7}|{:<7}|{:^6}|{:04}|{:+}|{:x}|{:X}|{:o}|{:b}]", R0) -> (R1)
+    PRINTLN_S R1
+
+    lnew R0
+    lpush R0, 1.5, 1.5, "q\"uote", "true"
+    lpush R0, "first", "second"
+    ncall "text.format" ("[{:.2f}|{:.3e}|{:q}|{3:.2}|{5} {4}|{{literal}}]", R0) -> (R1)
+    PRINTLN_S R1
+
+    lnew R0
+    lpush.b R0, 1
+    lpush.c R0, 'x'
+    lpush R0, "ab", 123456789012345678901234567890n
+    lnew R2
+    lpush R2, 1
+    lpush R0, R2
+    ncall "text.format" ("[{2:*^6}|{0}|{1}|{3}|{4}]", R0) -> (R1)
+    PRINTLN_S R1
+    ret 0
+.endf
