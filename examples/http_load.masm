@@ -1,0 +1,162 @@
+; http_load.masm - an HTTP load generator: a process per connection.
+;
+;     mlwsvm run examples/http_load.masm HOST PORT CONNECTIONS REQUESTS [PATH]
+;
+; Opens CONNECTIONS keep-alive connections at once, each in its own process,
+; sends REQUESTS requests on each (one at a time, waiting for each response),
+; and reports the throughput and the slowest request. Waiting for responses
+; costs no threads: each client process waits in the poller.
+;
+; With no arguments (as `make test` runs it) it starts a minimal server of its
+; own on a free port and checks itself.
+;
+; expect-stdout: 2000 of 2000 requests answered
+.include "std/io.inc"
+
+; ---- a minimal server, for the self-test ----------------------------------------
+
+.func serve_conn(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+1:  ncall "fs.read_line" (R0) -> (R1)  ; the request line
+    bz.r R1, 3f
+2:  ncall "fs.read_line" (R0) -> (R1)  ; headers, up to a blank line
+    bz.r R1, 3f
+    len I1, R1
+    bnz I1, 2b
+    ncall "fs.write" (R0, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n")
+    jmp 1b
+3:  ncall "fs.close" (R0)
+    ret
+.endf
+
+.func accept_loop(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+1:  ncall "net.accept" (R0) -> (R1)
+    ncall "fs.give" (R1) -> (I1)
+    spawn serve_conn (I1)
+    jmp 1b
+.endf
+
+; ---- the load generator --------------------------------------------------------
+
+; Read one response (status line, headers, Content-Length bytes). Returns 1
+; for a 200, 0 otherwise or at the end of input.
+.func read_response(ref conn) -> i64
+    ncall "fs.read_line" (conn) -> (R1)
+    bz.r R1, eof
+    ncall "text.starts_with" (R1, "HTTP/1.1 200") -> (I2)
+    mov I1, 0
+1:  ncall "fs.read_line" (conn) -> (R2)
+    bz.r R2, eof
+    len I3, R2
+    bz I3, 2f
+    ncall "text.lower" (R2) -> (R2)
+    ncall "text.starts_with" (R2, "content-length:") -> (I4)
+    bz I4, 1b
+    ncall "text.slice" (R2, 15, 100) -> (R3)
+    ncall "text.trim" (R3) -> (R3)
+    parse.i64 I1, R3
+    jmp 1b
+2:  bz I1, 4f                          ; the body: exactly Content-Length bytes
+    ncall "fs.read" (conn, I1) -> (R4)
+    len I5, R4
+    sub I1, I5
+    jmp 2b
+4:  ret I2
+eof:
+    ret 0
+.endf
+
+; One connection: `n` requests; sends the parent [answered, slowest ns].
+.func client(i64 parent, ref host, i64 port, i64 n, ref request)
+    ncall "net.connect" (host, port, 10000) -> (R2)
+    mov I3, 0                          ; answered
+    mov I4, 0                          ; slowest
+    mov I5, 0
+1:  ncall "time.now_ns" () -> (I6)
+    ncall "fs.write" (R2, request)
+    call read_response (R2) -> (I7)
+    ncall "time.now_ns" () -> (I8)
+    sub I8, I6
+    ble I8, I4, 2f
+    mov I4, I8
+2:  add I3, I7
+    inc I5
+    blt I5, n, 1b
+    ncall "fs.close" (R2)
+    lnew R3
+    lpush R3, I3, I4
+    send parent, R3
+    ret
+.endf
+
+; Run the load; returns the requests answered. (Parameters are in I0-I3, so
+; the temporaries start at I13.)
+.func load(ref host, i64 port, i64 conns, i64 n, ref path, i64 report) -> i64
+    strcat R3, "GET ", path, " HTTP/1.1\r\nHost: ", host, "\r\n\r\n"
+    ncall "time.now_ns" () -> (I13)
+    mov I14, 0
+1:  spawn client (PID, host, port, n, R3)
+    inc I14
+    blt I14, conns, 1b
+    mov I15, 0                          ; answered
+    mov I16, 0                          ; slowest
+    mov I14, 0
+2:  recv R4
+    add I15, R4[0]
+    mov I17, R4[1]
+    ble I17, I16, 3f
+    mov I16, I17
+3:  inc I14
+    blt I14, conns, 2b
+    ncall "time.now_ns" () -> (I18)
+    sub I18, I13
+    bz report, 4f
+    cvt.f64.i64 F0, I15
+    cvt.f64.i64 F1, I18
+    div F2, F0, F1
+    mul F2, 1000000000.0               ; requests per second
+    cvt.f64.i64 F3, I16
+    div F3, 1000000.0                  ; the slowest, in ms
+    cvt.f64.i64 F4, I18
+    div F4, 1000000.0
+    lnew R5
+    lpush R5, I15, conns, F4, F2, F3
+    ncall "text.format" ("{} requests over {} connections in {:.0f} ms: {:.0f} requests/s; slowest {:.2f} ms", R5) -> (R6)
+    PRINTLN_S R6
+4:  ret I15
+.endf
+
+.func main
+    ncall "os.args" () -> (R0)
+    len I0, R0
+    bz I0, self_test
+    blt I0, 4, usage
+    mov R1, R0[0]
+    mov R2, R0[1]
+    parse.i64 I1, R2
+    mov R2, R0[2]
+    parse.i64 I2, R2
+    mov R2, R0[3]
+    parse.i64 I3, R2
+    mov R4, "/"
+    blt I0, 5, 1f
+    mov R4, R0[4]
+1:  call load (R1, I1, I2, I3, R4, 1) -> (I4)
+    ret 0
+usage:
+    PRINTLN_S "usage: mlwsvm run examples/http_load.masm HOST PORT CONNECTIONS REQUESTS [PATH]"
+    ret 2
+self_test:
+    ncall "net.listen" ("127.0.0.1", 0) -> (R1)
+    ncall "net.port" (R1) -> (I1)
+    ncall "fs.give" (R1) -> (I2)
+    spawn accept_loop (I2)
+    call load ("127.0.0.1", I1, 50, 40, "/", 0) -> (I3)
+    lnew R5
+    lpush R5, I3
+    ncall "text.format" ("{} of 2000 requests answered", R5) -> (R6)
+    PRINTLN_S R6
+    ncall "os.exit" (0)
+    ret 0
+.endf

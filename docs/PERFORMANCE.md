@@ -39,6 +39,40 @@ only `parallel` has the work to use more than one.
 The tight register loop now runs at about 800M instructions per second, roughly
 5 cycles per instruction. That is the lower bound with the current design.
 
+### On Linux
+
+The same benchmarks on two Ubuntu 26.04 desktops (GCC, `-O2`, default threads):
+
+| Benchmark | Intel i7-11700KF (8 cores, 16 threads) | AMD Ryzen 9 5900X (12 cores, 24 threads) |
+|---|---|---|
+| fib | 205 | 208 |
+| loop | 473 | 617 |
+| sieve | 1,271 | 1,264 |
+| nbody | 222 | 216 |
+| binarytrees | 442 | 404 |
+| maps | 131 | 139 |
+| pingpong | 95 | 71 |
+| closures | 286 | 252 |
+| parallel | 146 | 121 |
+| connections (10,000 at once) | 814 | 1,528 |
+
+### HTTP
+
+`examples/http_server.masm` (a process per connection, an access-log line per
+request), loaded by `examples/http_load.masm` (a process per client connection)
+running on the other machine over gigabit Ethernet:
+
+| Connections | Requests | Requests/s | Slowest request |
+|---|---|---|---|
+| 50 | 200,000 | 140,000 | 18 ms |
+| 200 | 200,000 | 169,000 | 26 ms |
+| 1,000 | 200,000 | 168,000 | 29 ms |
+
+The server ran on the Ryzen machine (24 worker threads), and the load
+generator on the Intel one. During a 200-connection run, 40 handlers were made
+to fail (20 `GET /crash`, 20 `GET /hog`, which exhausts its heap quota):
+all 200,000 other requests were still answered, at the same rate.
+
 ## What was done, and why
 
 Each step was chosen from a profile (`sample` on macOS), not guessed.

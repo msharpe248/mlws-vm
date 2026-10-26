@@ -162,5 +162,5 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M12 I/O core, files and the OS (`std.fs`, `std.os`) | done ([STDLIB.md](docs/STDLIB.md)) |
 | M13 networking (`std.net`: TCP, UDP, DNS; handle transfer between processes) | done |
 | M14 text and JSON (`text.format`, string utilities, UTF-8, `json.*`) | done |
-| M15 `std.proc` (registry, request/reply), `std.supervisor`, and a supervised HTTP server example (~29k requests/s) | done |
+| M15 `std.proc` (registry, request/reply), `std.supervisor`, and a supervised HTTP server example (~168k requests/s between two Linux machines) | done |
 | M16 embedding API | planned ([ROADMAP.md](docs/ROADMAP.md#next-milestones)) |

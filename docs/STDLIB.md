@@ -236,9 +236,15 @@ purpose) that puts the pieces together:
   halfway, every request still answered), which is what `make test` runs.
 
 On an Apple M5 Pro laptop, ApacheBench (`ab -n 20000 -c 50 [-k]`) measures
-about 29,000 requests per second, with or without keep-alive, including a new
-process per connection and an access-log line per request. ab itself is
-single-threaded, so this is a lower bound.
+about 29,000 requests per second (ab itself is single-threaded, so this is a
+lower bound). Across two Linux desktops, with `examples/http_load.masm` as the
+client, it serves about 168,000 requests per second over 200 or 1,000
+connections, and keeps doing so while handlers are made to fail
+([PERFORMANCE.md](PERFORMANCE.md#http)).
+
+`examples/http_load.masm HOST PORT CONNECTIONS REQUESTS [PATH]` is the load
+generator: a process per connection, each making keep-alive requests and
+timing them.
 
 ## Errors
 
