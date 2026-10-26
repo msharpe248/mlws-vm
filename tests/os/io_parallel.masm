@@ -1,0 +1,30 @@
+; Processes waiting for pipes hold no thread: with one worker thread, 20
+; processes each read from a command that takes 200 ms, all at the same time.
+; threads: 1
+.include "std/test.inc"
+.func reader(i64 parent)
+    lnew R0
+    lpush R0, "sh", "-c", "sleep 0.2; echo done"
+    ncall "os.spawn" (R0, 2) -> (R1, R2, R3, R4)
+    ncall "fs.read_line" (R3) -> (R5)  ; waits in the poller
+    ncall "os.wait" (R1) -> (I1)
+    strcmp I2, R5, "done"
+    send parent, I2
+    ret
+.endf
+.func main
+    ncall "time.now_ns" () -> (I0)
+    mov I1, 0
+1:  spawn reader (PID)
+    inc I1
+    blt I1, 20, 1b
+    mov I1, 0
+2:  recv I2
+    ASSERT_EQ I2, 0
+    inc I1
+    blt I1, 20, 2b
+    ncall "time.now_ns" () -> (I3)
+    sub I3, I0
+    ASSERT_LT I3, 2000000000           ; together: well under 20 x 200 ms
+    ret 0
+.endf

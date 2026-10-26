@@ -41,7 +41,7 @@ a test file's own lines override both.
 | `--max-frames N` | 100000 | call depth limit (`E_CALL_DEPTH`) |
 | `--slice N` | 2000 | time slice, in instructions, before another process gets a turn |
 | `--gc-min BYTES` | 1M | the heap size below which no collection runs |
-| `--quota LIST` | unlimited | starting limits for every process, e.g. `heap=64M,raw=1G,mailbox=1000,insns=5000000,foreign=0`; any subset, `unlimited` resets one |
+| `--quota LIST` | unlimited | starting limits for every process, e.g. `heap=64M,raw=1G,mailbox=1000,insns=5000000,foreign=0,os=0`; any subset, `unlimited` resets one |
 | `--ext-path DIR[:DIR]` | (none) | trusted native-extension directories, searched before `lib/ext` ([EXTENDING.md](EXTENDING.md)) |
 
 Sizes take an optional `K`, `M` or `G` suffix (powers of 1024). A bad value is

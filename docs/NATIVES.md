@@ -39,3 +39,41 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `math.log10` | f64 | f64 | Base-10 logarithm. |
 | `math.pow` | f64, f64 | f64 | x raised to y. |
 | `math.hypot` | f64, f64 | f64 | sqrt(x*x + y*y) without undue overflow. |
+
+## Files and the operating system (`fs.*`, `os.*`)
+
+> Generated from `src/native/osio.c`. See [STDLIB.md](STDLIB.md) for how they wait,
+> their errors, and the OS-call quota (kind 5).
+
+| Name | Parameters | Results | Description |
+|---|---|---|---|
+| `fs.open` | r, r | r | Open a file: mode "r", "w" (create or truncate), "a" (append), "r+", "w+", "a+"; add "x" to fail if it exists. |
+| `fs.close` | r | - | Close a file now (it is also closed when collected). |
+| `fs.read` | r, i64 | r | Read up to n bytes (n <= 0: up to 16 MiB), as a byte buffer; empty at the end of input. |
+| `fs.read_line` | r | r | Read a line, without its \n (or \r\n), as a string; null at the end of input. |
+| `fs.read_all` | r | r | Read everything up to the end of input, as a byte buffer. |
+| `fs.write` | r, r | - | Write all of a string or byte buffer. |
+| `fs.seek` | r, i64, i64 | i64 | Move in a file: whence 0 from the start, 1 from here, 2 from the end; returns the new offset. |
+| `fs.set_timeout` | r, i64 | - | Give later reads and writes on a pipe or socket a timeout in ms (E_TIMEOUT); negative: none. |
+| `fs.stdin` | - | r | The program's standard input. |
+| `fs.stdout` | - | r | The program's standard output (the same output as io.print). |
+| `fs.stderr` | - | r | The program's standard error. |
+| `fs.read_file` | r | r | A whole file, as a byte buffer. |
+| `fs.write_file` | r, r | - | Create or replace a file with a string or byte buffer. |
+| `fs.stat` | r | r | A FileInfo for a path: size, mtime (ns), mode, kind (1 file, 2 directory, 3 link, 4 other). |
+| `fs.exists` | r | b | Whether a path exists. |
+| `fs.list` | r | r | The names in a directory, sorted, as a list of strings. |
+| `fs.mkdir` | r | - | Create a directory. |
+| `fs.remove` | r | - | Delete a file. |
+| `fs.rmdir` | r | - | Delete an empty directory. |
+| `fs.rename` | r, r | - | Rename or move a file or directory. |
+| `fs.cwd` | - | r | The current directory. |
+| `os.args` | - | r | The program's arguments (after the program file on the command line), as a list of strings. |
+| `os.env` | r | r | An environment variable, or null. |
+| `os.environ` | - | r | The whole environment, as a map of strings. |
+| `os.exit` | i64 | - | End the whole program now, from any process, with this exit code. |
+| `os.platform` | - | r | "macos", "linux", "freebsd", ... or "windows". |
+| `os.spawn` | r, i64 | r, r, r, r | Start a command (a list: the program, found on PATH, then its arguments). Pipes: 1 stdin, 2 stdout, 4 stderr, 8 stderr into stdout. Returns the process and its piped streams (null if not piped). |
+| `os.wait` | r | i64 | Wait for a command to finish; its exit code (128 + N if killed by signal N). |
+| `os.kill` | r, b | - | Stop a command: ask it to terminate, or kill it (true). |
+| `os.run` | r | i64, r | Run a command to completion: its exit code and its standard output, as a byte buffer. |

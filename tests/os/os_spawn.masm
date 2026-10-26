@@ -1,0 +1,41 @@
+; Running commands: os.run captures stdout; os.spawn gives pipes that are
+; waited for by the poller; exit codes, and a missing command.
+.include "std/test.inc"
+.func main
+    lnew R0
+    lpush R0, "echo", "hello"
+    ncall "os.run" (R0) -> (I0, R1)
+    ASSERT_EQ I0, 0
+    strcat R2, R1
+    strcmp I1, R2, "hello\n"
+    ASSERT_EQ I1, 0
+
+    lnew R0
+    lpush R0, "sh", "-c", "exit 3"
+    ncall "os.run" (R0) -> (I0, R1)
+    ASSERT_EQ I0, 3
+
+    lnew R0
+    lpush R0, "cat"
+    ncall "os.spawn" (R0, 3) -> (R3, R4, R5, R6)   ; pipes for stdin and stdout
+    ASSERT_FALSE R6, r                             ; stderr inherited
+    ncall "fs.write" (R4, "through cat\n")
+    ncall "fs.close" (R4)                          ; end of cat's input
+    ncall "fs.read_all" (R5) -> (R7)
+    strcat R2, R7
+    strcmp I1, R2, "through cat\n"
+    ASSERT_EQ I1, 0
+    ncall "os.wait" (R3) -> (I2)
+    ASSERT_EQ I2, 0
+
+.try h
+    lnew R0
+    lpush R0, "no-such-command-mlwsvm"
+    ncall "os.run" (R0) -> (I0, R1)
+.endtry
+    FAIL "ran a missing command"
+h:  catch R8
+    strcmp I3, R8->Error.code, "E_NOT_FOUND"
+    ASSERT_EQ I3, 0
+    ret 0
+.endf

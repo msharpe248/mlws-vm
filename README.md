@@ -53,6 +53,9 @@ base:
   thread per core with work stealing, `spawn`/`send`/`recv` with deep-copied
   messages, timeouts, Erlang-style `link`/`monitor` supervision, and per-process
   quotas on heap, raw memory, mailbox size and CPU.
+* **Files, commands and the OS** (`std.fs`, `std.os`): a process waiting on a pipe
+  waits in the poller (kqueue/epoll) like it waits in `recv`, holding no thread;
+  file I/O runs on a thread pool. Sandboxes can deny OS access with a quota.
 * **Calling C**: native extensions written against a small, versioned C API
   (`include/mlwsvm/mlwsvm.h`), and a declarative FFI (`.extern`, via libffi) that
   calls C functions directly. Blocking and non-thread-safe code is declared as
@@ -106,6 +109,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/ERRORS.md](docs/ERRORS.md) | Error codes |
 | [docs/BINARY_FORMAT.md](docs/BINARY_FORMAT.md) | The `.mlwso` file and instruction encoding |
 | [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard and `top` |
+| [docs/STDLIB.md](docs/STDLIB.md) | The standard library: files, commands, the OS, and how I/O waits |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks, results, and what was optimised (and why) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Remaining work: calling C libraries, the standard library, platforms, deferred performance work |
@@ -149,5 +153,6 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M9 Performance: multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes) | done |
 | M9 Performance: generational GC, more specialised memory forms | deferred: measured as low value for now ([PERFORMANCE.md](docs/PERFORMANCE.md)) |
 | M10 Calling C: extension API, declarative FFI, trusted installation (`mlwsvm ext`) | done ([EXTENDING.md](docs/EXTENDING.md)) |
-| M11 Linux and CI | in progress |
-| M12 I/O core, files and the OS · M13 networking · M14 text and JSON · M15 supervised HTTP server · M16 embedding API | planned ([ROADMAP.md](docs/ROADMAP.md#next-milestones)) |
+| M11 Linux and CI | done (GitHub Actions: Linux GCC/Clang, macOS) |
+| M12 I/O core, files and the OS (`std.fs`, `std.os`) | done ([STDLIB.md](docs/STDLIB.md)) |
+| M13 networking · M14 text and JSON · M15 supervised HTTP server · M16 embedding API | planned ([ROADMAP.md](docs/ROADMAP.md#next-milestones)) |

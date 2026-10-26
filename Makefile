@@ -108,7 +108,7 @@ check-tsan: test-ext
 	$(MAKE) BUILD=build-tsan BIN=mlwsvm-tsan \
 	    CFLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" LDFLAGS="-fsanitize=thread"
 	TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=4 ./mlwsvm-tsan test tests examples
-	TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=8 ./mlwsvm-tsan test tests/processes tests/threads tests/native
+	TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=8 ./mlwsvm-tsan test tests/processes tests/threads tests/native tests/os
 
 bench: $(BIN)
 	sh bench/run.sh ./$(BIN)

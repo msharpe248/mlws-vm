@@ -67,7 +67,7 @@ static bool parse_range(const char *name, const char *value, bool bytes, uint64_
 
 /* heap=64M,raw=1G,mailbox=1000,insns=5000000 (any subset; "unlimited" resets one). */
 static bool parse_quota(VM *vm, const char *value, MlwsError *err) {
-    static const char *const KINDS[QUOTA__COUNT] = {"heap", "raw", "mailbox", "insns", "foreign"};
+    static const char *const KINDS[QUOTA__COUNT] = {"heap", "raw", "mailbox", "insns", "foreign", "os"};
     uint64_t q[QUOTA__COUNT];
     memcpy(q, vm->default_quota, sizeof q);
     const char *s = value;
@@ -81,7 +81,7 @@ static bool parse_quota(VM *vm, const char *value, MlwsError *err) {
                 if ((size_t)(eq - s) == strlen(KINDS[k]) && !strncmp(s, KINDS[k], (size_t)(eq - s))) kind = k;
         if (kind < 0)
             return mlws_err(err, "E_BAD_OPTION",
-                            "--quota: expected heap=, raw=, mailbox=, insns= or foreign= (comma-separated), got '%.*s'",
+                            "--quota: expected heap=, raw=, mailbox=, insns=, foreign= or os= (comma-separated), got '%.*s'",
                             (int)len, s),
                    false;
         const char *v = eq + 1;

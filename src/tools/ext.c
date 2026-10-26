@@ -185,8 +185,9 @@ int tool_ext(int argc, char **argv, const ToolEnv *env) {
                 free(name);
                 free(to);
             } else if (!strcmp(cmd, "remove")) {
-                char *file = xmalloc(strlen(a) + 8);
-                sprintf(file, "%s.mlwsx", a);
+                size_t fl = strlen(a) + 8;
+                char *file = xmalloc(fl);
+                snprintf(file, fl, "%s.mlwsx", a);
                 char *path = path_join(dir, file);
                 drop(&lines, "ext", a);
                 remove(path);

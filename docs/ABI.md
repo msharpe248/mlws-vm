@@ -40,8 +40,11 @@ immutable and shared. Everything else belongs to exactly one process.
   before the `Down` sent when it ends. Anything else (which of two processes runs
   first, how output from different processes interleaves) can vary from run to
   run. Each native call such as `io.print` writes its output in one piece.
-* **The program ends when `main` ends.** Any processes still running are stopped,
-  and the exit code is `main`'s. If `main` waits in `recv` while every other process
+* A process waiting for I/O (a pipe or socket, [STDLIB.md](STDLIB.md)) waits in
+  the poller, like `recv`, holding no thread; the monitor shows it as `io`.
+* **The program ends when `main` ends**, or when any process calls `os.exit`.
+  Any processes still running are stopped, and the exit code is `main`'s (or
+  `os.exit`'s). If `main` waits in `recv` while every other process
   is also waiting, so no message can ever arrive, `main` gets a catchable
   `E_DEADLOCK`.
 * The debugger, tracer and profiler see every instruction, so a program run under
@@ -103,6 +106,7 @@ it.
 | 2 | waiting messages in the mailbox | catchable `E_QUOTA` in the **sender** |
 | 3 | instructions executed in total | the process is stopped with `E_QUOTA` (a hard CPU limit) |
 | 4 | foreign calls (natives from extensions and `.extern`); 0 shuts out native code | catchable `E_QUOTA` at the call |
+| 5 | OS calls (`fs.*`, `os.*`; [STDLIB.md](STDLIB.md)); 0 shuts out files, commands and the environment | catchable `E_QUOTA` at the call |
 
 `mlwsvm run --stats` reports processes spawned, the most alive at once, time
 slices, and instructions across all processes. `proc.count` returns the number

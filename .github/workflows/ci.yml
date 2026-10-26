@@ -34,7 +34,7 @@ jobs:
         run: sudo sysctl vm.mmap_rnd_bits=28
 
       - name: Build
-        run: make CC=$CC -j4
+        run: make CC=$CC -k -j4
 
       - name: Tests
         run: make CC=$CC test

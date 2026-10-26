@@ -95,16 +95,7 @@ static void gen_isa(StrBuf *b) {
     }
 }
 
-static void gen_natives(StrBuf *b) {
-    size_t n;
-    const NativeDef *t = natives_builtin_table(&n);
-    sb_puts(b, "# MLWSVM Built-in Natives\n\n"
-               "> Generated from `src/native/natives.c` by `mlwsvm doc natives`. Do not edit by hand.\n\n"
-               "Natives are host functions called with `ncall \"name\" (args...) -> (results...)`.\n"
-               "Arguments are read with the parameter types listed below, and the verifier checks\n"
-               "argument counts and register banks at load time. Most programs call them through the\n"
-               "wrappers in `lib/std/*.masm` instead of directly.\n\n"
-               "| Name | Parameters | Results | Description |\n|---|---|---|---|\n");
+static void native_rows(StrBuf *b, const NativeDef *t, size_t n) {
     for (size_t i = 0; i < n; i++) {
         sb_printf(b, "| `%s` | ", t[i].name);
         for (int k = 0; k < t[i].np; k++) sb_printf(b, "%s%s", k ? ", " : "", type_name((MlwsType)t[i].pt[k]));
@@ -114,6 +105,24 @@ static void gen_natives(StrBuf *b) {
         if (!t[i].nr) sb_puts(b, "-");
         sb_printf(b, " | %s |\n", t[i].doc);
     }
+}
+
+static void gen_natives(StrBuf *b) {
+    size_t n, nos;
+    const NativeDef *t = natives_builtin_table(&n), *os = natives_os_table(&nos);
+    sb_puts(b, "# MLWSVM Built-in Natives\n\n"
+               "> Generated from `src/native/natives.c` by `mlwsvm doc natives`. Do not edit by hand.\n\n"
+               "Natives are host functions called with `ncall \"name\" (args...) -> (results...)`.\n"
+               "Arguments are read with the parameter types listed below, and the verifier checks\n"
+               "argument counts and register banks at load time. Most programs call them through the\n"
+               "wrappers in `lib/std/*.masm` instead of directly.\n\n"
+               "| Name | Parameters | Results | Description |\n|---|---|---|---|\n");
+    native_rows(b, t, n);
+    sb_puts(b, "\n## Files and the operating system (`fs.*`, `os.*`)\n\n"
+               "> Generated from `src/native/osio.c`. See [STDLIB.md](STDLIB.md) for how they wait,\n"
+               "> their errors, and the OS-call quota (kind 5).\n\n"
+               "| Name | Parameters | Results | Description |\n|---|---|---|---|\n");
+    native_rows(b, os, nos);
 }
 
 int tool_doc(int argc, char **argv) {

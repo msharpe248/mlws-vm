@@ -38,17 +38,38 @@ void native_fail(Process *p, const char *code, const char *fmt, ...) {
 
 /* ---- calling ------------------------------------------------------------------ */
 
-void native_count_call(Process *p) {
-    if (p->foreign_calls >= p->quota[QUOTA_FOREIGN])
-        vm_trap(p, "E_QUOTA", "foreign call quota of %llu exceeded", (unsigned long long)p->quota[QUOTA_FOREIGN]);
-    p->foreign_calls++;
+void native_count_call(Process *p, const NativeDef *nd) {
+    if (p->resumed) return; /* run again after a wait: still the same call */
+    if (nd->flags & NF_FOREIGN) {
+        if (p->foreign_calls >= p->quota[QUOTA_FOREIGN])
+            vm_trap(p, "E_QUOTA", "foreign call quota of %llu exceeded", (unsigned long long)p->quota[QUOTA_FOREIGN]);
+        p->foreign_calls++;
+    }
+    if (nd->flags & NF_OS) {
+        if (p->os_calls >= p->quota[QUOTA_OS])
+            vm_trap(p, "E_QUOTA", "OS call quota of %llu exceeded (files, commands, environment, network)",
+                    (unsigned long long)p->quota[QUOTA_OS]);
+        p->os_calls++;
+    }
 }
+
+void native_wait_fd(Process *p, int fd, int events, int64_t timeout_ms) {
+    p->native_req = NREQ_WAIT_FD;
+    p->fdwait.fd = fd;
+    p->fdwait.events = events;
+    p->fdwait.timed_out = false;
+    /* A timeout covers the whole operation, across however many waits it takes. */
+    if (!p->fdwait.deadline && timeout_ms >= 0) p->fdwait.deadline = plat_now_ns() + (uint64_t)timeout_ms * 1000000u;
+}
+
+void native_run_blocking(Process *p) { p->native_req = NREQ_BLOCKING; }
 
 void native_invoke(Process *p, const NativeDef *nd, Word *args, Word *rets) {
     PlatLock *serial = nd->flags & NF_SERIAL ? nd->lib->serial : NULL;
     p->cur_native = nd;
     p->in_foreign = true;
     p->foreign_err = false;
+    p->native_req = NREQ_NONE;
     if (serial) plat_lock(serial);
     nd->fn(p, args, rets);
     if (serial) plat_unlock(serial);
@@ -66,8 +87,9 @@ void native_complete(Process *p) {
 }
 
 void native_call(Process *p, const NativeDef *nd, Word *args, Word *rets) {
-    native_count_call(p);
+    native_count_call(p, nd);
     native_invoke(p, nd, args, rets);
+    if (p->foreign_err) p->native_req = NREQ_NONE; /* an error ends the call */
     native_complete(p);
 }
 
@@ -311,7 +333,7 @@ static bool api_define(MlwsExtension *ext, const MlwsNativeDesc *d) {
     nd->xfn = (void (*)(void))d->fn;
     nd->data = d->data;
     nd->lib = ext->lib;
-    nd->flags = NF_FOREIGN | (d->flags & MLWS_NATIVE_BLOCKING ? NF_BLOCKING : 0) |
+    nd->flags = NF_FOREIGN | NF_CHECKED | (d->flags & MLWS_NATIVE_BLOCKING ? NF_BLOCKING : 0) |
                 (d->flags & MLWS_NATIVE_SERIAL ? NF_SERIAL : 0);
     VEC_PUSH(ext->vm->foreign_natives, nd);
     vm_register_native(ext->vm, nd);

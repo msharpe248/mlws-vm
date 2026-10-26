@@ -240,6 +240,36 @@ bool plat_mkdir(const char *path) { return CreateDirectoryA(path, NULL) || GetLa
 
 bool plat_restrict_writes(const char *path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
 
+/* ---- I/O: not yet implemented on Windows (an IOCP poller is on the roadmap) ---- */
+
+int plat_last_error(void) { return (int)GetLastError(); }
+const char *plat_err_code(int err) { return err == ERROR_FILE_NOT_FOUND ? "E_NOT_FOUND" : "E_IO"; }
+const char *plat_err_text(int err) { (void)err; return "not supported on Windows yet"; }
+int plat_file_open(const char *path, int mode, int *err) { (void)path, (void)mode; *err = ERROR_NOT_SUPPORTED; return -1; }
+long plat_fd_read(int fd, void *buf, size_t n, int *err) { (void)fd, (void)buf, (void)n; *err = ERROR_NOT_SUPPORTED; return PLAT_IO_ERR; }
+long plat_fd_write(int fd, const void *buf, size_t n, int *err) { (void)fd, (void)buf, (void)n; *err = ERROR_NOT_SUPPORTED; return PLAT_IO_ERR; }
+bool plat_fd_close(int fd) { (void)fd; return false; }
+bool plat_fd_pollable(int fd) { (void)fd; return false; }
+bool plat_fd_set_nonblocking(int fd, bool on) { (void)fd, (void)on; return false; }
+int64_t plat_fd_seek(int fd, int64_t off, int whence, int *err) { (void)fd, (void)off, (void)whence; *err = ERROR_NOT_SUPPORTED; return -1; }
+bool plat_stat(const char *path, bool follow, PlatStat *st, int *err) { (void)path, (void)follow, (void)st; *err = ERROR_NOT_SUPPORTED; return false; }
+bool plat_remove(const char *path, int *err) { (void)path; *err = ERROR_NOT_SUPPORTED; return false; }
+bool plat_rmdir(const char *path, int *err) { (void)path; *err = ERROR_NOT_SUPPORTED; return false; }
+bool plat_rename(const char *a, const char *b, int *err) { (void)a, (void)b; *err = ERROR_NOT_SUPPORTED; return false; }
+bool plat_mkdir_err(const char *path, int *err) { (void)path; *err = ERROR_NOT_SUPPORTED; return false; }
+char *plat_getcwd(void) { return NULL; }
+char *const *plat_environ(void) { return _environ; }
+const char *plat_os_name(void) { return "windows"; }
+bool plat_spawn(char *const argv[], int pipes, PlatChild *c, int *err) { (void)argv, (void)pipes, (void)c; *err = ERROR_NOT_SUPPORTED; return false; }
+bool plat_wait_child(int64_t pid, int *code, int *err) { (void)pid, (void)code; *err = ERROR_NOT_SUPPORTED; return false; }
+bool plat_signal_child(int64_t pid, int sig) { (void)pid, (void)sig; return false; }
+PlatPoller *plat_poller_new(void) { return NULL; }
+void plat_poller_free(PlatPoller *p) { (void)p; }
+bool plat_poller_arm(PlatPoller *p, int fd, int events, uint64_t token) { (void)p, (void)fd, (void)events, (void)token; return false; }
+void plat_poller_forget(PlatPoller *p, int fd) { (void)p, (void)fd; }
+int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_ns) { (void)p, (void)tokens, (void)max, (void)timeout_ns; return 0; }
+void plat_poller_wake(PlatPoller *p) { (void)p; }
+
 int plat_cpu_count(void) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);

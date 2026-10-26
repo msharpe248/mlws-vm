@@ -31,10 +31,16 @@ typedef void (*NativeFn)(Process *p, Word *args, Word *rets);
 #define NATIVE_MAX_ARGS 8
 #define NATIVE_MAX_RETS 4
 
-/* NativeDef flags. Built-in natives have none and take the fast path. */
-#define NF_FOREIGN 0x1  /* from an extension or the FFI: foreign code (docs/EXTENDING.md) */
+/* NativeDef flags. Most built-in natives have none and take the fast path. */
+#define NF_FOREIGN 0x1  /* from an extension or the FFI: foreign code, counted by quota 4 */
 #define NF_BLOCKING 0x2 /* runs on the I/O thread pool while the caller waits */
 #define NF_SERIAL 0x4   /* one call at a time per library (its `serial` lock) */
+#define NF_CHECKED 0x8  /* reports errors with native_fail (never traps): see extapi.c */
+#define NF_OS 0x10      /* reaches the operating system (std.fs, std.os): counted by quota 5 */
+
+/* What a checked native may ask for instead of finishing (Process.native_req):
+ * wait for a descriptor and run again, or run again on the I/O thread pool. */
+enum { NREQ_NONE = 0, NREQ_WAIT_FD, NREQ_BLOCKING, NREQ_EXIT };
 
 struct ExtLib;
 
@@ -126,7 +132,10 @@ typedef bool (*InsnHook)(struct Process *p, uint32_t pc);
 typedef void (*PollHook)(struct VM *vm, uint64_t wait_ns);
 
 /* Per-process resource limits (the `quota` instruction kinds). */
-enum { QUOTA_HEAP = 0, QUOTA_RAW = 1, QUOTA_MAILBOX = 2, QUOTA_INSNS = 3, QUOTA_FOREIGN = 4, QUOTA__COUNT };
+enum {
+    QUOTA_HEAP = 0, QUOTA_RAW = 1, QUOTA_MAILBOX = 2, QUOTA_INSNS = 3, QUOTA_FOREIGN = 4, QUOTA_OS = 5,
+    QUOTA__COUNT
+};
 
 struct PlatLock;
 struct Sched;
@@ -173,6 +182,10 @@ typedef struct VM {
     VEC(ExtLib *) extlibs;
     VEC(NativeDef *) foreign_natives; /* owned NativeDefs of extensions and the FFI */
     StrMap ffi_types;            /* FFI handle tag -> its MlwsForeignType */
+    /* the program's view of the OS (std.os) */
+    StrVec prog_args;            /* os.args: the arguments after the program file */
+    _Atomic bool exit_requested; /* os.exit was called: the program ends with exit_code */
+    _Atomic int64_t exit_code;
 } VM;
 
 /* ---- processes ------------------------------------------------------------- */
@@ -208,11 +221,22 @@ typedef struct {
     Obj *closure;         /* the closure being run (UP[n] reads it), or NULL */
 } Frame;
 
-enum { PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED, PROC_NATIVE };
+/* PROC_NATIVE: in a blocking native call on the I/O pool. PROC_IOWAIT: waiting
+ * for a descriptor (Process.fdwait), woken by the poller. */
+enum { PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED, PROC_NATIVE, PROC_IOWAIT };
 
 /* How a time slice ended. SLICE_NATIVE: a blocking native call is to be made
- * on the I/O thread pool (Process.bcall). */
-enum { SLICE_YIELD = 0, SLICE_BLOCK, SLICE_SLEEP, SLICE_DONE, SLICE_FAILED, SLICE_BREAK, SLICE_NATIVE };
+ * on the I/O thread pool (Process.bcall). SLICE_IOWAIT: wait for Process.fdwait. */
+enum { SLICE_YIELD = 0, SLICE_BLOCK, SLICE_SLEEP, SLICE_DONE, SLICE_FAILED, SLICE_BREAK, SLICE_NATIVE, SLICE_IOWAIT };
+
+/* A wait for a descriptor that a native asked for (native_wait_fd). The native
+ * runs again when the descriptor is ready, or with timed_out set. */
+typedef struct {
+    int fd, events;     /* PLAT_POLL_READ / PLAT_POLL_WRITE */
+    uint64_t deadline;  /* ns, or 0 */
+    uint32_t gen;       /* matches the poller's token; stale wake-ups are ignored */
+    bool timed_out;
+} FdWait;
 
 /* A blocking native call in progress: made by an I/O thread, then completed
  * when the ncall instruction runs again. */
@@ -308,6 +332,11 @@ struct Process {
     char foreign_msg[512];
     uint64_t foreign_calls;
     BlockingCall bcall;
+    int native_req;              /* NREQ_*: what the checked native just asked for */
+    bool on_io_thread;           /* the native is running on the I/O pool: it may block */
+    bool resumed;                /* the native is being run again after a wait (not counted again) */
+    FdWait fdwait;               /* PROC_IOWAIT */
+    uint64_t os_calls;
     uint64_t cpu_ns, msgs_sent, msgs_received;
 };
 
@@ -404,7 +433,17 @@ const NativeDef *natives_builtin_table(size_t *n);
 void native_call(Process *p, const NativeDef *nd, Word *args, Word *rets);
 void native_invoke(Process *p, const NativeDef *nd, Word *args, Word *rets);
 void native_complete(Process *p);
-void native_count_call(Process *p); /* the foreign-call quota */
+void native_count_call(Process *p, const NativeDef *nd); /* the foreign (4) and OS (5) quotas */
+/* A checked native's requests (it then returns; it is run again later, with
+ * Process.resumed set): wait for a descriptor (timeout_ms < 0: none), or run on
+ * the I/O thread pool, where it may block. */
+void native_wait_fd(Process *p, int fd, int events, int64_t timeout_ms);
+void native_run_blocking(Process *p);
+/* osio.c: std.fs and std.os */
+void natives_register_os(VM *vm);
+const NativeDef *natives_os_table(size_t *n);
+/* sched.c: os.exit: end the whole program now with this exit code. */
+void sched_request_exit(VM *vm, int64_t code);
 /* Inside a foreign call: fail it (raised when the call returns). */
 void native_fail(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);
 void foreign_finalize(Obj *o);       /* run a foreign handle's finalizer (GC) */

@@ -1,0 +1,25 @@
+; std.os: the platform, the environment, arguments, and writing through the
+; stdout handle (the same output as io.print).
+; expect-stdout: via fs.stdout
+.include "std/test.inc"
+.func main
+    ncall "os.platform" () -> (R0)
+    len I0, R0
+    ASSERT_GT I0, 0
+    ncall "os.env" ("PATH") -> (R1)
+    ASSERT_TRUE R1, r
+    ncall "os.env" ("MLWSVM_SURELY_UNSET_VARIABLE") -> (R1)
+    ASSERT_FALSE R1, r
+    ncall "os.environ" () -> (R2)
+    mhas I1, R2, "PATH"
+    ASSERT_TRUE I1
+    ncall "os.args" () -> (R3)         ; none, under the test runner
+    len I2, R3
+    ASSERT_EQ I2, 0
+    ncall "fs.cwd" () -> (R4)
+    len I3, R4
+    ASSERT_GT I3, 0
+    ncall "fs.stdout" () -> (R5)
+    ncall "fs.write" (R5, "via fs.stdout\n")
+    ret 0
+.endf

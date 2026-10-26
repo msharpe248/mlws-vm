@@ -11,7 +11,7 @@ static void usage(FILE *f) {
     fputs("usage: mlwsvm <command> [options]\n"
           "\n"
           "commands:\n"
-          "  run   [options] file.(masm|mlwso)      run a program's main\n"
+          "  run   [options] file.(masm|mlwso) [args...]  run a program's main (args: os.args)\n"
           "        --stats                         resource summary on exit\n"
           "        --profile [--flame FILE]        hot functions, lines and opcodes; collapsed stacks\n"
           "        --trace FILE|- [--trace-limit N] log every instruction\n"
@@ -105,6 +105,8 @@ static int cmd_run(int argc, char **argv) {
     const char *trace = NULL, *flame = NULL, *monitor = NULL;
     uint64_t trace_limit = 0;
     VEC(const char *) opts = {0}; /* VM options: name, value pairs */
+    char **prog_argv = NULL;
+    int prog_argc = 0;
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--stats")) stats = true;
         else if (!strcmp(argv[i], "--profile")) profile = true;
@@ -123,8 +125,12 @@ static int cmd_run(int argc, char **argv) {
             }
             VEC_PUSH(opts, argv[i] + 2);
             VEC_PUSH(opts, argv[++i]);
-        } else if (!file) file = argv[i];
-        else {
+        } else if (!file) {
+            file = argv[i];
+            prog_argv = argv + i + 1; /* everything after the file belongs to the program (os.args) */
+            prog_argc = argc - i - 1;
+            break;
+        } else {
             fprintf(stderr, "mlwsvm run: unexpected argument '%s'\n", argv[i]);
             VEC_FREE(opts);
             return 2;
@@ -146,6 +152,7 @@ static int cmd_run(int argc, char **argv) {
         }
     }
     VEC_FREE(opts);
+    for (int i = 0; i < prog_argc; i++) VEC_PUSH(vm->prog_args, xstrdup(prog_argv[i]));
     if (gc_stress) vm->gc_stress = true;
     if (unsafe_native) vm->unsafe_native = true;
     if (trace && !tools_trace(vm, trace, trace_limit)) {

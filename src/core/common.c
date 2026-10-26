@@ -1,7 +1,13 @@
 /* common.c - see common.h */
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L /* stat */
+#endif
 #include "common.h"
 
 #include <sys/stat.h>
+#if defined(_WIN32) && !defined(S_ISREG)
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
 
 static void oom(void) {
     fputs("mlwsvm: out of memory\n", stderr);
@@ -224,7 +230,7 @@ bool write_file(const char *path, const void *data, size_t len) {
 
 bool file_exists(const char *path) {
     struct stat st;
-    return stat(path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
 }
 
 char *path_dirname(const char *path) {

@@ -1,0 +1,38 @@
+; A timeout on a pipe: the read gives up with E_TIMEOUT, and the process can
+; carry on. A process killed while waiting for I/O stops at once.
+.include "std/test.inc"
+.func stuck_reader
+    lnew R0
+    lpush R0, "sleep", "5"
+    ncall "os.spawn" (R0, 2) -> (R1, R2, R3, R4)
+    ncall "fs.read_line" (R3) -> (R5)
+    ret
+.endf
+.func main
+    lnew R0
+    lpush R0, "sleep", "5"
+    ncall "os.spawn" (R0, 2) -> (R1, R2, R3, R4)
+    ncall "fs.set_timeout" (R3, 50)
+    ncall "time.now_ns" () -> (I0)
+.try h
+    ncall "fs.read_line" (R3) -> (R5)
+.endtry
+    FAIL "the read did not time out"
+h:  catch R6
+    strcmp I1, R6->Error.code, "E_TIMEOUT"
+    ASSERT_EQ I1, 0
+    ncall "time.now_ns" () -> (I2)
+    sub I2, I0
+    ASSERT_LT I2, 2000000000
+    ncall "os.kill" (R1, true)
+    ncall "os.wait" (R1) -> (I3)
+    ASSERT_EQ I3, 137                  ; 128 + SIGKILL
+
+    spawnm stuck_reader -> (I4)
+    sleep 50
+    kill I4
+    recv R7
+    strcmp I5, R7->Down.code, "E_KILLED"
+    ASSERT_EQ I5, 0
+    ret 0
+.endf

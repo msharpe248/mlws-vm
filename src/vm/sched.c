@@ -77,6 +77,11 @@ typedef struct Sched {
     int io_idle, io_busy;
     bool io_stop, io_abandoned;
     _Atomic int io_inflight; /* queued or running: other work that can still wake processes */
+    /* the poller thread: processes waiting for descriptors (PROC_IOWAIT) */
+    PlatPoller *poller;
+    PlatThread *poll_thread;
+    _Atomic bool poll_stop;
+    _Atomic int io_waiting;
 } Sched;
 
 #define IO_MAX_THREADS 64
@@ -329,7 +334,9 @@ static uint64_t timers_service(Sched *s, uint64_t now) {
         plat_mutex_unlock(s->lock);
         Process *p = pin(s, t.pid);
         /* wake_at and deadline_set are only read once the process is not running */
-        bool live = p && (p->state == PROC_SLEEPING || (p->state == PROC_WAITING && p->deadline_set)) &&
+        bool live = p &&
+                    (p->state == PROC_SLEEPING || (p->state == PROC_WAITING && p->deadline_set) ||
+                     (p->state == PROC_IOWAIT && p->fdwait.deadline)) &&
                     p->wake_at == t.at;
         if (live && t.at > now) {
             plat_unlock(p->lock);
@@ -339,6 +346,10 @@ static uint64_t timers_service(Sched *s, uint64_t now) {
         if (s->timers.n && s->timers.v[0].at == t.at && s->timers.v[0].pid == t.pid) timer_pop(s);
         timers_changed(s);
         plat_mutex_unlock(s->lock);
+        if (live && p->state == PROC_IOWAIT) { /* an I/O timeout: the native runs again and reports it */
+            p->fdwait.timed_out = true;
+            s->io_waiting--;
+        }
         if (live) ready_locked(s, p); /* recvt re-executes and sees that its deadline passed */
         if (p) plat_unlock(p->lock);
     }
@@ -471,6 +482,7 @@ static bool kill_locked(Process *t, const char *code, const char *msg) {
     snprintf(t->err.msg, sizeof t->err.msg, "%s", msg);
     t->backtrace.n = 0; /* no backtrace: it was stopped from outside */
     if (t->backtrace.s) t->backtrace.s[0] = 0;
+    if (t->state == PROC_IOWAIT) t->vm->sched->io_waiting--;
     t->state = PROC_FAILED;
     return true;
 }
@@ -686,7 +698,7 @@ static void idle(Worker *w) {
         if (work_available(s)) break;
         uint64_t nt = s->next_timer, now = plat_now_ns();
         if (nt && nt <= now) break;
-        if (!nt && s->nidle == s->nrun && !s->io_inflight) { /* nothing can ever run again */
+        if (!nt && s->nidle == s->nrun && !s->io_inflight && !s->io_waiting) { /* nothing can ever run again */
             deadlock = true;
             break;
         }
@@ -743,7 +755,9 @@ static void io_main(void *arg) {
         if (s->io_head == s->io_queue.n) s->io_head = s->io_queue.n = 0;
         s->io_busy++;
         plat_mutex_unlock(s->io_lock);
+        p->on_io_thread = true;
         native_invoke(p, p->bcall.nd, p->bcall.args, p->bcall.rets);
+        p->on_io_thread = false;
         plat_mutex_lock(s->io_lock);
         bool stopping = s->io_stop;
         plat_mutex_unlock(s->io_lock);
@@ -796,6 +810,77 @@ static void io_shutdown(Sched *s) {
 
 bool sched_abandoned(VM *vm) { return vm->sched && vm->sched->io_abandoned; }
 
+/* ---- the poller ------------------------------------------------------------------- */
+
+/* Wakes processes whose descriptors are ready. A token is pid << 16 | the wait's
+ * generation, so a wake-up for a wait that has since timed out (or a process
+ * that has gone) is ignored. */
+static void poll_main(void *arg) {
+    Sched *s = arg;
+    uint64_t tokens[64];
+    while (!s->poll_stop) {
+        int n = plat_poller_wait(s->poller, tokens, 64, -1);
+        for (int i = 0; i < n; i++) {
+            Process *p = pin(s, tokens[i] >> 16);
+            if (!p) continue;
+            if (p->state == PROC_IOWAIT && (p->fdwait.gen & 0xFFFFu) == (tokens[i] & 0xFFFFu)) {
+                s->io_waiting--;
+                ready_locked(s, p);
+            }
+            plat_unlock(p->lock);
+        }
+    }
+}
+
+/* Start the poller on first use. Called with a process lock held (leaf locks only). */
+static bool poller_ready(Sched *s) {
+    plat_mutex_lock(s->lock);
+    if (!s->poller) {
+        s->poller = plat_poller_new();
+        if (s->poller) s->poll_thread = plat_thread_start(poll_main, s);
+    }
+    bool ok = s->poller && s->poll_thread;
+    plat_mutex_unlock(s->lock);
+    return ok;
+}
+
+static void poller_shutdown(Sched *s) {
+    if (!s->poll_thread) return;
+    s->poll_stop = true;
+    plat_poller_wake(s->poller);
+    plat_thread_join(s->poll_thread);
+    s->poll_thread = NULL;
+}
+
+/* A process asked to wait for a descriptor (SLICE_IOWAIT); p is locked. */
+static void wait_for_fd(Sched *s, Process *p) {
+    p->state = PROC_IOWAIT;
+    s->io_waiting++;
+    p->fdwait.gen++;
+    uint64_t token = p->pid << 16 | (p->fdwait.gen & 0xFFFFu);
+    if (!poller_ready(s) || !plat_poller_arm(s->poller, p->fdwait.fd, p->fdwait.events, token)) {
+        s->io_waiting--; /* cannot wait: run again now, and the operation reports the error */
+        ready_locked(s, p);
+        return;
+    }
+    if (p->fdwait.deadline) {
+        p->wake_at = p->fdwait.deadline;
+        timer_add(s, p);
+    }
+}
+
+void sched_request_exit(VM *vm, int64_t code) {
+    Sched *s = vm->sched;
+    vm->exit_code = code;
+    vm->exit_requested = true;
+    plat_mutex_lock(s->lock);
+    s->done = true;
+    plat_cond_broadcast(s->work_cv);
+    plat_cond_broadcast(s->resume_cv);
+    plat_cond_broadcast(s->stw_cv);
+    plat_mutex_unlock(s->lock);
+}
+
 /* After a time slice: requeue, park, or finish the process. Returns true if a
  * tool hook stopped the scheduler. */
 static bool after_slice(Worker *w, Process *p, int r) {
@@ -831,6 +916,7 @@ static bool after_slice(Worker *w, Process *p, int r) {
         w->vm->stopped = p;
         stop = true;
         break;
+    case SLICE_IOWAIT: wait_for_fd(s, p); break;
     case SLICE_NATIVE: /* a blocking native call: the I/O pool makes it */
         p->state = PROC_NATIVE;
         s->io_inflight++;
@@ -952,6 +1038,7 @@ bool sched_run(VM *vm, Process *main) {
 void sched_shutdown(VM *vm, Process *keep) {
     Sched *s = vm->sched;
     if (!s) return;
+    poller_shutdown(s); /* it looks processes up: stop it before any is freed */
     if (!s->io_stop) io_shutdown(s);
     if (s->io_abandoned) return; /* a blocking call still uses its process: free nothing */
     for (uint32_t c = 0; c < PT_CHUNKS; c++) {
@@ -990,6 +1077,7 @@ void sched_free(VM *vm) {
     plat_cond_free(s->work_cv);
     plat_cond_free(s->stw_cv);
     plat_cond_free(s->resume_cv);
+    plat_poller_free(s->poller);
     VEC_FREE(s->timers);
     free(s);
     vm->sched = NULL;

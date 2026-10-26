@@ -96,6 +96,8 @@ void vm_free(VM *vm) {
     for (size_t i = 0; i < vm->loading.n; i++) free(vm->loading.v[i]);
     VEC_FREE(vm->loading);
     VEC_FREE(vm->exits);
+    for (size_t i = 0; i < vm->prog_args.n; i++) free(vm->prog_args.v[i]);
+    VEC_FREE(vm->prog_args);
     copy_state_free();
     smap_free(&vm->natives);
     plat_lock_free(vm->lock);

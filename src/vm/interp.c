@@ -1490,24 +1490,45 @@ int interp_run(Process *p, uint32_t budget) {
             if (!nd->flags) { /* built in: the fast path */
                 for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)nd->pt[k]);
                 nd->fn(p, args, rets);
-            } else if (!(nd->flags & NF_BLOCKING)) {
-                for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)nd->pt[k]);
-                native_call(p, nd, args, rets);
             } else if (p->bcall.state == BCALL_DONE && p->bcall.insn == in) { /* back from the I/O pool */
                 memcpy(rets, p->bcall.rets, sizeof rets);
                 p->bcall.state = BCALL_NONE;
+                p->resumed = false;
+                p->fdwait.deadline = 0;
                 native_complete(p);
-            } else { /* hand the call to the I/O thread pool; this instruction runs again after it */
+            } else {
                 for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)nd->pt[k]);
-                native_count_call(p);
-                p->bcall.state = BCALL_PENDING;
-                p->bcall.nd = nd;
-                p->bcall.insn = in;
-                memcpy(p->bcall.args, args, sizeof args);
-                memset(p->bcall.rets, 0, sizeof p->bcall.rets);
-                fr->pc--;
-                p->insns--;
-                return SLICE_NATIVE;
+                bool to_pool = (nd->flags & NF_BLOCKING) != 0;
+                if (to_pool) {
+                    native_count_call(p, nd);
+                } else {
+                    native_call(p, nd, args, rets);
+                    int req = p->native_req;
+                    p->native_req = NREQ_NONE;
+                    if (req == NREQ_WAIT_FD) { /* wait for the descriptor; then this instruction runs again */
+                        p->resumed = true;
+                        fr->pc--;
+                        p->insns--;
+                        return SLICE_IOWAIT;
+                    }
+                    if (req == NREQ_EXIT) { /* os.exit: the program ends (sched_request_exit) */
+                        p->exit_code = vm->exit_code;
+                        return SLICE_DONE;
+                    }
+                    to_pool = req == NREQ_BLOCKING;
+                    if (to_pool) p->resumed = true;
+                    else p->resumed = false, p->fdwait.deadline = 0;
+                }
+                if (to_pool) { /* run it on the I/O thread pool; this instruction runs again after it */
+                    p->bcall.state = BCALL_PENDING;
+                    p->bcall.nd = nd;
+                    p->bcall.insn = in;
+                    memcpy(p->bcall.args, args, sizeof args);
+                    memset(p->bcall.rets, 0, sizeof p->bcall.rets);
+                    fr->pc--;
+                    p->insns--;
+                    return SLICE_NATIVE;
+                }
             }
             for (int k = 0; k < in->nops - 2 - argc; k++) wr(&c, &ops[2 + argc + k], (MlwsType)nd->rt[k], rets[k]);
             break;

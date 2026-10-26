@@ -38,7 +38,11 @@ bool vm_run_file(VM *vm, const char *path, RunResult *res) {
     res->gc_ns = p->gc_ns;
     res->objects_allocated = p->objects_allocated;
     res->objects_freed = p->gc_freed_objects;
-    if (ok) {
+    if (vm->exit_requested) { /* os.exit, from any process */
+        ok = true;
+        res->status = RUN_OK;
+        res->exit_code = vm->exit_code;
+    } else if (ok) {
         res->status = RUN_OK;
         res->exit_code = p->exit_code;
     } else {

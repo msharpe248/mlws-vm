@@ -1,0 +1,20 @@
+; A process waiting for I/O can still wake others, so it is not a deadlock:
+; main waits in recv while the only other process waits on a pipe.
+; threads: 2
+.include "std/test.inc"
+.func child(i64 parent)
+    lnew R0
+    lpush R0, "sh", "-c", "sleep 0.2; echo late"
+    ncall "os.spawn" (R0, 2) -> (R1, R2, R3, R4)
+    ncall "fs.read_line" (R3) -> (R5)
+    ncall "os.wait" (R1) -> (I1)
+    send parent, R5
+    ret
+.endf
+.func main
+    spawn child (PID)
+    recv R0
+    strcmp I0, R0, "late"
+    ASSERT_EQ I0, 0
+    ret 0
+.endf

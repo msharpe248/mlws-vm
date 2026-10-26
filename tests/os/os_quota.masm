@@ -1,0 +1,21 @@
+; Quota kind 5 counts OS calls (files, commands, the environment). A sandbox
+; lowers it to 0 to deny the code it runs any access to the OS.
+.include "std/test.inc"
+.const OS = 5
+.func sandboxed -> i64
+.try h
+    ncall "fs.cwd" () -> (R0)
+.endtry
+    ret 1
+h:  catch R1
+    strcmp I0, R1->Error.code, "E_QUOTA"
+    ret I0
+.endf
+.func main
+    ncall "fs.cwd" () -> (R0)
+    quota OS, 0
+    spawnm sandboxed -> (I0)
+    recv R1
+    ASSERT_EQ R1->Down.exit, 0
+    ret 0
+.endf

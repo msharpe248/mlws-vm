@@ -1,0 +1,117 @@
+; walk.masm - files, directories and commands, with a process per directory.
+;
+; Builds a small directory tree, then walks it in parallel: every directory is
+; handled by its own process, which counts its files and bytes, spawns a child
+; for each subdirectory, and reports the total to its parent. Then it sorts
+; some text by piping it through the `sort` command, and cleans up.
+;
+; expect-stdout: 7 files, 280 bytes, in 4 directories
+; expect-stdout: sorted: apple banana cherry
+.include "std/io.inc"
+
+; Create ROOT with 1 file, ROOT/a with 2, ROOT/a/x with 3, ROOT/b with 1.
+.func make_tree(ref root)
+    ncall "fs.mkdir" (root)
+    strcat R1, root, "/a"
+    ncall "fs.mkdir" (R1)
+    strcat R2, root, "/a/x"
+    ncall "fs.mkdir" (R2)
+    strcat R3, root, "/b"
+    ncall "fs.mkdir" (R3)
+    lnew R4
+    lpush R4, "/top.txt", "/a/1.txt", "/a/2.txt", "/a/x/1.txt", "/a/x/2.txt", "/a/x/3.txt", "/b/1.txt"
+    mov I0, 0
+1:  mov R5, R4[I0]
+    strcat R6, root, R5
+    ncall "fs.write_file" (R6, "0123456789012345678901234567890123456789") ; 40 bytes
+    inc I0
+    blt I0, 7, 1b
+    ret
+.endf
+
+; Count a directory: send (files, bytes, directories) to the parent as a list.
+.func walk(i64 parent, ref dir)
+    ncall "fs.list" (dir) -> (R1)
+    len I1, R1
+    mov I2, 0                          ; files
+    mov I3, 0                          ; bytes
+    mov I4, 1                          ; directories (this one)
+    mov I5, 0                          ; children still to report
+    mov I6, 0                          ; (I0 is `parent`)
+1:  bge I6, I1, 3f
+    mov R2, R1[I6]
+    strcat R3, dir, "/", R2
+    ncall "fs.stat" (R3) -> (R4)
+    beq R4->FileInfo.kind, 2, 2f
+    inc I2
+    add I3, R4->FileInfo.size
+    inc I6
+    jmp 1b
+2:  spawn walk (PID, R3)               ; a subdirectory: its own process
+    inc I5
+    inc I6
+    jmp 1b
+3:  bz I5, 4f                          ; collect the children's totals
+    recv R5
+    add I2, R5[0]
+    add I3, R5[1]
+    add I4, R5[2]
+    dec I5
+    jmp 3b
+4:  lnew R6
+    lpush R6, I2, I3, I4
+    send parent, R6
+    ret
+.endf
+
+; Remove the tree again (children first).
+.func remove_tree(ref dir)
+    ncall "fs.list" (dir) -> (R1)
+    len I1, R1
+    mov I0, 0
+1:  bge I0, I1, 3f
+    mov R2, R1[I0]
+    strcat R3, dir, "/", R2
+    ncall "fs.stat" (R3) -> (R4)
+    beq R4->FileInfo.kind, 2, 2f
+    ncall "fs.remove" (R3)
+    inc I0
+    jmp 1b
+2:  call remove_tree (R3)
+    inc I0
+    jmp 1b
+3:  ncall "fs.rmdir" (dir)
+    ret
+.endf
+
+.func main
+    mov R0, "build/walk-example"
+    ncall "fs.exists" (R0) -> (I0)
+    bz I0, 1f
+    call remove_tree (R0)              ; left over from an interrupted run
+1:  call make_tree (R0)
+    spawn walk (PID, R0)
+    recv R1
+    PRINT_I R1[0]
+    PRINT_S " files, "
+    PRINT_I R1[1]
+    PRINT_S " bytes, in "
+    PRINT_I R1[2]
+    PRINTLN_S " directories"
+
+    lnew R2                            ; sort some words with the sort command
+    lpush R2, "sort"
+    ncall "os.spawn" (R2, 3) -> (R3, R4, R5, R6)
+    ncall "fs.write" (R4, "cherry\napple\nbanana\n")
+    ncall "fs.close" (R4)
+    PRINT_S "sorted:"
+2:  ncall "fs.read_line" (R5) -> (R7)
+    bz.r R7, 3f
+    PRINT_S " "
+    PRINT_S R7
+    jmp 2b
+3:  PRINTLN_S ""
+    ncall "os.wait" (R3) -> (I1)
+    call remove_tree (R0)
+    ret I1
+.endf

@@ -109,8 +109,9 @@ static void searched(StrBuf *b, VM *vm) {
 
 bool ext_load(VM *vm, const char *name, MlwsError *err) {
     if (find_lib(vm, name, false)) return true;
-    char *file = xmalloc(strlen(name) + 8);
-    sprintf(file, "%s.mlwsx", name);
+    size_t fl = strlen(name) + 8;
+    char *file = xmalloc(fl);
+    snprintf(file, fl, "%s.mlwsx", name);
     for (size_t d = 0; d < vm->ext_paths.n; d++) {
         const char *dir = vm->ext_paths.v[d];
         char *path = path_join(dir, file);
@@ -207,7 +208,7 @@ ExtLib *ext_ffi_library(VM *vm, const char *spec, MlwsError *err) {
             void *h = plat_dlopen(alt, dlerr, sizeof dlerr);
             if (!h && !strchr(alt, '/')) { /* "libm" -> "libm.dylib" / "libm.so" */
                 char *with = xmalloc(n + 16);
-                sprintf(with, "%s%s", alt, plat_dl_suffix());
+                snprintf(with, n + 16, "%s%s", alt, plat_dl_suffix());
                 h = plat_dlopen(with, dlerr, sizeof dlerr);
                 free(with);
             }

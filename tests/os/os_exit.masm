@@ -1,0 +1,11 @@
+; os.exit ends the whole program, from any process, with its exit code.
+; expect-exit: 7
+.func quitter
+    ncall "os.exit" (7)
+    ret
+.endf
+.func main
+    spawn quitter
+    recv I0                            ; never arrives
+    ret 0
+.endf

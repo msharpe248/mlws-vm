@@ -65,4 +65,69 @@ bool plat_path_trusted(const char *path, char *why, size_t whylen);
 bool plat_mkdir(const char *path);            /* one level; true if it now exists */
 bool plat_restrict_writes(const char *path);  /* writable only by its owner (0644 / 0755) */
 
+/* ---- I/O for std.fs, std.os and std.net (posix_io.c) ------------------------
+ * Functions report failure with an errno-style code in *err; plat_err_code
+ * names it for MLWSVM (E_NOT_FOUND, E_PERMISSION, ...). */
+int plat_last_error(void);
+const char *plat_err_code(int err);
+const char *plat_err_text(int err);
+
+#define PLAT_O_READ 1
+#define PLAT_O_WRITE 2
+#define PLAT_O_RDWR 3
+#define PLAT_O_ACCESS 3
+#define PLAT_O_CREATE 4
+#define PLAT_O_TRUNCATE 8
+#define PLAT_O_APPEND 16
+#define PLAT_O_EXCLUSIVE 32
+#define PLAT_IO_ERR (-1)
+#define PLAT_IO_AGAIN (-2) /* a non-blocking descriptor is not ready */
+int plat_file_open(const char *path, int mode, int *err);
+long plat_fd_read(int fd, void *buf, size_t n, int *err);
+long plat_fd_write(int fd, const void *buf, size_t n, int *err);
+bool plat_fd_close(int fd);
+bool plat_fd_pollable(int fd); /* pipe, socket or terminal: waited for with the poller */
+bool plat_fd_set_nonblocking(int fd, bool on);
+int64_t plat_fd_seek(int fd, int64_t off, int whence, int *err); /* whence 0 start, 1 current, 2 end */
+
+enum { PLAT_KIND_FILE = 1, PLAT_KIND_DIR = 2, PLAT_KIND_LINK = 3, PLAT_KIND_OTHER = 4 };
+typedef struct {
+    int64_t size, mtime_ns;
+    uint32_t mode; /* permission bits */
+    int kind;      /* PLAT_KIND_* */
+} PlatStat;
+bool plat_stat(const char *path, bool follow_links, PlatStat *st, int *err);
+bool plat_remove(const char *path, int *err);
+bool plat_rmdir(const char *path, int *err);
+bool plat_rename(const char *from, const char *to, int *err);
+bool plat_mkdir_err(const char *path, int *err);
+char *plat_getcwd(void); /* malloc'd */
+char *const *plat_environ(void); /* NAME=VALUE strings, NULL-terminated */
+const char *plat_os_name(void);  /* "macos", "linux", "freebsd", "windows", ... */
+
+/* Child processes. `pipes` selects which of stdin/stdout/stderr get a pipe
+ * (the others are inherited); PLAT_MERGE_ERR sends stderr to stdout. */
+#define PLAT_PIPE_IN 1
+#define PLAT_PIPE_OUT 2
+#define PLAT_PIPE_ERR 4
+#define PLAT_MERGE_ERR 8
+typedef struct {
+    int64_t pid;
+    int in_fd, out_fd, err_fd; /* our ends of the pipes, or -1 */
+} PlatChild;
+bool plat_spawn(char *const argv[], int pipes, PlatChild *c, int *err); /* searches PATH */
+bool plat_wait_child(int64_t pid, int *exit_code, int *err);           /* blocks; 128+N for signal N */
+bool plat_signal_child(int64_t pid, int sig);                          /* 9 = kill, else terminate */
+
+/* The poller: one-shot waits for descriptors to become readable or writable. */
+typedef struct PlatPoller PlatPoller;
+#define PLAT_POLL_READ 1
+#define PLAT_POLL_WRITE 2
+PlatPoller *plat_poller_new(void);
+void plat_poller_free(PlatPoller *p);
+bool plat_poller_arm(PlatPoller *p, int fd, int events, uint64_t token); /* token != 0 */
+void plat_poller_forget(PlatPoller *p, int fd);                          /* before closing fd */
+int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_ns); /* -1: forever */
+void plat_poller_wake(PlatPoller *p);
+
 #endif

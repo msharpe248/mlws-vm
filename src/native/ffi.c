@@ -253,7 +253,8 @@ bool ffi_define(VM *vm, const MExtern *x, MlwsError *err) {
     nd->fn = ffi_native;
     nd->data = fc;
     nd->lib = lib;
-    nd->flags = NF_FOREIGN | (x->flags & MX_BLOCKING ? NF_BLOCKING : 0) | (x->flags & MX_SERIAL ? NF_SERIAL : 0);
+    nd->flags = NF_FOREIGN | NF_CHECKED | (x->flags & MX_BLOCKING ? NF_BLOCKING : 0) |
+                (x->flags & MX_SERIAL ? NF_SERIAL : 0);
     VEC_PUSH(vm->foreign_natives, nd);
     vm_register_native(vm, nd);
     return true;

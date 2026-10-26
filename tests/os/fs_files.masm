@@ -1,0 +1,89 @@
+; std.fs: whole files, handles (write, read_line, read, read_all, seek),
+; metadata, directories, and errors as catchable Errors with OS codes.
+; expect-stdout: 3 lines: one two three
+.include "std/test.inc"
+.include "std/io.inc"
+.func main
+    ncall "fs.exists" ("build/test-fs") -> (I0)
+    bnz I0, 1f
+    ncall "fs.mkdir" ("build/test-fs")
+1:  ncall "fs.write_file" ("build/test-fs/a.txt", "one\ntwo\r\nthree")
+    ncall "fs.read_file" ("build/test-fs/a.txt") -> (R0)
+    len I1, R0
+    ASSERT_EQ I1, 14
+
+    ncall "fs.open" ("build/test-fs/a.txt", "r") -> (R1)
+    mov I2, 0
+    PRINT_S ""
+2:  ncall "fs.read_line" (R1) -> (R2)  ; lines without \n or \r\n; null at the end
+    bz.r R2, 3f
+    inc I2
+    jmp 2b
+3:  PRINT_I I2
+    PRINT_S " lines:"
+    ncall "fs.seek" (R1, 0, 0) -> (I3) ; back to the start
+    ASSERT_EQ I3, 0
+4:  ncall "fs.read_line" (R1) -> (R2)
+    bz.r R2, 5f
+    PRINT_S " "
+    PRINT_S R2
+    jmp 4b
+5:  PRINTLN_S ""
+    ncall "fs.seek" (R1, 4, 0) -> (I3)
+    ncall "fs.read" (R1, 3) -> (R3)    ; up to 3 bytes
+    strcat R4, R3
+    strcmp I4, R4, "two"
+    ASSERT_EQ I4, 0
+    ncall "fs.read_all" (R1) -> (R3)   ; the rest
+    len I4, R3
+    ASSERT_EQ I4, 7
+    ncall "fs.read" (R1, 10) -> (R3)   ; at the end: empty
+    len I4, R3
+    ASSERT_EQ I4, 0
+    ncall "fs.close" (R1)
+
+    ncall "fs.open" ("build/test-fs/a.txt", "a") -> (R1)
+    ncall "fs.write" (R1, "\nfour")
+    ncall "fs.close" (R1)
+    ncall "fs.stat" ("build/test-fs/a.txt") -> (R5)
+    ASSERT_EQ R5->FileInfo.size, 19
+    ASSERT_EQ R5->FileInfo.kind, 1
+    ncall "fs.stat" ("build/test-fs") -> (R5)
+    ASSERT_EQ R5->FileInfo.kind, 2
+
+    ncall "fs.rename" ("build/test-fs/a.txt", "build/test-fs/b.txt")
+    ncall "fs.list" ("build/test-fs") -> (R6)
+    len I5, R6
+    ASSERT_EQ I5, 1
+    mov R7, R6[0]
+    strcmp I5, R7, "b.txt"
+    ASSERT_EQ I5, 0
+
+.try h1
+    ncall "fs.open" ("build/test-fs/a.txt", "r") -> (R1)  ; renamed away
+.endtry
+    FAIL "opened a missing file"
+h1: catch R8
+    strcmp I6, R8->Error.code, "E_NOT_FOUND"
+    ASSERT_EQ I6, 0
+.try h2
+    ncall "fs.open" ("build/test-fs/b.txt", "wx") -> (R1)  ; x: must not exist
+.endtry
+    FAIL "x did not refuse an existing file"
+h2: catch R8
+    strcmp I6, R8->Error.code, "E_EXISTS"
+    ASSERT_EQ I6, 0
+.try h3
+    ncall "fs.read" (R1, 1) -> (R3)    ; R1 was closed above
+.endtry
+    FAIL "read a closed file"
+h3: catch R8
+    strcmp I6, R8->Error.code, "E_CLOSED"
+    ASSERT_EQ I6, 0
+
+    ncall "fs.remove" ("build/test-fs/b.txt")
+    ncall "fs.rmdir" ("build/test-fs")
+    ncall "fs.exists" ("build/test-fs") -> (I0)
+    ASSERT_FALSE I0
+    ret 0
+.endf

@@ -273,7 +273,7 @@ OP(MONITOR,0x0108, "monitor","Processes", "Q", 0, 0,
 OP(ALIVE,  0x0109, "alive",  "Processes", "BQ", 0, 0,
    "dst = true if the process exists and has not finished.")
 OP(QUOTA,  0x010A, "quota",  "Processes", "IQ", 0, 0,
-   "`quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed, 4 foreign calls (natives from extensions and .extern; 0 forbids native code). Processes it spawns inherit its limits (and count their own use). Exceeding a limit traps E_QUOTA.")
+   "`quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed, 4 foreign calls (natives from extensions and .extern; 0 forbids native code), 5 OS calls (fs.* and os.*; 0 forbids files, commands and the environment). Processes it spawns inherit its limits (and count their own use). Exceeding a limit traps E_QUOTA.")
 OP(MLEN,   0x010B, "mlen",   "Processes", "J", 0, 0,
    "dst = the number of messages waiting in this process's mailbox.")
 OP(SPAWNL, 0x010C, "spawnl", "Processes", "FC", 0, OPF_CALL,
