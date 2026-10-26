@@ -1,6 +1,6 @@
 ; records.masm - records (structs) laid out by hand in raw memory, with
-; .const field offsets, plus a linked list built from them. Milestone M4 adds
-; GC-managed .struct types, which make this pattern unnecessary for most code.
+; .const field offsets, plus a linked list built from them. GC-managed .struct
+; types (M4) make this pattern unnecessary for most code.
 ;
 ; expect-stdout: sum=55 count=10
 .include "std/io.inc"

@@ -130,11 +130,15 @@ call fib (I1) -> (I2)       ; call block syntax
 
 An instruction with no type suffix gets its type as follows:
 
-1. `push`, `pop` and `ret`: each operand uses its own **natural type** (see below).
+1. `push`, `pop`, `ret`, and the instructions that store or fetch values of any
+   type (`tostr`, `lpush`, `lpop`, `lins`, `mset`, `mget`, `send`, `recv`,
+   `recvt`): each operand uses its own **natural type** (see below).
 2. `cvt`/`bitcast`: the target type comes from the destination register and the
    source type from the source operand (`cvt F0, I1` is `cvt.f64.i64`).
 3. Otherwise the **first register** among the destination and source operands decides:
-   `I`→`i64`, `F`→`f64`, `R`→`r`, `P`/`SP`/`FP`→`p`.
+   `I`→`i64`, `F`→`f64`, `R`→`r`, `P`/`SP`/`FP`→`p`. A field operand of a struct
+   declared earlier in the module counts too, with the field's declared type
+   (`mov R0->Point.x, 1` is `mov.f64`).
 4. `mov`/`swap` with no register operand use natural types, so a memory-to-memory
    `mov` copies a word together with its type tag.
 5. Otherwise the first literal source decides (integer→`i64`, float→`f64`, string→`r`),
@@ -183,8 +187,8 @@ how arguments are bound.
   natural types.
 * The assembler computes how many registers of each bank the function uses, and
   `.regs I=8, F=2` can raise those numbers. A call allocates exactly that window.
-* The last instruction must be `ret`, `jmp`, `tcall` or `halt`. Execution cannot
-  run off the end.
+* The last instruction must be `ret`, `jmp`, `tcall`, `tcalli`, `throw` or `halt`.
+  Execution cannot run off the end.
 * Instructions are only allowed inside a function.
 
 ### 5.1 Labels
@@ -197,7 +201,7 @@ how arguments are bound.
   short loops.
 * A label defined outside any function names **data** at the current global offset
   (§6).
-* Labels cannot be named like registers or `ARG`, `LOC`, `null`, `true`, `false`.
+* Labels cannot be named like registers or `ARG`, `LOC`, `UP`, `null`, `true`, `false`.
 
 ```asm
     mov I1, 0
@@ -299,10 +303,11 @@ buffer:   .zero 64
 | `.b` *values...* / `.c` *values...* | Bools (1 byte) / chars (4 bytes) |
 | `.ascii "s"` / `.asciz "s"` | String bytes, without / with a terminating NUL |
 | `.zero n` / `.space n` | n zero bytes |
-| `.align n` | Pad to a multiple of n (a power of two) |
+| `.align n` | Pad to a multiple of n (a power of two, at most 4096) |
 
 Each 8-byte word of the image carries a type tag (`i64`, `f64`, ...) that untyped
-moves respect. The tags record the declared type of the data.
+moves respect. The tags record the declared type of 8-byte data; words holding
+smaller values or string bytes are tagged as raw bytes.
 
 ## 7. Heap objects and structs
 
@@ -322,6 +327,7 @@ no longer reachable ([ABI.md §6](ABI.md#6-the-garbage-collected-heap)).
 | closure (7) | `closure f (captures) -> (R0)` | `calli R0 (args) -> (results)`; inside f, `UP[n]` | A function plus copies of captured values |
 | bigint (8) | `123n`, `cvt.big.i64`, `parse.big` | `add.big`, `blt.big`, ... | Immutable, arbitrary precision |
 | decimal (9) | `19.99d`, `cvt.dec.f64`, `parse.dec` | `add.dec`, `div.dec`, ... | Immutable; exact except inexact division |
+| foreign handle (10) | a `ptr` result of an `.extern`, or a native from an extension | passed back to `ncall` | An opaque C pointer ([EXTENDING.md](EXTENDING.md)) |
 
 ```asm
 .struct Point                 ; a struct type, usable as `Point` in this module
@@ -457,10 +463,15 @@ every instruction.
 
 | File | Use with | Contents |
 |---|---|---|
-| `std/io.masm` | `.import std.io` | `print`, `println`, `print_i`, `println_i`, `print_u`, `print_f`, `println_f`, `print_c`, `print_b`, `print_hex`, `nl` |
+| `std/io.masm` | `.import std.io` | `print`, `println`, `print_i`, `println_i`, `print_u`, `println_u`, `print_f`, `println_f`, `print_c`, `print_b`, `print_hex`, `nl` |
 | `std/math.masm` | `.import std.math` | `gcd`, `ipow`, `isqrt`, `fact`, `clamp`, `fclamp`, `sin`, `cos`, `sqrt`, `pow` |
-| `std/io.inc` | `.include "std/io.inc"` | Macros `PRINT_S`, `PRINTLN_S`, `PRINT_I`, `PRINTLN_I`, `PRINT_F`, `PRINTLN_F`, `PRINT_C`, `PRINT_B`, `PRINT_HEX`, `NL`, `PRINTLN s, v...` |
+| `std/supervisor.masm` | `.import std.supervisor` | `start`: a supervisor process that restarts failed children (closures) |
+| `std/io.inc` | `.include "std/io.inc"` | Macros `PRINT_S`, `PRINTLN_S`, `PRINT_I`, `PRINTLN_I`, `PRINT_U`, `PRINTLN_U`, `PRINT_F`, `PRINTLN_F`, `PRINT_C`, `PRINT_B`, `PRINTLN_B`, `PRINT_HEX`, `NL`, `PRINTLN s, v...` |
 | `std/test.inc` | `.include "std/test.inc"` | Macros `ASSERT_EQ/NE/LT/LE/GT/GE a, b [, type]`, `ASSERT_TRUE/FALSE v [, type]`, `FAIL "msg"` |
+
+The rest of the standard library (files, the OS, networking, text and JSON, time,
+hashes, random numbers, encodings, sorting) is built-in natives, called with
+`ncall`: see [STDLIB.md](STDLIB.md) and [NATIVES.md](NATIVES.md).
 
 ## 9. Preprocessor
 
@@ -570,7 +581,7 @@ macro-only files use the `.inc` extension and are not modules.
 | `.module name` | top level | Module name |
 | `.import name [as alias]` | top level | Load and link another module |
 | `.extension "name"` | top level | Load an installed native extension ([EXTENDING.md](EXTENDING.md)) |
-| `.extern name, "lib", "sym" (types) -> (type) [, blocking] [, serial]` | top level | Make a C function a native (the FFI; [EXTENDING.md](EXTENDING.md)) |
+| `.extern name, "lib", "sym" (types [, ..., types]) -> (type) [, blocking] [, serial]` | top level | Make a C function a native (the FFI; [EXTENDING.md](EXTENDING.md)); `...` marks a variadic function's fixed parameters |
 | `.cstruct Name` … `.ends` | top level | A C struct's layout (`field: type` lines), and a struct of the same name, for `.extern` `struct Name` / `struct* Name` / `out struct Name` ([EXTENDING.md](EXTENDING.md#c-structs)) |
 | `.callback Name (types) -> (type) [, async]` | top level | A C function-pointer type, for `.extern` parameters `callback Name`: a closure that C calls during the call, or (async) a handle whose calls become messages ([EXTENDING.md](EXTENDING.md#callbacks)) |
 | `.ffi_free tag, "lib", "sym"` | top level | Give `ptr<tag>` handles a finalizer: `sym(ptr)` when collected or released ([EXTENDING.md](EXTENDING.md#handles-that-free-themselves)) |
@@ -590,13 +601,16 @@ macro-only files use the `.inc` extension and are not modules.
 ## 11. Tools
 
 ```
-mlwsvm run  [-L dir] [--stats] [--profile] [--trace FILE] [--monitor PORT] [VM options] prog.masm|prog.mlwso
+mlwsvm run  [-L dir] [--stats] [--profile] [--trace FILE] [--monitor PORT] [VM options] prog.masm|prog.mlwso [args...]
 mlwsvm debug [-L dir] prog.masm|prog.mlwso
 mlwsvm top  [HOST:PORT] [--once]
 mlwsvm asm  [-L dir] [-o out.mlwso] [-E] prog.masm
 mlwsvm dis  [-L dir] prog.masm|prog.mlwso
 mlwsvm test [-L dir] [-v] [VM options] [paths...]
 mlwsvm doc  isa|natives [-o file]
+mlwsvm ext  list|install|remove|allow-ffi|deny-ffi [--dir D] ...
+mlwsvm bindgen [-l LIB] [-p PREFIX] [-o OUT] [--all] header.h
+mlwsvm version
 ```
 
 `mlwsvm test` runs every `.masm` file under the given paths (default `tests/`),
@@ -622,4 +636,5 @@ A test still running after `MLWSVM_TEST_TIMEOUT` seconds (default 300) is
 reported as `TIMEOUT path`, and the run ends with exit code 3. A hung VM cannot
 be stopped from outside, so the run cannot go on.
 
-See [TOOLING.md](TOOLING.md) for the debugger, profiler, tracer and monitor.
+See [TOOLING.md](TOOLING.md) for the debugger, profiler, tracer, monitor and
+`bindgen`, and [EXTENDING.md](EXTENDING.md) for `ext`.

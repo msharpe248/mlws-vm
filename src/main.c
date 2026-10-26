@@ -1,4 +1,5 @@
-/* main.c - the `mlwsvm` command line: run, asm, dis, test, doc. */
+/* main.c - the `mlwsvm` command line: run, debug, top, asm, dis, test, doc, ext,
+ * bindgen and version. */
 #include "asm/asm.h"
 #include "core/disasm.h"
 #include "platform/platform.h"
@@ -24,7 +25,7 @@ static void usage(FILE *f) {
           "        --max-frames N                  call depth limit (100000)\n"
           "        --slice N                       time slice, in instructions (2000)\n"
           "        --gc-min BYTES                  smallest heap that triggers a collection (1M)\n"
-          "        --quota heap=B,raw=B,mailbox=N,insns=N,foreign=N   starting limits for every process\n"
+          "        --quota heap=B,raw=B,mailbox=N,insns=N,foreign=N,os=N   starting limits for every process\n"
           "        --ext-path DIR[:DIR]            trusted extension directories, before lib/ext\n"
           "  debug [-L dir] file.(masm|mlwso)      interactive debugger (type 'help')\n"
           "  top   [HOST:PORT] [--once]            live process table of a VM run with --monitor\n"

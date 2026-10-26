@@ -227,7 +227,8 @@ shuffles a list in place.
 
 The generator is fast but predictable from its output: use
 `random.bytes(n)`, which reads the OS's entropy source directly, for keys,
-tokens, nonces and passwords.
+tokens, nonces and passwords. It returns up to 16 MiB at a time (`E_RANGE`
+beyond that).
 
 ## Encodings
 
@@ -275,7 +276,7 @@ Malformed input is `E_PARSE`, with the offset of the problem.
 ## Integer maths
 
 `math.powmod(b, e, m)` computes b^e mod m without overflow, and the result is in
-[0, m). `math.gcd` and `math.lcm` work on the absolute values, and `math.lcm`
+[0, m). It needs e >= 0 and m > 0 (`E_RANGE` otherwise). `math.gcd` and `math.lcm` work on the absolute values, and `math.lcm`
 raises `E_OVERFLOW` when the result does not fit in an `i64`. `std.math`
 (`lib/std/math.masm`) has more, written in assembly: `ipow`, `isqrt`,
 `fact` and `clamp`.
@@ -308,7 +309,7 @@ from other messages (MLWSVM has no selective receive), and a reply that arrives
 after its call timed out (`E_TIMEOUT`) is dropped, never mistaken for the
 answer to a later call. A call to a process that does not exist raises
 `E_NOPROC`. A call that can never be answered (every process waiting) raises
-`E_DEADLOCK`, as `recv` does. Requests and replies are references (wrap
+`E_DEADLOCK`, as `recv` does, and so does a process calling itself. Requests and replies are references (wrap
 numbers in a list or struct), deep-copied like any message.
 
 ### Supervisors (`std.supervisor`)
@@ -379,7 +380,7 @@ and the path, and gives the OS's description:
 | `E_TIMEOUT`, `E_NOPROC`, `E_DEADLOCK` | `proc.call`: no reply in time, no such process, or no reply possible |
 | `E_RESTARTS` | a supervisor gave up: its children failed too often |
 | `E_PARSE` | malformed text for `time.parse`, `hex.decode`, `base64.decode`, `url.decode` or `csv.parse` |
-| `E_RANGE` | an argument out of range (an offset beyond a day, `random.int` with lo > hi, a SipHash key that is not 16 bytes) |
+| `E_RANGE` | an argument out of range (an offset beyond a day, a time or `Date` outside the years 1678 to 2261, `random.int` with lo > hi, `random.bytes` of more than 16 MiB, a SipHash key that is not 16 bytes, `math.powmod` with e < 0 or m <= 0) |
 | `E_OVERFLOW` | a result that does not fit (`math.lcm`) |
 | `E_CALLBACK` | a comparator, probe or C callback tried to wait |
 
@@ -411,9 +412,10 @@ when MLWSVM exits.
 
 ## Sandboxing
 
-Quota kind 5 counts a process's OS calls: every `fs.*` and `os.*` call. A
-sandbox lowers it to 0 (`quota 5, 0`, or `--quota os=0` for the whole program)
-to deny the code it runs any access to files, commands or the environment.
+Quota kind 5 counts a process's OS calls: every `fs.*`, `os.*` and `net.*`
+call. A sandbox lowers it to 0 (`quota 5, 0`, or `--quota os=0` for the whole
+program) to deny the code it runs any access to files, commands, the network or
+the environment.
 Children inherit the limit. Kind 4 does the same for native extensions and the
 FFI ([EXTENDING.md](EXTENDING.md)).
 

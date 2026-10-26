@@ -1,12 +1,13 @@
 # MLWSVM Roadmap
 
-Milestones M0–M10 are complete (see [README.md](../README.md#status-and-roadmap)).
-The aim of the next milestones is to make MLWSVM worth targeting: programs on it
+Milestones M0–M21 are complete (see [README.md](../README.md#status-and-roadmap)).
+What remains is Windows (section 3) and the deferred performance work (section 4).
+The aim of milestones M11–M21 was to make MLWSVM worth targeting: programs on it
 should be able to do real work (files, the OS, the network, text and data), and
 its distinctive feature (isolated, parallel, supervised processes) should be
 easy to show off. The scripting language is a separate project.
 
-## Next milestones
+## Milestones M11–M21
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -14,7 +15,7 @@ easy to show off. The scripting language is a separate project.
 | **M12 I/O core, files and the OS** (done) | An event loop inside the scheduler (kqueue on macOS and the BSDs, epoll on Linux): a process waiting for I/O waits like `recv`, costing no thread. `std.fs` (files, directories, metadata, stdin/stdout/stderr as streams), `std.os` (arguments, environment, exit status, running commands with pipes) | A program can copy files, walk directories and run a pipeline of commands, with many processes doing I/O at once |
 | **M13 Networking** (done) | `std.net`: TCP listen/accept/connect/read/write, UDP, DNS (on the I/O thread pool), timeouts, all on the event loop | An echo server holds 10,000 idle connections as 10,000 processes |
 | **M14 Text and data** (done) | `std.text`: a safe `format`, UTF-8 iteration and validation, case mapping, split/join/trim/find/replace. `std.json`: parse and serialize, with depth and size limits | JSON round-trips a test corpus; `format` covers integers, floats, strings and padding |
-| **M15 Showcase: a supervised HTTP server** (done) | `std.proc` (a name → pid registry, request/reply calls with timeouts, supervisors with restart strategies); `examples/http`: one process per connection, per-connection quotas, a crash in a handler is contained and logged, watched live with `mlwsvm top`; a load-test benchmark | The example serves requests under load while handlers are killed and restarted |
+| **M15 Showcase: a supervised HTTP server** (done) | `std.proc` (a name → pid registry, request/reply calls with timeouts, supervisors with restart strategies); `examples/http_server.masm`: one process per connection, per-connection quotas, a crash in a handler is contained and logged, watched live with `mlwsvm top`; a load generator (`examples/http_load.masm`) | The example serves requests under load while handlers are killed and restarted |
 | **M16 Embedding API** (done) | `libmlwsvm` (static and shared) and `include/mlwsvm/embed.h`: create a VM, set options, load modules from files or memory, call functions, send messages, register natives (reusing the extension API), and an example C host program | A C program embeds the VM and calls MLWSVM code both ways |
 
 Then, in order (Windows is set aside until there is a machine to test on):
@@ -35,7 +36,8 @@ trusted installation (`mlwsvm ext`, SHA-256 pinning, permission checks), and
 the foreign-call quota. See [EXTENDING.md](EXTENDING.md).
 
 Variadic functions (1.1), C structs (1.2) and finalizers for `.extern`
-handles were added in M17; the rest is still to do.
+handles were added in M17, callbacks (1.3, 1.4) in M18, and the binding
+generator in M20. Only the Windows trust check (1.5) is still to do.
 
 ### 1.1 Variadic functions (M17: done)
 
@@ -138,10 +140,13 @@ untrusted process cannot reach the OS at all (compare Deno's permissions).
 
 Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 
-* ~~A size-class allocator for the GC heap~~ (M21: done; allocation-heavy
-  benchmarks are 9–25% faster).
+* ~~A size-class allocator for the GC heap~~ (M21: done; `binarytrees` and
+  `maps` take 17–25% less time on Linux, `binarytrees` 9% less on macOS).
 * Specialised memory and array operand forms, chosen from what the
   scripting-language compiler actually emits.
+* A compact decoded form for the quickened instruction shapes. Each decoded
+  operand takes 72 bytes, so programs with a lot of hot code may run out of
+  cache before the benchmarks do ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)).
 * A generational collector, if collection grows past roughly 10% of real
   workloads.
 * Computed-goto dispatch, if profiles ever show dispatch dominating.

@@ -1,4 +1,5 @@
-# MLWSVM build. Plain C11, no dependencies beyond libc and libm.
+# MLWSVM build. Plain C11; needs only libc and libm (plus -ldl and -lpthread on
+# Linux). libffi is optional: when found, it enables the FFI (.extern).
 #
 #   make              build ./mlwsvm
 #   make test         run the assembly test suite and the examples
@@ -8,6 +9,9 @@
 #   make check-tsan   build with ThreadSanitizer and run the tests on several worker threads
 #   make lib          the embedding library: build/libmlwsvm.a and a shared libmlwsvm
 #   make check-embed  build and run the embedding example (examples/embed/host.c)
+#   make test-ext     build the example extension the tests load (extensions/)
+#   make embed-example  build the embedding example without running it
+#   make check-bindgen  generate bindings for tests/_bindgen/libc.h, compare and call them (needs clang)
 #   make bench        run the benchmarks in bench/
 #   make docs         regenerate docs/ISA.md and docs/NATIVES.md from the code
 

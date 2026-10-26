@@ -916,7 +916,7 @@ static bool dir_endf(Asm *A, Cur *c) {
     AsmInsn *last = &f->insns.v[f->insns.n - 1];
     if (!(op_info[last->op].flags & OPF_TERM))
         return aerr(A, last->pl, 0, "E_ASM_SYNTAX",
-                    "function %s can run off its end: the last instruction must be ret, jmp, tcall or halt", f->name);
+                    "function %s can run off its end: the last instruction must be ret, jmp, tcall, tcalli, throw or halt", f->name);
     for (int b = 0; b < NBANKS; b++) {
         int n = maxr[b];
         if (f->nparam_bank[b] > n) n = f->nparam_bank[b];

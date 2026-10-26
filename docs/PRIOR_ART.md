@@ -22,8 +22,9 @@ us.
 
 All code in this repository was written for this project. Nothing was ported or
 translated from another VM. A few standard public algorithms appear verbatim:
-FNV-1a hashing, the MurmurHash3 `fmix64` and SplitMix64 mixing constants, SHA-256 (FIPS 180-4), and LEB128
-encoding.
+FNV-1a hashing, the MurmurHash3 `fmix64` and SplitMix64 mixing constants, SHA-256 (FIPS 180-4), LEB128
+encoding, and, since M19, CRC-32, SipHash-2-4, xoshiro256\*\* and Howard Hinnant's
+civil-date conversions.
 
 ---
 
@@ -33,11 +34,11 @@ encoding.
 
 | MLWSVM | Influences | How MLWSVM differs |
 |---|---|---|
-| Register machine, not a stack machine | Lua 5, Dalvik/ART, Parrot; the stack-vs-register debate (Shi, Gregg, Beatty and Ertl, *Virtual Machine Showdown: Stack Versus Registers*) | Most register VMs use small, fixed-size, mostly three-operand instructions for fast decoding. MLWSVM uses variable-length instructions with 0–32 operands, trading decode speed for density and ease of targeting. |
+| Register machine, not a stack machine | Lua 5, Dalvik/ART, Parrot; the stack-vs-register debate (Shi, Gregg, Beatty and Ertl, *Virtual Machine Showdown: Stack Versus Registers*) | Most register VMs use small, fixed-size, mostly three-operand instructions for fast decoding. MLWSVM uses variable-length instructions with 0–32 operands and decodes them once, at load time. Measured, this costs no run time, while a fixed 3-operand format would make call-heavy code about 20% slower ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)). |
 | Four typed banks: `I` int, `F` float, `R` GC reference, `P` raw pointer, 32 each | **Parrot**'s four register sets (`I` int, `N` number, `S` string, `P` PMC) are the closest precedent; hardware int/float register files in general | The `R`/`P` split, managed references versus checked raw pointers, is a safety boundary. Narrow integer types are kept canonical (sign- or zero-extended) within the `I` bank. |
 | Fresh register window per call, sized per function | Lua 5's register window on the value stack; SPARC register windows | Arguments are bound *per bank* (first int arg to `I0`, first float to `F0`, ...). There are no callee- or caller-saved conventions at all. |
 | Variadic arithmetic (`add dst, s1..s31`) and the two-operand shorthand | Two-operand forms are a CISC tradition (x86, VAX); variadic operations resemble Lisp `(+ a b c)` | Unusual in a VM ISA. It lets one instruction fold a whole expression. |
-| Type suffixes on one opcode (`add.i32`, `add.f64`, `add.p`) | VAX and 68k size suffixes (`.b/.w/.l`); Dalvik's typed opcodes | The type byte is separate from the opcode, so the table stays small (about 110 opcodes) while supporting 14 types. |
+| Type suffixes on one opcode (`add.i32`, `add.f64`, `add.p`) | VAX and 68k size suffixes (`.b/.w/.l`); Dalvik's typed opcodes | The type byte is separate from the opcode, so the table stays small (120 opcodes) while supporting 16 types. |
 | Untyped (`natural`) moves that copy a word together with its type tag | Tagged architectures (Burroughs B5000, Lisp machines) | Used so that spills and reloads preserve types for the GC. |
 
 ### Addressing modes
@@ -86,7 +87,7 @@ encoding.
 | Stop the world only for tools | Safepoints in the JVM and BEAM | The program itself never stops the world; only the monitor does, and only at time-slice boundaries. |
 | `link` / `monitor` / `Down` messages / unobserved crash reports | **BEAM**: links, monitors, `DOWN` messages, OTP supervision | `Down` is an ordinary struct, inspected with the same field operands as any other. |
 | The program ends when `main` ends; deadlock detection | **Go** (main returning ends the program; "all goroutines are asleep") | The deadlock is a *catchable* exception in `main`. |
-| Quotas that can only be lowered, inherited by children | Unix `setrlimit` (soft and hard limits); BEAM's `max_heap_size` | Covers heap, raw memory, mailbox size and instruction count. A sandbox is just a wrapper that lowers its own limits before calling untrusted code. |
+| Quotas that can only be lowered, inherited by children | Unix `setrlimit` (soft and hard limits); BEAM's `max_heap_size` | Covers heap, raw memory, mailbox size, instruction count, native code and OS access. A sandbox is just a wrapper that lowers its own limits before calling untrusted code. |
 
 ### Calling C (M10)
 
@@ -168,7 +169,7 @@ Experiments that would show whether the combination pays off:
 
 | Question | Experiment |
 |---|---|
-| Is code denser than a stack VM's? | Compile the same programs for MLWSVM, the JVM (javac) and Lua (luac); compare instruction counts and bytes |
+| Is code denser than a stack VM's? | Partly answered: against CPython, MLWSVM executes 61–67% fewer instructions, but its code is 50–90% larger in bytes ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)). Still to do: the JVM (javac) and Lua (luac) |
 | How much do rich operands cost the interpreter? | Instructions per second, and time per program, against Lua 5.4 on small benchmarks (fib, sieve, nbody, binary-trees), before and after the M9 dispatch work |
 | What do the tags cost? | Memory overhead (1/8 extra on the stack and globals), and the time spent on tag checks (a profile with tag checks disabled) |
 | Is it easier to target? | Lines of code for a code generator from a small language to MLWSVM, compared with a JVM or WebAssembly backend |
@@ -176,11 +177,13 @@ Experiments that would show whether the combination pays off:
 | Is the GC simpler but competitive? | Pause times and throughput on allocation-heavy benchmarks; the cost of whole-stack tag scanning as stacks grow |
 
 Current data points (see [PERFORMANCE.md](PERFORMANCE.md)): about 800M
-instructions/s on a tight register loop and about 290M/s on recursive `fib`, after
+instructions/s on a tight register loop and about 280M/s on recursive `fib`, after
 quickening, on an Apple Silicon laptop with one thread. That is 10× faster than
 CPython 3.14 on the loop and about the same speed on `fib`. A two-process
 ping-pong reaches about 19M messages/s, and 16 independent CPU-bound processes
-run 8.2× faster on the laptop's 18 cores than on one thread.
+run 8.3× faster on the laptop's 18 cores than on one thread. Instructions with up
+to 32 operands cost nothing measurable against a fixed three, and save up to 44%
+of the instructions in call-heavy code.
 
 ## Milestone log
 
@@ -227,3 +230,6 @@ run 8.2× faster on the laptop's 18 cores than on one thread.
 - The Erlang/OTP documentation, `erl_nif` (NIFs and dirty schedulers).
 - The libffi documentation; the CPython `ctypes` documentation; the LuaJIT FFI documentation.
 - FIPS 180-4, *Secure Hash Standard* (SHA-256).
+- Jean-Philippe Aumasson and Daniel J. Bernstein, *SipHash: a Fast Short-Input PRF*, INDOCRYPT 2012.
+- David Blackman and Sebastiano Vigna, *Scrambled Linear Pseudorandom Number Generators*, ACM TOMS, 2021 (xoshiro256\*\*).
+- Howard Hinnant, *chrono-Compatible Low-Level Date Algorithms* (`days_from_civil`).

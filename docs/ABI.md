@@ -110,7 +110,7 @@ it.
 | 2 | waiting messages in the mailbox | catchable `E_QUOTA` in the **sender** |
 | 3 | instructions executed in total | the process is stopped with `E_QUOTA` (a hard CPU limit) |
 | 4 | foreign calls (natives from extensions and `.extern`); 0 shuts out native code | catchable `E_QUOTA` at the call |
-| 5 | OS calls (`fs.*`, `os.*`; [STDLIB.md](STDLIB.md)); 0 shuts out files, commands and the environment | catchable `E_QUOTA` at the call |
+| 5 | OS calls (`fs.*`, `os.*`, `net.*`; [STDLIB.md](STDLIB.md)); 0 shuts out files, commands, the network and the environment | catchable `E_QUOTA` at the call |
 
 `mlwsvm run --stats` reports processes spawned, the most alive at once, time
 slices, and instructions across all processes. `proc.count` returns the number
@@ -248,7 +248,7 @@ encoding, the pointer layout or the object headers.
 | Call depth | 100,000 frames (`E_CALL_DEPTH`); *option* `--max-frames`. Frames live on the heap, not the C stack, so a deeper limit only costs memory |
 | Data stack | 131,072 words (1 MiB) per process; *option* `--stack-words` |
 | Time slice | 2,000 instructions; *option* `--slice` |
-| Starting quotas | unlimited; *option* `--quota heap=…,raw=…,mailbox=…,insns=…` (§1.4) |
+| Starting quotas | unlimited; *option* `--quota heap=…,raw=…,mailbox=…,insns=…,foreign=…,os=…` (§1.4) |
 | Raw block size | < 4 GiB |
 | Modules per VM | 4,094 |
 | Elements in a string, buffer, array, list or map | < 2^31 |
@@ -326,8 +326,13 @@ the process that created them. Processes never share heap objects; the only
 exception is constant-pool strings, which are immutable and immortal.
 
 * **Collector.** Precise, non-moving mark-sweep. A collection starts when the heap
-  has grown to twice its size after the previous collection (minimum 1 MiB).
-  `gc.collect` requests one explicitly.
+  has grown to twice its size after the previous collection (minimum 1 MiB;
+  *option* `--gc-min`), or earlier as a heap quota approaches. `gc.collect`
+  requests one explicitly.
+* **Allocation.** Objects of up to 256 bytes are carved from the process's own
+  chunks, in 16-byte size classes with a free list each; larger ones use
+  `malloc`. `MLWSVM_NO_SLABS=1` allocates every object with `malloc` (as do
+  AddressSanitizer builds).
 * **Safepoints.** Collections happen only *between* instructions. During one
   instruction, including a native call, nothing moves or is freed.
 * **Roots.** These are every `R` register of every live frame, every

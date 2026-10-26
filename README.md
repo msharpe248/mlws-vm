@@ -2,9 +2,10 @@
 
 A portable virtual machine in the spirit of the JVM, but a **register machine**
 rather than a stack machine. It has variable-arity instructions (0–32 operands),
-about twenty addressing modes, an assembler with macros, a module loader with
+25 addressing modes, an assembler with macros, a module loader with
 libraries, and checked memory safety. It is written in plain C11 with no
-dependencies, so it builds anywhere a C compiler exists.
+required dependencies (libffi, if present, enables the FFI), so it builds
+anywhere a C compiler exists.
 
 ```asm
 .import std.io as io
@@ -33,7 +34,7 @@ base:
 * **Typed register banks.** `I0–I31` (integers), `F0–F31` (floats), `R0–R31` (GC
   references) and `P0–P31` (checked pointers), plus `SP`, `FP` and `PID`. Every call
   gets a fresh register window, so there are no caller/callee-saved conventions.
-* **Rich types** as instruction suffixes: `b c i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 r p`.
+* **Rich types** as instruction suffixes: `b c i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 r p big dec`.
   Narrow integers wrap correctly.
 * **Operands can be anything**: registers, literals, strings, `SP[42]`, `P1{13}`,
   `P0[I1*2+1]`, `[SP]+`, `-[SP]`, `@global[I3]`, `[FP[2]][3]`, `ARG[n]`, `LOC[n]`. Any
@@ -80,7 +81,7 @@ base:
   dashboard, JSON API and `mlwsvm top`.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 160+ test programs, also run under
+* **Tested in its own assembly**: 220+ test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, and with a
   garbage collection at every allocation.
 
@@ -92,9 +93,10 @@ make test                    # runs tests/ and examples/
 make check-gc                # the same, collecting garbage at every allocation
 make check-tools             # smoke-test the monitor, top, profiler and tracer
 make bench                   # benchmarks, with output checks (docs/PERFORMANCE.md)
-make check-asan              # both of the above, under AddressSanitizer + UBSan
+make check-asan              # test and check-gc, under AddressSanitizer + UBSan
 make check-tsan              # the tests on several threads, under ThreadSanitizer
 make lib check-embed         # the embedding library, and its example host program
+make check-bindgen           # generate, compare and call bindings for a test header (needs clang)
 
 ./mlwsvm run examples/hello.masm
 ./mlwsvm run --stats examples/fib.masm
@@ -110,6 +112,7 @@ make lib check-embed         # the embedding library, and its example host progr
 ./mlwsvm test tests/           # run assembly tests
 ./mlwsvm bindgen -l libz -p z /usr/include/zlib.h -o zlib.inc   # FFI declarations for a C header
 make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
+./mlwsvm --help                # every command and option
 ```
 
 ## Documentation
@@ -129,26 +132,31 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/EMBEDDING.md](docs/EMBEDDING.md) | Running MLWSVM inside a C or C++ program (`libmlwsvm`) |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks, results, and what was optimised (and why) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Remaining work: calling C libraries, the standard library, platforms, deferred performance work |
+| [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines against stack machines, measured against CPython, and what 0–32 operands cost compared with a fixed 3 |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M11–M21 and what remains: Windows and the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
 
 ```
+src/main.c      the mlwsvm command line
 src/core/       types, opcode table (opcodes.def), instruction codec, shared checker, disassembler
 src/asm/        lexer, constant expressions, preprocessor (macros etc.), assembler
 src/loader/     .mlwso reader/writer
-src/vm/         loader/linker, verifier, processes and memory, interpreter, run helper
-src/heap/       garbage collector and heap objects (strings, bytes, arrays, structs, lists, maps)
-src/native/     built-in natives, the extension API and the FFI
+src/vm/         loader/linker, verifier, processes and memory, scheduler, interpreter, VM options, run helper
+src/heap/       garbage collector, heap objects (strings, bytes, arrays, structs, lists, maps), BigInt and decimal, message copying
+src/native/     built-in and standard-library natives, the extension API and the FFI
 src/embed/      the embedding API (libmlwsvm)
-src/tools/      test runner, doc generator, debugger, profiler/tracer, monitor, top, bindgen
-web/            the monitor's dashboard (compiled into the binary)
+src/tools/      test runner, doc generator, debugger, profiler/tracer, monitor, top, ext, bindgen
 src/platform/   the only OS-specific code (POSIX and Windows)
+include/mlwsvm/ public C headers: the extension API (mlwsvm.h) and the embedding API (embed.h)
+web/            the monitor's dashboard (compiled into the binary)
+build-tools/    build helper that compiles the dashboard into C
+extensions/     an example native extension (also a test fixture)
 lib/std/        standard library and macro files, written in MLWSVM assembly
 tests/          the test suite, in MLWSVM assembly
 bench/          benchmarks (make bench)
-examples/       runnable, self-checking example programs
+examples/       runnable, self-checking example programs (examples/embed: a C host program)
 ```
 
 `src/core/opcodes.def` is the single source of truth for the instruction set. The
@@ -181,4 +189,4 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M18 Callbacks: a re-entrant interpreter, closures as C function pointers, async callbacks as messages, `api->post` | done |
 | M19 Standard library II: time, hashes, random, encodings, sorting and searching, set operations | done ([STDLIB.md](docs/STDLIB.md)) |
 | M20 `mlwsvm bindgen`: FFI declarations from a C header (clang's JSON syntax tree) | done ([TOOLING.md](docs/TOOLING.md)) |
-| M21 Performance: a per-process small-object allocator (allocation-heavy code 9–25% faster) | done ([PERFORMANCE.md](docs/PERFORMANCE.md)) |
+| M21 Performance: a per-process small-object allocator (`binarytrees` and `maps` take 17–25% less time on Linux, `binarytrees` 9% less on macOS) | done ([PERFORMANCE.md](docs/PERFORMANCE.md)) |

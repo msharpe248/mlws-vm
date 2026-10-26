@@ -8,7 +8,7 @@ built-in ones in [NATIVES.md](NATIVES.md):
 |---|---|---|
 | What you write | A small C library against [`include/mlwsvm/mlwsvm.h`](../include/mlwsvm/mlwsvm.h) | One `.extern` line per C function, in assembly |
 | Good for | Wrapping a library properly: converting types, owning resources, reporting errors well | Calling existing C functions directly, with no C code at all |
-| Values | Strings, bytes, lists, maps and foreign handles, through the API | Numbers, strings, byte buffers and opaque pointers |
+| Values | Strings, bytes, lists, maps and foreign handles, through the API | Numbers, strings, byte buffers, opaque pointers, C structs and callbacks |
 | Models | Lua's C API, CPython extensions, JNI, Erlang NIFs | Python's ctypes and cffi, LuaJIT's FFI, Java's FFM API |
 | Needs | A C compiler | libffi, found when MLWSVM is built (it ships with macOS) |
 
@@ -322,7 +322,8 @@ When the call returns, the pointer is freed: C must not keep it.
   thrown.
 * **No waiting.** C is waiting for the callback, so the callback cannot wait in
   turn: `recv` with no message, `sleep`, and natives that would wait (network
-  and pipe I/O, `proc.call`) trap `E_CALLBACK` inside it. Everything else
+  and pipe I/O, `proc.call`) trap `E_CALLBACK` inside it, as does `halt`
+  (`yield` does nothing there). Everything else
   works: allocation and garbage collection, other foreign calls (including ones
   that call back again), blocking natives (they run right there), and spawning
   and sending. The debugger does not stop inside callbacks.
@@ -418,7 +419,8 @@ mlwsvm ext deny-ffi  [--dir D] LIBRARY
 |---|---|
 | `E_LINK_EXT` | An extension is not installed, does not load, has no init function for this API version, or its init failed |
 | `E_LINK_UNTRUSTED` | An extension or FFI library fails a trust check; the message says which |
-| `E_LINK_FFI` | `.extern`: the library cannot be loaded, the symbol is missing, or MLWSVM was built without libffi |
+| `E_LINK_FFI` | `.extern`, `.ffi_free`, `.cstruct` or `.callback`: the library cannot be loaded, the symbol is missing, a `.cstruct` or `.callback` is missing or declared differently elsewhere, libffi cannot make the call, or MLWSVM was built without libffi |
 | `E_QUOTA` | The foreign-call quota is used up |
-| `E_TYPE` | A value of the wrong kind reached foreign code, or a handle was sent to another process |
+| `E_TYPE` | A value of the wrong kind reached foreign code (including a released handle, or a closure that does not match its callback type), or a handle was sent to another process |
+| `E_CALLBACK` | A callback tried to wait or `halt`, C called it from another thread, or it called back into its own `serial` library |
 | `E_NATIVE` | The default code for an error recorded by an extension without one |

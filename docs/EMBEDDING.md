@@ -55,9 +55,9 @@ int main(void) {
 * **Values** crossing the boundary are numbers (`MLWS_INT`, `MLWS_FLOAT`,
   `MLWS_BOOL`, and any `MLWS_T_*` type) and strings (`MLWS_STR`). Arguments are
   checked against the function's parameters (`E_TYPE`). A result that is a
-  string comes back as a NUL-terminated copy, valid until the next call. Any
-  other reference comes back as its text, so return `json.stringify(...)` for
-  structured data.
+  string (or byte buffer) comes back as a NUL-terminated copy, valid until the
+  next call. Any other reference comes back as its text, so return
+  `json.stringify(...)` for structured data.
 * **Errors**: functions return `false`, and `mlws_error` gives
   `"E_CODE: message"`, with `mlws_error_code` and `mlws_backtrace` for runtime
   errors. MLWSVM code can never crash the host through a bad pointer: the VM's
@@ -68,9 +68,12 @@ int main(void) {
 `mlws_define` registers a host function that MLWSVM code calls with `ncall`.
 It's written exactly like a native extension's
 ([EXTENDING.md](EXTENDING.md)), with the same `MlwsApi` table (`mlws_api()`):
-strings, lists, maps, foreign handles, errors. Host natives may be declared
+strings, lists, maps, foreign handles, errors. Its name needs a prefix
+(`app.lookup`) and must not already be taken by another native; otherwise
+`mlws_define` fails with `E_LINK_NATIVE`. Host natives may be declared
 `MLWS_NATIVE_BLOCKING` (run on the I/O pool) or `MLWS_NATIVE_SERIAL` (one call
-at a time). Define them before loading code that calls them.
+at a time). They are the host's own code, so they do not count towards the
+foreign-call quota (kind 4). Define them before loading code that calls them.
 
 ## Long-lived services
 
@@ -85,8 +88,11 @@ mlws_wait(vm, out, 1, NULL);                      /* its results */
 `mlws_start` runs a function in the background and returns its pid at once.
 `mlws_send` posts a message to any process from any host thread; MLWSVM code
 receives it with `recv`. While the host may send, a process waiting in `recv`
-is never reported as deadlocked. `mlws_wait` waits for the function to return
-and collects its results.
+is never reported as deadlocked. A send to a process that has ended returns
+false. `mlws_wait` waits for the function to return and collects its results.
+Only one background run can go at a time: until `mlws_wait`, loading, calling
+and starting fail with `E_BUSY` (as does `mlws_wait` with nothing running).
+`mlws_free` waits for a background run to finish.
 
 ## Threads and limits
 

@@ -34,7 +34,7 @@ only `parallel` has the work to use more than one.
 | maps | 71 | 59 | 1.2× | 84 |
 | pingpong | 168 | 32 | 5.2× | |
 | closures | 318 | 150 | 2.1× | |
-| parallel | 507 (one thread) | 61 | 8.2× | |
+| parallel | 507 (one thread) | 61 | 8.3× | |
 
 The tight register loop now runs at about 800M instructions per second, roughly
 5 cycles per instruction. That is the lower bound with the current design.
@@ -197,6 +197,15 @@ for each request it serves.
   about 5 cycles per instruction including dispatch, and the remaining time is
   spread across the generic operand paths rather than in dispatch itself.
   Revisit if profiles show dispatch dominating.
+* **Fewer operands per instruction.** Measured, and rejected. Storing up to three
+  operands inside each instruction, as a fixed 3-operand format would, was no
+  faster, and fixed-format calls would make `fib` 22% slower. See
+  [REGISTER_VS_STACK.md](REGISTER_VS_STACK.md), which also compares MLWSVM with a
+  stack machine (CPython).
+* **A compact decoded form.** Not attempted. Each decoded operand is a 72-byte
+  `Operand` with room for every addressing mode. The benchmarks fit in cache, so
+  it does not show yet. A small form for the quickened shapes would be the fix if
+  large programs show cache misses.
 * **A generational GC.** Deferred. Collection is about 9% of `binarytrees` and 5%
   of `maps`, the most allocation-heavy benchmarks. Halving it would save under
   5% overall, while a generational collector needs a write barrier on every

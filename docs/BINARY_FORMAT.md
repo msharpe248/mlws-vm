@@ -54,7 +54,8 @@ natives      uleb n, then n × str           native names used by ncall
 
 structs      uleb n, then n × {
                name   str
-               flags  uleb   1 = exported, 2 = import, 4 = built-in (Error; nothing follows)
+               flags  uleb   1 = exported, 2 = import, 4 = built-in (provided by the VM:
+                             Error, Down, FileInfo, Call, Callback, Date; nothing follows)
                if import:
                  import_index uleb                    the struct is defined there
                else:
@@ -168,9 +169,12 @@ operand := mode:u8 payload
 **Register byte**: `bank << 5 | index`, where the bank is 0 = I, 1 = F, 2 = R,
 3 = P, 4 = special. For the special bank, index 0 = SP, 1 = FP and 2 = PID.
 
-**Call blocks** (`call`, `tcall`, `ncall`): operand 0 is the target (FUNC or
-NATIVE), operand 1 is IMM *argc*, the next *argc* operands are the arguments, and
-the remaining operands are result destinations.
+**Call blocks** (`call`, `tcall`, `ncall`, `spawn`, `spawnl`, `spawnm`,
+`closure`, and the closure forms `calli`, `tcalli`, `spawni`, `spawnil`,
+`spawnim`): operand 0 is the target (FUNC, NATIVE for `ncall`, or a value operand
+holding the closure for the closure forms), operand 1 is IMM *argc*, the next
+*argc* operands are the arguments (for `closure`, the captured values), and the
+remaining operands are result destinations.
 
 Branch targets are instruction indices, not byte offsets, so instructions can be
 re-encoded freely. The loader decodes each function once into an internal form

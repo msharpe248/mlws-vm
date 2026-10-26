@@ -22,8 +22,8 @@ Use `.import` for dependencies and `.export` for public functions and globals.
 |---|---|---|
 | int, bool, char, enum tag | `i64` / `b` / `c` (or narrower) | `I` |
 | float | `f64` (or `f32`) | `F` |
-| string, object, array, map, closure (GC) | `r` | `R` |
-| raw buffer / FFI pointer | `p` | `P` |
+| string, object, array, map, closure (GC), FFI handle | `r` | `R` |
+| raw buffer | `p` | `P` |
 
 * **Every function has 32 registers per bank, and they are private to its call.**
   You never save or restore registers around calls. The simplest correct allocator
@@ -55,8 +55,8 @@ counter += 1             add  @counter, 1             ; globals are operands too
   Conditional values use `sel`.
 * Integer/float conversion is `cvt.f64.i64` / `cvt.i64.f64`, which truncates and
   saturates.
-* Integer overflow wraps. Checked-arithmetic variants are planned. Until then,
-  generate explicit checks if the language requires them.
+* Integer overflow wraps. There are no checked-arithmetic variants, so generate
+  explicit checks if the language requires them.
 * Division by zero traps (`E_DIV_ZERO`). Like every fault, it can be caught with a
   `.try` handler (§8).
 
@@ -91,8 +91,8 @@ switch x { 0: .. 1: .. }       jtab x, .Lcase0, .Lcase1, .Lcase2
 * Prefer the fused compare-and-branch forms (`blt a, b, L`) over `slt` + `bnz`.
 * Labels are local to the function. Generate unique names with a per-function
   counter (`.Lelse3`), or use numeric labels (`1:` / `1b` / `1f`).
-* Every function must end with `ret`, `jmp`, `tcall` or `halt`. If the source
-  function can fall off its end, emit a final `ret`.
+* Every function must end with `ret`, `jmp`, `tcall`, `tcalli`, `throw` or `halt`.
+  If the source function can fall off its end, emit a final `ret`.
 
 ## 5. Functions
 
@@ -144,6 +144,8 @@ The heap object types map directly onto scripting-language values
 | A fixed-size typed array | `anew.f64 R0, n`; `R0[I1]` |
 | A dynamic list / array | `lnew`, `lpush`, `lpop`, `lins`, `ldel`, `R0[I1]`, `len` |
 | A dictionary / object literal | `mnew`, `mset`, `mget` (with a default), `mhas`, `mdel`, `mkeys` |
+| Sorting and searching a list | `ncall "list.sort" (R0, cmp)` with a comparator closure (or `null` for natural order); `list.bsearch` |
+| Set operations | maps as sets: `map.union`, `map.intersect`, `map.difference` |
 | A string builder | `bufnew`, `bufcat`, `bufpush`, then `strcat R0, buf` |
 | A lambda / nested function | `closure f (captured...) -> (R0)`; the body reads `UP[n]` |
 | Calling a function value | `calli R0 (args) -> (results)` (`tcalli` in tail position) |
@@ -235,10 +237,15 @@ A language's "foreign function" or "native" declarations map to `.extern`:
     ncall "m.pow" (F0, F1) -> (F2)
 ```
 
-For anything richer (owning resources, structured results), wrap the library in
-a native extension and emit `.extension "name"` plus `ncall`s. Mark calls that
-can block as `blocking`, so they run off the worker threads. See
-[EXTENDING.md](EXTENDING.md).
+The FFI also covers C structs (`.cstruct`, passed as `struct NAME`,
+`struct* NAME` or `out struct NAME`), variadic functions (`...`), function
+pointers (`.callback`, which C can call back into, or `async` to receive the
+calls as messages) and handles that free themselves (`.ffi_free`).
+`mlwsvm bindgen header.h` writes these declarations from a C header. For
+anything the FFI can't express, wrap the library in a native extension and emit
+`.extension "name"` plus `ncall`s. Mark calls that can block as `blocking`, so
+they run off the worker threads. A library must be allowed before it can be
+loaded (`mlwsvm ext allow-ffi`). See [EXTENDING.md](EXTENDING.md).
 
 ## 10. A complete translation
 
@@ -314,10 +321,14 @@ on them.
 
 These are stable and safe to target now: the assembly syntax, the operand forms,
 the opcode numbers, the calling convention, the heap object model (M4),
-exceptions (M5), processes (M6), closures and arbitrary-precision numbers (M8), and
-the `.mlwso` layout. These are
-planned, and will only be *additions*:
+exceptions (M5), processes (M6), closures and arbitrary-precision numbers (M8),
+and the FFI (M10, M17, M18). The `.mlwso` layout is versioned (version 6 since
+M18), and the loader refuses other versions, so ship `.masm` or re-assemble
+after upgrading ([BINARY_FORMAT.md](BINARY_FORMAT.md)). What is still planned is
+performance work, done when measurements call for it
+([ROADMAP.md](ROADMAP.md#4-performance-when-measurements-call-for-it)), and will
+only be *additions*:
 
-| Milestone | Adds |
+| Planned | Adds |
 |---|---|
-| M9 | Performance: computed-goto dispatch, generational GC (the multi-threaded scheduler is done, and needed no changes to programs) |
+| Performance | specialised memory and array operand forms (chosen from what compilers emit), a generational GC, computed-goto dispatch (the multi-threaded scheduler and the small-object allocator are done, and needed no changes to programs) |

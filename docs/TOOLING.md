@@ -55,9 +55,12 @@ $ MLWSVM_QUOTA=heap=256M,insns=10000000000 mlwsvm run untrusted.masm
 ```
 
 Two environment variables are for testing the VM itself: `MLWSVM_GC_STRESS=1`
-collects garbage at every instruction boundary after an allocation, and
-`MLWSVM_NO_SLABS=1` allocates every object with `malloc` instead of the
-small-object allocator ([PERFORMANCE.md](PERFORMANCE.md#the-small-object-allocator-m21)).
+(or `mlwsvm run --gc-stress`) collects garbage at every instruction boundary
+after an allocation, and `MLWSVM_NO_SLABS=1` allocates every object with
+`malloc` instead of the small-object allocator
+([PERFORMANCE.md](PERFORMANCE.md#the-small-object-allocator-m21)). For
+development, `mlwsvm run --unsafe-native` (or `MLWSVM_UNSAFE_NATIVE=1`) loads
+native code without the trust checks ([EXTENDING.md](EXTENDING.md#security)).
 
 A backtrace from a runaway recursion stays short: runs of identical frames are
 collapsed (`... repeated 99998 more times`), and a very deep stack shows only its
@@ -185,9 +188,9 @@ a second.
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/vm` | `uptime_ns`, `processes` (live), `spawned`, `max_live`, `slices`, `insns` (all processes), `heap_bytes`, `raw_bytes`, `modules`, `main_pid` |
-| `GET /api/procs` | an array, per live process: `pid`, `state` (`ready` / `running` / `waiting` / `sleeping`), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors` |
-| `GET /api/proc/PID` | the same for one process, plus `quota` (`heap`, `raw`, `mailbox`, `insns`; `null` = unlimited) and `backtrace` |
+| `GET /api/vm` | `vm` (`"mlwsvm"`), `uptime_ns`, `processes` (live), `spawned`, `max_live`, `slices`, `insns` (all processes), `heap_bytes`, `raw_bytes`, `modules`, `main_pid` |
+| `GET /api/procs` | an array, per live process: `pid`, `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors` |
+| `GET /api/proc/PID` | the same for one process, plus `quota` (`heap`, `raw`, `mailbox`, `insns`, `foreign`, `os`; `null` = unlimited) and `backtrace` |
 | `GET /api/exits` | the last 64 finished processes, newest first: `pid`, `entry`, `failed`, `code`, `exit`, `insns`, `cpu_ns`, `ago_ns` |
 | `GET /top` | the plain-text table that `mlwsvm top` shows |
 
@@ -207,7 +210,8 @@ recent exits:
      7 worker           failed E_BOUNDS        1.2K insns
 ```
 
-`top` redraws every second (`--interval MS`) and sorts processes by CPU. `--once`
+`top` connects to `127.0.0.1:7070` unless given another address. It redraws
+every second (`--interval MS`) and sorts processes by CPU. `--once`
 prints one snapshot and exits; there, %CPU is measured over the VM's whole uptime.
 It fetches `/top` from the monitor, so it works against any VM started with
 `--monitor`.

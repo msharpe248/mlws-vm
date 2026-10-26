@@ -45,7 +45,7 @@ integer.
 | 25 | `UP[2]` | `0x1B` UPVAL | capture 2 of the closure currently running (read/write) |
 | — | `Point` after `new`/`isa` | `0x1A` STRUCT | a struct type (`new` and `isa` only) |
 | — | `label` | `0x14` LABEL | branch target (branch operands only) |
-| — | `func`, `mod.func` | `0x15` FUNC | call target (`call`/`tcall` only) |
+| — | `func`, `mod.func` | `0x15` FUNC | call target (`call`, `tcall`, `spawn`, `spawnl`, `spawnm`, `closure` only) |
 | — | `"io.print_i"` after `ncall` | `0x16` NATIVE | native function (`ncall` only) |
 
 ¹ Only a constant displacement is allowed after a memory-indirect operand. The inner
@@ -167,10 +167,11 @@ memory-indirect operand.
 
 ## Access width and types
 
-The instruction's type sets how many bytes a memory operand reads or writes (`u8`
-1, `i16` 2, `i32`/`u32`/`f32`/`c` 4, everything else 8). Memory is
-**little-endian** on every host. Unaligned accesses are allowed for every type
-except `r`.
+The instruction's type sets how many bytes a memory operand reads or writes
+(`b`/`i8`/`u8` 1, `i16`/`u16` 2, `i32`/`u32`/`f32`/`c` 4, everything else 8).
+Memory is **little-endian** on every host. Unaligned accesses are allowed for
+every type except `r`, which can only be stored in word-aligned stack or global
+slots (raw blocks cannot hold references).
 
 ## Safety
 
