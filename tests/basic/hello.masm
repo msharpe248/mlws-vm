@@ -1,0 +1,7 @@
+; The smallest useful program: print a line and return 0.
+; expect-stdout: Hello, MLWSVM!
+.func main
+    ncall "io.print_s" ("Hello, MLWSVM!")
+    ncall "io.nl" ()
+    ret 0
+.endf

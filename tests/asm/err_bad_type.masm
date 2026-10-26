@@ -1,0 +1,6 @@
+; Bitwise instructions do not accept float types.
+; expect-error: E_ASM_BAD_TYPE
+.func main
+    and.f64 F0, F1
+    ret
+.endf

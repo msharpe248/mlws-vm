@@ -1,0 +1,36 @@
+; [P]+ post-increments and -[P] pre-decrements by one word; {P}+ and -{P}
+; step by the access width. -[SP] / [SP]+ are push / pop.
+.include "std/test.inc"
+.func main
+    alloc P0, 40
+    mov P1, P0
+    mov I0, 1
+1:  mov [P1]+, I0              ; store, then advance one word
+    inc I0
+    ble I0, 5, 1b
+    mov I2, 0
+2:  add I2, -[P1]              ; step back, then add
+    bne.p P1, P0, 2b
+    ASSERT_EQ I2, 15
+    ; byte-stepping
+    alloc P2, 4
+    mov P3, P2
+    mov.u8 {P3}+, 'a'
+    mov.u8 {P3}+, 'b'
+    mov.u16 {P3}+, 0x6463      ; 'c' 'd', advances 2 bytes
+    add.p P4, P2, 4
+    ASSERT_EQ P3, P4, p
+    ASSERT_EQ P2{0}, 0x64636261, u32
+    mov.u8 I5, -{P3}
+    ASSERT_EQ I5, 'd'
+    ; push/pop are the same as pre-decrement/post-increment on SP
+    mov -[SP], 7
+    push 8
+    mov I6, [SP]+
+    pop I7
+    ASSERT_EQ I6, 8
+    ASSERT_EQ I7, 7
+    free P0
+    free P2
+    ret 0
+.endf

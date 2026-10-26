@@ -1,0 +1,25 @@
+; fib.masm - naive recursive Fibonacci; a quick interpreter benchmark.
+;
+;   mlwsvm run --stats examples/fib.masm
+;
+; expect-stdout: fib(27) = 196418
+.include "std/io.inc"
+
+.func fib(i64 n) -> i64
+    blt n, 2, base
+    sub I1, n, 1
+    call fib (I1) -> (I2)
+    sub I1, n, 2
+    call fib (I1) -> (I3)
+    add I0, I2, I3
+    ret I0
+base:
+    ret n
+.endf
+
+.func main
+    call fib (27) -> (I0)
+    PRINT_S "fib(27) = "
+    PRINTLN_I I0
+    ret 0
+.endf

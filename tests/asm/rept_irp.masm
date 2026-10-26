@@ -1,0 +1,27 @@
+; .rept n[, var] repeats a block with \var = 0..n-1; .irp var, a, b, ... iterates
+; over a list. Both work for code and data.
+.include "std/test.inc"
+
+squares:
+.rept 5, k
+    .i64 \k * \k
+.endr
+
+.func main
+    mov I0, 0
+.rept 5, i
+    add I0, \i
+.endr
+    ASSERT_EQ I0, 10
+.irp r, I1, I2, I3
+    mov \r, 3
+.endr
+    add I4, I1, I2, I3
+    ASSERT_EQ I4, 9
+    ASSERT_EQ @squares[4], 16
+.rept 3
+    inc I4
+.endr
+    ASSERT_EQ I4, 12
+    ret 0
+.endf

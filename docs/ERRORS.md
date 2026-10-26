@@ -1,0 +1,62 @@
+# MLWSVM Error Codes
+
+Every error the toolchain reports has a stable code, printed as `error[CODE]` or
+`runtime error[CODE]`. Tests match on these codes with `; expect-error: CODE`.
+
+## Assembler (`E_ASM_*`)
+
+Reported as `file:line:col: message`. If the error is inside a macro expansion,
+the message also names the macro and where it was expanded.
+
+| Code | Meaning |
+|---|---|
+| `E_ASM_SYNTAX` | Malformed statement, unbalanced `.if`/`.macro`/`.rept`, a function that can run off its end, a misplaced directive |
+| `E_ASM_UNKNOWN_OP` | Unknown instruction or macro name |
+| `E_ASM_BAD_OPERAND` | Operand not allowed here (literal destination, wrong register bank, bad base/index register, write to PID, ...) |
+| `E_ASM_BAD_TYPE` | Unknown type suffix, or a type the instruction doesn't support |
+| `E_ASM_OPERAND_COUNT` | Too few or too many operands |
+| `E_ASM_UNDEF_LABEL` | Branch to a label not defined in the function |
+| `E_ASM_UNDEF_SYM` | Unknown function, data symbol, constant or alias |
+| `E_ASM_DUP_SYM` | Duplicate label, function, symbol, macro or constant |
+| `E_ASM_EXPR` | Invalid constant expression (undefined name, division by zero, ...) |
+| `E_ASM_RANGE` | Value out of range (`.align`, `.rept` count, scale, ...) |
+| `E_ASM_MACRO` | Wrong number of macro arguments, or recursion too deep |
+| `E_ASM_INCLUDE` | `.include` file not found or unreadable |
+| `E_ASM_USER` | Raised by `.error "message"` |
+
+## Loader and linker (`E_LOAD_*`, `E_LINK_*`, `E_VERIFY`)
+
+| Code | Meaning |
+|---|---|
+| `E_LOAD_NOT_FOUND` | Program file or imported module not found on the library path |
+| `E_LOAD_IO` | File could not be read |
+| `E_LOAD_FORMAT` | Malformed or truncated `.mlwso` file, or unknown opcode/mode |
+| `E_LOAD_NAME` | A module declares a different name than it was imported as, or the name is already loaded |
+| `E_LOAD_LIMIT` | Too many modules |
+| `E_LINK_CYCLE` | Import cycle (the message shows the chain) |
+| `E_LINK_UNDEF` | Imported function or data symbol not exported by the module |
+| `E_LINK_NATIVE` | Unknown native function name in `ncall` |
+| `E_LINK_NO_MAIN` | The program has no `main`, or `main` takes parameters |
+| `E_VERIFY` | Bytecode verification failed: an operand shape, a register outside the window, a branch target, call or native arity or argument kinds, `ret` versus declared results, or code that runs off the end. Reported with source file, line and function |
+
+## Runtime traps
+
+Reported with a backtrace. `mlwsvm run` exits with status 70.
+
+| Code | Meaning |
+|---|---|
+| `E_DIV_ZERO` | Integer division or remainder by zero |
+| `E_NULL` | Dereference of a null pointer, or a null argument to a native |
+| `E_BOUNDS` | Memory access outside its block, or pointer arithmetic out of range |
+| `E_BAD_PTR` | Pointer to an unknown segment |
+| `E_UAF` | Use of a pointer to a freed or reallocated block |
+| `E_DOUBLE_FREE` | `free`/`realloc` of an already freed block |
+| `E_BAD_FREE` | `free`/`realloc` of something that is not the start of a raw block |
+| `E_BAD_ALLOC` | Invalid allocation size, or too many live blocks |
+| `E_TYPE` | Reference type violation, or a value written to a register of the wrong bank |
+| `E_STACK_OVERFLOW` | Data stack exhausted |
+| `E_STACK_UNDERFLOW` | Access above the top of the data stack (popping an empty stack) |
+| `E_CALL_DEPTH` | More than the maximum number of nested calls |
+| `E_RET_COUNT` | A caller expects more results than the callee returned |
+| `E_ASSERT` | `assert` failed, or `test.fail` was called (as the `std/test.inc` macros do) |
+| `E_INTERNAL` | A VM bug. Please report it |

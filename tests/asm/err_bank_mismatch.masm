@@ -1,0 +1,6 @@
+; An f64 instruction cannot use I registers.
+; expect-error: E_ASM_BAD_OPERAND
+.func main
+    add.f64 I0, I1, I2
+    ret
+.endf

@@ -1,0 +1,23 @@
+; [mem] dereferences a pointer stored in memory; [mem][n] and [mem]{n} add a
+; displacement after the dereference.
+.include "std/test.inc"
+
+pslot:  .i64 0
+
+.func main
+    alloc P0, 32
+    mov P0[2], 77
+    push P0                    ; SP[0] holds a pointer
+    ASSERT_EQ [SP[0]][2], 77
+    mov.u8 [SP[0]]{16}, 5      ; low byte of word 2
+    ASSERT_EQ P0[2], 5
+    mov.p @pslot, P0
+    ASSERT_EQ [@pslot][2], 5
+    ASSERT_EQ [@pslot], 0
+    add [@pslot][2], 1         ; read-modify-write through the indirection
+    ASSERT_EQ P0[2], 6
+    pop P1
+    ASSERT_EQ P1, P0, p
+    free P0
+    ret 0
+.endf

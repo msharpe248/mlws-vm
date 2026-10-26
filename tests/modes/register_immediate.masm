@@ -1,0 +1,34 @@
+; Register, immediate and constant-pool operands, and literal syntax.
+.include "std/test.inc"
+.func main
+    mov I0, 1_000_000
+    ASSERT_EQ I0, 1000000
+    mov I1, 0b1010
+    ASSERT_EQ I1, 10
+    mov I2, 0o17
+    ASSERT_EQ I2, 15
+    mov I3, 0x7fff_ffff_ffff_ffff
+    ASSERT_EQ I3, 9223372036854775807
+    mov I4, -(3 + 4) * 2       ; constant expressions are folded
+    ASSERT_EQ I4, -14
+    mov I5, '\n'
+    ASSERT_EQ I5, 10
+    mov I6, '\u{1F600}'        ; chars are Unicode scalar values
+    ASSERT_EQ I6, 0x1F600
+    mov F0, 1.5e3
+    ASSERT_EQ F0, 1500.0
+    mov R0, "hello"            ; strings live in the constant pool
+    ncall "str.len" (R0) -> (I7)
+    ASSERT_EQ I7, 5
+    ncall "str.byte" (R0, 1) -> (I8)
+    ASSERT_EQ I8, 'e'
+    mov I9, true
+    ASSERT_EQ I9, 1
+    mov R1, null
+    ASSERT_FALSE R1
+    mov I31, 31                ; all 32 registers per bank are usable
+    mov F31, 31.0
+    ASSERT_EQ I31, 31
+    ASSERT_EQ PID, 1           ; PID is a read-only special register
+    ret 0
+.endf

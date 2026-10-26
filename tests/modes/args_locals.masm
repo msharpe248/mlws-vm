@@ -1,0 +1,27 @@
+; ARG[n] reads stack-passed arguments (FP[n]); LOC[n] is a local (FP[-1-n]).
+; Callers push stack arguments in reverse so ARG[0] is the last one pushed,
+; and drop them after the call.
+.include "std/test.inc"
+
+.func sum3                     ; stack args: ARG[0], ARG[1], ARG[2]
+    enter 1
+    add LOC[0], ARG[0], ARG[1], ARG[2]
+    mov I0, LOC[0]
+    ret I0
+.endf
+
+.func first -> i64
+    ret ARG[0]
+.endf
+
+.func main
+    mov P5, SP
+    push 3, 2, 1
+    call sum3 -> (I0)
+    call first -> (I1)
+    drop 3
+    ASSERT_EQ I0, 6
+    ASSERT_EQ I1, 1
+    ASSERT_EQ SP, P5, p        ; calls restore SP; drop removed the arguments
+    ret 0
+.endf

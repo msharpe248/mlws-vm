@@ -1,0 +1,9 @@
+; An undeclared f64 result written to an I register is a runtime type error.
+; expect-error: E_TYPE
+.func pair
+    ret 1, 2.5
+.endf
+.func main
+    call pair -> (I0, I1)
+    ret 0
+.endf

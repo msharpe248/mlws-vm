@@ -1,0 +1,72 @@
+; Macros: positional parameters, defaults, variadic parameters, unique labels
+; (\@), token pasting (\()), macros calling macros, labels before invocations.
+.include "std/test.inc"
+
+.macro ROTATE3 a, b, c
+    swap \a, \b
+    swap \b, \c
+.endm
+
+.macro ADD_DEFAULT dst, x, y=100
+    add \dst, \x, \y
+.endm
+
+.macro SUM dst, vals...
+    mov \dst, 0
+    .irp v, \vals
+    add \dst, \v
+    .endr
+.endm
+
+.macro COUNT_TO dst, n
+    mov \dst, 0
+.Lcount\@:
+    inc \dst
+    blt \dst, \n, .Lcount\@
+.endm
+
+.macro SET_REG bank, idx, value
+    mov \bank\idx, \value
+.endm
+
+.macro TWICE m, arg
+    \m \arg
+    \m \arg
+.endm
+
+.macro BUMP r
+    add \r, 1
+.endm
+
+.macro SUFFIXED op, type, d, a, b
+    \op\().\type \d, \a, \b
+.endm
+
+.func main
+    mov I0, 1
+    mov I1, 2
+    mov I2, 3
+    ROTATE3 I0, I1, I2
+    ASSERT_EQ I0, 2
+    ASSERT_EQ I1, 3
+    ASSERT_EQ I2, 1
+    ADD_DEFAULT I3, 5
+    ASSERT_EQ I3, 105
+    ADD_DEFAULT I3, 5, 6
+    ASSERT_EQ I3, 11
+    SUM I4, 1, 2, 3, 4, 5
+    ASSERT_EQ I4, 15
+here:
+    COUNT_TO I5, 4
+    COUNT_TO I6, 9             ; second expansion gets its own label
+    ASSERT_EQ I5, 4
+    ASSERT_EQ I6, 9
+    SET_REG I, 7, 77
+    ASSERT_EQ I7, 77
+    mov I8, 0
+    TWICE BUMP, I8
+    ASSERT_EQ I8, 2
+    SUFFIXED add, u8, I9, 250, 10
+    ASSERT_EQ I9, 4
+    ret 0
+.endf

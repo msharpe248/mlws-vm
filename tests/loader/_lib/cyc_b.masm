@@ -1,0 +1,5 @@
+.module _lib.cyc_b
+.import _lib.cyc_a
+.func g
+    ret
+.endf

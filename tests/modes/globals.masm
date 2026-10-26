@@ -1,0 +1,28 @@
+; @sym, @sym[n], @sym{n}, @sym[Ireg*s+d] and @sym{Ireg*s+d} address module globals.
+.include "std/test.inc"
+
+x:      .i64 5
+arr:    .i64 1, 2, 3, 4
+bytes:  .u8 1, 2, 3, 4, 5, 6, 7, 8
+i32s:   .i32 100, 200, 300
+pi:     .f64 3.25
+
+.func main
+    ASSERT_EQ @x, 5
+    ASSERT_EQ @arr[3], 4
+    mov I1, 2
+    ASSERT_EQ @arr[I1], 3
+    ASSERT_EQ @arr[I1*1+1], 4
+    ASSERT_EQ @arr{8}, 2
+    ASSERT_EQ @bytes{I1}, 3, u8
+    ASSERT_EQ @i32s{I1*4}, 300, i32
+    ASSERT_EQ @pi, 3.25, f64
+    add @x, 10
+    ASSERT_EQ @x, 15
+    lea P0, @arr[1]            ; pointers into the global segment
+    ASSERT_EQ [P0], 2
+    ASSERT_EQ P0[2], 4
+    mov P0[2], 40
+    ASSERT_EQ @arr[3], 40
+    ret 0
+.endf

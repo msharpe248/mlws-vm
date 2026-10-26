@@ -1,0 +1,8 @@
+; `.import name as alias` gives a library a short prefix.
+.include "std/test.inc"
+.import _lib.mathx as m
+.func main
+    call m.add3 (10, 20, 30) -> (I0)
+    ASSERT_EQ I0, 60
+    ret 0
+.endf

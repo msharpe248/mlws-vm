@@ -1,0 +1,5 @@
+; expect-error: E_VERIFY
+.func main
+    ncall "io.print_i" (1, 2)
+    ret 0
+.endf

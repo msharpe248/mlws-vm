@@ -1,0 +1,25 @@
+; base[Ireg], base[Ireg*scale+disp] (words) and base{Ireg*scale+disp} (bytes).
+.include "std/test.inc"
+.func main
+    alloc P0, 80               ; ten words
+    mov I1, 0
+1:  mul I2, I1, I1
+    mov P0[I1], I2             ; P0[i] = i*i
+    inc I1
+    blt I1, 10, 1b
+    ASSERT_EQ P0[7], 49
+    mov I1, 3
+    ASSERT_EQ P0[I1*2+1], 49   ; word 7
+    ASSERT_EQ P0[I1*2-1+2], 49 ; displacement is a full expression
+    ASSERT_EQ P0[I1-1], 4      ; word 2
+    ASSERT_EQ P0{I1*8+8}, 16   ; byte 32 = word 4
+    mov.i32 P0{I1*4}, -5       ; byte 12
+    ASSERT_EQ P0{12}, -5, i32
+    ASSERT_EQ SP, FP, p
+    push 111, 222
+    mov I3, 1
+    ASSERT_EQ SP[I3], 111      ; SP and FP can be indexed too
+    drop 2
+    free P0
+    ret 0
+.endf

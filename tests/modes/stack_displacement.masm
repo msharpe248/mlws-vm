@@ -1,0 +1,23 @@
+; SP[n] / FP[n]: base register + displacement in 8-byte words.
+.include "std/test.inc"
+.func main
+    push 10, 20, 30            ; SP[0]=30 SP[1]=20 SP[2]=10
+    ASSERT_EQ SP[0], 30
+    ASSERT_EQ SP[1], 20
+    ASSERT_EQ SP[2], 10
+    mov SP[1], 99
+    pop I0, I1, I2
+    ASSERT_EQ I0, 30
+    ASSERT_EQ I1, 99
+    ASSERT_EQ I2, 10
+    ; FP is SP at function entry; enter n reserves locals below it
+    enter 3
+    mov LOC[0], 5              ; LOC[0] is FP[-1]
+    mov FP[-2], 6              ; same as LOC[1]
+    ASSERT_EQ SP[2], 5         ; SP = FP - 3 words
+    ASSERT_EQ LOC[1], 6
+    ASSERT_EQ SP[0], 0         ; locals start zeroed
+    drop 3
+    ASSERT_EQ SP, FP, p
+    ret 0
+.endf

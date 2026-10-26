@@ -1,0 +1,7 @@
+; expect-error: E_ASM_DUP_SYM
+.func main
+top:
+    nop
+top:
+    ret
+.endf

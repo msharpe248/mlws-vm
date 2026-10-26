@@ -1,0 +1,47 @@
+; Conditional assembly: .if/.elif/.else/.endif, .ifdef/.ifndef, .ifb/.ifnb and
+; defined() in expressions. Inactive branches are not assembled at all.
+.include "std/test.inc"
+
+.const MODE = 2
+.if MODE == 1
+    .error "wrong branch taken"
+.elif MODE == 2
+    .const PICKED = 20
+.else
+    .error "wrong branch taken"
+.endif
+
+.ifdef PICKED
+    .const HAS_PICKED = 1
+.endif
+.ifndef NOT_DEFINED
+    .const UNDEFINED_OK = 1
+.endif
+.if defined(HAS_PICKED) && !defined(NOT_DEFINED)
+    .const BOTH = 1
+.endif
+.if 0
+    .if 1
+        this line is never even parsed
+    .endif
+.endif
+
+.macro OPT x
+.ifb \x
+    mov I0, -1
+.else
+    mov I0, \x
+.endif
+.endm
+
+.func main
+    mov I1, PICKED
+    ASSERT_EQ I1, 20
+    mov I2, BOTH + UNDEFINED_OK
+    ASSERT_EQ I2, 2
+    OPT
+    ASSERT_EQ I0, -1
+    OPT 5
+    ASSERT_EQ I0, 5
+    ret 0
+.endf

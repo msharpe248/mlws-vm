@@ -1,0 +1,9 @@
+; Imports another library: loading chain_a loads chain_b first.
+.module _lib.chain_a
+.import _lib.chain_b as b
+.export plus2
+.func plus2 -> i64
+    call b.base -> (I0)
+    add I0, 2
+    ret I0
+.endf

@@ -1,0 +1,7 @@
+; GC references may only live in registers and tagged stack/global words.
+; expect-error: E_TYPE
+.func main
+    alloc P0, 8
+    mov.r [P0], "nope"
+    ret 0
+.endf

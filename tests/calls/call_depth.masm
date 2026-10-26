@@ -1,0 +1,10 @@
+; Unbounded recursion hits the frame limit instead of crashing the host.
+; expect-error: E_CALL_DEPTH
+.func forever
+    call forever
+    ret
+.endf
+.func main
+    call forever
+    ret 0
+.endf

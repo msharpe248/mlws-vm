@@ -1,0 +1,11 @@
+; Exported data symbols can be read and written from other modules; they are
+; the same storage the library's own code uses.
+.include "std/test.inc"
+.import _lib.mathx as m
+.func main
+    ASSERT_EQ @m.scale, 3
+    mov @m.scale, 5
+    call m.triple (2) -> (I0)
+    ASSERT_EQ I0, 10
+    ret 0
+.endf

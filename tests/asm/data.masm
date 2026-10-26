@@ -1,0 +1,30 @@
+; Data directives. Each value directive aligns to its own size.
+.include "std/test.inc"
+
+b8:     .i8 -1, 2
+w16:    .i16 -300
+d32:    .i32 70000
+f32v:   .f32 1.5
+text:   .asciz "hi!"
+        .align 8
+zeros:  .zero 16
+q:      .u64 0xFFFFFFFFFFFFFFFF
+fl:     .f64 -0.25
+ch:     .c 'Z'
+flag:   .b true
+
+.func main
+    ASSERT_EQ @b8{0}, -1, i8
+    ASSERT_EQ @b8{1}, 2, i8
+    ASSERT_EQ @w16, -300, i16
+    ASSERT_EQ @d32, 70000, i32
+    ASSERT_EQ @f32v, 1.5, f32
+    ASSERT_EQ @text{0}, 'h', u8
+    ASSERT_EQ @text{3}, 0, u8
+    ASSERT_EQ @zeros[1], 0
+    ASSERT_EQ @q, -1, u64
+    ASSERT_EQ @fl, -0.25, f64
+    ASSERT_EQ @ch, 'Z', c
+    ASSERT_EQ @flag, 1, b
+    ret 0
+.endf

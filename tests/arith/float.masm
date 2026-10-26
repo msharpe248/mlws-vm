@@ -1,0 +1,45 @@
+; Floating point arithmetic, IEEE special values, rounding and f32 precision.
+; expect-stdout: inf -inf nan
+; expect-stdout: 1.4142135623730951
+.include "std/test.inc"
+.include "std/io.inc"
+.func main
+    div.f64 F0, 1.0, 0.0
+    PRINT_F F0
+    PRINT_C ' '
+    div.f64 F0, -1.0, 0.0
+    PRINT_F F0
+    PRINT_C ' '
+    div.f64 F1, 0.0, 0.0
+    PRINTLN_F F1
+    ASSERT_NE F1, F1           ; NaN != NaN
+    sqrt.f64 F2, 2.0
+    PRINTLN_F F2
+    floor F3, -2.5
+    ASSERT_EQ F3, -3.0
+    ceil F3, -2.5
+    ASSERT_EQ F3, -2.0
+    round F3, -2.5
+    ASSERT_EQ F3, -3.0
+    round F3, 2.5
+    ASSERT_EQ F3, 3.0
+    trunc F3, -2.7
+    ASSERT_EQ F3, -2.0
+    fma F4, 2.0, 3.0, 4.0
+    ASSERT_EQ F4, 10.0
+    rem F5, 7.5, 2.0
+    ASSERT_EQ F5, 1.5
+    min F6, 3.0, 1.0, 2.0
+    ASSERT_EQ F6, 1.0
+    ; f32 values are rounded to single precision
+    mov.f32 F7, 0.1
+    ASSERT_NE F7, 0.1, f64
+    ASSERT_EQ F7, 0.1, f32
+    ; integer literals convert in float context
+    add F8, 1, 2
+    ASSERT_EQ F8, 3.0
+    neg F8
+    abs F8
+    ASSERT_EQ F8, 3
+    ret 0
+.endf

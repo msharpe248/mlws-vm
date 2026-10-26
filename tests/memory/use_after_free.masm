@@ -1,0 +1,8 @@
+; Pointers into a freed block are detected via the generation counter.
+; expect-error: E_UAF
+.func main
+    alloc P0, 8
+    free P0
+    mov I0, [P0]
+    ret 0
+.endf

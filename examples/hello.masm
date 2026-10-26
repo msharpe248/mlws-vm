@@ -1,0 +1,11 @@
+; hello.masm - the smallest program, using the std.io library.
+;
+;   mlwsvm run examples/hello.masm
+;
+; expect-stdout: Hello, MLWSVM!
+.import std.io as io
+
+.func main
+    call io.println ("Hello, MLWSVM!")
+    ret 0
+.endf

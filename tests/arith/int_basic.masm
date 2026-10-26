@@ -1,0 +1,35 @@
+; Integer add/sub/mul/div/rem in two-operand and three-operand forms.
+.include "std/test.inc"
+.func main
+    mov I0, 10
+    add I0, 5              ; two-operand form: I0 += 5
+    ASSERT_EQ I0, 15
+    sub I1, I0, 20         ; three-operand form
+    ASSERT_EQ I1, -5
+    mul I2, I1, I1
+    ASSERT_EQ I2, 25
+    div I3, -7, 2          ; truncates toward zero
+    ASSERT_EQ I3, -3
+    rem I4, -7, 2          ; sign follows the dividend
+    ASSERT_EQ I4, -1
+    rem I4, 7, -2
+    ASSERT_EQ I4, 1
+    neg I5, 9
+    ASSERT_EQ I5, -9
+    abs I5
+    ASSERT_EQ I5, 9
+    inc I5
+    dec I5
+    dec I5
+    ASSERT_EQ I5, 8
+    ; INT64_MIN / -1 wraps instead of trapping
+    mov I6, 0x8000000000000000
+    div I7, I6, -1
+    ASSERT_EQ I7, I6
+    rem I8, I6, -1
+    ASSERT_EQ I8, 0
+    ; sub is left-associative over many operands
+    sub I9, 100, 1, 2, 3
+    ASSERT_EQ I9, 94
+    ret 0
+.endf

@@ -1,0 +1,5 @@
+; expect-error: E_ASM_BAD_OPERAND
+.func main
+    mov PID, 3
+    ret
+.endf

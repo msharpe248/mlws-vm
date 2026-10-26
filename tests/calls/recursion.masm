@@ -1,0 +1,20 @@
+; Recursive calls get fresh register windows.
+; expect-stdout: 75025
+.func fib(i64 n) -> i64
+    blt n, 2, base
+    sub I1, n, 1
+    call fib (I1) -> (I2)
+    sub I1, n, 2
+    call fib (I1) -> (I3)
+    add I0, I2, I3
+    ret I0
+base:
+    ret n
+.endf
+
+.func main
+    call fib (25) -> (I0)
+    ncall "io.print_i" (I0)
+    ncall "io.nl" ()
+    ret 0
+.endf

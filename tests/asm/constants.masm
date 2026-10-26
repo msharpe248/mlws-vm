@@ -1,0 +1,44 @@
+; .const / .set and constant expressions (C-like precedence), usable in any
+; operand position, including displacements.
+.include "std/test.inc"
+
+.const A = 10
+.const B = A * 2 + 1
+.const C = (A + B) << 2
+.const D = -A / 3
+.const E = 17 % 5
+.const CH = 'A' + 1
+.const SZ = sizeof(i32) + sizeof(f64)
+.const LOGIC = 1 < 2 && 3 > 2
+.const HALF = 1.5 * 2
+.const MASK = 0xFF & ~0x0F
+.const SAME = 1
+.const SAME = 1                ; redefinition with the same value is allowed
+.set X = 1
+.set X = X + 1                 ; .set may be reassigned
+
+.func main
+    mov I0, B
+    ASSERT_EQ I0, 21
+    ASSERT_EQ C, 124
+    mov I1, D
+    ASSERT_EQ I1, -3
+    mov I2, E
+    ASSERT_EQ I2, 2
+    mov I3, CH
+    ASSERT_EQ I3, 'B'
+    mov I4, SZ
+    ASSERT_EQ I4, 12
+    mov I5, LOGIC
+    ASSERT_EQ I5, 1
+    mov F0, HALF
+    ASSERT_EQ F0, 3.0
+    mov I6, MASK
+    ASSERT_EQ I6, 0xF0
+    mov I7, X
+    ASSERT_EQ I7, 2
+    push 5, 6, 7
+    ASSERT_EQ SP[A - 9 + 1], 5
+    drop 3
+    ret 0
+.endf

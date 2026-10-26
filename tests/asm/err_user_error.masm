@@ -1,0 +1,11 @@
+; .error stops assembly with a message (useful for macro argument checks).
+; expect-error: E_ASM_USER
+.macro NEED_REG r
+.ifb \r
+    .error "NEED_REG needs a register"
+.endif
+.endm
+.func main
+    NEED_REG
+    ret
+.endf

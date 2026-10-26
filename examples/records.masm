@@ -1,0 +1,43 @@
+; records.masm - records (structs) laid out by hand in raw memory, with
+; .const field offsets, plus a linked list built from them. Milestone M4 adds
+; GC-managed .struct types, which make this pattern unnecessary for most code.
+;
+; expect-stdout: sum=55 count=10
+.include "std/io.inc"
+
+; struct Node { i64 value; ptr next; }   (offsets in words)
+.const NODE_VALUE = 0
+.const NODE_NEXT  = 1
+.const NODE_SIZE  = 2 * 8           ; bytes
+
+; prepend(head, value) -> new head
+.func prepend(ptr head, i64 value) -> ptr
+    alloc P1, NODE_SIZE
+    mov P1[NODE_VALUE], value
+    mov.p P1[NODE_NEXT], head
+    ret P1
+.endf
+
+.func main
+    mov P0, null                    ; empty list
+    mov I0, 1
+1:  call prepend (P0, I0) -> (P0)
+    inc I0
+    ble I0, 10, 1b
+
+    mov I1, 0                       ; sum
+    mov I2, 0                       ; count
+    mov P1, P0
+2:  bz P1, 3f
+    add I1, P1[NODE_VALUE]
+    inc I2
+    mov.p P2, P1[NODE_NEXT]
+    free P1
+    mov P1, P2
+    jmp 2b
+3:  PRINT_S "sum="
+    PRINT_I I1
+    PRINT_S " count="
+    PRINTLN_I I2
+    ret 0
+.endf

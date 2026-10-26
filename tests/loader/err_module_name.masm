@@ -1,0 +1,6 @@
+; A library must declare the module name it is imported as.
+; expect-error: E_LOAD_NAME
+.import _lib.wrongname
+.func main
+    ret 0
+.endf

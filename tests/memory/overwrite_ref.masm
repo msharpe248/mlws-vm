@@ -1,0 +1,12 @@
+; Overwriting a reference slot with an integer retypes the slot; it can then
+; be read as an integer but no longer as a reference.
+.include "std/test.inc"
+.func main
+    push "text"
+    mov SP[0], 5
+    ASSERT_EQ SP[0], 5
+    mov.u8 SP{0}, 9            ; a partial write also retypes the slot
+    ASSERT_EQ SP{0}, 9, u8
+    drop 1
+    ret 0
+.endf

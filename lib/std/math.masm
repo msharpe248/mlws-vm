@@ -1,0 +1,97 @@
+; std.math - integer and float helpers written in MLWSVM assembly.
+;
+;     .import std.math as math
+;     call math.gcd (I0, I1) -> (I2)
+
+.module std.math
+.export gcd, ipow, isqrt, fact, clamp, fclamp, sin, cos, sqrt, pow
+
+; Greatest common divisor (Euclid), non-negative result.
+.func gcd(i64 a, i64 b) -> i64
+    abs a
+    abs b
+loop:
+    bz b, done
+    rem I2, a, b
+    mov a, b
+    mov b, I2
+    jmp loop
+done:
+    ret a
+.endf
+
+; base ** exp for exp >= 0, by repeated squaring (wraps on overflow).
+.func ipow(i64 base, i64 exp) -> i64
+    mov I2, 1
+    blt exp, 0, neg
+1:  bz exp, 2f
+    and I3, exp, 1
+    bz I3, 3f
+    mul I2, base
+3:  mul base, base
+    shr exp, 1
+    jmp 1b
+2:  ret I2
+neg:
+    ncall "test.fail" ("std.math.ipow: negative exponent")
+    ret 0
+.endf
+
+; Floor of the square root of n >= 0 (Newton's method on integers).
+.func isqrt(i64 n) -> i64
+    ble n, 1, small
+    mov I1, n             ; x
+    add I2, n, 1
+    shr I2, 1             ; y = (n + 1) / 2
+1:  bge I2, I1, 2f
+    mov I1, I2
+    div I3, n, I1
+    add I2, I1, I3
+    shr I2, 1
+    jmp 1b
+2:  ret I1
+small:
+    ret n
+.endf
+
+; n! (wraps on overflow), iterative.
+.func fact(i64 n) -> i64
+    mov I1, 1
+1:  ble n, 1, 2f
+    mul I1, n
+    dec n
+    jmp 1b
+2:  ret I1
+.endf
+
+.func clamp(i64 v, i64 lo, i64 hi) -> i64
+    max v, lo
+    min v, hi
+    ret v
+.endf
+
+.func fclamp(f64 v, f64 lo, f64 hi) -> f64
+    max v, lo
+    min v, hi
+    ret v
+.endf
+
+.func sin(f64 x) -> f64
+    ncall "math.sin" (x) -> (F0)
+    ret F0
+.endf
+
+.func cos(f64 x) -> f64
+    ncall "math.cos" (x) -> (F0)
+    ret F0
+.endf
+
+.func sqrt(f64 x) -> f64
+    sqrt x
+    ret x
+.endf
+
+.func pow(f64 x, f64 y) -> f64
+    ncall "math.pow" (x, y) -> (F0)
+    ret F0
+.endf

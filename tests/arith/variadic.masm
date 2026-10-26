@@ -1,0 +1,21 @@
+; Arithmetic instructions take up to 31 source operands.
+.include "std/test.inc"
+.func main
+    add I0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+    ASSERT_EQ I0, 496
+    mul I1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+    ASSERT_EQ I1, 3628800
+    min I2, 9, 4, 7, -3, 12
+    ASSERT_EQ I2, -3
+    max I3, 9, 4, 7, -3, 12
+    ASSERT_EQ I3, 12
+    and I4, 0xFF, 0xF0F, 0x3C
+    ASSERT_EQ I4, 0x0C
+    or I5, 1, 2, 4, 8
+    ASSERT_EQ I5, 15
+    xor I6, 0xFF, 0x0F, 0xF0
+    ASSERT_EQ I6, 0
+    add F0, 0.5, 0.25, 0.125
+    ASSERT_EQ F0, 0.875
+    ret 0
+.endf

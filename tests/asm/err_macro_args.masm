@@ -1,0 +1,8 @@
+; expect-error: E_ASM_MACRO
+.macro ONE a
+    mov I0, \a
+.endm
+.func main
+    ONE 1, 2
+    ret
+.endf

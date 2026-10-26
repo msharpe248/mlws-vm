@@ -1,0 +1,6 @@
+; expect-error: E_NULL
+.func main
+    mov P0, null
+    mov I0, P0[1]
+    ret 0
+.endf

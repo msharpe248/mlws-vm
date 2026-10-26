@@ -1,0 +1,10 @@
+; .include searches the including file's directory, then the library path.
+; Each file is included at most once.
+.include "std/test.inc"
+.include "_inc/defs.inc"
+.include "_inc/defs.inc"
+.func main
+    LOAD_ANSWER I0
+    ASSERT_EQ I0, 42
+    ret 0
+.endf

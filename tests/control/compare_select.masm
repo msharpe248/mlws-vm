@@ -1,0 +1,28 @@
+; seq/sne/slt/sle/sgt/sge produce bools; sel picks one of two values.
+.include "std/test.inc"
+.func main
+    seq I0, 3, 3
+    ASSERT_EQ I0, 1
+    sne I1, 3, 3
+    ASSERT_EQ I1, 0
+    slt I2, -1, 0
+    ASSERT_EQ I2, 1
+    slt.u64 I3, -1, 0
+    ASSERT_EQ I3, 0
+    sge I4, 5, 5
+    ASSERT_EQ I4, 1
+    sgt.f64 I5, 2.5, 2.25
+    ASSERT_EQ I5, 1
+    sle.i8 I6, 0x7F, -128      ; 127 <= -128 is false
+    ASSERT_EQ I6, 0
+    sel I7, 1, 10, 20
+    ASSERT_EQ I7, 10
+    sel I7, 0, 10, 20
+    ASSERT_EQ I7, 20
+    sel F0, I0, 1.5, 2.5
+    ASSERT_EQ F0, 1.5
+    push 0
+    seq SP[0], I0, I1          ; bools can go straight to memory
+    ASSERT_EQ SP[0], 0, b
+    ret 0
+.endf

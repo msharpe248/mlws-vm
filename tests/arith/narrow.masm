@@ -1,0 +1,25 @@
+; Narrow integer types wrap and are kept sign- or zero-extended in registers.
+.include "std/test.inc"
+.func main
+    mov.i8 I0, 200
+    ASSERT_EQ I0, -56
+    add.i8 I0, 127, 1
+    ASSERT_EQ I0, -128
+    add.u8 I1, 255, 1
+    ASSERT_EQ I1, 0
+    mul.i16 I2, 300, 300
+    ASSERT_EQ I2, 24464
+    sub.u32 I3, 0, 1
+    ASSERT_EQ I3, 4294967295
+    add.i32 I4, 2147483647, 1
+    ASSERT_EQ I4, -2147483648
+    mov.c I5, 'A'
+    ASSERT_EQ I5, 65
+    mov.b I6, 5
+    ASSERT_EQ I6, 1
+    ; reading an i64 register as a narrow type truncates
+    mov I7, 0x1234
+    add.u8 I8, I7, 0
+    ASSERT_EQ I8, 0x34
+    ret 0
+.endf

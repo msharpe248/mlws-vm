@@ -1,0 +1,5 @@
+; expect-error: E_ASM_SYNTAX
+.if 1
+.func main
+    ret
+.endf

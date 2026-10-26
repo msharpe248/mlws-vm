@@ -1,0 +1,36 @@
+; tcall reuses the current frame, so a million-deep tail recursion runs in
+; constant space (the default frame limit is 100000).
+.include "std/test.inc"
+
+.func count(i64 n, i64 acc) -> i64
+    bz n, done
+    sub n, 1
+    add acc, 2
+    tcall count (n, acc)
+done:
+    ret acc
+.endf
+
+.func even(i64 n) -> i64
+    bz n, yes
+    sub n, 1
+    tcall odd (n)
+yes:
+    ret 1
+.endf
+
+.func odd(i64 n) -> i64
+    bz n, no
+    sub n, 1
+    tcall even (n)
+no:
+    ret 0
+.endf
+
+.func main
+    call count (1000000, 0) -> (I0)
+    ASSERT_EQ I0, 2000000
+    call even (100001) -> (I1)
+    ASSERT_EQ I1, 0
+    ret 0
+.endf

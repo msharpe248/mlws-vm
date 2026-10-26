@@ -1,0 +1,18 @@
+; .alias names a register, module-wide or inside one function. Parameter names
+; are aliases too.
+.include "std/test.inc"
+.alias counter, I5
+
+.func add_named(i64 left, i64 right) -> i64
+    .alias tmp, I9
+    add tmp, left, right
+    ret tmp
+.endf
+
+.func main
+    mov counter, 3
+    call add_named (counter, 4) -> (I0)
+    ASSERT_EQ I0, 7
+    ASSERT_EQ I5, 3
+    ret 0
+.endf

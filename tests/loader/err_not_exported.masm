@@ -1,0 +1,6 @@
+; expect-error: E_LINK_UNDEF
+.import _lib.mathx as m
+.func main
+    call m.hidden
+    ret 0
+.endf

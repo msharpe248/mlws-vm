@@ -1,0 +1,230 @@
+/* process.c - process creation, memory segments (stack, globals, raw heap),
+ * call frames, traps and backtraces. */
+#include "vm.h"
+
+#include "proc_internal.h"
+
+Process *proc_new(VM *vm) {
+    Process *p = xcalloc(1, sizeof *p);
+    p->vm = vm;
+    p->pid = vm->next_pid++;
+    uint32_t bytes = vm->stack_words * 8;
+    p->stack.data = xcalloc(bytes, 1);
+    p->stack.tags = xcalloc(vm->stack_words, 1);
+    p->stack.size = bytes;
+    p->stack.gen = 1;
+    p->stack.kind = SEGK_STACK;
+    p->stack.live = 1;
+    p->sp = p->fp = PTR_MAKE(SEG_STACK, 1, bytes);
+    p->stack_low_off = bytes;
+    p->nglobals = (uint32_t)vm->mods.n;
+    p->globals = xcalloc(p->nglobals + 1, sizeof(Segment));
+    for (uint32_t i = 0; i < p->nglobals; i++) {
+        const Module *m = vm->mods.v[i]->m;
+        Segment *s = &p->globals[i];
+        s->size = m->gsize;
+        s->data = xcalloc(m->gsize + 1, 1);
+        s->tags = xcalloc(m->gsize / 8 + 1, 1);
+        memcpy(s->data, m->gdata, m->gsize);
+        memcpy(s->tags, m->gtags, m->gsize / 8);
+        s->gen = 1;
+        s->kind = SEGK_GLOBAL;
+        s->live = 1;
+    }
+    for (int b = 0; b < NBANKS; b++) p->rcap[b] = 0;
+    return p;
+}
+
+void proc_free(Process *p) {
+    if (!p) return;
+    free(p->stack.data);
+    free(p->stack.tags);
+    for (uint32_t i = 0; i < p->nglobals; i++) {
+        free(p->globals[i].data);
+        free(p->globals[i].tags);
+    }
+    free(p->globals);
+    for (size_t i = 0; i < p->raw.n; i++) free(p->raw.v[i].data);
+    VEC_FREE(p->raw);
+    VEC_FREE(p->rawfree);
+    free(p->ireg);
+    free(p->freg);
+    free(p->rreg);
+    free(p->preg);
+    free(p->frames);
+    sb_free(&p->backtrace);
+    free(p);
+}
+
+static void build_backtrace(Process *p) {
+    p->backtrace.n = 0;
+    for (uint32_t i = p->nframes; i-- > 0;) {
+        const Frame *fr = &p->frames[i];
+        const Function *f = fr->fn;
+        uint32_t pc = fr->pc ? fr->pc - 1 : 0;
+        uint32_t line = f->mf->lines && pc < f->mf->ninsns ? f->mf->lines[pc] : 0;
+        const char *src = f->mod->m->source && *f->mod->m->source ? f->mod->m->source : f->mod->path;
+        sb_printf(&p->backtrace, "  at %s.%s (%s:%u)\n", f->mod->m->name, f->name, src, line);
+    }
+}
+
+void vm_trap(Process *p, const char *code, const char *fmt, ...) {
+    snprintf(p->err.code, sizeof p->err.code, "%s", code);
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(p->err.msg, sizeof p->err.msg, fmt, ap);
+    va_end(ap);
+    build_backtrace(p);
+    longjmp(*p->jb, 1);
+}
+
+/* ---- frames ------------------------------------------------------------------ */
+
+static void grow_bank(Process *p, int b, uint32_t need) {
+    if (need <= p->rcap[b]) return;
+    uint32_t nc = p->rcap[b] ? p->rcap[b] * 2 : 256;
+    while (nc < need) nc *= 2;
+    switch (b) {
+    case BANK_I: p->ireg = xrealloc(p->ireg, nc * sizeof *p->ireg); break;
+    case BANK_F: p->freg = xrealloc(p->freg, nc * sizeof *p->freg); break;
+    case BANK_R: p->rreg = xrealloc(p->rreg, nc * sizeof *p->rreg); break;
+    default: p->preg = xrealloc(p->preg, nc * sizeof *p->preg); break;
+    }
+    p->rcap[b] = nc;
+}
+
+void proc_push_frame(Process *p, Function *fn, const Insn *ret_insn) {
+    if (p->nframes >= p->vm->max_frames)
+        vm_trap(p, "E_CALL_DEPTH", "call depth limit of %u frames exceeded (unbounded recursion?)", p->vm->max_frames);
+    if (p->nframes == p->fcap) {
+        p->fcap = p->fcap ? p->fcap * 2 : 64;
+        p->frames = xrealloc(p->frames, p->fcap * sizeof *p->frames);
+    }
+    Frame *fr = &p->frames[p->nframes++];
+    fr->fn = fn;
+    fr->pc = 0;
+    fr->ret_insn = ret_insn;
+    fr->entry_sp = p->sp;
+    fr->saved_fp = p->fp;
+    p->fp = p->sp;
+    const uint16_t *nr = fn->mf->nregs;
+    for (int b = 0; b < NBANKS; b++) {
+        grow_bank(p, b, p->rtop[b] + nr[b]);
+        fr->base[b] = p->rtop[b];
+        p->rtop[b] += nr[b];
+    }
+    memset(p->ireg + fr->base[BANK_I], 0, nr[BANK_I] * sizeof *p->ireg);
+    memset(p->freg + fr->base[BANK_F], 0, nr[BANK_F] * sizeof *p->freg);
+    memset(p->rreg + fr->base[BANK_R], 0, nr[BANK_R] * sizeof *p->rreg);
+    memset(p->preg + fr->base[BANK_P], 0, nr[BANK_P] * sizeof *p->preg);
+    if (p->nframes > p->max_depth) p->max_depth = p->nframes;
+}
+
+void proc_pop_frame(Process *p) {
+    Frame *fr = &p->frames[--p->nframes];
+    p->sp = fr->entry_sp;
+    p->fp = fr->saved_fp;
+    for (int b = 0; b < NBANKS; b++) p->rtop[b] = fr->base[b];
+}
+
+bool proc_run_main(Process *p, Function *fn) {
+    jmp_buf jb;
+    p->jb = &jb;
+    p->state = PROC_RUNNING;
+    if (setjmp(jb)) {
+        p->state = PROC_FAILED;
+        p->jb = NULL;
+        return false;
+    }
+    proc_push_frame(p, fn, NULL);
+    interp_run(p);
+    p->state = PROC_DONE;
+    p->jb = NULL;
+    return true;
+}
+
+/* ---- memory ------------------------------------------------------------------ */
+
+Segment *proc_segment(Process *p, uint64_t ptr) {
+    uint32_t seg = PTR_SEG(ptr), gen = PTR_GEN(ptr);
+    Segment *s;
+    if (seg == 0) vm_trap(p, "E_NULL", "null pointer dereference");
+    if (seg == SEG_STACK) {
+        s = &p->stack;
+    } else if (seg < SEG_RAW0) {
+        if (seg - SEG_GLOBAL0 >= p->nglobals) vm_trap(p, "E_BAD_PTR", "invalid pointer (unknown global segment %u)", seg);
+        s = &p->globals[seg - SEG_GLOBAL0];
+    } else {
+        uint32_t i = seg - SEG_RAW0;
+        if (i >= p->raw.n) vm_trap(p, "E_BAD_PTR", "invalid pointer (unknown segment %u)", seg);
+        s = &p->raw.v[i];
+        if (!s->live || s->gen != gen) vm_trap(p, "E_UAF", "use of a freed or reallocated raw block");
+        return s;
+    }
+    if (s->gen != gen) vm_trap(p, "E_BAD_PTR", "invalid pointer (bad generation)");
+    return s;
+}
+
+uint64_t proc_alloc(Process *p, int64_t size) {
+    if (size < 0 || size > (int64_t)UINT32_MAX)
+        vm_trap(p, "E_BAD_ALLOC", "cannot allocate %lld bytes", (long long)size);
+    uint32_t idx;
+    if (p->rawfree.n) {
+        idx = p->rawfree.v[--p->rawfree.n];
+    } else {
+        if (p->raw.n >= SEG_MAX - SEG_RAW0) vm_trap(p, "E_BAD_ALLOC", "too many live raw blocks");
+        Segment z;
+        memset(&z, 0, sizeof z);
+        idx = (uint32_t)p->raw.n;
+        VEC_PUSH(p->raw, z);
+    }
+    Segment *s = &p->raw.v[idx];
+    s->gen = (uint16_t)((s->gen + 1) & 0xFFF);
+    if (s->gen == 0) s->gen = 1;
+    s->data = xcalloc((size_t)size + 1, 1);
+    s->size = (uint32_t)size;
+    s->kind = SEGK_RAW;
+    s->live = 1;
+    p->raw_bytes += (uint64_t)size;
+    p->raw_allocs++;
+    if (p->raw_bytes > p->raw_peak) p->raw_peak = p->raw_bytes;
+    return PTR_MAKE(SEG_RAW0 + idx, s->gen, 0);
+}
+
+static Segment *raw_block(Process *p, uint64_t ptr, const char *what) {
+    uint32_t seg = PTR_SEG(ptr);
+    if (seg < SEG_RAW0 || PTR_OFF(ptr) != 0)
+        vm_trap(p, "E_BAD_FREE", "%s of a pointer that is not the start of a raw block", what);
+    uint32_t i = seg - SEG_RAW0;
+    if (i >= p->raw.n) vm_trap(p, "E_BAD_FREE", "%s of an invalid pointer", what);
+    Segment *s = &p->raw.v[i];
+    if (!s->live || s->gen != PTR_GEN(ptr)) vm_trap(p, "E_DOUBLE_FREE", "%s of an already freed block", what);
+    return s;
+}
+
+void proc_free_block(Process *p, uint64_t ptr) {
+    if (ptr == 0) return;
+    Segment *s = raw_block(p, ptr, "free");
+    p->raw_bytes -= s->size;
+    p->raw_frees++;
+    free(s->data);
+    s->data = NULL;
+    s->size = 0;
+    s->live = 0;
+    VEC_PUSH(p->rawfree, PTR_SEG(ptr) - SEG_RAW0);
+}
+
+uint64_t proc_realloc(Process *p, uint64_t ptr, int64_t size) {
+    if (ptr == 0) return proc_alloc(p, size);
+    if (size < 0 || size > (int64_t)UINT32_MAX)
+        vm_trap(p, "E_BAD_ALLOC", "cannot allocate %lld bytes", (long long)size);
+    Segment *s = raw_block(p, ptr, "realloc");
+    s->data = xrealloc(s->data, (size_t)size + 1);
+    if ((uint32_t)size > s->size) memset(s->data + s->size, 0, (size_t)size - s->size);
+    p->raw_bytes = p->raw_bytes - s->size + (uint64_t)size;
+    if (p->raw_bytes > p->raw_peak) p->raw_peak = p->raw_bytes;
+    s->size = (uint32_t)size;
+    s->gen = (uint16_t)((s->gen + 1) & 0xFFF);
+    if (s->gen == 0) s->gen = 1;
+    return PTR_MAKE(PTR_SEG(ptr), s->gen, 0);
+}

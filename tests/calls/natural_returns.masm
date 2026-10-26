@@ -1,0 +1,11 @@
+; Without a declared result list, ret values keep their natural types.
+.include "std/test.inc"
+.func pair
+    ret 1, 2.5
+.endf
+.func main
+    call pair -> (I0, F0)
+    ASSERT_EQ I0, 1
+    ASSERT_EQ F0, 2.5
+    ret 0
+.endf

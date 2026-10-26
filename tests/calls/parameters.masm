@@ -1,0 +1,32 @@
+; Parameters are bound per bank in order: ints to I0, I1..., floats to F0...,
+; refs to R0..., pointers to P0.... Parameter names alias those registers.
+; The caller's registers are untouched by the call.
+.include "std/test.inc"
+
+.func f(i64 a, f64 x, ref s, i64 b, ptr p, f64 y) -> i64
+    ASSERT_EQ I0, 1
+    ASSERT_EQ I1, 2
+    ASSERT_EQ F0, 1.5
+    ASSERT_EQ F1, 2.5
+    ASSERT_EQ a, 1
+    ASSERT_EQ y, 2.5
+    ncall "str.len" (s) -> (I2)
+    ASSERT_EQ I2, 3
+    ASSERT_TRUE p
+    mov I5, 1000               ; does not clobber the caller's I5
+    ret b
+.endf
+
+.func main
+    alloc P3, 8
+    mov I5, 55
+    call f (1, 1.5, "abc", 2, P3, 2.5) -> (I0)
+    ASSERT_EQ I0, 2
+    ASSERT_EQ I5, 55
+    mov I9, 1                  ; arguments can be any readable operand
+    push 2
+    call f (I9, 1.5, "abc", SP[0], P3, 2.5) -> (I0)
+    ASSERT_EQ I0, 2
+    free P3
+    ret 0
+.endf

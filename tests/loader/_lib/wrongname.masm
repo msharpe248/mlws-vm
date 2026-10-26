@@ -1,0 +1,4 @@
+.module something.else
+.func f
+    ret
+.endf

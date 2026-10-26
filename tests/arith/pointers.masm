@@ -1,0 +1,22 @@
+; Pointer arithmetic is in bytes (add.p/sub.p); lea computes addresses using
+; any addressing mode.
+.include "std/test.inc"
+.func main
+    alloc P0, 64
+    add.p P1, P0, 16           ; byte offsets
+    mov [P1], 5
+    ASSERT_EQ P0[2], 5         ; word 2 == byte 16
+    sub.p P2, P1, 8
+    mov [P2], 4
+    ASSERT_EQ P0[1], 4
+    lea P3, P0[4]
+    mov [P3], 9
+    ASSERT_EQ P0{32}, 9
+    lea P4, P0{3}
+    add.p P4, 5                ; byte 3 + 5 = byte 8
+    ASSERT_EQ P4, P2, p
+    blt.p P0, P1, 1f           ; pointers into one block order by offset
+    FAIL "pointer order"
+1:  free P0
+    ret 0
+.endf

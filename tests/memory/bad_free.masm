@@ -1,0 +1,8 @@
+; Only the start of a raw block can be freed.
+; expect-error: E_BAD_FREE
+.func main
+    alloc P0, 16
+    add.p P0, 8
+    free P0
+    ret 0
+.endf

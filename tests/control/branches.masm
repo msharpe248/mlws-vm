@@ -1,0 +1,46 @@
+; Conditional branches on signed/unsigned integers, floats (incl. NaN),
+; references and pointers.
+.include "std/test.inc"
+.func main
+    mov I0, -1
+    mov I1, 1
+    blt I0, I1, 1f
+    FAIL "blt signed"
+1:  bgt.u64 I0, I1, 1f         ; 0xFFFF... > 1 unsigned
+    FAIL "bgt unsigned"
+1:  ble I0, I0, 1f
+    FAIL "ble equal"
+1:  bge I1, I0, 1f
+    FAIL "bge"
+1:  bne I0, I1, 1f
+    FAIL "bne"
+1:  beq I1, 1, 1f
+    FAIL "beq"
+1:  mov F0, 1.5
+    ble F0, 1.5, 1f
+    FAIL "ble float"
+1:  div F1, 0.0, 0.0           ; NaN: every ordered comparison is false
+    blt F1, 0.0, nan_bad
+    bge F1, 0.0, nan_bad
+    beq F1, F1, nan_bad
+    bne F1, F1, 1f
+nan_bad:
+    FAIL "NaN comparison"
+1:  mov R0, null
+    bz R0, 1f
+    FAIL "bz null"
+1:  mov R0, "x"
+    bnz R0, 1f
+    FAIL "bnz ref"
+1:  beq.r R0, "x", 1f          ; identical constants are the same object
+    FAIL "ref identity"
+1:  mov P0, null
+    bz P0, 1f
+    FAIL "bz ptr"
+1:  bz 0, 1f
+    FAIL "bz literal"
+1:  bnz I0, done
+    FAIL "bnz"
+done:
+    ret 0
+.endf

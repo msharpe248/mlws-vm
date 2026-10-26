@@ -1,0 +1,34 @@
+; Functions return any number of values of mixed types; callers may take fewer
+; and may write results straight to memory.
+.include "std/test.inc"
+
+.func divmod(i64 a, i64 b) -> (i64, i64)
+    div I2, a, b
+    rem I3, a, b
+    ret I2, I3
+.endf
+
+.func mixed(i64 n) -> (i64, f64, ref)
+    cvt.f64.i64 F0, n
+    mul F0, 0.5
+    ret n, F0, "mixed"
+.endf
+
+.func main
+    call divmod (17, 5) -> (I0, I1)
+    ASSERT_EQ I0, 3
+    ASSERT_EQ I1, 2
+    call mixed (7) -> (I2, F0, R0)
+    ASSERT_EQ I2, 7
+    ASSERT_EQ F0, 3.5
+    ncall "str.len" (R0) -> (I3)
+    ASSERT_EQ I3, 5
+    call divmod (9, 4) -> (I5)
+    ASSERT_EQ I5, 2
+    push 0
+    call divmod (9, 4) -> (SP[0])
+    pop I6
+    ASSERT_EQ I6, 2
+    call divmod (9, 4)         ; results may be ignored entirely
+    ret 0
+.endf

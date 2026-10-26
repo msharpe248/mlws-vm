@@ -1,0 +1,26 @@
+; Any operand can be memory, including all of them. Untyped mov/swap/push/pop
+; copy whole words together with their type tags.
+.include "std/test.inc"
+
+g:  .i64 0
+
+.func main
+    push 1, 2, 3               ; SP[0]=3 SP[1]=2 SP[2]=1
+    mul SP[0], SP[1], SP[2], 10
+    ASSERT_EQ SP[0], 20
+    swap SP[0], SP[2]
+    ASSERT_EQ SP[2], 20
+    mov @g, SP[2]
+    ASSERT_EQ @g, 20
+    drop 3
+    push 0, 1.5                ; SP[0]=1.5 SP[1]=0
+    mov SP[1], SP[0]           ; tag f64 travels with the value
+    pop F0, F1
+    ASSERT_EQ F1, 1.5
+    push 0, "hello"
+    mov SP[1], SP[0]           ; a reference stays a reference
+    pop R0, R1
+    ncall "str.len" (R1) -> (I0)
+    ASSERT_EQ I0, 5
+    ret 0
+.endf

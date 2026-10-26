@@ -1,0 +1,212 @@
+# MLWSVM Execution Model and ABI
+
+This document explains what happens when MLWSVM code runs: processes, registers, the
+calling convention, the data stack, memory and traps. Compiler writers should read
+it alongside [TARGETING.md](TARGETING.md).
+
+## 1. Processes
+
+A program runs as a **process**. Each process owns:
+
+* a call-frame stack and per-bank register stacks (for the register windows)
+* a **data stack** of 8-byte words (1 MiB by default; `mlwsvm run --stack-words N`)
+* its own copy of every loaded module's **global segment**
+* its own **raw heap** (blocks created with `alloc`)
+* in later milestones, its own GC heap and mailbox
+
+Processes share nothing mutable. Loaded code and constant-pool strings are
+immutable and shared. Milestone M6 adds the scheduler, so many processes run at
+once with `spawn`/`send`/`recv` and per-process resource accounting. Today
+`mlwsvm run` runs one process that executes `main`.
+
+## 2. Registers and frames
+
+Every **call** creates a frame with a fresh, zeroed window of registers:
+
+```
+caller frame:   I0..I(n-1)   F0..   R0..   P0..       (window sized for caller)
+callee frame:   I0..I(m-1)   F0..   R0..   P0..       (fresh window sized for callee)
+```
+
+* The size of each bank's window is computed by the assembler (highest register
+  used + 1, at least the parameter count, at least `.regs`). It is stored in the
+  module and checked by the verifier, so a function can only touch its own window.
+* No register is shared between caller and callee. There are no callee-saved or
+  caller-saved registers to manage: when a call returns, the caller's registers
+  are exactly as it left them.
+* `SP`, `FP` and `PID` are per process, not per frame.
+
+### 2.1 Calling convention
+
+```asm
+call f (a0, a1, ...) -> (d0, d1, ...)
+```
+
+1. Each argument is read **in the caller**, left to right, using the callee's
+   declared parameter type.
+2. A new frame is pushed. `FP` is set to the current `SP`.
+3. Arguments are bound **per bank, in order**: the first int-class parameter (any
+   of `b c i8..u64`) goes to `I0`, the next to `I1`, and so on. Floats go to `F0, F1, ...`,
+   references to `R0, ...` and pointers to `P0, ...`.
+
+   ```asm
+   .func f(i64 a, f64 x, ref s, i64 b, ptr p)   ; a=I0 b=I1 x=F0 s=R0 p=P0
+   ```
+4. `ret v0, v1, ...` reads its values in the callee, with the declared result
+   types if there are any (otherwise their natural types). It pops the frame,
+   restores `SP` and `FP` to their values at the call, and writes `v0, v1, ...` to
+   the caller's `d0, d1, ...`. The caller may take fewer results than are returned,
+   but not more (`E_RET_COUNT`).
+5. Destinations can be any writable operand: registers, stack slots, globals, or
+   memory through pointers.
+
+At load time the verifier checks every call against the callee's signature: the
+argument count, and the argument and result operand kinds (for example, a float
+literal can't be passed to an `i64` parameter). This includes calls across modules.
+
+### 2.2 Stack-passed arguments
+
+Up to 30 arguments fit in a call instruction. For more, or for variadic functions,
+pass values on the data stack:
+
+```asm
+; caller
+    push a2, a1, a0           ; push in reverse, so ARG[0] = a0
+    call sum3 -> (I0)
+    drop 3                    ; the caller removes its arguments
+
+; callee
+.func sum3
+    add I0, ARG[0], ARG[1], ARG[2]     ; ARG[n] = FP[n]
+    ret I0
+.endf
+```
+
+### 2.3 Frame layout on the data stack
+
+```
+higher addresses
+    ...                caller's data
+    ARG[1]   = FP[1]
+    ARG[0]   = FP[0]   <- FP (= SP at the call)
+    LOC[0]   = FP[-1]  \
+    LOC[1]   = FP[-2]   > reserved by `enter 3`
+    LOC[2]   = FP[-3]  /  <- SP after enter
+    ...                pushes made by the callee
+lower addresses
+```
+
+* `enter n` reserves n zeroed words: `SP -= n words`.
+* There is no `leave`: `ret` restores `SP` to `FP`'s value at entry, freeing locals
+  and anything else the callee pushed.
+* The caller's own pushes (stack arguments) are above `FP` and survive the call.
+
+### 2.4 Tail calls
+
+`tcall f (args)` replaces the current frame with a call to `f`. `f`'s results go
+directly to the current function's caller, and the stack depth does not grow, so
+tail recursion runs in constant space. Because the current frame is freed first,
+`tcall` supports **register arguments only**: don't pass stack arguments to a tail
+call.
+
+### 2.5 Natives
+
+`ncall "name" (args) -> (results)` calls a host function. Parameter and result
+types come from the native registry ([NATIVES.md](NATIVES.md)) and are checked by
+the verifier. Natives do not create a frame.
+
+### 2.6 Program entry and exit
+
+* The root module must define `main` with no parameters.
+* The process ends when `main` returns. If `main`'s first result is an integer,
+  it is the **exit code** (the OS sees its low 8 bits). Otherwise the exit code is 0.
+* `halt [code]` ends the process immediately, from any depth.
+* `mlwsvm run` exits with 65 if the program fails to load and 70 on a runtime trap.
+
+### 2.7 Limits
+
+| Limit | Value |
+|---|---|
+| Registers per bank | 32 |
+| Operands per instruction | 32 (calls: target + count + 30 arguments/results) |
+| Call depth | 100,000 frames (`E_CALL_DEPTH`) |
+| Data stack | 131,072 words (1 MiB) by default |
+| Raw block size | < 4 GiB |
+| Modules per VM | 4,094 |
+
+## 3. Instruction semantics shared by many opcodes
+
+* **Canonical integers.** Integer registers hold 64-bit values that are canonical
+  for the type last written: signed narrow types are sign-extended and unsigned
+  ones zero-extended. Operations wrap modulo 2^width. Reading a register as a
+  narrower type truncates it first.
+* **Two-operand forms.** `op dst, src` means `dst = dst op src`.
+* **Variadic forms.** `op dst, s1, s2, ..., sN` folds left to right.
+* **Division.** Integer division and remainder truncate toward zero and trap with
+  `E_DIV_ZERO`. `INT64_MIN / -1` wraps to `INT64_MIN`. Float division never traps.
+* **Comparisons.** Comparisons involving NaN are false (except `!=`). Signedness
+  comes from the instruction type: `blt.u64` compares unsigned.
+* **Conversions.** `cvt` from float to int truncates toward zero and saturates; NaN
+  converts to 0.
+
+## 4. Pointers
+
+A pointer (`p`) is a checked 64-bit value:
+
+```
+ 63        44 43      32 31                  0
++------------+----------+---------------------+
+|  segment   |   gen    |       offset        |
++------------+----------+---------------------+
+```
+
+| Segment | What |
+|---|---|
+| 0 | null |
+| 1 | the process's data stack |
+| 2 ... 4095 | module global segments (module k is segment 2 + k) |
+| 4096 ... | raw heap blocks |
+
+* Pointers come from `SP`/`FP`, `lea`, `alloc`/`realloc` and pointer arithmetic.
+  No instruction converts an integer to a pointer. Pointers stored in raw memory
+  are plain bytes, though, so a program can fabricate one by writing integer bits
+  there and loading them as `p`. That is harmless: every dereference is still
+  segment-, generation- and bounds-checked, and the segment table is per process,
+  so a pointer can never reach another process's memory or the host's.
+* `add.p`/`sub.p` adjust the offset by a byte count, trapping with `E_BOUNDS` if
+  the result leaves 0 .. 2^32-1. `lea P1, P0[3]` advances by words.
+* Pointers compare (`beq.p`, `blt.p`, ...) as 64-bit values. Within one block that
+  is the order of their offsets.
+* `free`/`realloc` bump the block's generation, so stale pointers trap with `E_UAF`.
+  Freeing a pointer twice traps with `E_DOUBLE_FREE`, and freeing a non-start
+  pointer traps with `E_BAD_FREE`.
+* A process's raw blocks are released when it ends. `--stats` reports any bytes
+  still allocated as "raw leaked".
+
+## 5. Memory
+
+* All memory is byte-addressable and **little-endian** on every host.
+* The stack and the global segments are **tagged**: every 8-byte word records the
+  type it was last written with (`i64`, `f64`, `r`, `p`, ...), or "raw" after
+  partial, unaligned, `memcpy` or `memset` writes. Raw heap blocks have no tags.
+* Untyped `mov`, `swap`, `push` and `pop` copy a word together with its tag, so
+  values keep their types when spilled and reloaded.
+* **References** (`r`) may only be stored in word-aligned, tagged words (stack and
+  globals) and in `R` registers. A word can be read as `r` only if its tag is `r`,
+  and a reference word cannot be read as anything else. This keeps the coming GC
+  precise and makes references unforgeable. To refer to a GC object from raw
+  memory, use a handle (milestone M4).
+
+## 6. Traps
+
+A runtime fault stops the process and reports a stable error code and message,
+followed by a backtrace with source lines:
+
+```
+runtime error[E_ASSERT]: ASSERT_EQ(x, 3) failed
+  at fail.helper (fail.masm:3)
+  at fail.main (fail.masm:7)
+```
+
+[ERRORS.md](ERRORS.md) lists every code. Milestone M5 turns traps into catchable
+exceptions (`.try`/`throw`/`catch`) with the same codes.

@@ -1,0 +1,70 @@
+; translation.masm - the worked example from docs/TARGETING.md: how a small
+; scripting-language program maps onto MLWSVM assembly.
+;
+;   var total = 0                         // module global
+;   fn score(word: str, bonus: f64) -> (i64, f64) {
+;       var n = len(word)
+;       var s = 0
+;       for i in 0..n { if word[i] == 'a' { s += 10 } else { s += 1 } }
+;       return (s, s * bonus)
+;   }
+;   fn main() {
+;       for w in ["banana", "kiwi"] {
+;           let (pts, weighted) = score(w, 1.5)
+;           total += pts
+;           print(w, pts, weighted)
+;       }
+;       print("total", total)
+;   }
+;
+; expect-stdout: banana 33 49.5
+; expect-stdout: kiwi 4 6
+; expect-stdout: total 37
+.include "std/io.inc"
+
+total:  .i64 0
+
+.func score(ref word, f64 bonus) -> (i64, f64)
+    .alias n, I0
+    .alias s, I1
+    .alias i, I2
+    .alias ch, I3
+    ncall "str.len" (word) -> (n)
+    mov s, 0
+    mov i, 0
+loop:
+    bge i, n, end
+    ncall "str.byte" (word, i) -> (ch)
+    bne ch, 'a', else
+    add s, 10
+    jmp next
+else:
+    add s, 1
+next:
+    inc i
+    jmp loop
+end:
+    cvt.f64.i64 F1, s
+    mul F1, bonus
+    ret s, F1
+.endf
+
+.func show(ref w, i64 pts, f64 weighted)
+    PRINT_S w
+    PRINT_C ' '
+    PRINT_I pts
+    PRINT_C ' '
+    PRINTLN_F weighted
+    ret
+.endf
+
+.func main
+    .irp word, "banana", "kiwi"
+    call score (\word, 1.5) -> (I0, F0)
+    add @total, I0
+    call show (\word, I0, F0)
+    .endr
+    PRINT_S "total "
+    PRINTLN_I @total
+    ret 0
+.endf

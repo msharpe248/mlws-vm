@@ -1,0 +1,40 @@
+; cvt.<to>.<from> converts values; bitcast reinterprets bits.
+; expect-stdout: 1.8446744073709552e+19
+.include "std/test.inc"
+.include "std/io.inc"
+.func main
+    cvt.f64.i64 F0, 7
+    ASSERT_EQ F0, 7.0
+    cvt F0, I0                 ; inferred: cvt.f64.i64
+    ASSERT_EQ F0, 0.0
+    cvt.i32.f64 I0, 3.9e10     ; saturates
+    ASSERT_EQ I0, 2147483647
+    cvt.i32.f64 I0, -3.9e10
+    ASSERT_EQ I0, -2147483648
+    cvt.i64.f64 I1, -2.9       ; truncates toward zero
+    ASSERT_EQ I1, -2
+    cvt.u8.f64 I2, -5.0
+    ASSERT_EQ I2, 0
+    cvt.u8.f64 I2, 300.0
+    ASSERT_EQ I2, 255
+    div F1, 0.0, 0.0
+    cvt.i64.f64 I3, F1         ; NaN -> 0
+    ASSERT_EQ I3, 0
+    cvt.u8.i64 I4, 0x1FF
+    ASSERT_EQ I4, 255
+    cvt.i8.u64 I4, 255
+    ASSERT_EQ I4, -1
+    cvt.b.f64 I5, 0.5
+    ASSERT_EQ I5, 1
+    cvt.f32.f64 F2, 0.1
+    ASSERT_EQ F2, 0.1, f32
+    cvt.f64.u64 F3, -1
+    PRINTLN_F F3
+    bitcast.i64.f64 I6, 1.0
+    ASSERT_EQ I6, 0x3FF0000000000000
+    bitcast.f32.u32 F4, 0x40490FDB
+    ASSERT_EQ F4, 3.14159274, f32
+    bitcast.f64.i64 F5, I6
+    ASSERT_EQ F5, 1.0
+    ret 0
+.endf

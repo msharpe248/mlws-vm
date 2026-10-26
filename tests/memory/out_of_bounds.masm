@@ -1,0 +1,7 @@
+; Every memory access is bounds checked against its block.
+; expect-error: E_BOUNDS
+.func main
+    alloc P0, 16
+    mov P0[2], 1               ; bytes 16..23 are past the end
+    ret 0
+.endf

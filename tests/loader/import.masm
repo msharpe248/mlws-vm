@@ -1,0 +1,10 @@
+; Import a library by its full name and call into it.
+.include "std/test.inc"
+.import _lib.mathx
+.func main
+    call _lib.mathx.add3 (1, 2, 3) -> (I0)
+    ASSERT_EQ I0, 6
+    call _lib.mathx.triple (5) -> (I1)
+    ASSERT_EQ I1, 15
+    ret 0
+.endf

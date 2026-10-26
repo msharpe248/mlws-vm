@@ -1,0 +1,5 @@
+; The first integer result of main becomes the process exit code.
+; expect-exit: 42
+.func main -> i64
+    ret 42
+.endf

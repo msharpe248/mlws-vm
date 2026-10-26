@@ -1,0 +1,8 @@
+; Libraries can import libraries.
+.include "std/test.inc"
+.import _lib.chain_a as a
+.func main
+    call a.plus2 -> (I0)
+    ASSERT_EQ I0, 42
+    ret 0
+.endf

@@ -1,0 +1,7 @@
+; Integer division by zero traps.
+; expect-error: E_DIV_ZERO
+.func main
+    mov I1, 0
+    div I0, 10, I1
+    ret 0
+.endf

@@ -1,0 +1,21 @@
+; Numeric local labels: `1:` can be redefined; `1b` is the nearest earlier
+; definition and `1f` the nearest later one.
+.include "std/test.inc"
+.func main
+    mov I0, 0
+    mov I1, 0
+1:  bge I1, 5, 4f              ; outer loop i = 0..4
+    mov I2, 0
+2:  bge I2, 3, 3f              ; inner loop j = 0..2
+    add I0, I1
+    inc I2
+    jmp 2b
+3:  inc I1
+    jmp 1b
+4:  ASSERT_EQ I0, 30
+1:  mov I3, 7
+    jmp 1f
+    FAIL "jumped to the wrong 1"
+1:  ASSERT_EQ I3, 7
+    ret 0
+.endf

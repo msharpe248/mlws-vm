@@ -1,0 +1,5 @@
+; A function must end with ret, jmp, tcall or halt.
+; expect-error: E_ASM_SYNTAX
+.func main
+    mov I0, 1
+.endf

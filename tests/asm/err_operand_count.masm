@@ -1,0 +1,5 @@
+; expect-error: E_ASM_OPERAND_COUNT
+.func main
+    mov I0
+    ret
+.endf

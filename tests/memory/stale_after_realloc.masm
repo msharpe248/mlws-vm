@@ -1,0 +1,9 @@
+; realloc invalidates old pointers into the block.
+; expect-error: E_UAF
+.func main
+    alloc P0, 8
+    mov P1, P0
+    realloc P0, P0, 64
+    mov [P1], 1
+    ret 0
+.endf

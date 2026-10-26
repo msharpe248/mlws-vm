@@ -1,0 +1,7 @@
+; An integer on the stack cannot be read back as a reference.
+; expect-error: E_TYPE
+.func main
+    push 12345
+    pop R0
+    ret 0
+.endf

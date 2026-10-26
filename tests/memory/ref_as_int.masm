@@ -1,0 +1,7 @@
+; A reference slot cannot be read as an integer (host addresses never leak).
+; expect-error: E_TYPE
+.func main
+    push "secret"
+    mov.i64 I0, SP[0]
+    ret 0
+.endf

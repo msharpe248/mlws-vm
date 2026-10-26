@@ -1,0 +1,4 @@
+; expect-error: E_LINK_NO_MAIN
+.func helper
+    ret
+.endf

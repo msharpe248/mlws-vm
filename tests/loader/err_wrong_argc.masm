@@ -1,0 +1,7 @@
+; The verifier checks calls across modules against the callee's signature.
+; expect-error: E_VERIFY
+.import _lib.mathx as m
+.func main
+    call m.add3 (1, 2) -> (I0)
+    ret 0
+.endf

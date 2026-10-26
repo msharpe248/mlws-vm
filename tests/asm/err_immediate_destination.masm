@@ -1,0 +1,6 @@
+; A literal cannot be a destination.
+; expect-error: E_ASM_BAD_OPERAND
+.func main
+    add 5, I0
+    ret
+.endf

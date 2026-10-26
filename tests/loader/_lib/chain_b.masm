@@ -1,0 +1,5 @@
+.module _lib.chain_b
+.export base
+.func base -> i64
+    ret 40
+.endf

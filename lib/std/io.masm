@@ -1,0 +1,77 @@
+; std.io - console output.
+;
+; Usage:
+;     .import std.io as io
+;     call io.println ("hello")
+;     call io.println_i (I0)
+;
+; Each function wraps one of the io.* natives (see docs/NATIVES.md). The
+; macros in std/io.inc expand to the natives directly and avoid the call.
+
+.module std.io
+.export print, println, print_i, println_i, print_u, println_u, print_f, println_f
+.export print_c, print_b, print_hex, nl
+
+.func print(ref s)
+    ncall "io.print_s" (s)
+    ret
+.endf
+
+.func println(ref s)
+    ncall "io.print_s" (s)
+    ncall "io.nl" ()
+    ret
+.endf
+
+.func print_i(i64 v)
+    ncall "io.print_i" (v)
+    ret
+.endf
+
+.func println_i(i64 v)
+    ncall "io.print_i" (v)
+    ncall "io.nl" ()
+    ret
+.endf
+
+.func print_u(u64 v)
+    ncall "io.print_u" (v)
+    ret
+.endf
+
+.func println_u(u64 v)
+    ncall "io.print_u" (v)
+    ncall "io.nl" ()
+    ret
+.endf
+
+.func print_f(f64 v)
+    ncall "io.print_f" (v)
+    ret
+.endf
+
+.func println_f(f64 v)
+    ncall "io.print_f" (v)
+    ncall "io.nl" ()
+    ret
+.endf
+
+.func print_c(char c)
+    ncall "io.print_c" (c)
+    ret
+.endf
+
+.func print_b(bool b)
+    ncall "io.print_b" (b)
+    ret
+.endf
+
+.func print_hex(u64 v)
+    ncall "io.print_hex" (v)
+    ret
+.endf
+
+.func nl
+    ncall "io.nl" ()
+    ret
+.endf

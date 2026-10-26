@@ -1,0 +1,5 @@
+; expect-error: E_LINK_CYCLE
+.import _lib.cyc_a
+.func main
+    ret 0
+.endf

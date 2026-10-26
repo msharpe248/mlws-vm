@@ -1,0 +1,5 @@
+; expect-error: E_LINK_NATIVE
+.func main
+    ncall "no.such_native" ()
+    ret 0
+.endf

@@ -1,0 +1,58 @@
+; sieve.masm - Sieve of Eratosthenes over a raw heap block, printing the
+; primes below 60 and counting the primes below 1,000,000.
+;
+; expect-stdout: 2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59
+; expect-stdout: primes below 1000000: 78498
+.include "std/io.inc"
+
+; sieve(n) -> pointer to n bytes, where byte i is 1 if i is composite
+.func sieve(i64 n) -> ptr
+    alloc P0, n
+    mov.u8 P0{0}, 1
+    mov.u8 P0{1}, 1
+    mov I1, 2                       ; i
+outer:
+    mul I2, I1, I1                  ; j = i*i
+    bge I2, n, done
+    bnz.u8 P0{I1}, next             ; already composite
+inner:
+    bge I2, n, next
+    mov.u8 P0{I2}, 1
+    add I2, I1
+    jmp inner
+next:
+    inc I1
+    jmp outer
+done:
+    ret P0
+.endf
+
+.func main
+    call sieve (60) -> (P1)
+    mov I0, 2
+    mov I3, 0                       ; printed anything yet?
+1:  bge I0, 60, 2f
+    bnz.u8 P1{I0}, 3f
+    bz I3, 4f
+    PRINT_C ' '
+4:  PRINT_I I0
+    mov I3, 1
+3:  inc I0
+    jmp 1b
+2:  NL
+    free P1
+
+    .const N = 1000000
+    call sieve (N) -> (P1)
+    mov I0, 0                       ; count
+    mov I1, 0                       ; i
+5:  bge I1, N, 6f
+    bnz.u8 P1{I1}, 7f
+    inc I0
+7:  inc I1
+    jmp 5b
+6:  PRINT_S "primes below 1000000: "
+    PRINTLN_I I0
+    free P1
+    ret 0
+.endf

@@ -1,0 +1,5 @@
+; expect-error: E_ASM_UNKNOWN_OP
+.func main
+    frobnicate I0
+    ret
+.endf

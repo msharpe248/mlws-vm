@@ -1,0 +1,13 @@
+; halt stops the process from any depth with an exit code.
+; expect-exit: 7
+; expect-stdout: before
+.func inner
+    ncall "io.print_s" ("before")
+    ncall "io.nl" ()
+    halt 7
+.endf
+.func main
+    call inner
+    ncall "io.print_s" ("never printed")
+    ret 0
+.endf

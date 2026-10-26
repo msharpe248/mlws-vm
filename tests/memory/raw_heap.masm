@@ -1,0 +1,24 @@
+; alloc/realloc/free, memset/memcpy on bounds-checked raw blocks.
+.include "std/test.inc"
+.func main
+    alloc P0, 16
+    ASSERT_EQ P0[0], 0         ; blocks start zeroed
+    mov P0[0], 11
+    mov P0[1], 22
+    realloc P0, P0, 32         ; grow; contents are kept
+    ASSERT_EQ P0[1], 22
+    ASSERT_EQ P0[3], 0
+    memset P0, 0xAB, 32
+    ASSERT_EQ P0{31}, 0xAB, u8
+    alloc P1, 32
+    memcpy P1, P0, 32
+    ASSERT_EQ P1[2], 0xABABABABABABABAB, u64
+    lea P3, P0{1}              ; memcpy takes pointer values: make one with lea
+    memcpy P3, P0, 8           ; overlapping copies are fine
+    free P0
+    free P1
+    free null                  ; freeing null is a no-op
+    alloc P2, 0                ; zero-size blocks are valid
+    free P2
+    ret 0
+.endf

@@ -1,0 +1,5 @@
+; expect-error: E_LOAD_NOT_FOUND
+.import no.such.module
+.func main
+    ret 0
+.endf

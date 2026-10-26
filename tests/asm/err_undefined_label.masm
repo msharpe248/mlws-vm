@@ -1,0 +1,4 @@
+; expect-error: E_ASM_UNDEF_LABEL
+.func main
+    jmp nowhere
+.endf

@@ -1,0 +1,21 @@
+; The standard library ships in lib/std and is always on the library path.
+; expect-stdout: gcd=6 2^10=1024 isqrt=1000
+; expect-stdout: 3.5
+; expect-stdout: ok
+.import std.io as io
+.import std.math as math
+.func main
+    call math.gcd (48, -18) -> (I0)
+    call io.print ("gcd=")
+    call io.print_i (I0)
+    call math.ipow (2, 10) -> (I0)
+    call io.print (" 2^10=")
+    call io.print_i (I0)
+    call math.isqrt (1000999) -> (I0)
+    call io.print (" isqrt=")
+    call io.println_i (I0)
+    call math.fclamp (9.0, 1.0, 3.5) -> (F0)
+    call io.println_f (F0)
+    call io.println ("ok")
+    ret 0
+.endf

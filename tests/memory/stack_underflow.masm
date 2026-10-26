@@ -1,0 +1,5 @@
+; expect-error: E_STACK_UNDERFLOW
+.func main
+    pop I0
+    ret 0
+.endf

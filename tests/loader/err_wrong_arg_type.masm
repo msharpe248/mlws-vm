@@ -1,0 +1,6 @@
+; expect-error: E_VERIFY
+.import _lib.mathx as m
+.func main
+    call m.triple (1.5) -> (I0)
+    ret 0
+.endf

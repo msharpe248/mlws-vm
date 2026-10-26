@@ -1,0 +1,25 @@
+; jtab idx, L0, L1, ... jumps to L<idx>, or falls through when out of range.
+.include "std/test.inc"
+
+.func classify(i64 n) -> i64
+    jtab n, zero, one, two
+    ret -1
+zero:
+    ret 100
+one:
+    ret 101
+two:
+    ret 102
+.endf
+
+.func main
+    call classify (0) -> (I0)
+    ASSERT_EQ I0, 100
+    call classify (2) -> (I0)
+    ASSERT_EQ I0, 102
+    call classify (3) -> (I0)
+    ASSERT_EQ I0, -1
+    call classify (-1) -> (I0)
+    ASSERT_EQ I0, -1
+    ret 0
+.endf
