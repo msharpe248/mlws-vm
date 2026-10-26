@@ -5,7 +5,9 @@ bool mode_is_memory(uint8_t mode) {
     return (mode >= OM_IND && mode <= OM_MINDB);
 }
 
-bool mode_is_writable(uint8_t mode) { return mode == OM_REG || mode_is_memory(mode); }
+bool mode_is_object(uint8_t mode) { return mode >= OM_ELEM && mode <= OM_FIELD; }
+
+bool mode_is_writable(uint8_t mode) { return mode == OM_REG || mode_is_memory(mode) || mode_is_object(mode); }
 
 void encode_operand(ByteBuf *b, const Operand *o) {
     bb_u8(b, o->mode);
@@ -16,12 +18,20 @@ void encode_operand(ByteBuf *b, const Operand *o) {
         break;
     case OM_IMM: bb_sleb(b, o->imm); break;
     case OM_FIMM: bb_f64(b, o->f); break;
-    case OM_CONST: case OM_LABEL: case OM_FUNC: case OM_NATIVE:
+    case OM_CONST: case OM_LABEL: case OM_FUNC: case OM_NATIVE: case OM_STRUCT:
         bb_uleb(b, o->index);
         break;
     case OM_DISP: case OM_DISPB:
         bb_u8(b, o->reg);
         bb_sleb(b, o->imm);
+        break;
+    case OM_ELEM:
+        bb_u8(b, o->reg);
+        bb_u8(b, o->ireg);
+        break;
+    case OM_ELEMI: case OM_FIELD:
+        bb_u8(b, o->reg);
+        bb_uleb(b, o->index);
         break;
     case OM_IDX: case OM_IDXB:
         bb_u8(b, o->reg);
@@ -66,12 +76,20 @@ static bool decode_operand(ByteReader *r, Operand *o, int depth, MlwsError *err)
         break;
     case OM_IMM: o->imm = br_sleb(r); break;
     case OM_FIMM: o->f = br_f64(r); break;
-    case OM_CONST: case OM_LABEL: case OM_FUNC: case OM_NATIVE:
+    case OM_CONST: case OM_LABEL: case OM_FUNC: case OM_NATIVE: case OM_STRUCT:
         o->index = br_uleb(r);
         break;
     case OM_DISP: case OM_DISPB:
         o->reg = br_u8(r);
         o->imm = br_sleb(r);
+        break;
+    case OM_ELEM:
+        o->reg = br_u8(r);
+        o->ireg = br_u8(r);
+        break;
+    case OM_ELEMI: case OM_FIELD:
+        o->reg = br_u8(r);
+        o->index = br_uleb(r);
         break;
     case OM_IDX: case OM_IDXB:
         o->reg = br_u8(r);

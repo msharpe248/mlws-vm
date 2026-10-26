@@ -1,0 +1,20 @@
+; Unreachable cycles are collected (mark-sweep needs no reference counts).
+.include "std/test.inc"
+.struct Node
+    next: ref
+    payload: ref
+.ends
+.func main
+    mov I0, 0
+1:  new R0, Node
+    new R1, Node
+    mov R0->Node.next, R1              ; R0 -> R1 -> R0
+    mov R1->Node.next, R0
+    anew.i64 R2, 64                    ; make each cycle weigh ~0.5 KiB
+    mov R0->Node.payload, R2
+    inc I0
+    blt I0, 50000, 1b
+    ncall "gc.heap_bytes" () -> (I1)
+    ASSERT_LT I1, 4000000              ; ~27 MB of cycles were allocated
+    ret 0
+.endf

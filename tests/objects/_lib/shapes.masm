@@ -1,0 +1,20 @@
+; A library that exports a struct type and functions using it.
+.module _lib.shapes
+.export Rect, make_rect, area
+
+.struct Rect
+    w: f64
+    h: f64
+.ends
+
+.func make_rect(f64 w, f64 h) -> ref
+    new R0, Rect
+    mov R0->Rect.w, w
+    mov R0->Rect.h, h
+    ret R0
+.endf
+
+.func area(ref r) -> f64
+    mul F0, r->Rect.w, r->Rect.h
+    ret F0
+.endf

@@ -1,0 +1,7 @@
+; expect-error: E_KEY
+.func main
+    mnew R0
+    mset R0, "a", 1
+    mget I0, R0, "b"
+    ret 0
+.endf

@@ -76,7 +76,7 @@ around a call (see [ABI.md](ABI.md)).
 |---|---|---|
 | `I0`–`I31` | Integers of any width, bools, chars | `i64` |
 | `F0`–`F31` | Floats | `f64` |
-| `R0`–`R31` | Garbage-collected references (strings; objects in later milestones) | `r` |
+| `R0`–`R31` | Garbage-collected references: strings, byte buffers, arrays, structs, lists, maps | `r` |
 | `P0`–`P31` | Raw, bounds-checked pointers | `p` |
 | `SP`, `FP` | Data stack pointer and frame pointer | `p` |
 | `PID` | The current process id (read-only) | `i64` |
@@ -246,7 +246,68 @@ buffer:   .zero 64
 Each 8-byte word of the image carries a type tag (`i64`, `f64`, ...) that untyped
 moves respect. The tags record the declared type of the data.
 
-## 7. Modules and libraries
+## 7. Heap objects and structs
+
+`R` registers hold references to objects on the process's garbage-collected heap.
+Allocate objects with instructions, access their contents with the element and
+field operand forms, and never free them: the collector reclaims anything that is
+no longer reachable ([ABI.md §6](ABI.md#6-the-garbage-collected-heap)).
+
+| Kind (`typeof`) | Create | Access | Notes |
+|---|---|---|---|
+| string (1) | `"literal"`, `strcat`, `substr`, `tostr` | `R0[I1]` reads a byte | Immutable bytes, by convention UTF-8 |
+| byte buffer (2) | `bufnew R0, n` | `R0[I1]` reads/writes a byte | Mutable and growable: `bufcat`, `bufpush`, `resize` |
+| array (3) | `anew.f64 R0, n` | `R0[I1]`, `R0[3]` | Fixed length; every element has the instruction's type |
+| struct (4) | `new R0, Point` | `R0->Point.x` | Declared with `.struct`; fields have declared types |
+| list (5) | `lnew R0` | `R0[I1]` | Growable; every element carries its own type tag |
+| map (6) | `mnew R0` | `mset`, `mget`, `mhas`, `mdel`, `mkeys` | Insertion-ordered; strings compare by content |
+
+```asm
+.struct Point                 ; a struct type, usable as `Point` in this module
+    x: f64
+    y: f64
+    label: ref
+.ends
+
+.func main
+    new   R0, Point           ; fields start as 0 / 0.0 / null
+    mov   R0->Point.x, 1.5    ; field operands work with every instruction
+    add   R0->Point.y, R0->Point.x, 2.0
+    anew.i32 R1, 10           ; array of 10 i32 elements
+    mov   R1[3], 42
+    lnew  R2                  ; a list of mixed values
+    lpush R2, 1, 2.5, "three"
+    mnew  R3                  ; a map
+    mset  R3, "pi", 3.14
+    mget  F0, R3, "pi"
+    tostr R4, R1[3]           ; "42"
+    strcat R5, "answer=", R4
+    ret
+.endf
+```
+
+* **Element operands** `R[Ireg]` and `R[n]` index strings, byte buffers, arrays and
+  lists. They are bounds-checked (`E_BOUNDS`), and the index counts elements, not
+  bytes. **Field operands** `R->Type.field` check at run time that the object really
+  is a `Type` (`E_TYPE`). Both are ordinary operands: you can `add R0[I1], 1`,
+  `push R2->Point.label` or pass `R1[0]` to a call.
+* **Types are checked.** Array elements and struct fields have fixed types: an
+  integer read or write is converted to the element's integer width, and storing a
+  float into an `i64` slot traps with `E_TYPE`. A list element or map value
+  remembers the type it was stored with. It can be read back as any type of the same
+  register bank, but a reference never mixes with a non-reference.
+* **Struct types** can be exported (`.export Point`) and used from other modules by
+  qualified name: `new R0, geo.Point`, `R0->geo.Point.x`. Fields are matched by name
+  when the module is linked.
+* **Handles** (`hnew`, `hget`, `hfree`) give an object an `i64` id, so raw memory or
+  external code can refer to it and keep it alive.
+* There are no pointers into objects: `lea` and the `P`-register addressing forms
+  don't apply to them. That is what lets the collector stay precise and safe.
+
+See [ISA.md](ISA.md) (sections "Objects", "Strings", "Lists and maps", "Handles") for
+every instruction.
+
+## 8. Modules and libraries
 
 ```asm
 .module geometry.vec          ; optional; default is the file name without extension
@@ -267,7 +328,7 @@ moves respect. The tags record the declared type of the data.
   then loads imports recursively, rejects import cycles (`E_LINK_CYCLE`), resolves
   every symbol (`E_LINK_UNDEF`) and runs the verifier before any code runs.
 
-### 7.1 The standard library (`lib/std`)
+### 8.1 The standard library (`lib/std`)
 
 | File | Use with | Contents |
 |---|---|---|
@@ -276,13 +337,13 @@ moves respect. The tags record the declared type of the data.
 | `std/io.inc` | `.include "std/io.inc"` | Macros `PRINT_S`, `PRINTLN_S`, `PRINT_I`, `PRINTLN_I`, `PRINT_F`, `PRINTLN_F`, `PRINT_C`, `PRINT_B`, `PRINT_HEX`, `NL`, `PRINTLN s, v...` |
 | `std/test.inc` | `.include "std/test.inc"` | Macros `ASSERT_EQ/NE/LT/LE/GT/GE a, b [, type]`, `ASSERT_TRUE/FALSE v [, type]`, `FAIL "msg"` |
 
-## 8. Preprocessor
+## 9. Preprocessor
 
 The preprocessor runs before assembly and works on lines of text. `mlwsvm asm -E
 file.masm` prints the fully expanded source, annotated with the original line
 numbers and the macros that produced each line.
 
-### 8.1 Constants
+### 9.1 Constants
 
 ```asm
 .const WORDS = 16             ; immutable (.equ is a synonym)
@@ -297,7 +358,7 @@ and unary `- + ~ !`. They can use integer, float and char literals, named consta
 64-bit and wraps. An expression is float if any operand is. Expressions can appear
 anywhere a number can, including displacements: `SP[BYTES/8 - 1]`.
 
-### 8.2 Macros
+### 9.2 Macros
 
 ```asm
 .macro NAME param1, param2=default, rest...
@@ -338,7 +399,7 @@ anywhere a number can, including displacements: `SP[BYTES/8 - 1]`.
 .endm
 ```
 
-### 8.3 Repetition
+### 9.3 Repetition
 
 ```asm
 .rept 4, k                    ; \k = 0, 1, 2, 3 (the variable is optional)
@@ -350,7 +411,7 @@ anywhere a number can, including displacements: `SP[BYTES/8 - 1]`.
 .endr
 ```
 
-### 8.4 Conditional assembly
+### 9.4 Conditional assembly
 
 ```asm
 .if MODE == 2 && defined(FAST)
@@ -367,7 +428,7 @@ anywhere a number can, including displacements: `SP[BYTES/8 - 1]`.
 
 Lines in an inactive branch are not even parsed.
 
-### 8.5 Includes
+### 9.5 Includes
 
 ```asm
 .include "std/test.inc"
@@ -377,14 +438,15 @@ The path is searched relative to the including file, then along the library path
 Each file is included at most once, so include files need no guards. By convention,
 macro-only files use the `.inc` extension and are not modules.
 
-## 9. Directive summary
+## 10. Directive summary
 
 | Directive | Where | Purpose |
 |---|---|---|
 | `.module name` | top level | Module name |
 | `.import name [as alias]` | top level | Load and link another module |
-| `.export a, b, ...` | anywhere | Export functions or data symbols |
+| `.export a, b, ...` | anywhere | Export functions, data symbols or struct types |
 | `.func ... / .endf` | top level | Define a function |
+| `.struct Name` ... `field: type` ... `.ends` | top level | Define a struct type |
 | `.regs I=n, F=n, R=n, P=n` | in function | Minimum register window |
 | `.alias name, REG` | anywhere | Register alias (module-wide or function-local) |
 | `.i8` ... `.f64`, `.b`, `.c`, `.ascii`, `.asciz`, `.zero`, `.space`, `.align` | top level | Global data |
@@ -394,10 +456,10 @@ macro-only files use the `.inc` extension and are not modules.
 | `.include "file"` | anywhere | Textual include (once per file) |
 | `.error "msg"` | anywhere | Stop with `E_ASM_USER` |
 
-## 10. Tools
+## 11. Tools
 
 ```
-mlwsvm run  [-L dir] [--stats] [--stack-words N] prog.masm|prog.mlwso
+mlwsvm run  [-L dir] [--stats] [--gc-stress] [--stack-words N] prog.masm|prog.mlwso
 mlwsvm asm  [-L dir] [-o out.mlwso] [-E] prog.masm
 mlwsvm dis  [-L dir] prog.masm|prog.mlwso
 mlwsvm test [-L dir] [-v] [paths...]

@@ -11,7 +11,8 @@ static void usage(FILE *f) {
     fputs("usage: mlwsvm <command> [options]\n"
           "\n"
           "commands:\n"
-          "  run  [-L dir] [--stats] [--stack-words N] file.(masm|mlwso)  run a program's main\n"
+          "  run  [-L dir] [--stats] [--gc-stress] [--stack-words N] file.(masm|mlwso)\n"
+          "                                                               run a program's main\n"
           "  asm  [-L dir] [-o out.mlwso] [-E] file.masm                   assemble (-E: preprocess only)\n"
           "  dis  [-L dir] file.(masm|mlwso)                               disassemble\n"
           "  test [-L dir] [-v] [paths...]                               run assembly tests (default: tests/)\n"
@@ -19,7 +20,8 @@ static void usage(FILE *f) {
           "  version\n"
           "\n"
           "Libraries are searched in: the program's directory, -L dirs, $MLWSVM_PATH, and lib/\n"
-          "next to the mlwsvm executable.\n",
+          "next to the mlwsvm executable. MLWSVM_GC_STRESS=1 collects garbage at every\n"
+          "instruction boundary after an allocation (for testing the VM).\n",
           f);
 }
 
@@ -78,10 +80,11 @@ static void print_error(const MlwsError *e) {
 
 static int cmd_run(int argc, char **argv) {
     const char *file = NULL;
-    bool stats = false;
+    bool stats = false, gc_stress = false;
     uint32_t stack_words = 0;
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--stats")) stats = true;
+        else if (!strcmp(argv[i], "--gc-stress")) gc_stress = true;
         else if (!strcmp(argv[i], "--stack-words") && i + 1 < argc) stack_words = (uint32_t)strtoul(argv[++i], NULL, 10);
         else if (!file) file = argv[i];
         else {
@@ -95,6 +98,7 @@ static int cmd_run(int argc, char **argv) {
     }
     VM *vm = vm_new();
     if (stack_words) vm->stack_words = stack_words;
+    if (gc_stress) vm->gc_stress = true;
     char *dir = path_dirname(file);
     vm_add_libpath(vm, dir);
     free(dir);
@@ -122,11 +126,18 @@ static int cmd_run(int argc, char **argv) {
                 "stack peak:       %llu bytes\n"
                 "raw allocs/frees: %llu / %llu\n"
                 "raw peak:         %llu bytes\n"
-                "raw leaked:       %llu bytes\n",
+                "raw leaked:       %llu bytes\n"
+                "heap peak:        %llu bytes\n"
+                "heap at exit:     %llu bytes\n"
+                "objects:          %llu allocated, %llu collected\n"
+                "gc:               %llu collections, %.3f ms\n",
                 (unsigned long long)r.insns, (double)r.wall_ns / 1e6,
                 r.wall_ns ? (double)r.insns / ((double)r.wall_ns / 1e9) / 1e6 : 0.0, r.max_depth,
                 (unsigned long long)r.stack_peak_bytes, (unsigned long long)r.raw_allocs,
-                (unsigned long long)r.raw_frees, (unsigned long long)r.raw_peak, (unsigned long long)r.raw_leaked);
+                (unsigned long long)r.raw_frees, (unsigned long long)r.raw_peak, (unsigned long long)r.raw_leaked,
+                (unsigned long long)r.heap_peak, (unsigned long long)r.heap_live,
+                (unsigned long long)r.objects_allocated, (unsigned long long)r.objects_freed,
+                (unsigned long long)r.gc_count, (double)r.gc_ns / 1e6);
     }
     run_result_free(&r);
     vm_free(vm);

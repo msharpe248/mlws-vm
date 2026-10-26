@@ -1,0 +1,8 @@
+; expect-error: E_BAD_HANDLE
+.func main
+    lnew R0
+    hnew I0, R0
+    hfree I0
+    hget R1, I0
+    ret 0
+.endf

@@ -1,0 +1,6 @@
+; parse traps on malformed or out-of-range input.
+; expect-error: E_PARSE
+.func main
+    parse.u8 I0, "256"
+    ret 0
+.endf

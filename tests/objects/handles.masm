@@ -1,0 +1,18 @@
+; Handles keep objects alive from raw memory, which cannot hold references.
+.include "std/test.inc"
+.func main
+    alloc P0, 8
+    strcat R0, "kept", " alive"
+    hnew I0, R0
+    mov [P0], I0                       ; the handle (an integer) goes in raw memory
+    mov R0, null                       ; drop the only reference
+    ncall "gc.collect" ()
+    nop                                ; the collection runs here
+    mov I1, [P0]
+    hget R1, I1
+    len I2, R1
+    ASSERT_EQ I2, 10
+    hfree I1
+    free P0
+    ret 0
+.endf

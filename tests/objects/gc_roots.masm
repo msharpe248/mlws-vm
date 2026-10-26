@@ -1,0 +1,88 @@
+; Every kind of root keeps objects alive across a forced collection: R
+; registers in this and outer frames, stack slots, globals, struct fields,
+; list elements, map keys and values, arrays of references and handles.
+.include "std/test.inc"
+
+gslot:  .i64 0                         ; a global that will hold a reference
+
+.struct Box
+    item: ref
+.ends
+
+.macro COLLECT
+    ncall "gc.collect" ()
+    nop                                ; the collection runs before this
+.endm
+
+.macro MAKE dst, text
+    strcat \dst, \text, ""             ; a fresh heap string
+.endm
+
+.macro CHECK r, text
+    strcmp I30, \r, \text
+    ASSERT_EQ I30, 0
+.endm
+
+; Recurse, allocating in each frame; the caller's R registers must survive.
+.func deep(i64 n) -> ref
+    MAKE R0, "frame"
+    bz n, 1f
+    sub n, 1
+    call deep (n) -> (R1)
+    COLLECT
+    CHECK R0, "frame"
+    ret R1
+1:  COLLECT
+    ret R0
+.endf
+
+.func main
+    MAKE R0, "register"
+    MAKE R1, "stack"
+    push R1
+    mov R1, null
+    MAKE R2, "global"
+    mov.r @gslot, R2
+    mov R2, null
+    new R3, Box
+    MAKE R4, "field"
+    mov R3->Box.item, R4
+    lnew R5
+    MAKE R4, "list"
+    lpush R5, R4
+    mnew R6
+    MAKE R4, "key"
+    MAKE R7, "value"
+    mset R6, R4, R7
+    anew.r R8, 1
+    MAKE R4, "array"
+    mov R8[0], R4
+    MAKE R4, "handle"
+    hnew I0, R4
+    mov R4, null
+    mov R7, null
+    COLLECT
+    COLLECT
+
+    CHECK R0, "register"
+    pop R1
+    CHECK R1, "stack"
+    mov R2, @gslot
+    CHECK R2, "global"
+    mov R4, R3->Box.item
+    CHECK R4, "field"
+    mov R4, R5[0]
+    CHECK R4, "list"
+    mkeys R9, R6
+    mov R4, R9[0]
+    CHECK R4, "key"
+    mget R4, R6, "key"
+    CHECK R4, "value"
+    mov R4, R8[0]
+    CHECK R4, "array"
+    hget R4, I0
+    CHECK R4, "handle"
+    call deep (50) -> (R10)
+    CHECK R10, "frame"
+    ret 0
+.endf

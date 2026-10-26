@@ -1,0 +1,10 @@
+; The verifier checks typed field accesses against the field's declared type.
+; expect-error: E_VERIFY
+.struct P
+    x: f64
+.ends
+.func main
+    new R0, P
+    mov.i64 R0->P.x, 1
+    ret 0
+.endf

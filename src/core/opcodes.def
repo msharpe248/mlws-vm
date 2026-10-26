@@ -10,6 +10,7 @@
  *   W dst (natural)     B bool dst          Q i64 src      A ptr src
  *   E ptr dst           M memory location   K string const I integer immediate
  *   L label             F function          N native name  C call block
+ *   O object src (r)    X object dst (r)    J i64 dst      T struct type
  * A trailing modifier applies to the last letter: ? optional, * zero or more,
  * + one or more. The operand count limits (0..32) are derived from the pattern.
  *
@@ -175,3 +176,69 @@ OP(MEMCPY, 0x0093, "memcpy", "Raw memory", "AAQ", 0, 0,
    "Copy n bytes: `memcpy dst_ptr, src_ptr, n` (the regions may overlap). Copied bytes are untyped: they cannot later be read as references.")
 OP(MEMSET, 0x0094, "memset", "Raw memory", "AQQ", 0, 0,
    "Fill n bytes with a byte value: `memset ptr, byte, n`.")
+
+/* ---- objects -------------------------------------------------------------- */
+OP(NEW,    0x00A0, "new",    "Objects", "XT", 0, 0,
+   "Allocate a struct with every field zero (0, 0.0 or null): `new R0, Point`. Fields are then accessed as R0->Point.x.")
+OP(ANEW,   0x00A1, "anew",   "Objects", "XQ", TS_ANY, 0,
+   "Allocate an array of n zeroed elements of the instruction type: `anew.f64 R0, 100`. Elements are accessed as R0[I1] or R0[5] and are bounds checked.")
+OP(LEN,    0x00A2, "len",    "Objects", "JO", 0, 0,
+   "Length: bytes of a string or byte buffer, elements of an array or list, entries of a map. Traps E_TYPE for a struct and E_NULL for null.")
+OP(TYPEOF, 0x00A3, "typeof", "Objects", "JO", 0, 0,
+   "Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map.")
+OP(ISA,    0x00A4, "isa",    "Objects", "BOT", 0, 0,
+   "dst = true if the reference is a struct of the given type: `isa I0, R1, Point`.")
+OP(RESIZE, 0x00A5, "resize", "Objects", "OQ", 0, 0,
+   "Set the length of a byte buffer or list. New bytes are 0. New list elements are untyped zeros, which read as 0, 0.0 or null.")
+
+/* ---- strings and bytes ------------------------------------------------------ */
+OP(STRCAT, 0x00B0, "strcat", "Strings", "XO+", 0, 0,
+   "Concatenate strings and/or byte buffers into a new string: `strcat R0, R1, \"-\", R2` (up to 31 parts). `strcat R0, buf` copies a byte buffer into a string.")
+OP(SUBSTR, 0x00B1, "substr", "Strings", "XOQQ", 0, 0,
+   "`substr dst, s, start, n`: new string of the n bytes starting at byte offset start. Traps E_BOUNDS if the range is outside s.")
+OP(STRCMP, 0x00B2, "strcmp", "Strings", "JOO", 0, 0,
+   "Compare two strings or byte buffers bytewise: dst = -1, 0 or 1.")
+OP(STRFIND,0x00B3, "strfind","Strings", "JOOQ?", 0, 0,
+   "`strfind dst, s, needle [, start]`: byte offset of the first occurrence of needle at or after start (default 0), or -1.")
+OP(TOSTR,  0x00B4, "tostr",  "Strings", "XV", TS_ANY, OPF_PERVAL,
+   "Convert a value to a new string, using the instruction type or the value's natural type: integers in decimal, floats in shortest round-trip form, bools as true/false, chars as UTF-8. A string converts to itself, a byte buffer to a copy, and other objects to a description such as <list len=3>.")
+OP(PARSE,  0x00B5, "parse",  "Strings", "DO", TS_NUM, 0,
+   "Parse a number from the whole string: `parse.i64 I0, s` (decimal, or 0x/0b/0o prefixed), `parse.f64 F0, s`. Anything else traps E_PARSE.")
+OP(BUFNEW, 0x00B6, "bufnew", "Strings", "XQ", 0, 0,
+   "New mutable byte buffer of n zero bytes. Its bytes are accessed as R0[I1] (u8).")
+OP(BUFCAT, 0x00B7, "bufcat", "Strings", "OO+", 0, 0,
+   "Append strings and/or byte buffers to a byte buffer: `bufcat buf, s1, s2, ...`.")
+OP(BUFPUSH,0x00B8, "bufpush","Strings", "OQ+", 0, 0,
+   "Append byte values (the low 8 bits of each operand) to a byte buffer.")
+
+/* ---- lists and maps --------------------------------------------------------- */
+OP(LNEW,   0x00C0, "lnew",   "Lists and maps", "XQ?", 0, 0,
+   "New empty list, with an optional initial capacity.")
+OP(LPUSH,  0x00C1, "lpush",  "Lists and maps", "OV+", TS_ANY, OPF_PERVAL,
+   "Append values to a list. Each element remembers its type: untyped operands use their natural type, typed ones (lpush.i32) the instruction type.")
+OP(LPOP,   0x00C2, "lpop",   "Lists and maps", "WO", TS_ANY, OPF_PERVAL,
+   "Remove the last element of a list into dst: `lpop dst, list`. Traps E_BOUNDS on an empty list.")
+OP(LINS,   0x00C3, "lins",   "Lists and maps", "OQV", TS_ANY, OPF_PERVAL,
+   "Insert a value before index i (0..len): `lins list, i, value`.")
+OP(LDEL,   0x00C4, "ldel",   "Lists and maps", "OQ", 0, 0,
+   "Delete the element at index i, shifting later elements down.")
+OP(MNEW,   0x00C5, "mnew",   "Lists and maps", "X", 0, 0,
+   "New empty map. Maps iterate in insertion order.")
+OP(MSET,   0x00C6, "mset",   "Lists and maps", "OVV", TS_ANY, OPF_PERVAL,
+   "`mset map, key, value`. Keys compare by value: integers of any width by value, floats by value, strings by content, other references by identity, pointers by value. A type suffix applies to the value.")
+OP(MGET,   0x00C7, "mget",   "Lists and maps", "WOVV?", TS_ANY, OPF_PERVAL,
+   "`mget dst, map, key [, default]`. A missing key yields the default if given, and otherwise traps E_KEY. A type suffix applies to the value and the default.")
+OP(MHAS,   0x00C8, "mhas",   "Lists and maps", "BOV", 0, 0,
+   "dst = true if the map contains the key.")
+OP(MDEL,   0x00C9, "mdel",   "Lists and maps", "OV", 0, 0,
+   "Remove a key from a map (no effect if it is absent).")
+OP(MKEYS,  0x00CA, "mkeys",  "Lists and maps", "XO", 0, 0,
+   "New list of a map's keys, in insertion order.")
+
+/* ---- handles ------------------------------------------------------------- */
+OP(HNEW,   0x00D0, "hnew",   "Handles", "JO", 0, 0,
+   "Make a handle: an i64 that keeps the object alive and can be stored anywhere, including raw memory. Freed handle numbers may be reused.")
+OP(HGET,   0x00D1, "hget",   "Handles", "XQ", 0, 0,
+   "Get a handle's object. Traps E_BAD_HANDLE for an unknown or freed handle.")
+OP(HFREE,  0x00D2, "hfree",  "Handles", "Q", 0, 0,
+   "Release a handle. The object becomes collectable if nothing else refers to it.")

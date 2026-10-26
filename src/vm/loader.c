@@ -85,6 +85,14 @@ static bool resolve_operand(LModule *lm, Function *f, Operand *o, MlwsError *err
         if (o->index >= m->ngrefs) return mlws_err(err, "E_VERIFY", "%s: global index out of range in %s", m->name, f->name);
         o->rv.gbase = lm->grefs[o->index];
         break;
+    case OM_STRUCT:
+        if (o->index >= m->nstructs) return mlws_err(err, "E_VERIFY", "%s: struct index out of range in %s", m->name, f->name);
+        o->rv.ptr = (void *)lm->structs[o->index];
+        break;
+    case OM_FIELD:
+        if (o->index >= m->nfrefs) return mlws_err(err, "E_VERIFY", "%s: field index out of range in %s", m->name, f->name);
+        o->rv.ptr = &lm->frefs[o->index];
+        break;
     case OM_LABEL:
         if (o->index >= f->ncode) return mlws_err(err, "E_VERIFY", "%s: branch target out of range in %s", m->name, f->name);
         o->rv.target = (uint32_t)o->index;
@@ -150,6 +158,40 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
             return mlws_err(err, "E_LINK_UNDEF", "module %s does not export data symbol '%s' (used by %s)", dep->m->name,
                           g->sym, m->name);
         lm->grefs[i] = PTR_MAKE(SEG_GLOBAL0 + (uint32_t)dep->index, 1, dep->m->syms[si].offset);
+    }
+    lm->sdefs = xcalloc(m->nstructs + 1, sizeof(StructDef));
+    lm->structs = xcalloc(m->nstructs + 1, sizeof(StructDef *));
+    for (uint32_t i = 0; i < m->nstructs; i++) {
+        const MStruct *st = &m->structs[i];
+        if (!(st->flags & MSF_IMPORT)) {
+            StructDef *d = &lm->sdefs[i];
+            d->name = st->name;
+            d->module = m->name;
+            d->nfields = st->nfields;
+            d->fields = st->fields;
+            d->types = st->types;
+            lm->structs[i] = d;
+            continue;
+        }
+        void *v;
+        smap_get(&vm->modmap, m->imports[st->import_idx], &v);
+        LModule *dep = v;
+        int si = module_find_export_struct(dep->m, st->name);
+        if (si < 0)
+            return mlws_err(err, "E_LINK_UNDEF", "module %s does not export struct '%s' (used by %s)", dep->m->name,
+                            st->name, m->name);
+        lm->structs[i] = dep->structs[si];
+    }
+    lm->frefs = xcalloc(m->nfrefs + 1, sizeof(FieldRef));
+    for (uint32_t i = 0; i < m->nfrefs; i++) {
+        const StructDef *d = lm->structs[m->frefs[i].struct_idx];
+        uint32_t k;
+        for (k = 0; k < d->nfields && strcmp(d->fields[k], m->frefs[i].field) != 0; k++) {}
+        if (k == d->nfields)
+            return mlws_err(err, "E_LINK_UNDEF", "struct %s.%s has no field '%s' (used by %s)", d->module, d->name,
+                            m->frefs[i].field, m->name);
+        lm->frefs[i].def = d;
+        lm->frefs[i].index = k;
     }
     lm->funcs = xcalloc(m->nfuncs + 1, sizeof(Function));
     for (uint32_t i = 0; i < m->nfuncs; i++) {

@@ -36,6 +36,14 @@ static bool operand_regs_ok(const MFunc *mf, const Operand *o, uint8_t *bad) {
     case OM_GLOBALIDX: case OM_GLOBALIDXB:
         *bad = o->ireg;
         return reg_in_frame(mf, o->ireg);
+    case OM_ELEM:
+        *bad = o->reg;
+        if (!reg_in_frame(mf, o->reg)) return false;
+        *bad = o->ireg;
+        return reg_in_frame(mf, o->ireg);
+    case OM_ELEMI: case OM_FIELD:
+        *bad = o->reg;
+        return reg_in_frame(mf, o->reg);
     case OM_MIND: case OM_MINDB: return operand_regs_ok(mf, o->inner, bad);
     default: return true;
     }
@@ -53,6 +61,15 @@ static bool verify_function(LModule *lm, Function *f, MlwsError *err) {
             char b[8];
             if (!operand_regs_ok(mf, &in->ops[k], &bad))
                 return verr(err, lm, f, pc, "register %s is outside the function's register window", reg_name(bad, b));
+            /* A typed access to a struct field must match the field's register bank. */
+            if (in->ops[k].mode == OM_FIELD && !(op_info[in->op].flags & OPF_CALL)) {
+                const FieldRef *fr = in->ops[k].rv.ptr;
+                MlwsType ft = (MlwsType)fr->def->types[fr->index];
+                MlwsType ot = operand_type(in, k);
+                if (ot != T_NONE && (type_bank(ot) != type_bank(ft) || (ot == T_R) != (ft == T_R)))
+                    return verr(err, lm, f, pc, "%s: field %s.%s is %s but is accessed as %s", op_info[in->op].mnem,
+                                fr->def->name, fr->def->fields[fr->index], type_name(ft), type_name(ot));
+            }
         }
         if (in->op == OP_CALL || in->op == OP_TCALL) {
             const Function *callee = in->ops[0].rv.ptr;

@@ -2,6 +2,7 @@
  * call frames, traps and backtraces. */
 #include "vm.h"
 
+#include "../heap/heap.h"
 #include "proc_internal.h"
 
 Process *proc_new(VM *vm) {
@@ -37,6 +38,7 @@ Process *proc_new(VM *vm) {
 
 void proc_free(Process *p) {
     if (!p) return;
+    heap_free_all(p);
     free(p->stack.data);
     free(p->stack.tags);
     for (uint32_t i = 0; i < p->nglobals; i++) {

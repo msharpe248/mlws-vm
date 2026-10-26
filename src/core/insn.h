@@ -36,6 +36,10 @@ typedef enum {
     OM_LABEL = 0x14,      /* insn:uleb (index within the function)    loop          */
     OM_FUNC = 0x15,       /* func:uleb (module function table)        fib, io.print */
     OM_NATIVE = 0x16,     /* native:uleb (module native table)        "io.print_i"  */
+    OM_ELEM = 0x17,       /* reg:u8 ireg:u8                           R2[I4]        */
+    OM_ELEMI = 0x18,      /* reg:u8 index:uleb                        R2[7]         */
+    OM_FIELD = 0x19,      /* reg:u8 fref:uleb (module field refs)     R2->Point.x   */
+    OM_STRUCT = 0x1A,     /* struct:uleb (module struct table)        Point         */
 } OperandMode;
 
 typedef struct Operand {
@@ -66,7 +70,8 @@ typedef struct {
 } Insn;
 
 bool mode_is_memory(uint8_t mode);
-bool mode_is_writable(uint8_t mode); /* register or memory */
+bool mode_is_object(uint8_t mode);   /* element or field of a heap object */
+bool mode_is_writable(uint8_t mode); /* register, memory or object slot */
 
 void encode_operand(ByteBuf *b, const Operand *o);
 void encode_insn(ByteBuf *b, const Insn *in);

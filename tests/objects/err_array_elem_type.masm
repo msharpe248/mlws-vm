@@ -1,0 +1,8 @@
+; An f64 array cannot hold integers without a conversion.
+; expect-error: E_TYPE
+.func main
+    anew.f64 R0, 2
+    mov I0, 1
+    mov R0[0], I0
+    ret 0
+.endf

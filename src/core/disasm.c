@@ -33,6 +33,16 @@ static void put_gref(StrBuf *b, const Module *m, uint64_t idx) {
     sb_printf(b, "@?offset_%u", g->offset);
 }
 
+static void put_struct(StrBuf *b, const Module *m, uint64_t idx) {
+    if (idx >= m->nstructs) {
+        sb_puts(b, "?struct");
+        return;
+    }
+    const MStruct *st = &m->structs[idx];
+    if (st->flags & MSF_IMPORT) sb_printf(b, "%s.%s", m->imports[st->import_idx], st->name);
+    else sb_puts(b, st->name);
+}
+
 static void put_index(StrBuf *b, const Operand *o, bool bytes, bool has_index) {
     char rb[8];
     sb_putc(b, bytes ? '{' : '[');
@@ -88,6 +98,18 @@ static void put_operand(StrBuf *b, const Module *m, const Operand *o) {
         sb_putc(b, ']');
         if (o->imm || o->mode == OM_MINDB) put_index(b, o, o->mode == OM_MINDB, false);
         break;
+    case OM_ELEM: sb_printf(b, "%s[%s]", reg_name(o->reg, rb), reg_name(o->ireg, fb)); break;
+    case OM_ELEMI: sb_printf(b, "%s[%llu]", reg_name(o->reg, rb), (unsigned long long)o->index); break;
+    case OM_FIELD:
+        sb_printf(b, "%s->", reg_name(o->reg, rb));
+        if (o->index < m->nfrefs && m->frefs[o->index].struct_idx < m->nstructs) {
+            put_struct(b, m, m->frefs[o->index].struct_idx);
+            sb_printf(b, ".%s", m->frefs[o->index].field);
+        } else {
+            sb_puts(b, "?field");
+        }
+        break;
+    case OM_STRUCT: put_struct(b, m, o->index); break;
     case OM_LABEL: sb_printf(b, ".L%llu", (unsigned long long)o->index); break;
     case OM_FUNC: sb_puts(b, func_ref_name(m, o->index, fb, sizeof fb)); break;
     case OM_NATIVE:
@@ -177,6 +199,15 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
         if ((m->funcs[i].flags & (MF_EXPORT | MF_IMPORT)) == MF_EXPORT) sb_printf(b, ".export %s\n", m->funcs[i].name);
     for (uint32_t i = 0; i < m->nsyms; i++)
         if (m->syms[i].flags & MS_EXPORT) sb_printf(b, ".export %s\n", m->syms[i].name);
+    for (uint32_t i = 0; i < m->nstructs; i++) {
+        const MStruct *st = &m->structs[i];
+        if (st->flags & MSF_IMPORT) continue;
+        if (st->flags & MSF_EXPORT) sb_printf(b, ".export %s\n", st->name);
+        sb_printf(b, "\n.struct %s\n", st->name);
+        for (uint32_t k = 0; k < st->nfields; k++)
+            sb_printf(b, "    %s: %s\n", st->fields[k], type_name((MlwsType)st->types[k]));
+        sb_puts(b, ".ends\n");
+    }
     disasm_data(b, m);
     for (uint32_t fi = 0; fi < m->nfuncs; fi++) {
         const MFunc *f = &m->funcs[fi];

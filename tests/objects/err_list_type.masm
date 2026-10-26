@@ -1,0 +1,8 @@
+; A string element cannot be read as an integer.
+; expect-error: E_TYPE
+.func main
+    lnew R0
+    lpush R0, "text"
+    mov I0, R0[0]
+    ret 0
+.endf

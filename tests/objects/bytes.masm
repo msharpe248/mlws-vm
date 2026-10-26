@@ -1,0 +1,27 @@
+; Byte buffers: mutable, growable bytes; strcat turns one into a string.
+; expect-stdout: hello hello!
+; expect-stdout: hello hello!
+.include "std/test.inc"
+.include "std/io.inc"
+.func main
+    bufnew R0, 0
+    bufcat R0, "hello"
+    bufpush R0, ' '
+    len I0, R0
+    ASSERT_EQ I0, 6
+    mov R0[0], 'H'                     ; bytes are writable
+    ASSERT_EQ R0[0], 'H'
+    mov R0[0], 'h'
+    bufcat R0, R0                      ; appending a buffer to itself
+    resize R0, 11                      ; drop the trailing space
+    bufpush R0, '!'
+    strcat R1, R0
+    PRINTLN_S R1
+    ncall "io.print_s" (R0)            ; natives accept byte buffers too
+    NL
+    typeof I1, R0
+    ASSERT_EQ I1, 2
+    bufnew R2, 3                       ; zero-filled
+    ASSERT_EQ R2[2], 0
+    ret 0
+.endf

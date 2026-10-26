@@ -1,0 +1,13 @@
+; Field access checks the object's struct type at run time.
+; expect-error: E_TYPE
+.struct A
+    x: i64
+.ends
+.struct B
+    x: i64
+.ends
+.func main
+    new R0, A
+    mov I0, R0->B.x
+    ret 0
+.endf

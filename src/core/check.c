@@ -87,6 +87,14 @@ bool check_operand(const Operand *o, int k, MlwsType t, bool write, CheckErr *ce
     case OM_LABEL: return fail(ce, k, "operand %d: a label is not a value", k + 1);
     case OM_FUNC: return fail(ce, k, "operand %d: a function is not a value (yet)", k + 1);
     case OM_NATIVE: return fail(ce, k, "operand %d: a native name is not a value", k + 1);
+    case OM_STRUCT: return fail(ce, k, "operand %d: a struct type is not a value", k + 1);
+    case OM_ELEM: case OM_ELEMI: case OM_FIELD:
+        if (REG_BANK(o->reg) != BANK_R)
+            return fail(ce, k, "operand %d: element and field access need an R register base, not %s", k + 1,
+                        reg_name(o->reg, b));
+        if (o->mode == OM_ELEM && REG_BANK(o->ireg) != BANK_I)
+            return fail(ce, k, "operand %d: index register %s must be an I register", k + 1, reg_name(o->ireg, b));
+        return true;
     default:
         if (mode_is_memory(o->mode)) return check_mem(o, k, ce);
         return fail(ce, k, "operand %d: unknown addressing mode", k + 1);
@@ -104,11 +112,15 @@ MlwsType operand_type(const Insn *in, int k) {
         return k == 1 ? T_P : T_I64;
     }
     if ((oi->flags & OPF_TYPE2) && k == 1) return (MlwsType)in->type2;
+    /* map keys are always read with their natural type */
+    if ((in->op == OP_MSET && k == 1) || (in->op == OP_MGET && k == 2)) return T_NONE;
     switch (op_pattern_at(oi, k)) {
     case 'D': case 'S': case 'V': case 'W': return t;
     case 'B': return T_B;
     case 'Q': return T_I64;
+    case 'J': return T_I64;
     case 'A': case 'E': return T_P;
+    case 'O': case 'X': return T_R;
     default: return T_NONE;
     }
 }
@@ -155,11 +167,14 @@ bool check_insn(const Insn *in, CheckErr *ce) {
         char pat = op_pattern_at(oi, k);
         MlwsType t = operand_type(in, k);
         switch (pat) {
-        case 'D': case 'W': case 'B': case 'E':
+        case 'D': case 'W': case 'B': case 'E': case 'X': case 'J':
             if (!check_operand(o, k, t, true, ce)) return false;
             break;
-        case 'S': case 'V': case 'Q': case 'A':
+        case 'S': case 'V': case 'Q': case 'A': case 'O':
             if (!check_operand(o, k, t, false, ce)) return false;
+            break;
+        case 'T':
+            if (o->mode != OM_STRUCT) return fail(ce, k, "operand %d must be a struct type name", k + 1);
             break;
         case 'M':
             if (!mode_is_memory(o->mode)) return fail(ce, k, "operand %d must be a memory operand", k + 1);

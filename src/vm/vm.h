@@ -8,25 +8,7 @@
 #include "../core/insn.h"
 #include "../core/module.h"
 
-/* ---- heap objects (minimal until the GC milestone) ------------------------ */
-
-enum { OBJ_STRING = 1 };
-#define OBJF_IMMORTAL 0x01
-
-typedef struct Obj {
-    uint8_t kind;
-    uint8_t flags;
-    uint16_t pad;
-    uint32_t size;
-    struct Obj *next;
-} Obj;
-
-typedef struct {
-    Obj h;
-    uint32_t len;
-    uint32_t hash;
-    char data[];
-} ObjString;
+#include "../heap/object.h"
 
 ObjString *str_new_immortal(const char *s, size_t len);
 
@@ -63,6 +45,11 @@ typedef struct Function {
 
 enum { LM_LOADING = 1, LM_READY = 2 };
 
+typedef struct FieldRef {
+    const StructDef *def;
+    uint32_t index;
+} FieldRef;
+
 typedef struct LModule {
     Module *m;
     char *path;
@@ -71,6 +58,9 @@ typedef struct LModule {
     Function *funcs;          /* m->nfuncs */
     ObjString **consts;       /* m->nconsts */
     uint64_t *grefs;          /* resolved global pointers, m->ngrefs */
+    StructDef *sdefs;         /* struct types defined here, m->nstructs (imports unused) */
+    const StructDef **structs; /* resolved struct table (local or imported), m->nstructs */
+    struct FieldRef *frefs;   /* resolved field references, m->nfrefs */
     const NativeDef **natives; /* m->nnatives */
 } LModule;
 
@@ -87,6 +77,8 @@ typedef struct VM {
     uint32_t stack_words;
     uint32_t max_frames;
     uint64_t next_pid;
+    bool gc_stress;          /* collect at every instruction boundary after an allocation */
+    uint64_t gc_min_threshold;
 } VM;
 
 /* ---- processes ------------------------------------------------------------- */
@@ -150,6 +142,14 @@ struct Process {
     uint64_t raw_bytes, raw_peak, raw_allocs, raw_frees;
     uint32_t stack_low_off; /* lowest SP offset seen (stack high-water mark) */
     uint32_t max_depth;
+    /* garbage-collected heap (heap/gc.c) */
+    Obj *heap;
+    uint64_t heap_bytes, heap_peak, next_gc;
+    uint64_t gc_count, gc_ns, gc_freed_objects, objects_allocated;
+    bool gc_pending;
+    VEC(Obj *) handles;
+    VEC(uint32_t) handle_free;
+    VEC(Obj *) markstack;
 };
 
 /* vm.c */

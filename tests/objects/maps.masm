@@ -1,0 +1,66 @@
+; Maps: keys by value (strings by content), insertion-ordered keys, defaults.
+.include "std/test.inc"
+.func main
+    mnew R0
+    mset R0, "apple", 3
+    strcat R1, "app", "le"             ; a different string object, same content
+    mget I0, R0, R1
+    ASSERT_EQ I0, 3
+    mset R0, R1, 4                     ; overwrites the same key
+    len I1, R0
+    ASSERT_EQ I1, 1
+    mget I0, R0, "apple"
+    ASSERT_EQ I0, 4
+
+    mset R0, 7, "seven"                ; integer keys of any width are equal by value
+    mov.u8 I2, 7
+    mget R2, R0, I2
+    ncall "str.len" (R2) -> (I3)
+    ASSERT_EQ I3, 5
+    mset R0, 0.0, "zero"
+    mhas I4, R0, -0.0                  ; -0.0 and 0.0 are the same key
+    ASSERT_TRUE I4
+    mhas I4, R0, 0                     ; but the integer 0 is a different key
+    ASSERT_FALSE I4
+    mset.f64 R0, "pi", 3.25            ; a type suffix applies to the value
+    mget F0, R0, "pi"
+    ASSERT_EQ F0, 3.25
+
+    mget I5, R0, "missing", -1         ; default for a missing key
+    ASSERT_EQ I5, -1
+    mdel R0, 7
+    mhas I6, R0, 7
+    ASSERT_FALSE I6
+    mdel R0, 7                         ; deleting a missing key is fine
+    len I7, R0
+    ASSERT_EQ I7, 3                    ; apple, 0.0, pi
+
+    mkeys R3, R0                       ; insertion order
+    mov R4, R3[0]
+    strcmp I8, R4, "apple"
+    ASSERT_EQ I8, 0
+    mov F1, R3[1]
+    ASSERT_EQ F1, 0.0
+    mov R5, R3[2]
+    strcmp I8, R5, "pi"
+    ASSERT_EQ I8, 0
+
+    ; many keys force rehashing, with deletions mixed in
+    mnew R6
+    mov I9, 0
+1:  mul I10, I9, I9
+    mset R6, I9, I10
+    inc I9
+    blt I9, 5000, 1b
+    mov I9, 0
+2:  mdel R6, I9
+    add I9, 2
+    blt I9, 5000, 2b
+    len I11, R6
+    ASSERT_EQ I11, 2500
+    mget I12, R6, 4999
+    ASSERT_EQ I12, 24990001
+    mhas I13, R6, 4998
+    ASSERT_FALSE I13
+    ret 0
+.endf

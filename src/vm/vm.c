@@ -11,7 +11,6 @@ ObjString *str_new_immortal(const char *s, size_t len) {
     memset(&o->h, 0, sizeof o->h);
     o->h.kind = OBJ_STRING;
     o->h.flags = OBJF_IMMORTAL;
-    o->h.size = (uint32_t)(sizeof *o + len + 1);
     o->len = (uint32_t)len;
     o->hash = hash_bytes(s, len);
     memcpy(o->data, s, len);
@@ -25,6 +24,8 @@ VM *vm_new(void) {
     vm->stack_words = 128 * 1024; /* 1 MiB data stack per process */
     vm->max_frames = 100000;
     vm->next_pid = 1;
+    const char *stress = getenv("MLWSVM_GC_STRESS");
+    vm->gc_stress = stress && *stress && strcmp(stress, "0") != 0;
     op_init();
     natives_register_builtin(vm);
     return vm;
@@ -46,6 +47,9 @@ static void lmodule_free(LModule *lm) {
     }
     free(lm->grefs);
     free(lm->natives);
+    free(lm->sdefs); /* field names/types are borrowed from the Module */
+    free(lm->structs);
+    free(lm->frefs);
     free(lm->path);
     module_free(m);
     free(lm);

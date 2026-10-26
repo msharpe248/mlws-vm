@@ -8,8 +8,8 @@ assembler picks the encoding. Compilers can treat operands uniformly.
 **Units.** Square brackets `[...]` count in **words** (8 bytes) and curly braces
 `{...}` count in **bytes**. So `SP[2]` and `SP{16}` are the same location.
 
-**Bases.** A memory base must be a pointer: a `P` register, `SP` or `FP`. Using an
-`R` register as a base is reserved for object element/field access (milestone M4).
+**Bases.** A memory base must be a pointer: a `P` register, `SP` or `FP`. An `R`
+register base means element or field access on a heap object (modes 22–24).
 
 **Index registers** must be `I` registers. Their value is taken as a signed 64-bit
 integer.
@@ -39,6 +39,10 @@ integer.
 | 19 | `[SP[0]]{4}` | `0x13` MINDB | the same, with a byte displacement |
 | 20 | `ARG[n]` | DISP on FP | `FP[n]`: the n-th stack-passed argument |
 | 21 | `LOC[n]` | DISP on FP | `FP[-1-n]`: the n-th local reserved by `enter` |
+| 22 | `R2[I4]` | `0x17` ELEM | element I4 of the string, byte buffer, array or list in R2 |
+| 23 | `R2[7]` `R2[N-1]` | `0x18` ELEMI | element 7 (a constant index) |
+| 24 | `R2->Point.x` `R2->geo.Point.x` | `0x19` FIELD | field `x` of the `Point` struct in R2 |
+| — | `Point` after `new`/`isa` | `0x1A` STRUCT | a struct type (`new` and `isa` only) |
 | — | `label` | `0x14` LABEL | branch target (branch operands only) |
 | — | `func`, `mod.func` | `0x15` FUNC | call target (`call`/`tcall` only) |
 | — | `"io.print_i"` after `ncall` | `0x16` NATIVE | native function (`ncall` only) |
@@ -142,6 +146,24 @@ pointer (`p`), and the outer displacement is added to it.
 These are aliases for `FP[n]` and `FP[-1-n]`; see [ABI.md](ABI.md) for the frame
 layout.
 
+### Object elements and fields: `R[i]`, `R->Type.field`
+
+```asm
+anew.f64 R1, 8
+mov  R1[I2], 2.5             ; array element (bounds checked)
+add  R0->Point.x, R1[0]      ; struct field + array element
+lpush R3, R0->Point.label    ; fields are ordinary operands
+mov.u8 R4[0], 'H'            ; byte buffer byte
+mov  I5, R6[I1]              ; byte of a string (read-only)
+```
+
+The base must be an `R` register holding a non-null object (`E_NULL`
+otherwise). The index is an `I` register or a non-negative constant, with no scale
+or displacement, and it counts elements. A field operand checks that the object is
+a struct of the named type (`E_TYPE`). Element and field operands are not
+addresses: `lea` rejects them, and they can't be the inner operand of a
+memory-indirect operand.
+
 ## Access width and types
 
 The instruction's type sets how many bytes a memory operand reads or writes (`u8`
@@ -159,6 +181,9 @@ Every memory access is checked:
 * **Lifetime**: pointers carry a generation, so using a pointer to a freed or
   reallocated block traps with `E_UAF`.
 * **Null**: dereferencing a null pointer traps with `E_NULL`.
-* **References**: a word read as `r` must have been written as a reference
-  (`E_TYPE` otherwise), and a reference word cannot be read as an integer. This
-  keeps the GC precise and makes references unforgeable.
+* **References**: a word read as `r` must have been written as a reference, or
+  never written (which reads as null). Anything else traps with `E_TYPE`, and a
+  reference word cannot be read as an integer. This keeps the GC precise and makes
+  references unforgeable.
+* **Objects**: element indices are bounds checked, field operands check the struct
+  type, and typed slots check the register bank (see [ASSEMBLY.md §7](ASSEMBLY.md#7-heap-objects-and-structs)).

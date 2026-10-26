@@ -36,6 +36,12 @@ bool vm_run_file(VM *vm, const char *path, RunResult *res) {
     res->raw_leaked = p->raw_bytes;
     res->stack_peak_bytes = p->stack.size - p->stack_low_off;
     res->max_depth = p->max_depth;
+    res->heap_peak = p->heap_peak;
+    res->heap_live = p->heap_bytes;
+    res->gc_count = p->gc_count;
+    res->gc_ns = p->gc_ns;
+    res->objects_allocated = p->objects_allocated;
+    res->objects_freed = p->gc_freed_objects;
     if (ok) {
         res->status = RUN_OK;
         res->exit_code = p->exit_code;

@@ -6,7 +6,7 @@
 #include "types.h"
 
 #define MLWSO_MAGIC "MLWS"
-#define MLWSO_VERSION 1
+#define MLWSO_VERSION 2
 
 /* A call has a target and an argc operand, leaving 30 for arguments/results. */
 #define MAX_PARAMS 30
@@ -57,6 +57,26 @@ typedef struct {
     char *sym;
 } MGref;
 
+/* Struct type flags */
+#define MSF_EXPORT 0x01
+#define MSF_IMPORT 0x02
+
+/* A struct type: defined here (fields listed), or imported by name. */
+typedef struct {
+    char *name;
+    uint32_t flags;
+    uint32_t import_idx; /* MSF_IMPORT */
+    uint32_t nfields;
+    char **fields;
+    uint8_t *types;      /* MlwsType per field */
+} MStruct;
+
+/* A field reference used by R->Type.field operands, resolved by name at link time. */
+typedef struct {
+    uint32_t struct_idx;
+    char *field;
+} MFieldRef;
+
 typedef struct Module {
     char *name;   /* dotted module name, e.g. "std.io" */
     char *source; /* source file the module was assembled from (debug) */
@@ -72,6 +92,10 @@ typedef struct Module {
     uint32_t ngrefs;
     char **natives;
     uint32_t nnatives;
+    MStruct *structs;
+    uint32_t nstructs;
+    MFieldRef *frefs;
+    uint32_t nfrefs;
     uint8_t *gdata;  /* initial global segment image */
     uint8_t *gtags;  /* one MlwsType tag per 8-byte word */
     uint32_t gsize;  /* bytes, multiple of 8 */
@@ -83,6 +107,7 @@ void module_free(Module *m);
 /* Index of an exported function/data symbol by name, or -1. */
 int module_find_export_func(const Module *m, const char *name);
 int module_find_export_sym(const Module *m, const char *name);
+int module_find_export_struct(const Module *m, const char *name);
 
 /* Serialisation (module_io.c). */
 #include "bytes.h"

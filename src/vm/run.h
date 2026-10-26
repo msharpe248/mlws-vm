@@ -16,6 +16,7 @@ typedef struct {
     uint64_t raw_peak, raw_allocs, raw_frees, raw_leaked;
     uint64_t stack_peak_bytes;
     uint32_t max_depth;
+    uint64_t heap_peak, heap_live, gc_count, gc_ns, objects_allocated, objects_freed;
 } RunResult;
 
 bool vm_run_file(VM *vm, const char *path, RunResult *res);

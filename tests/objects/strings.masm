@@ -1,0 +1,63 @@
+; String instructions: strcat, substr, strcmp, strfind, tostr, parse, len,
+; and read-only byte access.
+.include "std/test.inc"
+.func main
+    strcat R0, "Hello", ", ", "World", "!"
+    len I0, R0
+    ASSERT_EQ I0, 13
+    substr R1, R0, 7, 5
+    strcmp I1, R1, "World"
+    ASSERT_EQ I1, 0
+    strcmp I1, "abc", "abd"
+    ASSERT_EQ I1, -1
+    strcmp I1, "abc", "ab"
+    ASSERT_EQ I1, 1
+    strfind I2, R0, "o"
+    ASSERT_EQ I2, 4
+    strfind I2, R0, "o", 5
+    ASSERT_EQ I2, 8
+    strfind I2, R0, "xyz"
+    ASSERT_EQ I2, -1
+    ASSERT_EQ R0[1], 'e'               ; bytes of a string are readable
+    typeof I3, R0
+    ASSERT_EQ I3, 1
+
+    tostr R2, -42
+    strcmp I4, R2, "-42"
+    ASSERT_EQ I4, 0
+    tostr.u8 R2, 255
+    strcmp I4, R2, "255"
+    ASSERT_EQ I4, 0
+    tostr R2, 0.1
+    strcmp I4, R2, "0.1"
+    ASSERT_EQ I4, 0
+    tostr.b R2, 1
+    strcmp I4, R2, "true"
+    ASSERT_EQ I4, 0
+    tostr.c R2, 'Z'
+    strcmp I4, R2, "Z"
+    ASSERT_EQ I4, 0
+    tostr.r R2, null                   ; null is the literal 0, so say .r
+    strcmp I4, R2, "null"
+    ASSERT_EQ I4, 0
+    tostr R3, R0                       ; a string converts to itself
+    beq.r R3, R0, 1f
+    FAIL "tostr of a string"
+1:  parse.i64 I5, "-123"
+    ASSERT_EQ I5, -123
+    parse.i64 I5, "0x1F"
+    ASSERT_EQ I5, 31
+    parse.u8 I5, "200"
+    ASSERT_EQ I5, 200
+    parse.f64 F0, "2.5e3"
+    ASSERT_EQ F0, 2500.0
+    parse.b I6, "true"
+    ASSERT_EQ I6, 1
+    strcat R4, "4", "2"
+    parse I7, R4                       ; type inferred from I7: i64
+    ASSERT_EQ I7, 42
+    substr R5, R0, 13, 0               ; an empty substring at the very end
+    len I8, R5
+    ASSERT_EQ I8, 0
+    ret 0
+.endf

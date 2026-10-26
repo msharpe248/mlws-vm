@@ -12,7 +12,8 @@ A program runs as a **process**. Each process owns:
 * a **data stack** of 8-byte words (1 MiB by default; `mlwsvm run --stack-words N`)
 * its own copy of every loaded module's **global segment**
 * its own **raw heap** (blocks created with `alloc`)
-* in later milestones, its own GC heap and mailbox
+* its own **garbage-collected heap** (§6) and handle table
+* in a later milestone, its own mailbox
 
 Processes share nothing mutable. Loaded code and constant-pool strings are
 immutable and shared. Milestone M6 adds the scheduler, so many processes run at
@@ -133,6 +134,7 @@ the verifier. Natives do not create a frame.
 | Data stack | 131,072 words (1 MiB) by default |
 | Raw block size | < 4 GiB |
 | Modules per VM | 4,094 |
+| Elements in a string, buffer, array, list or map | < 2^31 |
 
 ## 3. Instruction semantics shared by many opcodes
 
@@ -192,12 +194,43 @@ A pointer (`p`) is a checked 64-bit value:
 * Untyped `mov`, `swap`, `push` and `pop` copy a word together with its tag, so
   values keep their types when spilled and reloaded.
 * **References** (`r`) may only be stored in word-aligned, tagged words (stack and
-  globals) and in `R` registers. A word can be read as `r` only if its tag is `r`,
-  and a reference word cannot be read as anything else. This keeps the coming GC
-  precise and makes references unforgeable. To refer to a GC object from raw
-  memory, use a handle (milestone M4).
+  globals), in `R` registers, and inside heap objects. A word can be read as `r` only
+  if its tag is `r` or it was never written (it then reads as null). A reference word
+  cannot be read as anything else, and `memcpy` refuses to copy one. This keeps the
+  GC precise (§6) and makes references unforgeable. To refer to a GC object from raw
+  memory, use a handle (`hnew`).
 
-## 6. Traps
+## 6. The garbage-collected heap
+
+Objects (strings, byte buffers, arrays, structs, lists, maps) live on the heap of
+the process that created them. Processes never share heap objects; the only
+exception is constant-pool strings, which are immutable and immortal.
+
+* **Collector.** Precise, non-moving mark-sweep. A collection starts when the heap
+  has grown to twice its size after the previous collection (minimum 1 MiB).
+  `gc.collect` requests one explicitly.
+* **Safepoints.** Collections happen only *between* instructions. During one
+  instruction, including a native call, nothing moves or is freed.
+* **Roots.** These are every `R` register of every live frame, every
+  reference-tagged word of the data stack and of every module's global segment,
+  and every live handle. Nothing else keeps an object alive, so a reference held
+  only in raw memory (which can't store references anyway) or in an integer
+  doesn't count.
+* **Precision.** The VM always knows which words are references: from the register
+  bank, from the memory word tags, from array element and struct field types, and
+  from list and map tags. Integers that happen to look like addresses never keep
+  objects alive, and references can't be forged.
+* **Cycles** are collected like any other garbage.
+* **Handles.** `hnew` returns an `i64` handle that is a root until `hfree`. Use one
+  to refer to an object from raw memory or from host code.
+* **Statistics.** `mlwsvm run --stats` reports peak heap, objects allocated and
+  collected, and GC count and time. `gc.heap_bytes` and `gc.collections` read them
+  from inside a program.
+* **Stress testing.** `--gc-stress` (or `MLWSVM_GC_STRESS=1`) collects at every
+  instruction boundary after an allocation. `make check-gc` runs the whole test
+  suite this way.
+
+## 7. Traps
 
 A runtime fault stops the process and reports a stable error code and message,
 followed by a backtrace with source lines:

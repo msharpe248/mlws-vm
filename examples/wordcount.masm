@@ -1,0 +1,94 @@
+; wordcount.masm - split text into words, count them in a map, then print the
+; counts in first-seen order. Shows strings, maps, lists and structs together.
+;
+; expect-stdout: the: 3
+; expect-stdout: quick: 1
+; expect-stdout: fox: 2
+; expect-stdout: jumps: 1
+; expect-stdout: over: 1
+; expect-stdout: lazy: 1
+; expect-stdout: dog: 1
+; expect-stdout: and: 1
+; expect-stdout: 11 words, 8 distinct, longest "quick"
+.include "std/io.inc"
+
+.struct Stats
+    words: i64
+    longest: ref
+.ends
+
+; split(text) -> list of the space-separated words in text
+.func split(ref text) -> ref
+    .alias words, R1
+    .alias n, I0
+    .alias start, I1
+    .alias i, I2
+    lnew words
+    len n, text
+    mov start, 0
+    mov i, 0
+loop:
+    bge i, n, last
+    bne text[i], ' ', next
+    call push_word (words, text, start, i)
+    add start, i, 1
+next:
+    inc i
+    jmp loop
+last:
+    call push_word (words, text, start, n)
+    ret words
+.endf
+
+; Append text[from:to] to words unless it is empty.
+.func push_word(ref words, ref text, i64 from, i64 to)
+    sub I2, to, from
+    bz I2, 1f
+    substr R2, text, from, I2
+    lpush words, R2
+1:  ret
+.endf
+
+.func main
+    .alias words, R0
+    .alias counts, R1
+    .alias stats, R2
+    .alias w, R3
+    call split ("the quick fox jumps over the lazy dog and the fox") -> (words)
+    mnew counts
+    new stats, Stats
+    mov R4, ""
+    mov stats->Stats.longest, R4
+    len I1, words
+    mov stats->Stats.words, I1
+    mov I0, 0
+1:  bge I0, I1, 2f
+    mov w, words[I0]
+    mget I2, counts, w, 0           ; default 0 for a new word
+    inc I2
+    mset counts, w, I2
+    len I3, w                       ; track the longest word
+    mov R4, stats->Stats.longest
+    len I4, R4
+    ble I3, I4, 3f
+    mov stats->Stats.longest, w
+3:  inc I0
+    jmp 1b
+2:  mkeys R5, counts                ; keys come back in insertion order
+    len I1, R5
+    mov I0, 0
+4:  bge I0, I1, 5f
+    mov w, R5[I0]
+    mget I2, counts, w
+    tostr R6, I2
+    strcat R7, w, ": ", R6
+    PRINTLN_S R7
+    inc I0
+    jmp 4b
+5:  tostr R6, stats->Stats.words
+    len I3, counts
+    tostr R7, I3
+    strcat R8, R6, " words, ", R7, " distinct, longest \"", stats->Stats.longest, "\""
+    PRINTLN_S R8
+    ret 0
+.endf

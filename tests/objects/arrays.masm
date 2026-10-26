@@ -1,0 +1,41 @@
+; anew.<type> makes a fixed-length array; R[Ireg] and R[n] access elements.
+.include "std/test.inc"
+.func main
+    anew.i32 R0, 10
+    len I0, R0
+    ASSERT_EQ I0, 10
+    mov I1, 0
+1:  mul R0[I1], I1, I1               ; R0[i] = i*i
+    inc I1
+    blt I1, 10, 1b
+    ASSERT_EQ R0[9], 81
+    mov R0[0], 0x1_0000_0005         ; stored as i32: wraps to 5
+    ASSERT_EQ R0[0], 5
+
+    anew.u8 R1, 4
+    mov R1[2], 300
+    ASSERT_EQ R1[2], 44
+
+    anew.f64 R2, 3
+    mov R2[1], 2.5
+    add F0, R2[1], R2[1]
+    ASSERT_EQ F0, 5.0
+
+    anew.r R3, 2                       ; arrays of references
+    mov R3[0], "zero"
+    mov R3[1], R2
+    mov R4, R3[1]
+    ASSERT_EQ R4[1], 2.5
+    ASSERT_TRUE R3[0], r
+    anew.r R5, 1
+    ASSERT_TRUE R5, r
+    mov R6, R5[0]                      ; elements start null
+    ASSERT_FALSE R6
+
+    typeof I2, R0
+    ASSERT_EQ I2, 3
+    tostr R7, R0
+    strcmp I3, R7, "<array i32[10]>"
+    ASSERT_EQ I3, 0
+    ret 0
+.endf

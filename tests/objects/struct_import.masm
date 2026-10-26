@@ -1,0 +1,15 @@
+; Struct types can be exported and used from other modules by qualified name.
+.include "std/test.inc"
+.import _lib.shapes as sh
+.func main
+    call sh.make_rect (3.0, 4.0) -> (R0)
+    ASSERT_EQ R0->sh.Rect.w, 3.0
+    new R1, sh.Rect
+    mov R1->sh.Rect.w, 2.0
+    mov R1->sh.Rect.h, 5.0
+    call sh.area (R1) -> (F0)
+    ASSERT_EQ F0, 10.0
+    isa I0, R0, sh.Rect
+    ASSERT_TRUE I0
+    ret 0
+.endf

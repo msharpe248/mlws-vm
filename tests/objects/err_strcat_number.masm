@@ -1,0 +1,7 @@
+; strcat needs strings or byte buffers; numbers go through tostr.
+; expect-error: E_TYPE
+.func main
+    lnew R1
+    strcat R0, "x", R1
+    ret 0
+.endf

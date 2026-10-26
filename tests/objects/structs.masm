@@ -1,0 +1,61 @@
+; Structs: .struct declarations, new, field access with R->Type.field, zeroed
+; fields, nested references, typeof/isa and narrow field types.
+.include "std/test.inc"
+
+.struct Point
+    x: f64
+    y: f64
+.ends
+
+.struct Node
+    value: i64
+    small: i8
+    flag: bool
+    next: ref
+    pos: ref
+.ends
+
+.func main
+    new R0, Point
+    ASSERT_EQ R0->Point.x, 0.0         ; new fields are zero
+    mov R0->Point.x, 1.5
+    mov R0->Point.y, 2.5
+    add F0, R0->Point.x, R0->Point.y
+    ASSERT_EQ F0, 4.0
+    add R0->Point.x, 10                ; read-modify-write a field (type inferred: f64)
+    ASSERT_EQ R0->Point.x, 11.5
+
+    new R1, Node
+    ASSERT_FALSE R1->Node.next, r      ; ref fields start null
+    mov R1->Node.value, 7
+    mov R1->Node.small, 300            ; i8 field wraps: 300 -> 44
+    ASSERT_EQ R1->Node.small, 44
+    mov R1->Node.flag, 5               ; bool field: non-zero -> 1
+    ASSERT_EQ R1->Node.flag, 1
+    mov R1->Node.pos, R0
+    new R2, Node
+    mov R2->Node.value, 8
+    mov R1->Node.next, R2
+    mov R3, R1->Node.next
+    ASSERT_EQ R3->Node.value, 8
+    mov R4, R1->Node.pos
+    ASSERT_EQ R4->Point.y, 2.5
+
+    typeof I0, R0
+    ASSERT_EQ I0, 4                    ; struct
+    isa I1, R0, Point
+    ASSERT_TRUE I1
+    isa I1, R0, Node
+    ASSERT_FALSE I1
+    isa I1, null, Point
+    ASSERT_FALSE I1
+    beq.r R1, R1, 1f                   ; references compare by identity
+    FAIL "identity"
+1:  bne.r R1, R2, 2f
+    FAIL "identity 2"
+2:  push R0                            ; references can be spilled to the stack
+    mov R5, null
+    pop R5
+    ASSERT_EQ R5->Point.x, 11.5
+    ret 0
+.endf

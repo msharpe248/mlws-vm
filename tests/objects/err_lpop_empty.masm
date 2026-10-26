@@ -1,0 +1,6 @@
+; expect-error: E_BOUNDS
+.func main
+    lnew R0
+    lpop I0, R0
+    ret 0
+.endf

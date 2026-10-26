@@ -1,0 +1,6 @@
+; expect-error: E_TYPE
+.func main
+    strcat R0, "abc"
+    mov R0[0], 'x'
+    ret 0
+.endf

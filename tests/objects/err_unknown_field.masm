@@ -1,0 +1,9 @@
+; expect-error: E_ASM_UNDEF_SYM
+.struct P
+    x: f64
+.ends
+.func main
+    new R0, P
+    mov F0, R0->P.z
+    ret 0
+.endf

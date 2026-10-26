@@ -79,6 +79,12 @@ typedef struct {
     VEC(MGref) grefs;
     StrMap grefmap;
     VEC(MFunc) ifuncs; /* imported function entries, appended after locals */
+    VEC(MStruct) structs;  /* local definitions and import entries */
+    StrMap structmap;      /* local name or "I:imp:name" -> idx+1 */
+    MStruct *cur_struct;   /* open .struct, if any */
+    const PLine *struct_pl;
+    VEC(MFieldRef) frefs;
+    StrMap frefmap;        /* "sidx:field" -> idx+1 */
     StrMap ifuncmap;
     uint32_t seq;
 } Asm;
@@ -246,7 +252,7 @@ static bool check_base(Asm *A, Cur *c, int reg, int col) {
     if (bank == BANK_P || (bank == BANK_S && REG_IDX(reg) != SREG_PID)) return true;
     if (bank == BANK_R)
         return aerr(A, c->pl, col, "E_ASM_BAD_OPERAND",
-                    "object element/field access through R registers arrives with heap objects (milestone M4)");
+                    "objects are indexed as R0[I1] or R0[3] (element units), not with { } or address forms");
     return aerr(A, c->pl, col, "E_ASM_BAD_OPERAND",
                 "a memory base must be a pointer: a P register, SP or FP (use cvt/lea to make pointers)");
 }
@@ -427,6 +433,43 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
         return true;
     }
     int r = resolve_reg(A, t);
+    if (r >= 0 && REG_BANK(r) == BANK_R && (tok_is(peekn(c, 1), "[") || tok_is(peekn(c, 1), "->"))) {
+        c->pos++;
+        if (tok_is(cur(c), "->")) { /* R2->Type.field */
+            c->pos++;
+            Token *ft = cur(c);
+            const char *dot = ft->kind == TK_IDENT ? memchr(ft->start, '.', (size_t)ft->len) : NULL;
+            if (!dot || ft->start[ft->len - 1] == '.')
+                return aerr(A, c->pl, ft->col, "E_ASM_SYNTAX", "expected Type.field after '->'");
+            op_init_mode(out, OM_FIELD, col);
+            out->o.reg = (uint8_t)r;
+            out->sym = tokdup(ft);
+            c->pos++;
+            return true;
+        }
+        c->pos++; /* '[' */
+        int ir = resolve_reg(A, cur(c));
+        if (ir >= 0) {
+            if (REG_BANK(ir) != BANK_I)
+                return aerr(A, c->pl, cur(c)->col, "E_ASM_BAD_OPERAND", "an element index must be an I register");
+            c->pos++;
+            op_init_mode(out, OM_ELEM, col);
+            out->o.ireg = (uint8_t)ir;
+        } else {
+            int icol = cur(c)->col;
+            int64_t idx;
+            if (!eval_int(A, c, &idx)) return false;
+            if (idx < 0) return aerr(A, c->pl, icol, "E_ASM_RANGE", "element index must be non-negative");
+            op_init_mode(out, OM_ELEMI, col);
+            out->o.index = (uint64_t)idx;
+        }
+        out->o.reg = (uint8_t)r;
+        if (!tok_is(cur(c), "]"))
+            return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX",
+                        "expected ']' (an element index is an I register or a constant; no scale or displacement)");
+        c->pos++;
+        return true;
+    }
     if (r >= 0) {
         c->pos++;
         if (tok_is(cur(c), "[") || tok_is(cur(c), "{")) {
@@ -444,8 +487,7 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
             return true;
         }
         if (tok_is(cur(c), "->"))
-            return aerr(A, c->pl, cur(c)->col, "E_ASM_BAD_OPERAND",
-                        "struct field access (R->Type.field) arrives with heap objects (milestone M4)");
+            return aerr(A, c->pl, cur(c)->col, "E_ASM_BAD_OPERAND", "field access needs an R register: R0->Type.field");
         op_init_mode(out, OM_REG, col);
         out->o.reg = (uint8_t)r;
         return true;
@@ -481,6 +523,13 @@ static bool parse_operand(Asm *A, Cur *c, char pat, AsmOp *out) {
         if (t->kind != TK_IDENT || resolve_reg(A, t) >= 0)
             return aerr(A, c->pl, col, "E_ASM_BAD_OPERAND", "expected a function name");
         op_init_mode(out, OM_FUNC, col);
+        out->sym = tokdup(t);
+        c->pos++;
+        return true;
+    case 'T':
+        if (t->kind != TK_IDENT || resolve_reg(A, t) >= 0)
+            return aerr(A, c->pl, col, "E_ASM_BAD_OPERAND", "expected a struct type name");
+        op_init_mode(out, OM_STRUCT, col);
         out->sym = tokdup(t);
         c->pos++;
         return true;
@@ -568,7 +617,7 @@ static bool define_label(Asm *A, Cur *c, Token *t) {
         free(name);
         return true;
     }
-    bool dup = smap_has(&A->symmap, name) || smap_has(&A->funcmap, name);
+    bool dup = smap_has(&A->symmap, name) || smap_has(&A->funcmap, name) || smap_has(&A->structmap, name);
     for (size_t i = 0; i < A->pending.n; i++) dup = dup || !strcmp(A->pending.v[i], name);
     if (dup) {
         aerr(A, c->pl, t->col, "E_ASM_DUP_SYM", "symbol '%s' is already defined", name);
@@ -647,7 +696,8 @@ static bool dir_func(Asm *A, Cur *c) {
     if (nt->kind != TK_IDENT || nt->start[0] == '.')
         return aerr(A, c->pl, nt->col, "E_ASM_SYNTAX", "expected a function name");
     char *name = tokdup(nt);
-    if (is_reserved_name(name) || smap_has(&A->funcmap, name) || smap_has(&A->symmap, name)) {
+    if (is_reserved_name(name) || smap_has(&A->funcmap, name) || smap_has(&A->symmap, name) ||
+        smap_has(&A->structmap, name)) {
         aerr(A, c->pl, nt->col, "E_ASM_DUP_SYM", "'%s' is already defined or reserved", name);
         free(name);
         return false;
@@ -746,6 +796,11 @@ static void note_operand_regs(int maxr[NBANKS], const Operand *o) {
         note_reg(maxr, o->ireg);
         break;
     case OM_GLOBALIDX: case OM_GLOBALIDXB: note_reg(maxr, o->ireg); break;
+    case OM_ELEM:
+        note_reg(maxr, o->reg);
+        note_reg(maxr, o->ireg);
+        break;
+    case OM_ELEMI: case OM_FIELD: note_reg(maxr, o->reg); break;
     case OM_MIND: case OM_MINDB: note_operand_regs(maxr, o->inner); break;
     default: break;
     }
@@ -860,6 +915,68 @@ static bool dir_import(Asm *A, Cur *c) {
     return expect_eol(A, c);
 }
 
+static bool dir_struct(Asm *A, Cur *c) {
+    if (A->cur || A->cur_struct)
+        return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".struct must be at top level");
+    Token *nt = cur(c);
+    if (nt->kind != TK_IDENT || nt->start[0] == '.' || memchr(nt->start, '.', (size_t)nt->len))
+        return aerr(A, c->pl, nt->col, "E_ASM_SYNTAX", "expected a struct name (without dots)");
+    char *name = tokdup(nt);
+    bool pending_dup = false;
+    for (size_t i = 0; i < A->pending.n; i++) pending_dup = pending_dup || !strcmp(A->pending.v[i], name);
+    if (is_reserved_name(name) || smap_has(&A->structmap, name) || smap_has(&A->funcmap, name) ||
+        smap_has(&A->symmap, name) || pending_dup) {
+        aerr(A, c->pl, nt->col, "E_ASM_DUP_SYM", "'%s' is already defined or reserved", name);
+        free(name);
+        return false;
+    }
+    c->pos++;
+    MStruct st;
+    memset(&st, 0, sizeof st);
+    st.name = name;
+    smap_put(&A->structmap, name, IV(A->structs.n));
+    VEC_PUSH(A->structs, st);
+    A->cur_struct = &A->structs.v[A->structs.n - 1];
+    A->struct_pl = c->pl;
+    return expect_eol(A, c);
+}
+
+/* Inside .struct: `name: type` lines until .ends. */
+static bool struct_line(Asm *A, Cur *c) {
+    Token *t = cur(c);
+    if (t->kind == TK_EOF) return true;
+    if (tok_ident(t, ".ends")) {
+        c->pos++;
+        if (A->cur_struct->nfields == 0)
+            return aerr(A, A->struct_pl, 0, "E_ASM_SYNTAX", "struct %s has no fields", A->cur_struct->name);
+        A->cur_struct = NULL;
+        return expect_eol(A, c);
+    }
+    if (t->kind != TK_IDENT || t->start[0] == '.' || !tok_is(peekn(c, 1), ":"))
+        return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "expected 'field: type' or .ends inside .struct");
+    MStruct *st = A->cur_struct;
+    char *fname = tokdup(t);
+    for (uint32_t i = 0; i < st->nfields; i++) {
+        if (!strcmp(st->fields[i], fname)) {
+            aerr(A, c->pl, t->col, "E_ASM_DUP_SYM", "duplicate field '%s' in struct %s", fname, st->name);
+            free(fname);
+            return false;
+        }
+    }
+    c->pos += 2;
+    MlwsType ty;
+    if (!parse_type_tok(A, c, &ty)) {
+        free(fname);
+        return false;
+    }
+    st->fields = xrealloc(st->fields, (st->nfields + 1) * sizeof(char *));
+    st->types = xrealloc(st->types, st->nfields + 1);
+    st->fields[st->nfields] = fname;
+    st->types[st->nfields] = (uint8_t)ty;
+    st->nfields++;
+    return expect_eol(A, c);
+}
+
 static bool directive(Asm *A, Cur *c) {
     Token *d = cur(c);
     c->pos++;
@@ -874,6 +991,8 @@ static bool directive(Asm *A, Cur *c) {
     for (size_t i = 0; i < sizeof data_dirs / sizeof data_dirs[0]; i++)
         if (IS(data_dirs[i].name)) return data_directive(A, c, data_dirs[i].t);
     if (IS(".func")) return dir_func(A, c);
+    if (IS(".struct")) return dir_struct(A, c);
+    if (IS(".ends")) return aerr(A, c->pl, d->col, "E_ASM_SYNTAX", ".ends without .struct");
     if (IS(".endf")) return dir_endf(A, c);
     if (IS(".regs")) return dir_regs(A, c);
     if (IS(".alias")) return dir_alias(A, c);
@@ -952,16 +1071,39 @@ static MlwsType default_type(uint32_t set) {
     return T_NONE;
 }
 
-static void infer_type(AsmInsn *ai, bool has_type, bool has_type2) {
+/* Declared type of a `Type.field` reference to a struct defined earlier in this
+ * module, or T_NONE (imported or not yet known). */
+static MlwsType local_field_type(Asm *A, const char *sym) {
+    const char *dot = strrchr(sym, '.');
+    if (!dot) return T_NONE;
+    char *sname = xstrndup(sym, (size_t)(dot - sym));
+    void *v;
+    MlwsType t = T_NONE;
+    if (smap_get(&A->structmap, sname, &v)) {
+        const MStruct *st = &A->structs.v[VI(v)];
+        for (uint32_t i = 0; i < st->nfields; i++)
+            if (!strcmp(st->fields[i], dot + 1)) t = (MlwsType)st->types[i];
+    }
+    free(sname);
+    return t;
+}
+
+static MlwsType operand_hint(Asm *A, const AsmOp *o) {
+    if (o->o.mode == OM_REG) return reg_natural_type(o->o.reg);
+    if (o->o.mode == OM_FIELD) return local_field_type(A, o->sym);
+    return T_NONE;
+}
+
+static void infer_type(Asm *A, AsmInsn *ai, bool has_type, bool has_type2) {
     const OpInfo *oi = &op_info[ai->op];
     if (!has_type && oi->types && !(oi->flags & OPF_PERVAL)) {
         MlwsType t = T_NONE;
         if (oi->flags & OPF_TYPE2) {
-            if (ai->nops > 0 && ai->ops[0].o.mode == OM_REG) t = reg_natural_type(ai->ops[0].o.reg);
+            if (ai->nops > 0) t = operand_hint(A, &ai->ops[0]);
         } else {
             for (int k = 0; k < ai->nops && !t; k++) {
                 char p = op_pattern_at(oi, k);
-                if ((p == 'D' || p == 'S') && ai->ops[k].o.mode == OM_REG) t = reg_natural_type(ai->ops[k].o.reg);
+                if (p == 'D' || p == 'S') t = operand_hint(A, &ai->ops[k]);
             }
             if (!t && !(oi->flags & OPF_NATURAL)) {
                 for (int k = 0; k < ai->nops && !t; k++)
@@ -972,7 +1114,7 @@ static void infer_type(AsmInsn *ai, bool has_type, bool has_type2) {
         ai->type = (uint8_t)t;
     }
     if ((oi->flags & OPF_TYPE2) && !has_type2 && ai->nops > 1) {
-        MlwsType t2 = natural_of(&ai->ops[1]);
+        MlwsType t2 = ai->ops[1].o.mode == OM_FIELD ? operand_hint(A, &ai->ops[1]) : natural_of(&ai->ops[1]);
         if (t2 != T_R && t2 != T_P) ai->type2 = (uint8_t)t2;
     }
 }
@@ -1080,7 +1222,7 @@ static bool instruction(Asm *A, Cur *c) {
     }
     ai.ops = ops.v;
     ai.nops = (int)ops.n;
-    infer_type(&ai, has_type, has_type2);
+    infer_type(A, &ai, has_type, has_type2);
 
     Operand tmp[MAX_OPERANDS];
     Insn in = {ai.op, ai.type, ai.type2, (uint8_t)ai.nops, tmp};
@@ -1110,6 +1252,11 @@ static bool statement(Asm *A, const PLine *pl) {
     Cur c = {tv.v, tv.n, 0, pl};
     A->seq++;
     bool ok = true;
+    if (A->cur_struct) {
+        ok = struct_line(A, &c);
+        tokvec_free(&tv);
+        return ok;
+    }
     while (ok && (cur(&c)->kind == TK_IDENT || cur(&c)->kind == TK_INT) && tok_is(peekn(&c, 1), ":")) {
         ok = define_label(A, &c, cur(&c));
         c.pos += 2;
@@ -1185,8 +1332,71 @@ static bool resolve_gref(Asm *A, const PLine *pl, AsmOp *o) {
     return true;
 }
 
+/* Struct table index for a local or imported (qualified) struct name. */
+static bool resolve_struct_name(Asm *A, const PLine *pl, int col, const char *name, uint32_t *out) {
+    void *v;
+    if (smap_get(&A->structmap, name, &v)) {
+        *out = (uint32_t)VI(v);
+        return true;
+    }
+    uint32_t imp;
+    const char *sym;
+    if (!split_import(A, name, &imp, &sym))
+        return aerr(A, pl, col, "E_ASM_UNDEF_SYM", "undefined struct type '%s'", name);
+    char key[512];
+    snprintf(key, sizeof key, "I:%u:%s", imp, sym);
+    if (smap_get(&A->structmap, key, &v)) {
+        *out = (uint32_t)VI(v);
+        return true;
+    }
+    MStruct st;
+    memset(&st, 0, sizeof st);
+    st.name = xstrdup(sym);
+    st.flags = MSF_IMPORT;
+    st.import_idx = imp;
+    *out = (uint32_t)A->structs.n;
+    smap_put(&A->structmap, key, IV(A->structs.n));
+    VEC_PUSH(A->structs, st);
+    return true;
+}
+
+static bool resolve_field_ref(Asm *A, const PLine *pl, AsmOp *o) {
+    const char *dot = strrchr(o->sym, '.');
+    char *sname = xstrndup(o->sym, (size_t)(dot - o->sym));
+    uint32_t si;
+    bool ok = resolve_struct_name(A, pl, o->col, sname, &si);
+    free(sname);
+    if (!ok) return false;
+    const char *field = dot + 1;
+    const MStruct *st = &A->structs.v[si];
+    if (!(st->flags & MSF_IMPORT)) {
+        bool found = false;
+        for (uint32_t i = 0; i < st->nfields; i++) found = found || !strcmp(st->fields[i], field);
+        if (!found) return aerr(A, pl, o->col, "E_ASM_UNDEF_SYM", "struct %s has no field '%s'", st->name, field);
+    }
+    char key[512];
+    snprintf(key, sizeof key, "%u:%s", si, field);
+    void *v;
+    if (smap_get(&A->frefmap, key, &v)) {
+        o->o.index = VI(v);
+        return true;
+    }
+    MFieldRef fr = {si, xstrdup(field)};
+    o->o.index = A->frefs.n;
+    smap_put(&A->frefmap, key, IV(A->frefs.n));
+    VEC_PUSH(A->frefs, fr);
+    return true;
+}
+
 static bool resolve_module_refs(Asm *A, const PLine *pl, AsmOp *o) {
     if (o->inner && !resolve_module_refs(A, pl, o->inner)) return false;
+    if (o->o.mode == OM_FIELD) return resolve_field_ref(A, pl, o);
+    if (o->o.mode == OM_STRUCT) {
+        uint32_t si;
+        if (!resolve_struct_name(A, pl, o->col, o->sym, &si)) return false;
+        o->o.index = si;
+        return true;
+    }
     if (o->o.mode == OM_FUNC) return resolve_func_ref(A, pl, o);
     if (o->o.mode >= OM_GLOBAL && o->o.mode <= OM_GLOBALIDXB) return resolve_gref(A, pl, o);
     return true;
@@ -1202,6 +1412,10 @@ static Module *finish(Asm *A) {
         aerr(A, A->cur->pl, 0, "E_ASM_SYNTAX", "missing .endf for function %s", A->cur->name);
         return NULL;
     }
+    if (A->cur_struct) {
+        aerr(A, A->struct_pl, 0, "E_ASM_SYNTAX", "missing .ends for struct %s", A->cur_struct->name);
+        return NULL;
+    }
     bind_pending(A);
     data_align(A, 8);
     sync_tags(A);
@@ -1213,6 +1427,7 @@ static Module *finish(Asm *A) {
         void *v;
         if (smap_get(&A->funcmap, A->exports.v[i], &v)) A->funcs.v[VI(v)]->mf.flags |= MF_EXPORT;
         else if (smap_get(&A->symmap, A->exports.v[i], &v)) A->syms.v[VI(v)].flags |= MS_EXPORT;
+        else if (smap_get(&A->structmap, A->exports.v[i], &v)) A->structs.v[VI(v)].flags |= MSF_EXPORT;
         else {
             aerr(A, A->export_pl.v[i], 0, "E_ASM_UNDEF_SYM", "cannot export undefined symbol '%s'", A->exports.v[i]);
             return NULL;
@@ -1275,6 +1490,14 @@ static Module *finish(Asm *A) {
     m->grefs = A->grefs.v;
     A->grefs.v = NULL;
     A->grefs.n = 0;
+    m->nstructs = (uint32_t)A->structs.n;
+    m->structs = A->structs.v ? A->structs.v : xcalloc(1, sizeof(MStruct));
+    A->structs.v = NULL;
+    A->structs.n = 0;
+    m->nfrefs = (uint32_t)A->frefs.n;
+    m->frefs = A->frefs.v ? A->frefs.v : xcalloc(1, sizeof(MFieldRef));
+    A->frefs.v = NULL;
+    A->frefs.n = 0;
     m->nnatives = (uint32_t)A->natives.n;
     m->natives = xcalloc(A->natives.n + 1, sizeof(char *));
     for (size_t i = 0; i < A->natives.n; i++) m->natives[i] = xstrdup(A->natives.v[i]);
@@ -1327,6 +1550,18 @@ static void asm_free(Asm *A) {
     smap_free(&A->nativemap);
     smap_free(&A->grefmap);
     smap_free(&A->ifuncmap);
+    for (size_t i = 0; i < A->structs.n; i++) {
+        MStruct *st = &A->structs.v[i];
+        free(st->name);
+        for (uint32_t k = 0; k < st->nfields; k++) free(st->fields[k]);
+        free(st->fields);
+        free(st->types);
+    }
+    VEC_FREE(A->structs);
+    smap_free(&A->structmap);
+    for (size_t i = 0; i < A->frefs.n; i++) free(A->frefs.v[i].field);
+    VEC_FREE(A->frefs);
+    smap_free(&A->frefmap);
     bb_free(&A->gdata);
     VEC_FREE(A->gtags);
     free(A->modname);

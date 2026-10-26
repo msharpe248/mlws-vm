@@ -128,22 +128,36 @@ switch x { 0: .. 1: .. }       jtab x, .Lcase0, .Lcase1, .Lcase2
 * Lookup tables become data directives with indexed operands:
   `table: .i32 ...` and then `mov.i32 I0, @table{I1*4}`.
 
-## 7. Records and arrays (until milestone M4)
+## 7. Objects, records and collections
 
-Until the GC-managed `.struct` and array types land, lay out records by hand in
-raw memory with `.const` field offsets (see `examples/records.masm`):
+The heap object types map directly onto scripting-language values
+([ASSEMBLY.md §7](ASSEMBLY.md#7-heap-objects-and-structs)):
 
-```asm
-.const NODE_VALUE = 0             ; word offsets
-.const NODE_NEXT  = 1
-.const NODE_SIZE  = 16            ; bytes
-    alloc P1, NODE_SIZE
-    mov   P1[NODE_VALUE], I0
-    mov.p P1[NODE_NEXT], P0
-```
+| Source construct | MLWSVM |
+|---|---|
+| `"a" + b` | `strcat R0, "a", R1` (up to 31 parts in one instruction) |
+| `str(x)`, string interpolation | `tostr R0, x`, then `strcat` |
+| `int("42")`, `float(s)` | `parse.i64 I0, R1` / `parse.f64 F0, R1` (`E_PARSE` on failure) |
+| `s[i]`, `len(s)`, slices | `R1[I2]` (a byte), `len I0, R1`, `substr R0, R1, start, n` |
+| A class or record type | `.struct Name` with typed fields; `new R0, Name`; `R0->Name.field` |
+| A field or method dispatch check | `isa I0, R0, Name`, or `typeof I0, R0` for the kind |
+| A fixed-size typed array | `anew.f64 R0, n`; `R0[I1]` |
+| A dynamic list / array | `lnew`, `lpush`, `lpop`, `lins`, `ldel`, `R0[I1]`, `len` |
+| A dictionary / object literal | `mnew`, `mset`, `mget` (with a default), `mhas`, `mdel`, `mkeys` |
+| A string builder | `bufnew`, `bufcat`, `bufpush`, then `strcat R0, buf` |
 
-Raw memory is bounds-checked and generation-checked, but it is manually managed
-(`free`) and cannot hold GC references.
+* Lists and maps are **dynamically typed**: every element carries its type tag, so
+  a dynamically typed language can store anything in them, and `tostr` / `typeof`
+  can inspect values. Arrays and struct fields are **statically typed**, which
+  suits typed languages and is more compact.
+* Map keys compare by value. Integers of any width are compared by value and strings
+  by content, so `"apple"` built at run time finds the key `"apple"`. `mkeys` returns
+  keys in insertion order, which gives deterministic iteration.
+* Never free objects; the collector does it. Keep live objects reachable from an `R`
+  register, a stack slot, a global or another object. To refer to one from raw
+  memory or host code, use `hnew`.
+* Raw memory (`alloc`, `P` registers) is still useful for byte-level buffers, FFI
+  and manual layouts. See `examples/records.masm`.
 
 ## 8. A complete translation
 
@@ -215,12 +229,12 @@ on them.
 ## 10. Stability and what is coming
 
 These are stable and safe to target now: the assembly syntax, the operand forms,
-the opcode numbers, the calling convention and the `.mlwso` layout. These are
+the opcode numbers, the calling convention, the heap object model (M4) and the
+`.mlwso` layout. These are
 planned, and will only be *additions*:
 
 | Milestone | Adds |
 |---|---|
-| M4 | GC heap: strings, byte buffers, arrays, structs (`.struct`, `R2->Point.x`, `R2[I1]`), lists, maps, handles |
 | M5 | Exceptions: `.try`, `throw`, `catch`. Traps become catchable |
 | M6 | Processes: `spawn`, `send`, `recv`, `link`, `monitor`, quotas |
 | M7 | Tooling: `mlwsvm top`, `mlwsvm debug`, `--trace`, `--profile`, web dashboard |

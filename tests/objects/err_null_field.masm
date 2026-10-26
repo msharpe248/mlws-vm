@@ -1,0 +1,9 @@
+; expect-error: E_NULL
+.struct A
+    x: i64
+.ends
+.func main
+    mov R0, null
+    mov I0, R0->A.x
+    ret 0
+.endf

@@ -34,7 +34,7 @@ the message also names the macro and where it was expanded.
 | `E_LOAD_NAME` | A module declares a different name than it was imported as, or the name is already loaded |
 | `E_LOAD_LIMIT` | Too many modules |
 | `E_LINK_CYCLE` | Import cycle (the message shows the chain) |
-| `E_LINK_UNDEF` | Imported function or data symbol not exported by the module |
+| `E_LINK_UNDEF` | Imported function, data symbol or struct type not exported by the module, or a struct field that does not exist |
 | `E_LINK_NATIVE` | Unknown native function name in `ncall` |
 | `E_LINK_NO_MAIN` | The program has no `main`, or `main` takes parameters |
 | `E_VERIFY` | Bytecode verification failed: an operand shape, a register outside the window, a branch target, call or native arity or argument kinds, `ret` versus declared results, or code that runs off the end. Reported with source file, line and function |
@@ -47,13 +47,16 @@ Reported with a backtrace. `mlwsvm run` exits with status 70.
 |---|---|
 | `E_DIV_ZERO` | Integer division or remainder by zero |
 | `E_NULL` | Dereference of a null pointer, or a null argument to a native |
-| `E_BOUNDS` | Memory access outside its block, or pointer arithmetic out of range |
+| `E_BOUNDS` | Memory access outside its block, pointer arithmetic out of range, or an object index out of range (including `lpop` of an empty list and `substr` past the end) |
 | `E_BAD_PTR` | Pointer to an unknown segment |
 | `E_UAF` | Use of a pointer to a freed or reallocated block |
 | `E_DOUBLE_FREE` | `free`/`realloc` of an already freed block |
 | `E_BAD_FREE` | `free`/`realloc` of something that is not the start of a raw block |
-| `E_BAD_ALLOC` | Invalid allocation size, or too many live blocks |
-| `E_TYPE` | Reference type violation, or a value written to a register of the wrong bank |
+| `E_BAD_ALLOC` | Invalid allocation size or object length, or too many live blocks |
+| `E_TYPE` | Type violation: reading a non-reference as a reference (or the reverse); storing a value of the wrong bank in a register, array element, struct field or list slot; a field access on the wrong struct type; an object of the wrong kind for an instruction (e.g. `strcat` of a list); writing to an immutable string |
+| `E_KEY` | `mget` without a default for a key that is not in the map |
+| `E_PARSE` | `parse` input is not a valid number of the requested type |
+| `E_BAD_HANDLE` | `hget`/`hfree` of an unknown or freed handle |
 | `E_STACK_OVERFLOW` | Data stack exhausted |
 | `E_STACK_UNDERFLOW` | Access above the top of the data stack (popping an empty stack) |
 | `E_CALL_DEPTH` | More than the maximum number of nested calls |

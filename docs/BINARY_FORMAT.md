@@ -13,7 +13,7 @@ file produces `E_LOAD_FORMAT` (or `E_VERIFY`) rather than a crash.
 
 ```
 magic        4 bytes  "MLWS"
-version      u16      1
+version      u16      2
 flags        u16      0
 name         str      dotted module name, e.g. "std.io"
 source       str      source file name (for backtraces); may be empty
@@ -49,6 +49,18 @@ global refs  uleb n, then n × {
 
 natives      uleb n, then n × str           native names used by ncall
 
+structs      uleb n, then n × {
+               name   str
+               flags  uleb   1 = exported, 2 = import
+               if import:
+                 import_index uleb                    the struct is defined there
+               else:
+                 nfields uleb, then nfields × { name str, type u8 (MlwsType) }
+             }
+
+field refs   uleb n, then n × { struct_index uleb, field_name str }
+                                              resolved by name at link time
+
 globals      uleb size (multiple of 8)
              bytes × size                     initial image of the global segment
              tags  × size/8                   one MlwsType tag per word (0xFF = raw bytes)
@@ -58,7 +70,7 @@ code         uleb size, then bytes × size     all functions' instructions
 
 Operands refer to these tables by index: `CONST` refers to constants, `FUNC` to
 functions (local functions and import stubs share one table), `GLOBAL*` to global
-refs, and `NATIVE` to natives.
+refs, `NATIVE` to natives, `STRUCT` to structs and `FIELD` to field refs.
 
 ### Type codes (`MlwsType`)
 
@@ -109,6 +121,10 @@ operand := mode:u8 payload
 | `0x14` | LABEL | instruction index within the function:uleb |
 | `0x15` | FUNC | function table index:uleb |
 | `0x16` | NATIVE | native table index:uleb |
+| `0x17` | ELEM | reg:u8 ireg:u8 |
+| `0x18` | ELEMI | reg:u8 index:uleb |
+| `0x19` | FIELD | reg:u8 field_ref:uleb |
+| `0x1A` | STRUCT | struct table index:uleb |
 
 **Register byte**: `bank << 5 | index`, where the bank is 0 = I, 1 = F, 2 = R,
 3 = P, 4 = special. For the special bank, index 0 = SP, 1 = FP and 2 = PID.
@@ -126,4 +142,5 @@ interpreter relies on.
 
 * Opcode numbers and mode bytes never change meaning. New ones are added in unused
   slots.
-* The version number changes if the layout above changes.
+* The version number changes if the layout above changes. Version 2 added the
+  struct and field-ref tables. Version 1 files must be re-assembled.

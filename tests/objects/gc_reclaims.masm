@@ -1,0 +1,25 @@
+; Garbage is reclaimed: 200,000 temporary strings and lists are allocated, but
+; the heap stays small and the long-lived list survives every collection.
+.include "std/test.inc"
+.func main
+    lnew R0                            ; long-lived: keeps every 1000th value
+    mov I0, 0
+1:  tostr R1, I0                       ; garbage string
+    lnew R2                            ; garbage list holding it
+    lpush R2, R1, I0
+    rem I1, I0, 1000
+    bnz I1, 2f
+    lpush R0, R1
+2:  inc I0
+    blt I0, 200000, 1b
+    ncall "gc.collections" () -> (I2)
+    ASSERT_GT I2, 0
+    ncall "gc.heap_bytes" () -> (I3)
+    ASSERT_LT I3, 4000000              ; far less than the ~30 MB allocated
+    len I4, R0
+    ASSERT_EQ I4, 200
+    mov R3, R0[199]                    ; the last kept value is "199000"
+    strcmp I5, R3, "199000"
+    ASSERT_EQ I5, 0
+    ret 0
+.endf

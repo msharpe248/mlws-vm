@@ -4,8 +4,11 @@
  * the loop below only evaluates addressing modes and dispatches on the dense
  * opcode. Every fault traps (longjmp) out through vm_trap with a stable error
  * code; the verifier has already checked everything static. */
+#include <ctype.h>
+#include <errno.h>
 #include <math.h>
 
+#include "../heap/heap.h"
 #include "proc_internal.h"
 
 typedef struct {
@@ -26,13 +29,32 @@ static void ctx_load(Ctx *c) {
     c->P = p->preg + c->fr->base[BANK_P];
 }
 
-/* A resolved operand location: a register or a byte offset in a segment. */
+/* A resolved operand location: segment memory, a register, a Word slot of a
+ * heap object (array/struct with a fixed type, or list/map with a tag), or a
+ * byte of a string or byte buffer. */
+enum { LK_MEM = 0, LK_REG = 1, LK_SLOT = 2, LK_BYTE = 3 };
+
 typedef struct {
-    uint8_t is_reg;
+    uint8_t is_reg; /* LK_* */
     uint8_t reg;
     Segment *seg;
     uint32_t off;
+    Word *slot;
+    uint8_t *tag;   /* LK_SLOT with a per-element tag (lists, map values) */
+    uint8_t fixed;  /* LK_SLOT with a fixed type (arrays, struct fields) */
+    uint8_t ro;     /* LK_BYTE of an immutable string */
+    uint8_t *byte;
 } Loc;
+
+/* Location of the memory a pointer designates (checks the segment). */
+static Loc mem_loc(Process *p, uint64_t ptr) {
+    Loc L;
+    memset(&L, 0, sizeof L);
+    L.is_reg = LK_MEM;
+    L.seg = proc_segment(p, ptr);
+    L.off = PTR_OFF(ptr);
+    return L;
+}
 
 /* ---- registers ---------------------------------------------------------------- */
 
@@ -125,10 +147,69 @@ static uint64_t op_addr(Ctx *c, const Operand *o, int width) {
         return ptr_add(c, o->rv.gbase, (int64_t)((uint64_t)c->I[REG_IDX(o->ireg)] * (uint64_t)o->bscale) + o->bdisp);
     case OM_MIND: case OM_MINDB: {
         uint64_t ia = op_addr(c, o->inner, 8);
-        Loc L = {0, 0, proc_segment(c->p, ia), PTR_OFF(ia)};
+        Loc L = mem_loc(c->p, ia);
         return ptr_add(c, mem_read(c, &L, T_P).p, o->bdisp);
     }
     default: vm_trap(c->p, "E_INTERNAL", "operand is not a memory location");
+    }
+}
+
+static const char *obj_desc(const Obj *o) {
+    return o->kind == OBJ_STRUCT ? ((const ObjStruct *)o)->def->name : obj_kind_name(o->kind);
+}
+
+static Obj *obj_reg(Ctx *c, uint8_t reg) {
+    Obj *o = c->R[REG_IDX(reg)];
+    char b[8];
+    if (!o) vm_trap(c->p, "E_NULL", "%s is null", reg_name(reg, b));
+    return o;
+}
+
+static void obj_loc(Ctx *c, const Operand *o, Loc *L) {
+    Obj *ob = obj_reg(c, o->reg);
+    L->tag = NULL;
+    L->fixed = T_NONE;
+    L->ro = 0;
+    if (o->mode == OM_FIELD) {
+        const FieldRef *fr = o->rv.ptr;
+        if (ob->kind != OBJ_STRUCT || ((ObjStruct *)ob)->def != fr->def)
+            vm_trap(c->p, "E_TYPE", "expected a %s struct, got %s", fr->def->name, obj_desc(ob));
+        L->is_reg = LK_SLOT;
+        L->slot = &((ObjStruct *)ob)->fields[fr->index];
+        L->fixed = fr->def->types[fr->index];
+        return;
+    }
+    int64_t idx = o->mode == OM_ELEM ? c->I[REG_IDX(o->ireg)] : (int64_t)o->index;
+    uint32_t len;
+    switch (ob->kind) {
+    case OBJ_ARRAY: len = ((ObjArray *)ob)->len; break;
+    case OBJ_LIST: len = ((ObjList *)ob)->len; break;
+    case OBJ_BYTES: len = ((ObjBytes *)ob)->len; break;
+    case OBJ_STRING: len = ((ObjString *)ob)->len; break;
+    default: vm_trap(c->p, "E_TYPE", "cannot index a %s", obj_desc(ob));
+    }
+    if (idx < 0 || idx >= (int64_t)len)
+        vm_trap(c->p, "E_BOUNDS", "index %lld out of range for %s of length %u", (long long)idx, obj_desc(ob), len);
+    switch (ob->kind) {
+    case OBJ_ARRAY:
+        L->is_reg = LK_SLOT;
+        L->slot = &((ObjArray *)ob)->data[idx];
+        L->fixed = ((ObjArray *)ob)->elem;
+        break;
+    case OBJ_LIST:
+        L->is_reg = LK_SLOT;
+        L->slot = &((ObjList *)ob)->items[idx];
+        L->tag = &((ObjList *)ob)->tags[idx];
+        break;
+    case OBJ_BYTES:
+        L->is_reg = LK_BYTE;
+        L->byte = &((ObjBytes *)ob)->data[idx];
+        break;
+    default:
+        L->is_reg = LK_BYTE;
+        L->byte = (uint8_t *)&((ObjString *)ob)->data[idx];
+        L->ro = 1;
+        break;
     }
 }
 
@@ -136,6 +217,10 @@ static void loc_of(Ctx *c, const Operand *o, int width, Loc *L) {
     if (o->mode == OM_REG) {
         L->is_reg = 1;
         L->reg = o->reg;
+        return;
+    }
+    if (mode_is_object(o->mode)) {
+        obj_loc(c, o, L);
         return;
     }
     uint64_t a = op_addr(c, o, width);
@@ -188,8 +273,12 @@ static Word mem_read(Ctx *c, const Loc *L, MlwsType t) {
     int width = type_size(t);
     const uint8_t *m = mem_ptr(c, L, width);
     if (t == T_R) {
-        if (!L->seg->tags || L->off % 8 || L->seg->tags[L->off / 8] != T_R)
-            vm_trap(c->p, "E_TYPE", "memory at offset %u does not hold a reference", L->off);
+        uint8_t tag = L->seg->tags && L->off % 8 == 0 ? L->seg->tags[L->off / 8] : TAG_RAW;
+        if (tag == T_NONE) { /* never-written word: null */
+            w.r = NULL;
+            return w;
+        }
+        if (tag != T_R) vm_trap(c->p, "E_TYPE", "memory at offset %u does not hold a reference", L->off);
         memcpy(&w.r, m, sizeof w.r); /* host pointer; never observable as an integer */
         return w;
     }
@@ -250,18 +339,67 @@ static void mark_raw(Segment *s, uint32_t off, uint64_t n) {
 
 /* ---- operand values --------------------------------------------------------- */
 
+/* Same register bank, and references never mix with non-references. */
+static bool same_class(MlwsType a, MlwsType b) { return type_bank(a) == type_bank(b) && (a == T_R) == (b == T_R); }
+
+static Word slot_read(Ctx *c, const Loc *L, MlwsType *t) {
+    MlwsType have = L->fixed ? (MlwsType)L->fixed : (MlwsType)*L->tag;
+    Word w;
+    if (have == T_NONE) { /* never written: zero of any type */
+        if (*t == T_NONE) *t = T_I64;
+        w.u = 0;
+        return w;
+    }
+    if (*t == T_NONE) *t = have;
+    if (!same_class(have, *t)) vm_trap(c->p, "E_TYPE", "element holds %s but is read as %s", type_name(have), type_name(*t));
+    w = *L->slot;
+    if (type_is_int(*t)) w.i = canon_int(*t, w.i);
+    else if (type_is_float(*t)) w.f = canon_float(*t, w.f);
+    return w;
+}
+
+static void slot_write(Ctx *c, const Loc *L, MlwsType t, Word w) {
+    if (L->fixed) {
+        MlwsType f = (MlwsType)L->fixed;
+        if (!same_class(f, t)) vm_trap(c->p, "E_TYPE", "cannot store %s in a %s element or field", type_name(t), type_name(f));
+        if (type_is_int(f)) w.i = canon_int(f, w.i);
+        else if (type_is_float(f)) w.f = canon_float(f, w.f);
+    } else {
+        *L->tag = (uint8_t)t;
+    }
+    *L->slot = w;
+}
+
 static Word rd_loc(Ctx *c, const Loc *L, MlwsType *t) {
-    if (L->is_reg) {
+    switch (L->is_reg) {
+    case LK_REG:
         if (*t == T_NONE) *t = reg_natural_type(L->reg);
         return reg_read(c, L->reg, *t);
+    case LK_SLOT: return slot_read(c, L, t);
+    case LK_BYTE: {
+        if (*t == T_NONE) *t = T_U8;
+        if (!type_is_int(*t)) vm_trap(c->p, "E_TYPE", "bytes are integers, not %s", type_name(*t));
+        Word w;
+        w.i = canon_int(*t, *L->byte);
+        return w;
     }
-    if (*t == T_NONE) *t = mem_natural(L);
-    return mem_read(c, L, *t);
+    default:
+        if (*t == T_NONE) *t = mem_natural(L);
+        return mem_read(c, L, *t);
+    }
 }
 
 static void wr_loc(Ctx *c, const Loc *L, MlwsType t, Word w) {
-    if (L->is_reg) reg_write(c, L->reg, t, w);
-    else mem_write(c, L, t, w);
+    switch (L->is_reg) {
+    case LK_REG: reg_write(c, L->reg, t, w); break;
+    case LK_SLOT: slot_write(c, L, t, w); break;
+    case LK_BYTE:
+        if (L->ro) vm_trap(c->p, "E_TYPE", "strings are immutable (use a byte buffer)");
+        if (!type_is_int(t)) vm_trap(c->p, "E_TYPE", "bytes are integers, not %s", type_name(t));
+        *L->byte = (uint8_t)w.i;
+        break;
+    default: mem_write(c, L, t, w); break;
+    }
 }
 
 /* Read an operand as type t; T_NONE reads its natural type and reports it. */
@@ -301,7 +439,7 @@ static void wr(Ctx *c, const Operand *o, MlwsType t, Word w) {
     }
     Loc L;
     loc_of(c, o, type_size(t), &L);
-    mem_write(c, &L, t, w);
+    wr_loc(c, &L, t, w);
 }
 
 /* ---- data stack --------------------------------------------------------------- */
@@ -309,7 +447,7 @@ static void wr(Ctx *c, const Operand *o, MlwsType t, Word w) {
 static void push_word(Ctx *c, MlwsType t, Word v) {
     Process *p = c->p;
     uint64_t sp = ptr_add(c, p->sp, -8);
-    Loc L = {0, 0, proc_segment(p, sp), PTR_OFF(sp)};
+    Loc L = mem_loc(p, sp);
     memset(mem_ptr(c, &L, 8), 0, 8);
     mem_write(c, &L, t, v);
     p->sp = sp;
@@ -562,6 +700,99 @@ static Word bitcast(MlwsType to, MlwsType from, Word v) {
 
 static bool is_zero(MlwsType t, Word v) { return t == T_R ? v.r == NULL : v.u == 0; }
 
+/* ---- object helpers --------------------------------------------------------- */
+
+static Obj *rd_obj(Ctx *c, const Operand *o, int kind, const char *what) {
+    Obj *ob = rd(c, o, T_R).r;
+    if (!ob) vm_trap(c->p, "E_NULL", "%s of null", what);
+    if (kind && ob->kind != kind)
+        vm_trap(c->p, "E_TYPE", "%s needs a %s, got %s", what, obj_kind_name(kind), obj_desc(ob));
+    return ob;
+}
+
+/* Bytes of a string or byte buffer operand. */
+static const uint8_t *rd_text(Ctx *c, const Operand *o, const char *what, uint32_t *len) {
+    Obj *ob = rd_obj(c, o, 0, what);
+    if (ob->kind == OBJ_STRING) {
+        *len = ((ObjString *)ob)->len;
+        return (const uint8_t *)((ObjString *)ob)->data;
+    }
+    if (ob->kind == OBJ_BYTES) {
+        *len = ((ObjBytes *)ob)->len;
+        return ((ObjBytes *)ob)->data;
+    }
+    vm_trap(c->p, "E_TYPE", "%s needs a string or byte buffer, got %s (convert with tostr)", what, obj_desc(ob));
+}
+
+static void wr_ref(Ctx *c, const Operand *o, void *obj) {
+    Word w;
+    w.r = obj;
+    wr(c, o, T_R, w);
+}
+
+static void wr_int(Ctx *c, const Operand *o, MlwsType t, int64_t v) {
+    Word w;
+    w.i = v;
+    wr(c, o, t, w);
+}
+
+static int64_t parse_number(Ctx *c, MlwsType t, const uint8_t *s, uint32_t n, Word *out) {
+    char buf[128];
+    if (n == 0 || n >= sizeof buf) return -1;
+    memcpy(buf, s, n);
+    buf[n] = 0;
+    if (isspace((unsigned char)buf[0])) return -1;
+    char *end;
+    if (type_is_float(t)) {
+        double d = strtod(buf, &end);
+        if (*end) return -1;
+        out->f = canon_float(t, d);
+        return 0;
+    }
+    if (t == T_B) {
+        if (!strcmp(buf, "true") || !strcmp(buf, "1")) out->i = 1;
+        else if (!strcmp(buf, "false") || !strcmp(buf, "0")) out->i = 0;
+        else return -1;
+        return 0;
+    }
+    const char *q = buf;
+    bool neg = false;
+    if (*q == '-' || *q == '+') neg = *q++ == '-';
+    int base = 10;
+    if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) base = 16, q += 2;
+    else if (q[0] == '0' && (q[1] == 'b' || q[1] == 'B')) base = 2, q += 2;
+    else if (q[0] == '0' && (q[1] == 'o' || q[1] == 'O')) base = 8, q += 2;
+    if (!*q || *q == '-' || *q == '+' || isspace((unsigned char)*q)) return -1;
+    errno = 0;
+    unsigned long long mag = strtoull(q, &end, base);
+    if (*end || errno == ERANGE) return -1;
+    int bits = type_bits(t);
+    if (type_is_signed(t)) {
+        uint64_t lim = (uint64_t)1 << (bits - 1); /* |min| */
+        if (neg ? mag > lim : mag > lim - 1) return -1;
+        out->i = neg ? (int64_t)(0 - (uint64_t)mag) : (int64_t)mag;
+    } else {
+        if (neg && mag != 0) return -1;
+        if (bits < 64 && mag > (((uint64_t)1 << bits) - 1)) return -1;
+        if (t == T_C && mag > 0x10FFFF) return -1;
+        out->u = mag;
+    }
+    (void)c;
+    return 0;
+}
+
+static void describe_key(Word k, MlwsType t, char *buf, size_t n) {
+    if (t == T_R) {
+        Obj *o = k.r;
+        if (o && o->kind == OBJ_STRING) snprintf(buf, n, "\"%.60s\"", ((ObjString *)o)->data);
+        else snprintf(buf, n, "<%s>", o ? obj_kind_name(o->kind) : "null");
+    } else if (type_is_float(t)) {
+        fmt_double(k.f, buf, n);
+    } else {
+        snprintf(buf, n, "%lld", (long long)k.i);
+    }
+}
+
 /* ---- calls -------------------------------------------------------------------- */
 
 static void bind_args(Ctx *c, const MlwsType *types, const uint8_t *ptypes, int n, const Word *args) {
@@ -591,6 +822,8 @@ void interp_run(Process *p) {
         const Operand *ops = in->ops;
         MlwsType T = (MlwsType)in->type;
         p->insns++;
+        /* GC safepoint: between instructions every live reference is in a root. */
+        if (p->gc_pending) gc_collect(p);
         switch ((Opcode)in->op) {
         case OP_NOP:
         case OP_BREAK:
@@ -640,7 +873,7 @@ void interp_run(Process *p) {
             for (int k = 0; k < in->nops; k++) {
                 MlwsType t = T;
                 if (t == T_NONE && ops[k].mode == OM_REG) t = reg_natural_type(ops[k].reg);
-                Loc top = {0, 0, proc_segment(p, p->sp), PTR_OFF(p->sp)};
+                Loc top = mem_loc(p, p->sp);
                 Word v = rd_loc(&c, &top, &t);
                 p->sp = ptr_add(&c, p->sp, 8);
                 wr(&c, &ops[k], t, v);
@@ -653,7 +886,7 @@ void interp_run(Process *p) {
             int64_t n = ops[0].imm;
             if (n > (int64_t)p->stack.size) vm_trap(p, "E_STACK_OVERFLOW", "data stack overflow");
             uint64_t sp = ptr_add(&c, p->sp, -n * 8);
-            Loc L = {0, 0, proc_segment(p, sp), PTR_OFF(sp)};
+            Loc L = mem_loc(p, sp);
             memset(mem_ptr(&c, &L, (int)(n * 8)), 0, (size_t)n * 8);
             if (L.seg->tags) memset(L.seg->tags + L.off / 8, T_NONE, (size_t)n);
             p->sp = sp;
@@ -830,15 +1063,18 @@ void interp_run(Process *p) {
             if (n < 0) vm_trap(p, "E_BOUNDS", "negative length %lld", (long long)n);
             if (n == 0) break;
             if (n > (int64_t)UINT32_MAX) vm_trap(p, "E_BOUNDS", "length %lld too large", (long long)n);
-            Loc dl = {0, 0, proc_segment(p, dst), PTR_OFF(dst)};
+            Loc dl = mem_loc(p, dst);
             uint8_t *dm = mem_ptr(&c, &dl, (int)0);
             if ((uint64_t)dl.off + (uint64_t)n > dl.seg->size)
                 vm_trap(p, "E_BOUNDS", "%s of %lld bytes overruns the destination", op_info[in->op].mnem, (long long)n);
             if (in->op == OP_MEMCPY) {
-                Loc sl = {0, 0, proc_segment(p, second.p), PTR_OFF(second.p)};
+                Loc sl = mem_loc(p, second.p);
                 const uint8_t *sm = mem_ptr(&c, &sl, 0);
                 if ((uint64_t)sl.off + (uint64_t)n > sl.seg->size)
                     vm_trap(p, "E_BOUNDS", "memcpy of %lld bytes overruns the source", (long long)n);
+                if (sl.seg->tags)
+                    for (uint64_t w = sl.off / 8; w <= (sl.off + (uint64_t)n - 1) / 8; w++)
+                        if (sl.seg->tags[w] == T_R) vm_trap(p, "E_TYPE", "memcpy cannot copy a reference slot");
                 memmove(dm, sm, (size_t)n);
             } else {
                 memset(dm, (int)(uint8_t)second.i, (size_t)n);
@@ -846,6 +1082,235 @@ void interp_run(Process *p) {
             mark_raw(dl.seg, dl.off, (uint64_t)n);
             break;
         }
+        /* ---- objects ---- */
+        case OP_NEW:
+            wr_ref(&c, &ops[0], struct_new(p, ops[1].rv.ptr));
+            break;
+        case OP_ANEW:
+            wr_ref(&c, &ops[0], array_new(p, T, rd(&c, &ops[1], T_I64).i));
+            break;
+        case OP_LEN: {
+            Obj *ob = rd_obj(&c, &ops[1], 0, "len");
+            int64_t n;
+            switch (ob->kind) {
+            case OBJ_STRING: n = ((ObjString *)ob)->len; break;
+            case OBJ_BYTES: n = ((ObjBytes *)ob)->len; break;
+            case OBJ_ARRAY: n = ((ObjArray *)ob)->len; break;
+            case OBJ_LIST: n = ((ObjList *)ob)->len; break;
+            case OBJ_MAP: n = ((ObjMap *)ob)->count; break;
+            default: vm_trap(p, "E_TYPE", "len of a %s", obj_desc(ob));
+            }
+            wr_int(&c, &ops[0], T_I64, n);
+            break;
+        }
+        case OP_TYPEOF: {
+            Obj *ob = rd(&c, &ops[1], T_R).r;
+            wr_int(&c, &ops[0], T_I64, ob ? ob->kind : OBJ_NULL);
+            break;
+        }
+        case OP_ISA: {
+            Obj *ob = rd(&c, &ops[1], T_R).r;
+            bool is = ob && ob->kind == OBJ_STRUCT && ((ObjStruct *)ob)->def == ops[2].rv.ptr;
+            wr_int(&c, &ops[0], T_B, is);
+            break;
+        }
+        case OP_RESIZE: {
+            Obj *ob = rd_obj(&c, &ops[0], 0, "resize");
+            int64_t n = rd(&c, &ops[1], T_I64).i;
+            if (ob->kind == OBJ_BYTES) bytes_resize(p, (ObjBytes *)ob, n);
+            else if (ob->kind == OBJ_LIST) list_resize(p, (ObjList *)ob, n);
+            else vm_trap(p, "E_TYPE", "resize needs a byte buffer or list, got %s", obj_desc(ob));
+            break;
+        }
+
+        /* ---- strings and bytes ---- */
+        case OP_STRCAT: {
+            StrBuf b = {0};
+            for (int k = 1; k < in->nops; k++) {
+                uint32_t n;
+                const uint8_t *d = rd_text(&c, &ops[k], "strcat", &n);
+                sb_putn(&b, (const char *)d, n);
+            }
+            ObjString *s = str_new(p, b.s ? b.s : "", b.n);
+            sb_free(&b);
+            wr_ref(&c, &ops[0], s);
+            break;
+        }
+        case OP_SUBSTR: {
+            uint32_t n;
+            const uint8_t *d = rd_text(&c, &ops[1], "substr", &n);
+            int64_t start = rd(&c, &ops[2], T_I64).i, cnt = rd(&c, &ops[3], T_I64).i;
+            if (start < 0 || cnt < 0 || start + cnt > (int64_t)n)
+                vm_trap(p, "E_BOUNDS", "substr(%lld, %lld) out of range for length %u", (long long)start, (long long)cnt, n);
+            wr_ref(&c, &ops[0], str_new(p, (const char *)d + start, (size_t)cnt));
+            break;
+        }
+        case OP_STRCMP: {
+            uint32_t na, nb;
+            const uint8_t *a = rd_text(&c, &ops[1], "strcmp", &na);
+            const uint8_t *b = rd_text(&c, &ops[2], "strcmp", &nb);
+            int r = memcmp(a, b, na < nb ? na : nb);
+            if (r == 0) r = na < nb ? -1 : na > nb;
+            wr_int(&c, &ops[0], T_I64, r < 0 ? -1 : r > 0);
+            break;
+        }
+        case OP_STRFIND: {
+            uint32_t nh, nn;
+            const uint8_t *h = rd_text(&c, &ops[1], "strfind", &nh);
+            const uint8_t *nd = rd_text(&c, &ops[2], "strfind", &nn);
+            int64_t start = in->nops > 3 ? rd(&c, &ops[3], T_I64).i : 0, found = -1;
+            if (start < 0) start = 0;
+            for (int64_t i = start; i + nn <= nh; i++) {
+                if (memcmp(h + i, nd, nn) == 0) {
+                    found = i;
+                    break;
+                }
+            }
+            wr_int(&c, &ops[0], T_I64, found);
+            break;
+        }
+        case OP_TOSTR: {
+            MlwsType t = T;
+            Word v = rdn(&c, &ops[1], &t);
+            wr_ref(&c, &ops[0], value_to_string(p, v, t));
+            break;
+        }
+        case OP_PARSE: {
+            uint32_t n;
+            const uint8_t *d = rd_text(&c, &ops[1], "parse", &n);
+            Word v;
+            if (parse_number(&c, T, d, n, &v) < 0)
+                vm_trap(p, "E_PARSE", "cannot parse \"%.*s\" as %s", (int)(n > 60 ? 60 : n), (const char *)d, type_name(T));
+            wr(&c, &ops[0], T, v);
+            break;
+        }
+        case OP_BUFNEW:
+            wr_ref(&c, &ops[0], bytes_new(p, rd(&c, &ops[1], T_I64).i));
+            break;
+        case OP_BUFCAT: {
+            ObjBytes *b = (ObjBytes *)rd_obj(&c, &ops[0], OBJ_BYTES, "bufcat");
+            for (int k = 1; k < in->nops; k++) {
+                uint32_t n;
+                const uint8_t *d = rd_text(&c, &ops[k], "bufcat", &n);
+                bytes_append(p, b, d, n);
+            }
+            break;
+        }
+        case OP_BUFPUSH: {
+            ObjBytes *b = (ObjBytes *)rd_obj(&c, &ops[0], OBJ_BYTES, "bufpush");
+            for (int k = 1; k < in->nops; k++) {
+                uint8_t byte = (uint8_t)rd(&c, &ops[k], T_I64).i;
+                bytes_append(p, b, &byte, 1);
+            }
+            break;
+        }
+
+        /* ---- lists and maps ---- */
+        case OP_LNEW:
+            wr_ref(&c, &ops[0], list_new(p, in->nops > 1 ? rd(&c, &ops[1], T_I64).i : 0));
+            break;
+        case OP_LPUSH: {
+            ObjList *l = (ObjList *)rd_obj(&c, &ops[0], OBJ_LIST, "lpush");
+            for (int k = 1; k < in->nops; k++) {
+                MlwsType t = T;
+                Word v = rdn(&c, &ops[k], &t);
+                list_push(p, l, v, (uint8_t)t);
+            }
+            break;
+        }
+        case OP_LPOP: {
+            ObjList *l = (ObjList *)rd_obj(&c, &ops[1], OBJ_LIST, "lpop");
+            if (l->len == 0) vm_trap(p, "E_BOUNDS", "lpop of an empty list");
+            MlwsType t = T;
+            if (t == T_NONE && ops[0].mode == OM_REG) t = reg_natural_type(ops[0].reg);
+            Loc L;
+            memset(&L, 0, sizeof L);
+            L.is_reg = LK_SLOT;
+            L.slot = &l->items[l->len - 1];
+            L.tag = &l->tags[l->len - 1];
+            Word v = slot_read(&c, &L, &t);
+            list_resize(p, l, l->len - 1);
+            wr(&c, &ops[0], t, v);
+            break;
+        }
+        case OP_LINS: {
+            ObjList *l = (ObjList *)rd_obj(&c, &ops[0], OBJ_LIST, "lins");
+            int64_t at = rd(&c, &ops[1], T_I64).i;
+            MlwsType t = T;
+            Word v = rdn(&c, &ops[2], &t);
+            list_insert(p, l, at, v, (uint8_t)t);
+            break;
+        }
+        case OP_LDEL: {
+            ObjList *l = (ObjList *)rd_obj(&c, &ops[0], OBJ_LIST, "ldel");
+            list_delete(p, l, rd(&c, &ops[1], T_I64).i);
+            break;
+        }
+        case OP_MNEW:
+            wr_ref(&c, &ops[0], map_new(p));
+            break;
+        case OP_MSET: {
+            ObjMap *m = (ObjMap *)rd_obj(&c, &ops[0], OBJ_MAP, "mset");
+            MlwsType kt = T_NONE, vt = T;
+            Word k = rdn(&c, &ops[1], &kt);
+            Word v = rdn(&c, &ops[2], &vt);
+            map_set(p, m, k, (uint8_t)kt, v, (uint8_t)vt);
+            break;
+        }
+        case OP_MGET: {
+            ObjMap *m = (ObjMap *)rd_obj(&c, &ops[1], OBJ_MAP, "mget");
+            MlwsType kt = T_NONE;
+            Word k = rdn(&c, &ops[2], &kt);
+            MapEntry *e = map_find(m, k, (uint8_t)kt);
+            MlwsType t = T;
+            if (t == T_NONE && ops[0].mode == OM_REG) t = reg_natural_type(ops[0].reg);
+            Word v;
+            if (e) {
+                Loc L;
+                memset(&L, 0, sizeof L);
+                L.is_reg = LK_SLOT;
+                L.slot = &e->val;
+                L.tag = &e->vtag;
+                v = slot_read(&c, &L, &t);
+            } else if (in->nops > 3) {
+                v = rdn(&c, &ops[3], &t);
+            } else {
+                char kb[96];
+                describe_key(k, kt, kb, sizeof kb);
+                vm_trap(p, "E_KEY", "key %s not found in map", kb);
+            }
+            wr(&c, &ops[0], t, v);
+            break;
+        }
+        case OP_MHAS: {
+            ObjMap *m = (ObjMap *)rd_obj(&c, &ops[1], OBJ_MAP, "mhas");
+            MlwsType kt = T_NONE;
+            Word k = rdn(&c, &ops[2], &kt);
+            wr_int(&c, &ops[0], T_B, map_find(m, k, (uint8_t)kt) != NULL);
+            break;
+        }
+        case OP_MDEL: {
+            ObjMap *m = (ObjMap *)rd_obj(&c, &ops[0], OBJ_MAP, "mdel");
+            MlwsType kt = T_NONE;
+            Word k = rdn(&c, &ops[1], &kt);
+            map_delete(m, k, (uint8_t)kt);
+            break;
+        }
+        case OP_MKEYS:
+            wr_ref(&c, &ops[0], map_keys(p, (ObjMap *)rd_obj(&c, &ops[1], OBJ_MAP, "mkeys")));
+            break;
+
+        /* ---- handles ---- */
+        case OP_HNEW:
+            wr_int(&c, &ops[0], T_I64, handle_new(p, rd(&c, &ops[1], T_R).r));
+            break;
+        case OP_HGET:
+            wr_ref(&c, &ops[0], handle_get(p, rd(&c, &ops[1], T_I64).i));
+            break;
+        case OP_HFREE:
+            handle_free(p, rd(&c, &ops[0], T_I64).i);
+            break;
+
         case OP__COUNT:
         default:
             vm_trap(p, "E_INTERNAL", "unimplemented opcode %s", op_info[in->op].mnem);

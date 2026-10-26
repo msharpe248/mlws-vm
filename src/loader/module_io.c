@@ -21,6 +21,16 @@ void module_free(Module *m) {
     free(m->grefs);
     for (uint32_t i = 0; i < m->nnatives; i++) free(m->natives[i]);
     free(m->natives);
+    for (uint32_t i = 0; i < m->nstructs; i++) {
+        MStruct *st = &m->structs[i];
+        free(st->name);
+        for (uint32_t k = 0; k < st->nfields; k++) free(st->fields[k]);
+        free(st->fields);
+        free(st->types);
+    }
+    free(m->structs);
+    for (uint32_t i = 0; i < m->nfrefs; i++) free(m->frefs[i].field);
+    free(m->frefs);
     free(m->gdata);
     free(m->gtags);
     free(m->code);
@@ -39,6 +49,14 @@ int module_find_export_func(const Module *m, const char *name) {
 int module_find_export_sym(const Module *m, const char *name) {
     for (uint32_t i = 0; i < m->nsyms; i++) {
         if ((m->syms[i].flags & MS_EXPORT) && strcmp(m->syms[i].name, name) == 0) return (int)i;
+    }
+    return -1;
+}
+
+int module_find_export_struct(const Module *m, const char *name) {
+    for (uint32_t i = 0; i < m->nstructs; i++) {
+        const MStruct *st = &m->structs[i];
+        if ((st->flags & MSF_EXPORT) && !(st->flags & MSF_IMPORT) && strcmp(st->name, name) == 0) return (int)i;
     }
     return -1;
 }
@@ -96,6 +114,26 @@ void module_write(const Module *m, ByteBuf *b) {
     }
     bb_uleb(b, m->nnatives);
     for (uint32_t i = 0; i < m->nnatives; i++) bb_str(b, m->natives[i]);
+    bb_uleb(b, m->nstructs);
+    for (uint32_t i = 0; i < m->nstructs; i++) {
+        const MStruct *st = &m->structs[i];
+        bb_str(b, st->name);
+        bb_uleb(b, st->flags);
+        if (st->flags & MSF_IMPORT) {
+            bb_uleb(b, st->import_idx);
+            continue;
+        }
+        bb_uleb(b, st->nfields);
+        for (uint32_t k = 0; k < st->nfields; k++) {
+            bb_str(b, st->fields[k]);
+            bb_u8(b, st->types[k]);
+        }
+    }
+    bb_uleb(b, m->nfrefs);
+    for (uint32_t i = 0; i < m->nfrefs; i++) {
+        bb_uleb(b, m->frefs[i].struct_idx);
+        bb_str(b, m->frefs[i].field);
+    }
     bb_uleb(b, m->gsize);
     bb_bytes(b, m->gdata, m->gsize);
     bb_bytes(b, m->gtags, m->gsize / 8);
@@ -235,6 +273,45 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
     m->natives = xcalloc(n, sizeof(char *));
     for (uint32_t i = 0; i < m->nnatives; i++) m->natives[i] = br_str(&r);
     CHECK();
+
+    n = br_uleb(&r);
+    CHECK_COUNT(n, 2);
+    m->nstructs = (uint32_t)n;
+    m->structs = xcalloc(n + 1, sizeof(MStruct));
+    for (uint32_t i = 0; i < m->nstructs; i++) {
+        MStruct *st = &m->structs[i];
+        st->name = br_str(&r);
+        st->flags = (uint32_t)br_uleb(&r);
+        CHECK();
+        if (st->flags & MSF_IMPORT) {
+            st->import_idx = (uint32_t)br_uleb(&r);
+            CHECK();
+            if (st->import_idx >= m->nimports) FAIL("struct %s: bad import index", st->name);
+            continue;
+        }
+        uint64_t nf = br_uleb(&r);
+        CHECK_COUNT(nf, 2);
+        st->nfields = (uint32_t)nf;
+        st->fields = xcalloc(nf + 1, sizeof(char *));
+        st->types = xcalloc(nf + 1, 1);
+        for (uint32_t k = 0; k < st->nfields; k++) {
+            st->fields[k] = br_str(&r);
+            st->types[k] = br_u8(&r);
+            CHECK();
+            if (st->types[k] == T_NONE || st->types[k] >= T__COUNT) FAIL("struct %s: bad field type", st->name);
+        }
+    }
+
+    n = br_uleb(&r);
+    CHECK_COUNT(n, 2);
+    m->nfrefs = (uint32_t)n;
+    m->frefs = xcalloc(n + 1, sizeof(MFieldRef));
+    for (uint32_t i = 0; i < m->nfrefs; i++) {
+        m->frefs[i].struct_idx = (uint32_t)br_uleb(&r);
+        m->frefs[i].field = br_str(&r);
+        CHECK();
+        if (m->frefs[i].struct_idx >= m->nstructs) FAIL("field reference: bad struct index");
+    }
 
     n = br_uleb(&r);
     CHECK_COUNT(n, 1);

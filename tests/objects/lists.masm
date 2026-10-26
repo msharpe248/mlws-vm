@@ -1,0 +1,52 @@
+; Lists grow, and each element remembers its own type.
+; expect-stdout: [1, 2.5, three, true]
+.include "std/test.inc"
+.include "std/io.inc"
+.func main
+    lnew R0
+    lpush R0, 1, 2.5, "three"
+    lpush.b R0, 1
+    len I0, R0
+    ASSERT_EQ I0, 4
+    ; print every element with tostr, which uses the element's type
+    PRINT_C '['
+    mov I1, 0
+1:  bge I1, I0, 3f
+    bz I1, 2f
+    PRINT_S ", "
+2:  tostr R1, R0[I1]
+    PRINT_S R1
+    inc I1
+    jmp 1b
+3:  PRINT_C ']'
+    NL
+    mov F0, R0[1]
+    ASSERT_EQ F0, 2.5
+    mov R0[1], "replaced"              ; an element's type can change
+    mov R2, R0[1]
+    ncall "str.len" (R2) -> (I2)
+    ASSERT_EQ I2, 8
+    lpop I3, R0                        ; true -> 1
+    ASSERT_EQ I3, 1
+    lins R0, 0, 99                     ; insert at the front
+    ASSERT_EQ R0[0], 99
+    ASSERT_EQ R0[1], 1
+    ldel R0, 0
+    ASSERT_EQ R0[0], 1
+    resize R0, 6                       ; new slots are untyped zeros
+    ASSERT_EQ R0[5], 0
+    mov R3, R0[5]                      ; ... which read as null references too
+    ASSERT_FALSE R3
+    resize R0, 1
+    len I4, R0
+    ASSERT_EQ I4, 1
+    ; a list can contain itself; the GC handles cycles
+    lpush R0, R0
+    mov R4, R0[1]
+    beq.r R4, R0, 4f
+    FAIL "self reference"
+4:  lnew R5, 100                       ; optional initial capacity
+    len I5, R5
+    ASSERT_EQ I5, 0
+    ret 0
+.endf

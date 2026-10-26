@@ -45,17 +45,21 @@ base:
   `.rept`/`.irp`, conditional assembly, includes, and register aliases.
 * **A loader with libraries**: `.import std.math as math`, a library search path,
   `.masm` or binary `.mlwso`, cycle detection, and a load-time verifier.
+* **Rich heap types with a garbage collector**: strings, byte buffers, typed
+  arrays, structs declared in assembly (`R0->Point.x`), dynamically typed lists, and
+  insertion-ordered maps. The collector is a precise, per-process mark-sweep.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 80+ test programs, also run under
-  AddressSanitizer and UBSan.
+* **Tested in its own assembly**: 100+ test programs, also run under
+  AddressSanitizer and UBSan, and with a garbage collection at every allocation.
 
 ## Build and run
 
 ```sh
 make                         # builds ./mlwsvm (needs only a C11 compiler)
 make test                    # runs tests/ and examples/
-make check-asan              # the same, under AddressSanitizer + UBSan
+make check-gc                # the same, collecting garbage at every allocation
+make check-asan              # both of the above, under AddressSanitizer + UBSan
 
 ./mlwsvm run examples/hello.masm
 ./mlwsvm run --stats examples/fib.masm
@@ -86,6 +90,7 @@ src/core/       types, opcode table (opcodes.def), instruction codec, shared che
 src/asm/        lexer, constant expressions, preprocessor (macros etc.), assembler
 src/loader/     .mlwso reader/writer
 src/vm/         loader/linker, verifier, processes and memory, interpreter, run helper
+src/heap/       garbage collector and heap objects (strings, bytes, arrays, structs, lists, maps)
 src/native/     built-in native functions
 src/tools/      test runner, doc generator
 src/platform/   the only OS-specific code (POSIX and Windows)
@@ -105,8 +110,8 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M1 Assembler: labels, expressions, directives, macros, includes | done |
 | M2 Loader and interpreter: register windows, data stack, all addressing modes, verifier, test runner | done |
 | M3 Libraries: imports/exports, library path, `lib/std` | done |
-| M4 GC heap: strings, byte buffers, arrays, structs, lists, maps, handles | next |
-| M5 Structured exceptions | planned |
+| M4 GC heap: strings, byte buffers, arrays, structs, lists, maps, handles | done |
+| M5 Structured exceptions | next |
 | M6 Many concurrent isolated processes: scheduler, messages, quotas, accounting | planned |
 | M7 Tooling: `mlwsvm top`, debugger, trace/profiler, web dashboard | planned |
 | M8 Closures, BigInt, decimal | planned |

@@ -4,6 +4,7 @@
 #include <math.h>
 
 #include "../platform/platform.h"
+#include "../heap/heap.h"
 #include "../vm/vm.h"
 
 static void out_str(Process *p, const char *s) { vm_write(p->vm, s, strlen(s)); }
@@ -36,14 +37,30 @@ static void n_print_f(Process *p, Word *a, Word *r) {
     out_str(p, buf);
 }
 
+/* A string or byte buffer argument's bytes; traps on anything else. */
+static const char *text_arg(Process *p, Word a, const char *fn, uint32_t *len) {
+    Obj *o = a.r;
+    if (!o) vm_trap(p, "E_NULL", "%s of null", fn);
+    if (o->kind == OBJ_STRING) {
+        *len = ((ObjString *)o)->len;
+        return ((ObjString *)o)->data;
+    }
+    if (o->kind == OBJ_BYTES) {
+        *len = ((ObjBytes *)o)->len;
+        return (const char *)((ObjBytes *)o)->data;
+    }
+    vm_trap(p, "E_TYPE", "%s needs a string or byte buffer, got %s", fn, obj_kind_name(o->kind));
+}
+
 static void n_print_s(Process *p, Word *a, Word *r) {
     (void)r;
-    ObjString *s = a[0].r;
-    if (!s) {
+    if (!a[0].r) {
         out_str(p, "null");
         return;
     }
-    vm_write(p->vm, s->data, s->len);
+    uint32_t n;
+    const char *s = text_arg(p, a[0], "io.print_s", &n);
+    vm_write(p->vm, s, n);
 }
 
 static void n_print_c(Process *p, Word *a, Word *r) {
@@ -89,16 +106,33 @@ static void n_now_ns(Process *p, Word *a, Word *r) {
 }
 
 static void n_str_len(Process *p, Word *a, Word *r) {
-    if (!a[0].r) vm_trap(p, "E_NULL", "str.len of null");
-    r[0].i = ((ObjString *)a[0].r)->len;
+    uint32_t n;
+    text_arg(p, a[0], "str.len", &n);
+    r[0].i = n;
 }
 
 static void n_str_byte(Process *p, Word *a, Word *r) {
-    ObjString *s = a[0].r;
-    if (!s) vm_trap(p, "E_NULL", "str.byte of null");
-    if (a[1].i < 0 || a[1].i >= (int64_t)s->len)
-        vm_trap(p, "E_BOUNDS", "str.byte index %lld out of range (length %u)", (long long)a[1].i, s->len);
-    r[0].i = (uint8_t)s->data[a[1].i];
+    uint32_t n;
+    const char *s = text_arg(p, a[0], "str.byte", &n);
+    if (a[1].i < 0 || a[1].i >= (int64_t)n)
+        vm_trap(p, "E_BOUNDS", "str.byte index %lld out of range (length %u)", (long long)a[1].i, n);
+    r[0].i = (uint8_t)s[a[1].i];
+}
+
+static void n_gc_collect(Process *p, Word *a, Word *r) {
+    (void)a;
+    (void)r;
+    p->gc_pending = true; /* runs at the next instruction boundary */
+}
+
+static void n_gc_heap_bytes(Process *p, Word *a, Word *r) {
+    (void)a;
+    r[0].i = (int64_t)p->heap_bytes;
+}
+
+static void n_gc_collections(Process *p, Word *a, Word *r) {
+    (void)a;
+    r[0].i = (int64_t)p->gc_count;
 }
 
 static void n_test_fail(Process *p, Word *a, Word *r) {
@@ -139,15 +173,18 @@ static const NativeDef BUILTINS[] = {
     {"io.print_u", 1, {T_U64}, 0, {0}, n_print_u, "Print an unsigned integer."},
     {"io.print_hex", 1, {T_U64}, 0, {0}, n_print_hex, "Print an integer in hexadecimal with a 0x prefix."},
     {"io.print_f", 1, {T_F64}, 0, {0}, n_print_f, "Print a float using the shortest representation that round-trips."},
-    {"io.print_s", 1, {T_R}, 0, {0}, n_print_s, "Print a string (null prints `null`)."},
+    {"io.print_s", 1, {T_R}, 0, {0}, n_print_s, "Print a string or byte buffer (null prints `null`)."},
     {"io.print_c", 1, {T_C}, 0, {0}, n_print_c, "Print a character (UTF-8 encoded)."},
     {"io.print_b", 1, {T_B}, 0, {0}, n_print_b, "Print `true` or `false`."},
     {"io.print_p", 1, {T_P}, 0, {0}, n_print_p, "Print a pointer for debugging."},
     {"io.nl", 0, {0}, 0, {0}, n_nl, "Print a newline."},
     {"time.now_ns", 0, {0}, 1, {T_I64}, n_now_ns, "Monotonic clock in nanoseconds."},
-    {"str.len", 1, {T_R}, 1, {T_I64}, n_str_len, "Length of a string in bytes."},
+    {"str.len", 1, {T_R}, 1, {T_I64}, n_str_len, "Length of a string or byte buffer in bytes (same as the len instruction)."},
     {"str.byte", 2, {T_R, T_I64}, 1, {T_U8}, n_str_byte, "Byte at an index of a string (bounds checked)."},
     {"test.fail", 1, {T_R}, 0, {0}, n_test_fail, "Trap with E_ASSERT and the given message."},
+    {"gc.collect", 0, {0}, 0, {0}, n_gc_collect, "Request a garbage collection; it runs before the next instruction."},
+    {"gc.heap_bytes", 0, {0}, 1, {T_I64}, n_gc_heap_bytes, "Bytes currently allocated on this process's heap (live and not yet collected)."},
+    {"gc.collections", 0, {0}, 1, {T_I64}, n_gc_collections, "Number of garbage collections so far in this process."},
     {"math.sin", F1, n_sin, "Sine (radians)."},
     {"math.cos", F1, n_cos, "Cosine (radians)."},
     {"math.tan", F1, n_tan, "Tangent (radians)."},

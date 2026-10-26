@@ -137,3 +137,52 @@ which preserves the type tag of a stack or global word.
 | `0x0092` | `realloc` | `ptr_dst, ptr, int` | - | Resize a raw block: `realloc dst, ptr, n`. The contents are preserved up to the smaller size and new bytes are zeroed. Old pointers into the block become invalid (E_UAF). |
 | `0x0093` | `memcpy` | `ptr, ptr, int` | - | Copy n bytes: `memcpy dst_ptr, src_ptr, n` (the regions may overlap). Copied bytes are untyped: they cannot later be read as references. |
 | `0x0094` | `memset` | `ptr, int, int` | - | Fill n bytes with a byte value: `memset ptr, byte, n`. |
+
+## Objects
+
+| Opcode | Mnemonic | Operands | Types | Description |
+|---|---|---|---|---|
+| `0x00A0` | `new` | `?, ?` | - | Allocate a struct with every field zero (0, 0.0 or null): `new R0, Point`. Fields are then accessed as R0->Point.x. |
+| `0x00A1` | `anew` | `?, int` | int float r p | Allocate an array of n zeroed elements of the instruction type: `anew.f64 R0, 100`. Elements are accessed as R0[I1] or R0[5] and are bounds checked. |
+| `0x00A2` | `len` | `?, ?` | - | Length: bytes of a string or byte buffer, elements of an array or list, entries of a map. Traps E_TYPE for a struct and E_NULL for null. |
+| `0x00A3` | `typeof` | `?, ?` | - | Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map. |
+| `0x00A4` | `isa` | `bool_dst, ?, ?` | - | dst = true if the reference is a struct of the given type: `isa I0, R1, Point`. |
+| `0x00A5` | `resize` | `?, int` | - | Set the length of a byte buffer or list. New bytes are 0. New list elements are untyped zeros, which read as 0, 0.0 or null. |
+
+## Strings
+
+| Opcode | Mnemonic | Operands | Types | Description |
+|---|---|---|---|---|
+| `0x00B0` | `strcat` | `?, ?, ...` | - | Concatenate strings and/or byte buffers into a new string: `strcat R0, R1, "-", R2` (up to 31 parts). `strcat R0, buf` copies a byte buffer into a string. |
+| `0x00B1` | `substr` | `?, ?, int, int` | - | `substr dst, s, start, n`: new string of the n bytes starting at byte offset start. Traps E_BOUNDS if the range is outside s. |
+| `0x00B2` | `strcmp` | `?, ?, ?` | - | Compare two strings or byte buffers bytewise: dst = -1, 0 or 1. |
+| `0x00B3` | `strfind` | `?, ?, ?, [int]` | - | `strfind dst, s, needle [, start]`: byte offset of the first occurrence of needle at or after start (default 0), or -1. |
+| `0x00B4` | `tostr` | `?, val` | int float r p | Convert a value to a new string, using the instruction type or the value's natural type: integers in decimal, floats in shortest round-trip form, bools as true/false, chars as UTF-8. A string converts to itself, a byte buffer to a copy, and other objects to a description such as <list len=3>. |
+| `0x00B5` | `parse` | `dst, ?` | int float | Parse a number from the whole string: `parse.i64 I0, s` (decimal, or 0x/0b/0o prefixed), `parse.f64 F0, s`. Anything else traps E_PARSE. |
+| `0x00B6` | `bufnew` | `?, int` | - | New mutable byte buffer of n zero bytes. Its bytes are accessed as R0[I1] (u8). |
+| `0x00B7` | `bufcat` | `?, ?, ...` | - | Append strings and/or byte buffers to a byte buffer: `bufcat buf, s1, s2, ...`. |
+| `0x00B8` | `bufpush` | `?, int, ...` | - | Append byte values (the low 8 bits of each operand) to a byte buffer. |
+
+## Lists and maps
+
+| Opcode | Mnemonic | Operands | Types | Description |
+|---|---|---|---|---|
+| `0x00C0` | `lnew` | `?, [int]` | - | New empty list, with an optional initial capacity. |
+| `0x00C1` | `lpush` | `?, val, ...` | int float r p | Append values to a list. Each element remembers its type: untyped operands use their natural type, typed ones (lpush.i32) the instruction type. |
+| `0x00C2` | `lpop` | `dst, ?` | int float r p | Remove the last element of a list into dst: `lpop dst, list`. Traps E_BOUNDS on an empty list. |
+| `0x00C3` | `lins` | `?, int, val` | int float r p | Insert a value before index i (0..len): `lins list, i, value`. |
+| `0x00C4` | `ldel` | `?, int` | - | Delete the element at index i, shifting later elements down. |
+| `0x00C5` | `mnew` | `?` | - | New empty map. Maps iterate in insertion order. |
+| `0x00C6` | `mset` | `?, val, val` | int float r p | `mset map, key, value`. Keys compare by value: integers of any width by value, floats by value, strings by content, other references by identity, pointers by value. A type suffix applies to the value. |
+| `0x00C7` | `mget` | `dst, ?, val, [val]` | int float r p | `mget dst, map, key [, default]`. A missing key yields the default if given, and otherwise traps E_KEY. A type suffix applies to the value and the default. |
+| `0x00C8` | `mhas` | `bool_dst, ?, val` | - | dst = true if the map contains the key. |
+| `0x00C9` | `mdel` | `?, val` | - | Remove a key from a map (no effect if it is absent). |
+| `0x00CA` | `mkeys` | `?, ?` | - | New list of a map's keys, in insertion order. |
+
+## Handles
+
+| Opcode | Mnemonic | Operands | Types | Description |
+|---|---|---|---|---|
+| `0x00D0` | `hnew` | `?, ?` | - | Make a handle: an i64 that keeps the object alive and can be stored anywhere, including raw memory. Freed handle numbers may be reused. |
+| `0x00D1` | `hget` | `?, int` | - | Get a handle's object. Traps E_BAD_HANDLE for an unknown or freed handle. |
+| `0x00D2` | `hfree` | `int` | - | Release a handle. The object becomes collectable if nothing else refers to it. |
