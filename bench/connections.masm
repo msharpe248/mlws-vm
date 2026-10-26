@@ -1,0 +1,53 @@
+; bench: 10,000 TCP connections open at once (20,000 descriptors: both ends are
+; in this VM), each end in its own waiting process; then every client sends a
+; line and gets it back
+; expect-stdout: 10000
+.include "std/test.inc"
+.const N = 10000
+.func handler(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+    ncall "fs.read_line" (R0) -> (R1)  ; idle here, in the poller
+    strcat R2, R1, "\n"
+    ncall "fs.write" (R0, R2)
+    ncall "fs.close" (R0)
+    ret
+.endf
+.func client(i64 parent, i64 port)
+    ncall "net.connect" ("127.0.0.1", port, 10000) -> (R0)
+    send parent, 1                     ; connected
+    recv I1                            ; wait until everyone is connected
+    ncall "fs.write" (R0, "ping\n")
+    ncall "fs.read_line" (R0) -> (R1)
+    strcmp I2, R1, "ping"
+    send parent, I2
+    ret
+.endf
+.func main
+    ncall "net.listen" ("127.0.0.1", 0) -> (R0)
+    ncall "net.port" (R0) -> (I0)
+    alloc P0, N * 8
+    mov I1, 0
+1:  spawn client (PID, I0) -> (I2)
+    mov P0[I1], I2
+    ncall "net.accept" (R0) -> (R1)
+    ncall "fs.give" (R1) -> (I3)
+    spawn handler (I3)
+    recv I4                            ; that client is connected
+    inc I1
+    blt I1, N, 1b
+    ncall "proc.count" () -> (I5)      ; main + N clients + N idle handlers
+    ASSERT_EQ I5, N * 2 + 1
+    mov I1, 0
+2:  mov I2, P0[I1]
+    send I2, 0                         ; go
+    inc I1
+    blt I1, N, 2b
+    mov I1, 0
+3:  recv I4
+    ASSERT_EQ I4, 0
+    inc I1
+    blt I1, N, 3b
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ret 0
+.endf

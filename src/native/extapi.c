@@ -177,7 +177,7 @@ static MlwsValue api_list_new(MlwsCtx *cx) { return (MlwsValue){.r = list_new(P(
 
 static int64_t api_list_len(MlwsCtx *cx, MlwsValue v) {
     ObjList *l = (ObjList *)want(P(cx), v, OBJ_LIST, "list");
-    return l ? l->len : -1;
+    return l ? (int64_t)l->len : -1;
 }
 
 static bool api_list_get(MlwsCtx *cx, MlwsValue v, int64_t i, MlwsValue *out, uint8_t *type) {
@@ -368,7 +368,9 @@ static const MlwsApi API = {
 /* Run an extension's init function; on failure `err` says why. */
 bool ext_run_init(VM *vm, ExtLib *lib, void *init, MlwsError *err) {
     MlwsExtension ext = {vm, lib, err, false};
-    int rc = ((MlwsExtensionInitFn)init)(&API, &ext);
+    MlwsExtensionInitFn fn; /* ISO C has no object-to-function pointer cast; dlsym's result is a function */
+    memcpy(&fn, &init, sizeof fn);
+    int rc = fn(&API, &ext);
     if (rc != 0 && !ext.failed) mlws_err(err, "E_LINK_EXT", "extension %s: initialisation failed (%d)", lib->name, rc);
     return rc == 0 && !ext.failed;
 }

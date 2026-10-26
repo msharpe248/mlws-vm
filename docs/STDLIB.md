@@ -11,7 +11,7 @@ restricts them.
 | `io`, `math`, `str`, `gc`, `proc`, `time`, `test` | since M2–M8 | printing, maths, string bytes, the collector, process count, the clock |
 | `fs` | M12 | files, standard streams, directories, metadata |
 | `os` | M12 | arguments, the environment, exit, running commands |
-| `net` | M13 (planned) | TCP, UDP, DNS |
+| `net` | M13 | TCP, UDP, DNS |
 | `text`, `json` | M14 (planned) | formatting, UTF-8, JSON |
 
 ## How I/O waits
@@ -58,6 +58,49 @@ Handles belong to their process and cannot be sent to another (`E_TYPE`).
   the test runner); `fs.stderr` goes to standard error. They cannot be read.
 * Seeking (`fs.seek`) works on files only.
 
+## Networking
+
+```asm
+    ncall "net.listen" ("127.0.0.1", 8080) -> (R0)   ; "" listens on every address; port 0 picks one
+1:  ncall "net.accept" (R0) -> (R1)                  ; waits in the poller
+    ncall "fs.give" (R1) -> (I0)                     ; hand the connection to its own process
+    spawn handle_connection (I0)
+    jmp 1b
+
+.func handle_connection(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+    ncall "fs.read_line" (R0) -> (R1)                ; connections are streams: fs.read, fs.write, ...
+```
+
+* A connection is a stream handle: read and write it with `fs.read`,
+  `fs.read_line`, `fs.read_all` and `fs.write`, and close it with `fs.close`.
+  `net.close_write` sends end-of-input but keeps reading. `fs.set_timeout`
+  applies to connections and listeners alike.
+* `net.connect(host, port, timeout_ms)` resolves the name and connects on the
+  I/O pool, trying each address in turn. Everything after that uses the poller.
+  Connections have `TCP_NODELAY` set, which suits request/reply protocols.
+* UDP: `net.udp(host, port)` makes a bound socket, `net.send_to` sends a
+  datagram, and `net.recv_from` waits for one and returns its sender.
+* DNS: `net.resolve(name)` returns the addresses. Names given to `listen`,
+  `connect`, `udp` or `send_to` are resolved on the I/O pool; addresses are not.
+* Thousands of connections are cheap: each costs a descriptor, a small process
+  and a buffer, never a thread. `bench/connections.masm` holds 10,000 open at
+  once (20,000 descriptors, since both ends are in the same VM). At startup
+  MLWSVM raises its descriptor limit as far as the system allows.
+* Writing to a connection the other end has closed raises `E_RESET`. The VM
+  ignores `SIGPIPE`, so this never kills the program.
+
+### Handing a handle to another process
+
+Handles belong to their process, so a server that accepts in one process and
+serves in another moves the connection explicitly. `fs.give(handle)` detaches
+the descriptor (the handle is closed from then on) and returns a **ticket**: a
+random 64-bit number that can be sent in a message or passed to `spawn`.
+`fs.take(ticket)` turns it into a handle in the receiving process, exactly once.
+A ticket cannot usefully be guessed, and one never taken is closed when the VM
+ends. This works for files and pipes too. A handle with read-ahead input
+buffered, or a write in progress, cannot be given.
+
 ## Errors
 
 Every failure raises an ordinary, catchable `Error`. The message names the call
@@ -72,6 +115,8 @@ and the path, and gives the OS's description:
 | `E_CLOSED` | the handle has been closed |
 | `E_TIMEOUT` | a timeout set with `fs.set_timeout` passed |
 | `E_RESET` | the other end of a pipe or connection closed it |
+| `E_REFUSED` | nothing is listening at that address |
+| `E_ADDR_IN_USE` | `net.listen` on a port already in use |
 | `E_RESOURCES` | out of descriptors, memory or disk space |
 | `E_IO` | any other OS error |
 | `E_TYPE` | a wrong argument (a handle of another kind, a bad mode) |

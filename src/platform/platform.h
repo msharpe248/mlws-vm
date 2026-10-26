@@ -119,6 +119,23 @@ bool plat_spawn(char *const argv[], int pipes, PlatChild *c, int *err); /* searc
 bool plat_wait_child(int64_t pid, int *exit_code, int *err);           /* blocks; 128+N for signal N */
 bool plat_signal_child(int64_t pid, int sig);                          /* 9 = kill, else terminate */
 
+/* Sockets (std.net). Listening and accepted sockets are non-blocking; connect
+ * blocks (run it on the I/O pool). Hosts may be names unless noted. */
+void plat_ignore_sigpipe(void);
+void plat_raise_fd_limit(void);
+bool plat_host_numeric(const char *host); /* "" or an IPv4/IPv6 literal: no DNS needed */
+int plat_sock_listen(const char *host, int port, int *err);
+int plat_sock_accept(int listen_fd, int *err); /* PLAT_IO_AGAIN if none is waiting */
+int plat_sock_connect(const char *host, int port, int64_t timeout_ms, int *err);
+int plat_sock_port(int fd); /* the local port */
+bool plat_sock_peer(int fd, char *ip, size_t n, int *port);
+bool plat_sock_shutdown_write(int fd);
+bool plat_resolve(const char *name, char ***addrs, size_t *n, int *err); /* malloc'd strings */
+int plat_udp_open(const char *host, int port, int *err);
+long plat_udp_send(int fd, const char *host, int port, const void *buf, size_t n, int *err);
+long plat_udp_recv(int fd, void *buf, size_t n, char *ip, size_t iplen, int *port, int *err);
+bool plat_random_bytes(void *buf, size_t n); /* from the OS's entropy source */
+
 /* The poller: one-shot waits for descriptors to become readable or writable. */
 typedef struct PlatPoller PlatPoller;
 #define PLAT_POLL_READ 1

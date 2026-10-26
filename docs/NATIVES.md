@@ -40,7 +40,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `math.pow` | f64, f64 | f64 | x raised to y. |
 | `math.hypot` | f64, f64 | f64 | sqrt(x*x + y*y) without undue overflow. |
 
-## Files and the operating system (`fs.*`, `os.*`)
+## Files, the operating system and the network (`fs.*`, `os.*`, `net.*`)
 
 > Generated from `src/native/osio.c`. See [STDLIB.md](STDLIB.md) for how they wait,
 > their errors, and the OS-call quota (kind 5).
@@ -58,6 +58,8 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `fs.stdin` | - | r | The program's standard input. |
 | `fs.stdout` | - | r | The program's standard output (the same output as io.print). |
 | `fs.stderr` | - | r | The program's standard error. |
+| `fs.give` | r | i64 | Hand a file or socket to another process: the handle closes, and the returned ticket (send it) is turned back into a handle by fs.take, once. |
+| `fs.take` | i64 | r | Take a handle given with fs.give. |
 | `fs.read_file` | r | r | A whole file, as a byte buffer. |
 | `fs.write_file` | r, r | - | Create or replace a file with a string or byte buffer. |
 | `fs.stat` | r | r | A FileInfo for a path: size, mtime (ns), mode, kind (1 file, 2 directory, 3 link, 4 other). |
@@ -77,3 +79,13 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `os.wait` | r | i64 | Wait for a command to finish; its exit code (128 + N if killed by signal N). |
 | `os.kill` | r, b | - | Stop a command: ask it to terminate, or kill it (true). |
 | `os.run` | r | i64, r | Run a command to completion: its exit code and its standard output, as a byte buffer. |
+| `net.listen` | r, i64 | r | Listen for TCP connections on a host ("" = all addresses, "127.0.0.1", "::", a name) and port (0: any free one). |
+| `net.accept` | r | r | Wait for the next connection; read and write it with fs.read, fs.read_line and fs.write. |
+| `net.connect` | r, i64, i64 | r | Connect to a host and port, with a timeout in ms (negative: the OS default). |
+| `net.port` | r | i64 | A socket's local port (the one chosen for net.listen port 0). |
+| `net.peer` | r | r, i64 | The address and port of a connection's other end. |
+| `net.close_write` | r | - | Finish sending on a connection (the other end reads end of input) but keep reading. |
+| `net.resolve` | r | r | A host name's addresses, as a list of strings. |
+| `net.udp` | r, i64 | r | A UDP socket bound to a host ("" = any) and port (0 = any). |
+| `net.send_to` | r, r, i64, r | - | Send a datagram (a string or byte buffer) to a host and port. |
+| `net.recv_from` | r | r, r, i64 | Wait for a datagram: its bytes, and the sender's address and port. |

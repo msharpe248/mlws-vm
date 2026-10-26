@@ -118,7 +118,7 @@ static void gen_natives(StrBuf *b) {
                "wrappers in `lib/std/*.masm` instead of directly.\n\n"
                "| Name | Parameters | Results | Description |\n|---|---|---|---|\n");
     native_rows(b, t, n);
-    sb_puts(b, "\n## Files and the operating system (`fs.*`, `os.*`)\n\n"
+    sb_puts(b, "\n## Files, the operating system and the network (`fs.*`, `os.*`, `net.*`)\n\n"
                "> Generated from `src/native/osio.c`. See [STDLIB.md](STDLIB.md) for how they wait,\n"
                "> their errors, and the OS-call quota (kind 5).\n\n"
                "| Name | Parameters | Results | Description |\n|---|---|---|---|\n");

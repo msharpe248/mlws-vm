@@ -1,0 +1,17 @@
+; UDP: datagrams between two sockets, with the sender's address and port.
+.include "std/test.inc"
+.func main
+    ncall "net.udp" ("127.0.0.1", 0) -> (R0)
+    ncall "net.udp" ("127.0.0.1", 0) -> (R1)
+    ncall "net.port" (R0) -> (I0)
+    ncall "net.port" (R1) -> (I1)
+    ncall "net.send_to" (R0, "127.0.0.1", I1, "datagram")
+    ncall "net.recv_from" (R1) -> (R2, R3, I2)
+    strcat R4, R2
+    strcmp I3, R4, "datagram"
+    ASSERT_EQ I3, 0
+    strcmp I3, R3, "127.0.0.1"
+    ASSERT_EQ I3, 0
+    ASSERT_EQ I2, I0                   ; from R0's port
+    ret 0
+.endf

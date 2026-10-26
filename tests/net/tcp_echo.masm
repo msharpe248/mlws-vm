@@ -1,0 +1,49 @@
+; A TCP echo server with a process per connection: the acceptor hands each
+; connection to its own handler with fs.give / fs.take, and 50 clients, each
+; in its own process, talk to it at the same time.
+.include "std/test.inc"
+.const CLIENTS = 50
+; Echo lines until the client closes.
+.func handler(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+1:  ncall "fs.read_line" (R0) -> (R1)
+    bz.r R1, 2f
+    strcat R2, R1, "\n"
+    ncall "fs.write" (R0, R2)
+    jmp 1b
+2:  ncall "fs.close" (R0)
+    ret
+.endf
+.func client(i64 parent, i64 port, i64 n)
+    ncall "net.connect" ("127.0.0.1", port, 5000) -> (R0)
+    tostr R1, n
+    strcat R2, "hello ", R1, "\n"
+    ncall "fs.write" (R0, R2)
+    ncall "fs.read_line" (R0) -> (R3)
+    strcat R4, "hello ", R1
+    strcmp I3, R3, R4
+    ncall "fs.close" (R0)
+    send parent, I3                    ; 0: the echo matched
+    ret
+.endf
+.func main
+    ncall "net.listen" ("127.0.0.1", 0) -> (R0)
+    ncall "net.port" (R0) -> (I0)
+    ASSERT_GT I0, 0
+    mov I1, 0
+1:  spawn client (PID, I0, I1)
+    inc I1
+    blt I1, CLIENTS, 1b
+    mov I1, 0                          ; accept them all, a handler each
+2:  ncall "net.accept" (R0) -> (R1)
+    ncall "fs.give" (R1) -> (I2)
+    spawn handler (I2)
+    inc I1
+    blt I1, CLIENTS, 2b
+    mov I1, 0
+3:  recv I3
+    ASSERT_EQ I3, 0
+    inc I1
+    blt I1, CLIENTS, 3b
+    ret 0
+.endf

@@ -6,14 +6,15 @@
 #include <setjmp.h>
 #include <stdatomic.h>
 
-/* POSIX setjmp may save the signal mask with a system call; the VM never
- * changes signal masks, so use the cheap variant (one setjmp per time slice). */
-#ifdef _WIN32
-#define VM_SETJMP(b) setjmp(b)
-#define VM_LONGJMP(b, v) longjmp(b, v)
-#else
+/* On macOS and the BSDs setjmp saves the signal mask with a system call; the
+ * VM never changes signal masks, so use the cheap variant there (one setjmp
+ * per time slice). glibc's and Windows' setjmp are already the cheap kind. */
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 #define VM_SETJMP(b) _setjmp(b)
 #define VM_LONGJMP(b, v) _longjmp(b, v)
+#else
+#define VM_SETJMP(b) setjmp(b)
+#define VM_LONGJMP(b, v) longjmp(b, v)
 #endif
 
 #include "../core/insn.h"
@@ -140,6 +141,12 @@ enum {
 struct PlatLock;
 struct Sched;
 
+/* A descriptor in transit between processes (fs.give / fs.take). */
+typedef struct {
+    uint64_t id; /* random: a ticket cannot be guessed */
+    int fd, kind;
+} FdTicket;
+
 typedef struct VM {
     VEC(LModule *) mods;
     StrMap modmap;
@@ -186,6 +193,7 @@ typedef struct VM {
     StrVec prog_args;            /* os.args: the arguments after the program file */
     _Atomic bool exit_requested; /* os.exit was called: the program ends with exit_code */
     _Atomic int64_t exit_code;
+    VEC(FdTicket) tickets;       /* handles given away with fs.give, not yet taken (under `lock`) */
 } VM;
 
 /* ---- processes ------------------------------------------------------------- */

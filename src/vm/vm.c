@@ -44,6 +44,8 @@ VM *vm_new(void) {
     const char *stress = getenv("MLWSVM_GC_STRESS");
     vm->gc_stress = stress && *stress && strcmp(stress, "0") != 0;
     vm_options_from_env(vm); /* MLWSVM_THREADS, MLWSVM_MAX_FRAMES, ... */
+    plat_ignore_sigpipe();   /* writes to a closed pipe or socket fail with E_RESET */
+    plat_raise_fd_limit();   /* many connections need many descriptors */
     vm->lock = plat_lock_new();
     const char *unsafe = getenv("MLWSVM_UNSAFE_NATIVE");
     vm->unsafe_native = unsafe && *unsafe && strcmp(unsafe, "0") != 0;
@@ -98,6 +100,8 @@ void vm_free(VM *vm) {
     VEC_FREE(vm->exits);
     for (size_t i = 0; i < vm->prog_args.n; i++) free(vm->prog_args.v[i]);
     VEC_FREE(vm->prog_args);
+    for (size_t i = 0; i < vm->tickets.n; i++) plat_fd_close(vm->tickets.v[i].fd); /* given, never taken */
+    VEC_FREE(vm->tickets);
     copy_state_free();
     smap_free(&vm->natives);
     plat_lock_free(vm->lock);

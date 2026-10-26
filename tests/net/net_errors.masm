@@ -1,0 +1,56 @@
+; Network errors are catchable: a refused connection, an accept timeout,
+; DNS, and handle transfer (a ticket works once; a given handle is closed).
+.include "std/test.inc"
+.func main
+    ncall "net.listen" ("127.0.0.1", 0) -> (R0)
+    ncall "net.port" (R0) -> (I0)
+    ncall "fs.close" (R0)              ; nothing listens there now
+.try h1
+    ncall "net.connect" ("127.0.0.1", I0, 2000) -> (R1)
+.endtry
+    FAIL "connected to a closed port"
+h1: catch R2
+    strcmp I1, R2->Error.code, "E_REFUSED"
+    ASSERT_EQ I1, 0
+
+    ncall "net.listen" ("127.0.0.1", 0) -> (R0)
+    ncall "fs.set_timeout" (R0, 30)
+.try h2
+    ncall "net.accept" (R0) -> (R1)    ; nobody connects
+.endtry
+    FAIL "accept did not time out"
+h2: catch R2
+    strcmp I1, R2->Error.code, "E_TIMEOUT"
+    ASSERT_EQ I1, 0
+
+    ncall "net.resolve" ("localhost") -> (R3)
+    len I2, R3
+    ASSERT_GT I2, 0
+.try h3
+    ncall "net.resolve" ("no-such-host.invalid") -> (R3)
+.endtry
+    FAIL "resolved an invalid name"
+h3: catch R2
+    strcmp I1, R2->Error.code, "E_NOT_FOUND"
+    ASSERT_EQ I1, 0
+
+    ncall "fs.give" (R0) -> (I3)
+.try h4
+    ncall "net.port" (R0) -> (I4)      ; given away: closed here
+.endtry
+    FAIL "used a handle after giving it away"
+h4: catch R2
+    strcmp I1, R2->Error.code, "E_CLOSED"
+    ASSERT_EQ I1, 0
+    ncall "fs.take" (I3) -> (R4)
+    ncall "net.port" (R4) -> (I4)
+    ASSERT_GT I4, 0
+.try h5
+    ncall "fs.take" (I3) -> (R4)       ; a ticket works once
+.endtry
+    FAIL "took a handle twice"
+h5: catch R2
+    strcmp I1, R2->Error.code, "E_NOT_FOUND"
+    ASSERT_EQ I1, 0
+    ret 0
+.endf

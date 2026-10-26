@@ -45,9 +45,10 @@ static Module *read_module_file(VM *vm, const char *path, const char *default_na
         Module *m = module_read((const uint8_t *)data, len, err);
         free(data);
         if (!m) {
-            char msg[sizeof err->msg];
-            snprintf(msg, sizeof msg, "%s: %s", path, err->msg);
-            snprintf(err->msg, sizeof err->msg, "%s", msg);
+            StrBuf msg = {0}; /* prefix the message with the file (truncating if need be) */
+            sb_printf(&msg, "%s: %s", path, err->msg);
+            snprintf(err->msg, sizeof err->msg, "%.*s", (int)(sizeof err->msg - 1), msg.s);
+            sb_free(&msg);
         }
         return m;
     }
@@ -113,9 +114,10 @@ static bool decode_function(LModule *lm, Function *f, MlwsError *err) {
     while (r.pos < r.n) {
         Insn in;
         if (!decode_insn(&r, &in, err)) {
-            char msg[sizeof err->msg];
-            snprintf(msg, sizeof msg, "%s.%s: %s", m->name, mf->name, err->msg);
-            snprintf(err->msg, sizeof err->msg, "%s", msg);
+            StrBuf msg = {0};
+            sb_printf(&msg, "%s.%s: %s", m->name, mf->name, err->msg);
+            snprintf(err->msg, sizeof err->msg, "%.*s", (int)(sizeof err->msg - 1), msg.s);
+            sb_free(&msg);
             for (size_t i = 0; i < code.n; i++) insn_free(&code.v[i]);
             VEC_FREE(code);
             return false;

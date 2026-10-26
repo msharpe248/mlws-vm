@@ -263,6 +263,20 @@ const char *plat_os_name(void) { return "windows"; }
 bool plat_spawn(char *const argv[], int pipes, PlatChild *c, int *err) { (void)argv, (void)pipes, (void)c; *err = ERROR_NOT_SUPPORTED; return false; }
 bool plat_wait_child(int64_t pid, int *code, int *err) { (void)pid, (void)code; *err = ERROR_NOT_SUPPORTED; return false; }
 bool plat_signal_child(int64_t pid, int sig) { (void)pid, (void)sig; return false; }
+void plat_ignore_sigpipe(void) {}
+void plat_raise_fd_limit(void) {}
+bool plat_host_numeric(const char *host) { (void)host; return true; }
+int plat_sock_listen(const char *host, int port, int *err) { (void)host, (void)port; *err = ERROR_NOT_SUPPORTED; return -1; }
+int plat_sock_accept(int lfd, int *err) { (void)lfd; *err = ERROR_NOT_SUPPORTED; return PLAT_IO_ERR; }
+int plat_sock_connect(const char *host, int port, int64_t t, int *err) { (void)host, (void)port, (void)t; *err = ERROR_NOT_SUPPORTED; return -1; }
+int plat_sock_port(int fd) { (void)fd; return -1; }
+bool plat_sock_peer(int fd, char *ip, size_t n, int *port) { (void)fd, (void)ip, (void)n, (void)port; return false; }
+bool plat_sock_shutdown_write(int fd) { (void)fd; return false; }
+bool plat_resolve(const char *name, char ***a, size_t *n, int *err) { (void)name, (void)a, (void)n; *err = ERROR_NOT_SUPPORTED; return false; }
+int plat_udp_open(const char *host, int port, int *err) { (void)host, (void)port; *err = ERROR_NOT_SUPPORTED; return -1; }
+long plat_udp_send(int fd, const char *h, int port, const void *b, size_t n, int *err) { (void)fd, (void)h, (void)port, (void)b, (void)n; *err = ERROR_NOT_SUPPORTED; return PLAT_IO_ERR; }
+long plat_udp_recv(int fd, void *b, size_t n, char *ip, size_t l, int *port, int *err) { (void)fd, (void)b, (void)n, (void)ip, (void)l, (void)port; *err = ERROR_NOT_SUPPORTED; return PLAT_IO_ERR; }
+bool plat_random_bytes(void *buf, size_t n) { (void)buf, (void)n; return false; }
 PlatPoller *plat_poller_new(void) { return NULL; }
 void plat_poller_free(PlatPoller *p) { (void)p; }
 bool plat_poller_arm(PlatPoller *p, int fd, int events, uint64_t token) { (void)p, (void)fd, (void)events, (void)token; return false; }

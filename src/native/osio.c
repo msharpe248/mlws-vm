@@ -1,5 +1,5 @@
-/* osio.c - std.fs and std.os: files, directories, the program's arguments and
- * environment, and child processes. See docs/STDLIB.md.
+/* osio.c - std.fs, std.os and std.net: files, directories, the program's
+ * arguments and environment, child processes, and sockets. See docs/STDLIB.md.
  *
  * These natives are "checked" (NF_CHECKED): they report errors with
  * native_fail and never trap, so they can run on the I/O thread pool. Where an
@@ -26,6 +26,8 @@ enum {
     H_STREAM = 2, /* a pipe or socket we made: non-blocking, waited for with the poller */
     H_STDOUT = 3, /* the program's output (through the VM, so tests and tools see it) */
     H_STDERR = 4,
+    H_LISTEN = 5, /* a listening TCP socket: net.accept */
+    H_UDP = 6,    /* a UDP socket: net.send_to / net.recv_from */
 };
 
 typedef struct {
@@ -55,7 +57,7 @@ static Obj *new_file(Process *p, int fd, int kind, bool owned) {
     h->kind = kind;
     h->owned = owned;
     h->timeout_ms = -1;
-    if (kind == H_STREAM) plat_fd_set_nonblocking(fd, true);
+    if (kind == H_STREAM || kind == H_LISTEN || kind == H_UDP) plat_fd_set_nonblocking(fd, true);
     return &foreign_new_obj(p, &FILE_T, h, NULL)->h;
 }
 
@@ -158,8 +160,8 @@ static int fill(Process *p, FileH *h) {
 static FileH *reader(Process *p, Word v) {
     FileH *h = get_file(p, v);
     if (!h) return NULL;
-    if (h->kind == H_STDOUT || h->kind == H_STDERR) {
-        native_fail(p, "E_TYPE", "%s: stdout and stderr cannot be read", p->cur_native->name);
+    if (h->kind == H_STDOUT || h->kind == H_STDERR || h->kind == H_LISTEN || h->kind == H_UDP) {
+        native_fail(p, "E_TYPE", "%s: this handle cannot be read as a stream", p->cur_native->name);
         return NULL;
     }
     if (h->kind == H_POOL && !on_pool(p)) return NULL;
@@ -266,6 +268,10 @@ static void fs_write(Process *p, Word *a, Word *r) {
         plat_unlock(p->vm->out_lock);
         return;
     }
+    if (h->kind == H_LISTEN || h->kind == H_UDP) {
+        native_fail(p, "E_TYPE", "fs.write: this handle cannot be written as a stream");
+        return;
+    }
     if (h->kind == H_POOL && !on_pool(p)) return;
     if (h->kind == H_STREAM && timed_out(p, h)) return;
     size_t done = h->wobj == a[1].r ? h->wdone : 0; /* continuing after a wait */
@@ -323,6 +329,50 @@ static void fs_stdout(Process *p, Word *a, Word *r) {
 static void fs_stderr(Process *p, Word *a, Word *r) {
     (void)a;
     r[0].r = new_file(p, 2, H_STDERR, false);
+}
+
+/* Handing a handle to another process: the descriptor leaves this handle (now
+ * closed) under a random, single-use ticket, which can be sent in a message. */
+static void fs_give(Process *p, Word *a, Word *r) {
+    FileH *h = get_file(p, a[0]);
+    if (!h) return;
+    if (!h->owned) {
+        native_fail(p, "E_TYPE", "fs.give: the standard streams cannot be given away");
+        return;
+    }
+    if (h->rpos < h->rlen || h->wobj) {
+        native_fail(p, "E_TYPE", "fs.give: the handle has buffered input or a write in progress");
+        return;
+    }
+    FdTicket t = {0, h->fd, h->kind};
+    while (!t.id) {
+        if (!plat_random_bytes(&t.id, sizeof t.id)) t.id = plat_now_ns() * 0x9E3779B97F4A7C15ull;
+    }
+    plat_lock(p->vm->lock);
+    VEC_PUSH(p->vm->tickets, t);
+    plat_unlock(p->vm->lock);
+    h->owned = false;
+    h->fd = -1;
+    foreign_finalize(a[0].r);
+    r[0].i = (int64_t)t.id;
+}
+
+static void fs_take(Process *p, Word *a, Word *r) {
+    VM *vm = p->vm;
+    FdTicket t = {0, -1, 0};
+    plat_lock(vm->lock);
+    for (size_t i = 0; i < vm->tickets.n; i++)
+        if (vm->tickets.v[i].id == a[0].u) {
+            t = vm->tickets.v[i];
+            vm->tickets.v[i] = vm->tickets.v[--vm->tickets.n];
+            break;
+        }
+    plat_unlock(vm->lock);
+    if (!t.id) {
+        native_fail(p, "E_NOT_FOUND", "fs.take: no handle was given with that ticket (or it was already taken)");
+        return;
+    }
+    r[0].r = new_file(p, t.fd, t.kind, true);
 }
 
 /* ---- std.fs: whole files and paths (on the I/O pool) ------------------------------------ */
@@ -604,6 +654,135 @@ static void os_run(Process *p, Word *a, Word *r) {
     r[1].r = out;
 }
 
+/* ---- std.net ------------------------------------------------------------------------------- */
+
+static FileH *get_kind(Process *p, Word v, int kind, const char *what) {
+    FileH *h = get_file(p, v);
+    if (h && h->kind != kind) {
+        native_fail(p, "E_TYPE", "%s: expected %s", p->cur_native->name, what);
+        return NULL;
+    }
+    return h;
+}
+
+static void net_listen(Process *p, Word *a, Word *r) {
+    const char *host = get_str(p, a[0], "the host");
+    if (!host) return;
+    if (!plat_host_numeric(host) && !on_pool(p)) return; /* a name: DNS may block */
+    int err = 0, fd = plat_sock_listen(host, (int)a[1].i, &err);
+    if (fd < 0) fail_os(p, err, host);
+    else r[0].r = new_file(p, fd, H_LISTEN, true);
+}
+
+static void net_accept(Process *p, Word *a, Word *r) {
+    FileH *h = get_kind(p, a[0], H_LISTEN, "a listening socket (from net.listen)");
+    if (!h || timed_out(p, h)) return;
+    int err = 0, fd = plat_sock_accept(h->fd, &err);
+    if (fd == PLAT_IO_AGAIN) native_wait_fd(p, h->fd, PLAT_POLL_READ, h->timeout_ms);
+    else if (fd < 0) fail_os(p, err, "accept");
+    else r[0].r = new_file(p, fd, H_STREAM, true);
+}
+
+static void net_connect(Process *p, Word *a, Word *r) {
+    const char *host = get_str(p, a[0], "the host");
+    if (!host || !on_pool(p)) return; /* resolving and connecting block */
+    int err = 0, fd = plat_sock_connect(host, (int)a[1].i, a[2].i, &err);
+    if (fd < 0) {
+        char what[300];
+        snprintf(what, sizeof what, "%s:%lld", host, (long long)a[1].i);
+        fail_os(p, err, what);
+        return;
+    }
+    r[0].r = new_file(p, fd, H_STREAM, true);
+}
+
+static void net_port(Process *p, Word *a, Word *r) {
+    FileH *h = get_file(p, a[0]);
+    if (h) r[0].i = plat_sock_port(h->fd);
+}
+
+static void net_peer(Process *p, Word *a, Word *r) {
+    FileH *h = get_kind(p, a[0], H_STREAM, "a connection");
+    char ip[64];
+    int port = 0;
+    if (!h) return;
+    if (!plat_sock_peer(h->fd, ip, sizeof ip, &port)) {
+        native_fail(p, "E_TYPE", "net.peer: not a connected socket");
+        return;
+    }
+    r[0].r = str_new(p, ip, strlen(ip));
+    r[1].i = port;
+}
+
+static void net_close_write(Process *p, Word *a, Word *r) {
+    (void)r;
+    FileH *h = get_kind(p, a[0], H_STREAM, "a connection");
+    if (h && !plat_sock_shutdown_write(h->fd)) fail_os(p, plat_last_error(), "close_write");
+}
+
+static void net_resolve(Process *p, Word *a, Word *r) {
+    const char *name = get_str(p, a[0], "the host name");
+    if (!name || !on_pool(p)) return;
+    char **addrs;
+    size_t n;
+    int err = 0;
+    if (!plat_resolve(name, &addrs, &n, &err)) {
+        fail_os(p, err, name);
+        return;
+    }
+    ObjList *l = list_new(p, (int64_t)n);
+    for (size_t i = 0; i < n; i++) {
+        Word w = {.r = str_new(p, addrs[i], strlen(addrs[i]))};
+        list_push(p, l, w, T_R);
+        free(addrs[i]);
+    }
+    free(addrs);
+    r[0].r = l;
+}
+
+static void net_udp(Process *p, Word *a, Word *r) {
+    const char *host = get_str(p, a[0], "the host");
+    if (!host) return;
+    if (!plat_host_numeric(host) && !on_pool(p)) return;
+    int err = 0, fd = plat_udp_open(host, (int)a[1].i, &err);
+    if (fd < 0) fail_os(p, err, host);
+    else r[0].r = new_file(p, fd, H_UDP, true);
+}
+
+static void net_send_to(Process *p, Word *a, Word *r) {
+    (void)r;
+    FileH *h = get_kind(p, a[0], H_UDP, "a UDP socket (from net.udp)");
+    const char *host = get_str(p, a[1], "the host");
+    const uint8_t *data;
+    size_t n;
+    if (!h || !host || !get_data(p, a[3], &data, &n) || timed_out(p, h)) return;
+    if (!plat_host_numeric(host) && !on_pool(p)) return;
+    int err = 0;
+    long s = plat_udp_send(h->fd, host, (int)a[2].i, data, n, &err);
+    if (s == PLAT_IO_AGAIN) native_wait_fd(p, h->fd, PLAT_POLL_WRITE, h->timeout_ms);
+    else if (s < 0) fail_os(p, err, "send_to");
+}
+
+static void net_recv_from(Process *p, Word *a, Word *r) {
+    FileH *h = get_kind(p, a[0], H_UDP, "a UDP socket (from net.udp)");
+    if (!h || timed_out(p, h)) return;
+    uint8_t buf[65536];
+    char ip[64];
+    int port = 0, err = 0;
+    long n = plat_udp_recv(h->fd, buf, sizeof buf, ip, sizeof ip, &port, &err);
+    if (n == PLAT_IO_AGAIN) {
+        native_wait_fd(p, h->fd, PLAT_POLL_READ, h->timeout_ms);
+        return;
+    }
+    if (n < 0) {
+        fail_os(p, err, "recv_from");
+        return;
+    }
+    r[0].r = bytes_of(p, buf, (size_t)n);
+    r[1].r = str_new(p, ip, strlen(ip));
+    r[2].i = port;
+}
+
 /* ---- the table ---------------------------------------------------------------------------- */
 
 #define F (NF_CHECKED | NF_OS)
@@ -628,6 +807,10 @@ static const NativeDef OS_NATIVES[] = {
     N("fs.stdin", 0, T(0), 1, T(T_R), fs_stdin, F, "The program's standard input."),
     N("fs.stdout", 0, T(0), 1, T(T_R), fs_stdout, F, "The program's standard output (the same output as io.print)."),
     N("fs.stderr", 0, T(0), 1, T(T_R), fs_stderr, F, "The program's standard error."),
+    N("fs.give", 1, T(T_R), 1, T(T_I64), fs_give, F,
+      "Hand a file or socket to another process: the handle closes, and the returned ticket (send it) is "
+      "turned back into a handle by fs.take, once."),
+    N("fs.take", 1, T(T_I64), 1, T(T_R), fs_take, F, "Take a handle given with fs.give."),
     N("fs.read_file", 1, T(T_R), 1, T(T_R), fs_read_file, B, "A whole file, as a byte buffer."),
     N("fs.write_file", 2, T(T_R, T_R), 0, T(0), fs_write_file, B,
       "Create or replace a file with a string or byte buffer."),
@@ -655,6 +838,22 @@ static const NativeDef OS_NATIVES[] = {
     N("os.kill", 2, T(T_R, T_B), 0, T(0), os_kill, F, "Stop a command: ask it to terminate, or kill it (true)."),
     N("os.run", 1, T(T_R), 2, T(T_I64, T_R), os_run, B,
       "Run a command to completion: its exit code and its standard output, as a byte buffer."),
+    N("net.listen", 2, T(T_R, T_I64), 1, T(T_R), net_listen, F,
+      "Listen for TCP connections on a host (\"\" = all addresses, \"127.0.0.1\", \"::\", a name) and port (0: any free one)."),
+    N("net.accept", 1, T(T_R), 1, T(T_R), net_accept, F,
+      "Wait for the next connection; read and write it with fs.read, fs.read_line and fs.write."),
+    N("net.connect", 3, T(T_R, T_I64, T_I64), 1, T(T_R), net_connect, F,
+      "Connect to a host and port, with a timeout in ms (negative: the OS default)."),
+    N("net.port", 1, T(T_R), 1, T(T_I64), net_port, F, "A socket's local port (the one chosen for net.listen port 0)."),
+    N("net.peer", 1, T(T_R), 2, T(T_R, T_I64), net_peer, F, "The address and port of a connection's other end."),
+    N("net.close_write", 1, T(T_R), 0, T(0), net_close_write, F,
+      "Finish sending on a connection (the other end reads end of input) but keep reading."),
+    N("net.resolve", 1, T(T_R), 1, T(T_R), net_resolve, F, "A host name's addresses, as a list of strings."),
+    N("net.udp", 2, T(T_R, T_I64), 1, T(T_R), net_udp, F, "A UDP socket bound to a host (\"\" = any) and port (0 = any)."),
+    N("net.send_to", 4, T(T_R, T_R, T_I64, T_R), 0, T(0), net_send_to, F,
+      "Send a datagram (a string or byte buffer) to a host and port."),
+    N("net.recv_from", 1, T(T_R), 3, T(T_R, T_R, T_I64), net_recv_from, F,
+      "Wait for a datagram: its bytes, and the sender's address and port."),
 };
 
 #undef F

@@ -9,10 +9,17 @@
 #endif
 #include "platform.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -33,8 +40,14 @@ extern char **environ;
 
 int plat_last_error(void) { return errno; }
 
+/* Name resolution errors are not errno values. */
+#define ERR_UNKNOWN_HOST 100001
+#define ERR_RESOLVE 100002
+
 const char *plat_err_code(int err) {
     switch (err) {
+    case ERR_UNKNOWN_HOST: return "E_NOT_FOUND";
+    case ERR_RESOLVE: return "E_IO";
     case ENOENT: case ENOTDIR: return "E_NOT_FOUND";
     case EEXIST: case ENOTEMPTY: return "E_EXISTS";
     case EACCES: case EPERM: case EROFS: return "E_PERMISSION";
@@ -49,7 +62,26 @@ const char *plat_err_code(int err) {
     }
 }
 
-const char *plat_err_text(int err) { return strerror(err); }
+const char *plat_err_text(int err) {
+    if (err == ERR_UNKNOWN_HOST) return "unknown host";
+    if (err == ERR_RESOLVE) return "name resolution failed";
+    return strerror(err);
+}
+
+void plat_ignore_sigpipe(void) { signal(SIGPIPE, SIG_IGN); } /* a closed pipe or socket: EPIPE, not death */
+
+void plat_raise_fd_limit(void) {
+    struct rlimit r;
+    if (getrlimit(RLIMIT_NOFILE, &r) != 0) return;
+    /* As high as the hard limit allows (macOS refuses values above its per-process maximum). */
+    static const rlim_t tries[] = {1048576, 262144, 65536, 24576, 10240};
+    for (size_t i = 0; i < sizeof tries / sizeof tries[0]; i++) {
+        rlim_t want = r.rlim_max < tries[i] ? r.rlim_max : tries[i];
+        if (want <= r.rlim_cur) return;
+        struct rlimit n = {want, r.rlim_max};
+        if (setrlimit(RLIMIT_NOFILE, &n) == 0) return;
+    }
+}
 
 /* ---- file descriptors ----------------------------------------------------------- */
 
@@ -251,6 +283,225 @@ bool plat_wait_child(int64_t pid, int *code, int *err) {
 }
 
 bool plat_signal_child(int64_t pid, int sig) { return kill((pid_t)pid, sig == 9 ? SIGKILL : SIGTERM) == 0; }
+
+/* ---- sockets ------------------------------------------------------------------------- */
+
+static void set_cloexec_nonblock(int fd) {
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+}
+
+bool plat_host_numeric(const char *host) {
+    unsigned char buf[16];
+    return !host || !*host || inet_pton(AF_INET, host, buf) == 1 || inet_pton(AF_INET6, host, buf) == 1;
+}
+
+static bool resolve(const char *host, int port, int type, bool passive, struct addrinfo **res, int *err) {
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = type;
+    hints.ai_flags = AI_NUMERICSERV | (passive ? AI_PASSIVE : 0);
+    char ps[16];
+    snprintf(ps, sizeof ps, "%d", port);
+    int rc = getaddrinfo(host && *host ? host : NULL, ps, &hints, res);
+    if (rc == 0) return true;
+    if (rc == EAI_SYSTEM) *err = errno;
+    else *err = rc == EAI_NONAME ? ERR_UNKNOWN_HOST : ERR_RESOLVE;
+    return false;
+}
+
+int plat_sock_listen(const char *host, int port, int *err) {
+    struct addrinfo *res;
+    if (!resolve(host, port, SOCK_STREAM, true, &res, err)) return -1;
+    int fd = -1;
+    for (struct addrinfo *a = res; a && fd < 0; a = a->ai_next) {
+        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd < 0) {
+            *err = errno;
+            continue;
+        }
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        if (bind(fd, a->ai_addr, a->ai_addrlen) != 0 || listen(fd, 1024) != 0) {
+            *err = errno;
+            close(fd);
+            fd = -1;
+        }
+    }
+    freeaddrinfo(res);
+    if (fd >= 0) set_cloexec_nonblock(fd);
+    return fd;
+}
+
+int plat_sock_accept(int lfd, int *err) {
+    for (;;) {
+        int c = accept(lfd, NULL, NULL);
+        if (c >= 0) {
+            set_cloexec_nonblock(c);
+            int one = 1;
+            setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+            return c;
+        }
+        if (errno == EINTR || errno == ECONNABORTED) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return PLAT_IO_AGAIN;
+        *err = errno;
+        return PLAT_IO_ERR;
+    }
+}
+
+/* Blocking (run on the I/O pool): resolve, then try each address in turn. */
+int plat_sock_connect(const char *host, int port, int64_t timeout_ms, int *err) {
+    struct addrinfo *res;
+    if (!resolve(host, port, SOCK_STREAM, false, &res, err)) return -1;
+    int fd = -1;
+    for (struct addrinfo *a = res; a && fd < 0; a = a->ai_next) {
+        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd < 0) {
+            *err = errno;
+            continue;
+        }
+        set_cloexec_nonblock(fd);
+        int rc = connect(fd, a->ai_addr, a->ai_addrlen);
+        if (rc != 0 && errno == EINPROGRESS) {
+            struct pollfd pf = {fd, POLLOUT, 0};
+            int n = poll(&pf, 1, timeout_ms < 0 ? -1 : (int)timeout_ms);
+            int soerr = 0;
+            socklen_t len = sizeof soerr;
+            if (n == 0) soerr = ETIMEDOUT;
+            else if (n < 0) soerr = errno;
+            else getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &len);
+            rc = soerr ? -1 : 0;
+            errno = soerr;
+        }
+        if (rc != 0) {
+            *err = errno;
+            close(fd);
+            fd = -1;
+        }
+    }
+    freeaddrinfo(res);
+    if (fd >= 0) {
+        int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    }
+    return fd;
+}
+
+int plat_sock_port(int fd) {
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof ss;
+    if (getsockname(fd, (struct sockaddr *)&ss, &len) != 0) return -1;
+    return ntohs(ss.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&ss)->sin6_port : ((struct sockaddr_in *)&ss)->sin_port);
+}
+
+static void format_addr(const struct sockaddr *sa, char *buf, size_t n, int *port) {
+    char ip[INET6_ADDRSTRLEN] = "?";
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)sa;
+        inet_ntop(AF_INET6, &s6->sin6_addr, ip, sizeof ip);
+        *port = ntohs(s6->sin6_port);
+    } else {
+        const struct sockaddr_in *s4 = (const struct sockaddr_in *)sa;
+        inet_ntop(AF_INET, &s4->sin_addr, ip, sizeof ip);
+        *port = ntohs(s4->sin_port);
+    }
+    snprintf(buf, n, "%s", ip);
+}
+
+bool plat_sock_peer(int fd, char *buf, size_t n, int *port) {
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof ss;
+    if (getpeername(fd, (struct sockaddr *)&ss, &len) != 0) return false;
+    format_addr((struct sockaddr *)&ss, buf, n, port);
+    return true;
+}
+
+bool plat_sock_shutdown_write(int fd) { return shutdown(fd, SHUT_WR) == 0; }
+
+bool plat_resolve(const char *name, char ***out, size_t *n, int *err) {
+    struct addrinfo *res;
+    if (!resolve(name, 0, SOCK_STREAM, false, &res, err)) return false;
+    VEC(char *) v = {0};
+    for (struct addrinfo *a = res; a; a = a->ai_next) {
+        char ip[INET6_ADDRSTRLEN];
+        int port;
+        format_addr(a->ai_addr, ip, sizeof ip, &port);
+        bool dup = false;
+        for (size_t i = 0; i < v.n; i++) dup = dup || !strcmp(v.v[i], ip);
+        if (!dup) VEC_PUSH(v, xstrdup(ip));
+    }
+    freeaddrinfo(res);
+    *out = v.v;
+    *n = v.n;
+    return true;
+}
+
+int plat_udp_open(const char *host, int port, int *err) {
+    struct addrinfo *res;
+    if (!resolve(host && *host ? host : "0.0.0.0", port, SOCK_DGRAM, true, &res, err)) return -1;
+    int fd = -1;
+    for (struct addrinfo *a = res; a && fd < 0; a = a->ai_next) {
+        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd < 0) {
+            *err = errno;
+            continue;
+        }
+        if (bind(fd, a->ai_addr, a->ai_addrlen) != 0) {
+            *err = errno;
+            close(fd);
+            fd = -1;
+        }
+    }
+    freeaddrinfo(res);
+    if (fd >= 0) set_cloexec_nonblock(fd);
+    return fd;
+}
+
+long plat_udp_send(int fd, const char *host, int port, const void *buf, size_t n, int *err) {
+    struct addrinfo *res;
+    if (!resolve(host, port, SOCK_DGRAM, false, &res, err)) return PLAT_IO_ERR;
+    long r = PLAT_IO_ERR;
+    for (;;) {
+        ssize_t s = sendto(fd, buf, n, 0, res->ai_addr, res->ai_addrlen);
+        if (s >= 0) r = (long)s;
+        else if (errno == EINTR) continue;
+        else if (errno == EAGAIN || errno == EWOULDBLOCK) r = PLAT_IO_AGAIN;
+        else *err = errno;
+        break;
+    }
+    freeaddrinfo(res);
+    return r;
+}
+
+long plat_udp_recv(int fd, void *buf, size_t n, char *addr, size_t alen, int *port, int *err) {
+    for (;;) {
+        struct sockaddr_storage ss;
+        socklen_t len = sizeof ss;
+        ssize_t r = recvfrom(fd, buf, n, 0, (struct sockaddr *)&ss, &len);
+        if (r >= 0) {
+            format_addr((struct sockaddr *)&ss, addr, alen, port);
+            return (long)r;
+        }
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return PLAT_IO_AGAIN;
+        *err = errno;
+        return PLAT_IO_ERR;
+    }
+}
+
+bool plat_random_bytes(void *buf, size_t n) {
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, (char *)buf + got, n - got);
+        if (r <= 0) break;
+        got += (size_t)r;
+    }
+    close(fd);
+    return got == n;
+}
 
 /* ---- the poller -------------------------------------------------------------------- */
 
