@@ -52,6 +52,11 @@ static bool operand_regs_ok(const MFunc *mf, const Operand *o, uint8_t *bad) {
 static bool verify_function(LModule *lm, Function *f, MlwsError *err) {
     const MFunc *mf = f->mf;
     if (f->ncode == 0) return verr(err, lm, f, 0, "function has no code");
+    for (uint32_t i = 0; i < mf->nhandlers; i++) {
+        const MHandler *h = &mf->handlers[i];
+        if (h->start > h->end || h->end > f->ncode || h->target >= f->ncode)
+            return verr(err, lm, f, 0, "exception handler %u is out of range", i);
+    }
     for (uint32_t pc = 0; pc < f->ncode; pc++) {
         const Insn *in = &f->code[pc];
         CheckErr ce;

@@ -1,0 +1,16 @@
+; `.try start, end, handler` names the region with labels, for compilers that
+; lay out code themselves. The end label is exclusive.
+.include "std/test.inc"
+.func main
+    .try begin, finish, handler
+    mov I0, 0
+begin:
+    inc I0
+    throw "inside"
+finish:
+    throw "outside the region"
+handler:
+    catch R0
+    ASSERT_EQ I0, 1
+    ret 0
+.endf

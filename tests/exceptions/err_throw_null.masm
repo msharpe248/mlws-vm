@@ -1,0 +1,5 @@
+; expect-error: E_NULL
+.func main
+    mov R0, null
+    throw R0
+.endf

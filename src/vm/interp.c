@@ -1125,14 +1125,23 @@ void interp_run(Process *p) {
 
         /* ---- strings and bytes ---- */
         case OP_STRCAT: {
-            StrBuf b = {0};
+            /* Read every part before allocating, so a trap leaks nothing. */
+            const uint8_t *part[MAX_OPERANDS];
+            uint32_t plen[MAX_OPERANDS];
+            uint64_t total = 0;
             for (int k = 1; k < in->nops; k++) {
-                uint32_t n;
-                const uint8_t *d = rd_text(&c, &ops[k], "strcat", &n);
-                sb_putn(&b, (const char *)d, n);
+                part[k] = rd_text(&c, &ops[k], "strcat", &plen[k]);
+                total += plen[k];
             }
-            ObjString *s = str_new(p, b.s ? b.s : "", b.n);
-            sb_free(&b);
+            if (total >= (uint64_t)1 << 31) vm_trap(p, "E_BAD_ALLOC", "strcat result too long");
+            char *buf = xmalloc((size_t)total + 1);
+            size_t at = 0;
+            for (int k = 1; k < in->nops; k++) {
+                memcpy(buf + at, part[k], plen[k]);
+                at += plen[k];
+            }
+            ObjString *s = str_new(p, buf, (size_t)total);
+            free(buf);
             wr_ref(&c, &ops[0], s);
             break;
         }
@@ -1309,6 +1318,16 @@ void interp_run(Process *p) {
             break;
         case OP_HFREE:
             handle_free(p, rd(&c, &ops[0], T_I64).i);
+            break;
+
+        /* ---- exceptions ---- */
+        case OP_THROW: {
+            Obj *ex = rd(&c, &ops[0], T_R).r;
+            if (!ex) vm_trap(p, "E_NULL", "throw of null");
+            proc_throw(p, ex);
+        }
+        case OP_CATCH:
+            wr_ref(&c, &ops[0], p->exception);
             break;
 
         case OP__COUNT:

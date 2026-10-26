@@ -1,0 +1,39 @@
+; The innermost region wins; a handler can rethrow to an outer one (throw the
+; caught value again); a finally pattern is a catch-all handler that runs the
+; cleanup and rethrows.
+; expect-stdout: inner
+; expect-stdout: cleanup
+; expect-stdout: outer: E_NULL
+.include "std/test.inc"
+.include "std/io.inc"
+
+.func risky
+.try finally                           ; try { ... } finally { cleanup }
+    mov P0, null
+    mov I0, [P0]                       ; E_NULL
+.endtry
+    ret
+finally:
+    catch R0
+    PRINTLN_S "cleanup"
+    throw R0                           ; rethrow
+.endf
+
+.func main
+.try outer
+.try inner
+    throw "first"
+.endtry
+inner:
+    catch R0
+    PRINTLN_S "inner"
+    call risky
+    FAIL "risky returned"
+.endtry
+    FAIL "fell through"
+outer:
+    catch R1
+    strcat R2, "outer: ", R1->Error.code
+    PRINTLN_S R2
+    ret 0
+.endf

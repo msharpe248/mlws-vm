@@ -1,0 +1,7 @@
+; expect-error: E_ASM_SYNTAX
+.func main
+.try h
+    nop
+h:
+    ret 0
+.endf

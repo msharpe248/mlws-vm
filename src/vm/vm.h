@@ -45,6 +45,10 @@ typedef struct Function {
 
 enum { LM_LOADING = 1, LM_READY = 2 };
 
+/* The built-in Error struct: every runtime fault is raised as one. */
+enum { ERRF_CODE = 0, ERRF_MESSAGE = 1, ERRF_TRACE = 2 };
+extern const StructDef VM_ERROR_DEF;
+
 typedef struct FieldRef {
     const StructDef *def;
     uint32_t index;
@@ -150,6 +154,8 @@ struct Process {
     VEC(Obj *) handles;
     VEC(uint32_t) handle_free;
     VEC(Obj *) markstack;
+    Obj *exception; /* being thrown or just caught (a GC root) */
+    uint64_t exceptions_thrown;
 };
 
 /* vm.c */
@@ -168,7 +174,10 @@ bool vm_verify_module(VM *vm, LModule *lm, MlwsError *err);
 /* process.c */
 Process *proc_new(VM *vm);
 void proc_free(Process *p);
+/* Raise a runtime fault as a catchable Error exception. */
 MLWS_NORETURN void vm_trap(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);
+/* Raise any non-null object as an exception. */
+MLWS_NORETURN void proc_throw(Process *p, Obj *ex);
 /* Run `fn` (no arguments) to completion. Returns false on a trap (see p->err). */
 bool proc_run_main(Process *p, Function *fn);
 Segment *proc_segment(Process *p, uint64_t ptr);

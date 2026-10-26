@@ -57,8 +57,8 @@ counter += 1             add  @counter, 1             ; globals are operands too
   saturates.
 * Integer overflow wraps. Checked-arithmetic variants are planned. Until then,
   generate explicit checks if the language requires them.
-* Division by zero traps (`E_DIV_ZERO`). Exceptions (milestone M5) will make it
-  catchable.
+* Division by zero traps (`E_DIV_ZERO`). Like every fault, it can be caught with a
+  `.try` handler (§8).
 
 ## 4. Control flow
 
@@ -159,7 +159,43 @@ The heap object types map directly onto scripting-language values
 * Raw memory (`alloc`, `P` registers) is still useful for byte-level buffers, FFI
   and manual layouts. See `examples/records.masm`.
 
-## 8. A complete translation
+## 8. Exceptions
+
+```
+try { A } catch (e) { B }        .try .Lcatch7
+                                     ...A...
+                                 .endtry
+                                     jmp .Lend7
+                                 .Lcatch7:
+                                     catch R5            ; e
+                                     ...B...
+                                 .Lend7:
+
+try { A } finally { F }          .try .Lfin8
+                                     ...A...
+                                 .endtry
+                                     ...F...             ; normal path
+                                     jmp .Ldone8
+                                 .Lfin8:
+                                     catch R5
+                                     ...F...             ; exceptional path
+                                     throw R5            ; rethrow
+                                 .Ldone8:
+
+throw MyError(...)                   new R0, MyError     ; any struct or value
+                                     throw R0
+```
+
+* Typed `catch (e: T)` clauses are an `isa` test (or `typeof`, or a check of
+  `R5->Error.code`) in the handler, followed by `throw R5` if nothing matches.
+* `return` inside a `try` with a `finally`: emit the finally code before the `ret`.
+* The handler runs in the same frame with the same registers. Values that the
+  handler needs are just registers.
+* Faults are `Error` structs with string fields `code`, `message` and `trace`.
+  User exceptions can be anything, and uncaught non-`Error` values report
+  `E_UNCAUGHT`.
+
+## 9. A complete translation
 
 `examples/translation.masm` (run by `make test`) translates this program:
 
@@ -214,7 +250,7 @@ end:
 .endf
 ```
 
-## 9. Debugging generated code
+## 10. Debugging generated code
 
 | Tool | Use |
 |---|---|
@@ -226,16 +262,15 @@ end:
 Every error has a stable code ([ERRORS.md](ERRORS.md)), so compiler tests can assert
 on them.
 
-## 10. Stability and what is coming
+## 11. Stability and what is coming
 
 These are stable and safe to target now: the assembly syntax, the operand forms,
-the opcode numbers, the calling convention, the heap object model (M4) and the
-`.mlwso` layout. These are
+the opcode numbers, the calling convention, the heap object model (M4),
+exceptions (M5) and the `.mlwso` layout. These are
 planned, and will only be *additions*:
 
 | Milestone | Adds |
 |---|---|
-| M5 | Exceptions: `.try`, `throw`, `catch`. Traps become catchable |
 | M6 | Processes: `spawn`, `send`, `recv`, `link`, `monitor`, quotas |
 | M7 | Tooling: `mlwsvm top`, `mlwsvm debug`, `--trace`, `--profile`, web dashboard |
 | M8 | Closures, BigInt (`.big`), decimal (`.dec`) |

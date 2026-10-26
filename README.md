@@ -48,6 +48,8 @@ base:
 * **Rich heap types with a garbage collector**: strings, byte buffers, typed
   arrays, structs declared in assembly (`R0->Point.x`), dynamically typed lists, and
   insertion-ordered maps. The collector is a precise, per-process mark-sweep.
+* **Structured exceptions**: `.try` regions, `throw`/`catch`, and zero cost until
+  something is thrown. Every runtime fault is catchable as an `Error`.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
 * **Tested in its own assembly**: 100+ test programs, also run under
@@ -111,8 +113,8 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M2 Loader and interpreter: register windows, data stack, all addressing modes, verifier, test runner | done |
 | M3 Libraries: imports/exports, library path, `lib/std` | done |
 | M4 GC heap: strings, byte buffers, arrays, structs, lists, maps, handles | done |
-| M5 Structured exceptions | next |
-| M6 Many concurrent isolated processes: scheduler, messages, quotas, accounting | planned |
+| M5 Structured exceptions | done |
+| M6 Many concurrent isolated processes: scheduler, messages, quotas, accounting | next |
 | M7 Tooling: `mlwsvm top`, debugger, trace/profiler, web dashboard | planned |
 | M8 Closures, BigInt, decimal | planned |
 | M9 Performance: computed-goto dispatch, multi-threaded scheduler, generational GC | planned |

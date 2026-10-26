@@ -39,7 +39,8 @@ static void put_struct(StrBuf *b, const Module *m, uint64_t idx) {
         return;
     }
     const MStruct *st = &m->structs[idx];
-    if (st->flags & MSF_IMPORT) sb_printf(b, "%s.%s", m->imports[st->import_idx], st->name);
+    if (st->flags & MSF_BUILTIN) sb_puts(b, st->name);
+    else if (st->flags & MSF_IMPORT) sb_printf(b, "%s.%s", m->imports[st->import_idx], st->name);
     else sb_puts(b, st->name);
 }
 
@@ -201,7 +202,7 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
         if (m->syms[i].flags & MS_EXPORT) sb_printf(b, ".export %s\n", m->syms[i].name);
     for (uint32_t i = 0; i < m->nstructs; i++) {
         const MStruct *st = &m->structs[i];
-        if (st->flags & MSF_IMPORT) continue;
+        if (st->flags & (MSF_IMPORT | MSF_BUILTIN)) continue;
         if (st->flags & MSF_EXPORT) sb_printf(b, ".export %s\n", st->name);
         sb_printf(b, "\n.struct %s\n", st->name);
         for (uint32_t k = 0; k < st->nfields; k++)
@@ -237,6 +238,13 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
             sb_putc(b, ')');
         }
         sb_printf(b, "\n    .regs I=%u, F=%u, R=%u, P=%u\n", f->nregs[0], f->nregs[1], f->nregs[2], f->nregs[3]);
+        for (uint32_t h = 0; h < f->nhandlers; h++) {
+            const MHandler *mh = &f->handlers[h];
+            sb_printf(b, "    .try .L%u, .L%u, .L%u\n", mh->start, mh->end, mh->target);
+            if (mh->start <= code.n) is_target[mh->start] = true;
+            if (mh->end <= code.n) is_target[mh->end] = true;
+            if (mh->target < code.n) is_target[mh->target] = true;
+        }
         for (size_t i = 0; i < code.n; i++) {
             if (is_target[i]) sb_printf(b, ".L%zu:\n", i);
             sb_puts(b, "    ");

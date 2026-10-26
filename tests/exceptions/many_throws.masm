@@ -1,0 +1,20 @@
+; Throwing and catching in a loop: exceptions are ordinary heap objects and are
+; collected like any other garbage.
+.include "std/test.inc"
+.func main
+    mov I0, 0
+    mov I1, 0
+1:
+.try 2f
+    tostr R0, I0
+    throw R0
+.endtry
+2:  catch R1
+    inc I1
+    inc I0
+    blt I0, 20000, 1b
+    ASSERT_EQ I1, 20000
+    ncall "gc.heap_bytes" () -> (I2)
+    ASSERT_LT I2, 4000000
+    ret 0
+.endf

@@ -230,10 +230,30 @@ exception is constant-pool strings, which are immutable and immortal.
   instruction boundary after an allocation. `make check-gc` runs the whole test
   suite this way.
 
-## 7. Traps
+## 7. Exceptions and traps
 
-A runtime fault stops the process and reports a stable error code and message,
-followed by a backtrace with source lines:
+**Raising.** `throw R0` raises any non-null reference. A runtime fault (division
+by zero, bounds, null, type, call depth, a failed assertion, ...) raises a new
+built-in `Error` struct with `code`, `message` and `trace` string fields.
+
+**Finding a handler.** Each function has a table of handler regions
+`[start, end) -> handler`, built from `.try` directives:
+
+1. The VM looks at the frame that raised. The *faulting instruction* is the
+   instruction executing in that frame. In the frames below it, it is the `call`
+   that is still in progress.
+2. Among the regions containing that instruction, the **smallest** one wins, so
+   nested regions behave as expected whatever order they are declared in.
+3. If no region matches, the frame is popped, which restores `SP` and `FP` exactly
+   as a `ret` would, and the search continues in the caller.
+4. When a handler is found, execution continues at its first instruction, in
+   that frame, with that frame's registers as they were. `SP` is as it was when
+   the faulting instruction started (for an outer frame, as it was at the call).
+   `catch dst` then fetches the exception.
+
+**Uncaught exceptions** end the process. An `Error` reports its own code and
+message. Any other value reports `E_UNCAUGHT`. In both cases the backtrace is the
+one captured where the exception was originally thrown:
 
 ```
 runtime error[E_ASSERT]: ASSERT_EQ(x, 3) failed
@@ -241,5 +261,6 @@ runtime error[E_ASSERT]: ASSERT_EQ(x, 3) failed
   at fail.main (fail.masm:7)
 ```
 
-[ERRORS.md](ERRORS.md) lists every code. Milestone M5 turns traps into catchable
-exceptions (`.try`/`throw`/`catch`) with the same codes.
+[ERRORS.md](ERRORS.md) lists every code. Because handlers are tables beside the
+code, a `.try` region costs nothing at run time until an exception is actually
+thrown.

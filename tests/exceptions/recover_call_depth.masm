@@ -1,0 +1,29 @@
+; Even exhausting the call depth is recoverable: all frames above the handler
+; are discarded and the program continues.
+.include "std/test.inc"
+.func forever(i64 n)
+    add n, 1
+    call forever (n)
+    ret
+.endf
+.func main
+.try h
+    call forever (0)
+.endtry
+    ret 1
+h:
+    catch R0
+    strcmp I0, R0->Error.code, "E_CALL_DEPTH"
+    ASSERT_EQ I0, 0
+    call forever_ok (10) -> (I1)       ; the stack is usable again
+    ASSERT_EQ I1, 10
+    ret 0
+.endf
+.func forever_ok(i64 n) -> i64
+    bz n, 1f
+    sub I1, n, 1
+    call forever_ok (I1) -> (I2)
+    add I2, 1
+    ret I2
+1:  ret 0
+.endf

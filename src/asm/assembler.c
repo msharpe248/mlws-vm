@@ -41,6 +41,18 @@ typedef struct {
     uint32_t seq, idx;
 } NumLabel;
 
+/* An exception handler region, from `.try start, end, handler` (labels) or
+ * from the block form `.try handler` ... `.endtry` (instruction indices). */
+typedef struct {
+    char *lbl[3];        /* start, end, handler: label names, or NULL */
+    int64_t lnum[3];     /* numeric local label references (1b / 1f) */
+    char ldir[3];        /* 'b' / 'f', or 0 */
+    uint32_t seq;        /* statement number, for resolving 1b / 1f */
+    uint32_t start, end; /* block form */
+    bool open;           /* block form, .endtry not yet seen */
+    const PLine *pl;
+} AsmHandler;
+
 typedef struct AsmFunc {
     char *name;
     const PLine *pl;
@@ -51,6 +63,7 @@ typedef struct AsmFunc {
     VEC(AsmInsn) insns;
     int regs_min[NBANKS];
     int nparam_bank[NBANKS];
+    VEC(AsmHandler) handlers;
 } AsmFunc;
 
 typedef struct {
@@ -827,6 +840,39 @@ static bool dir_endf(Asm *A, Cur *c) {
             note_operand_regs(maxr, &ai->ops[k].o);
         }
     }
+    for (size_t i = 0; i < f->handlers.n; i++) {
+        AsmHandler *h = &f->handlers.v[i];
+        if (h->open) return aerr(A, h->pl, 0, "E_ASM_SYNTAX", ".try without a matching .endtry");
+        uint32_t idx[3] = {h->start, h->end, 0};
+        for (int k = 0; k < 3; k++) {
+            if (h->ldir[k]) { /* numeric local label, as for branch operands */
+                const NumLabel *best = NULL;
+                for (size_t j = 0; j < f->numlabels.n; j++) {
+                    const NumLabel *nl = &f->numlabels.v[j];
+                    if (nl->num != h->lnum[k]) continue;
+                    if (h->ldir[k] == 'b' ? nl->seq <= h->seq && (!best || nl->seq >= best->seq)
+                                          : nl->seq > h->seq && (!best || nl->seq < best->seq))
+                        best = nl;
+                }
+                if (!best)
+                    return aerr(A, h->pl, 0, "E_ASM_UNDEF_LABEL", "no matching local label %lld%c in .try",
+                                (long long)h->lnum[k], h->ldir[k]);
+                idx[k] = best->idx;
+                continue;
+            }
+            if (!h->lbl[k]) continue;
+            void *v;
+            if (!smap_get(&f->labels, h->lbl[k], &v))
+                return aerr(A, h->pl, 0, "E_ASM_UNDEF_LABEL", "undefined label '%s' in .try", h->lbl[k]);
+            idx[k] = (uint32_t)VI(v);
+        }
+        if (idx[0] > idx[1]) return aerr(A, h->pl, 0, "E_ASM_SYNTAX", ".try region ends before it starts");
+        h->start = idx[0];
+        h->end = idx[1];
+        MHandler mh = {idx[0], idx[1], idx[2]};
+        f->mf.handlers = xrealloc(f->mf.handlers, (f->mf.nhandlers + 1) * sizeof(MHandler));
+        f->mf.handlers[f->mf.nhandlers++] = mh;
+    }
     AsmInsn *last = &f->insns.v[f->insns.n - 1];
     if (!(op_info[last->op].flags & OPF_TERM))
         return aerr(A, last->pl, 0, "E_ASM_SYNTAX",
@@ -977,6 +1023,58 @@ static bool struct_line(Asm *A, Cur *c) {
     return expect_eol(A, c);
 }
 
+static bool dir_try(Asm *A, Cur *c) {
+    AsmFunc *f = A->cur;
+    if (!f) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".try must be inside a .func");
+    AsmHandler h;
+    memset(&h, 0, sizeof h);
+    h.pl = c->pl;
+    h.seq = A->seq;
+    char *names[3] = {NULL, NULL, NULL};
+    int64_t nums[3] = {0, 0, 0};
+    char dirs[3] = {0, 0, 0};
+    int n = 0;
+    while (n < 3 && (cur(c)->kind == TK_IDENT || cur(c)->kind == TK_LOCALREF)) {
+        if (cur(c)->kind == TK_IDENT) names[n] = tokdup(cur(c));
+        else nums[n] = cur(c)->ival, dirs[n] = cur(c)->p[0];
+        n++;
+        c->pos++;
+        if (!tok_is(cur(c), ",")) break;
+        c->pos++;
+    }
+    if ((n != 1 && n != 3) || cur(c)->kind != TK_EOF) {
+        for (int i = 0; i < n; i++) free(names[i]);
+        return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX",
+                    "expected `.try handler` (block form, closed by .endtry) or `.try start, end, handler`");
+    }
+    int first = n == 1 ? 2 : 0; /* block form names only the handler */
+    for (int i = 0; i < n; i++) {
+        h.lbl[first + i] = names[i];
+        h.lnum[first + i] = nums[i];
+        h.ldir[first + i] = dirs[i];
+    }
+    if (n == 1) {
+        h.start = (uint32_t)f->insns.n;
+        h.open = true;
+    }
+    VEC_PUSH(f->handlers, h);
+    return true;
+}
+
+static bool dir_endtry(Asm *A, Cur *c) {
+    AsmFunc *f = A->cur;
+    if (!f) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".endtry must be inside a .func");
+    for (size_t i = f->handlers.n; i-- > 0;) { /* innermost open block */
+        AsmHandler *h = &f->handlers.v[i];
+        if (h->open) {
+            h->open = false;
+            h->end = (uint32_t)f->insns.n;
+            return expect_eol(A, c);
+        }
+    }
+    return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".endtry without a matching block-form .try");
+}
+
 static bool directive(Asm *A, Cur *c) {
     Token *d = cur(c);
     c->pos++;
@@ -992,6 +1090,8 @@ static bool directive(Asm *A, Cur *c) {
         if (IS(data_dirs[i].name)) return data_directive(A, c, data_dirs[i].t);
     if (IS(".func")) return dir_func(A, c);
     if (IS(".struct")) return dir_struct(A, c);
+    if (IS(".try")) return dir_try(A, c);
+    if (IS(".endtry")) return dir_endtry(A, c);
     if (IS(".ends")) return aerr(A, c->pl, d->col, "E_ASM_SYNTAX", ".ends without .struct");
     if (IS(".endf")) return dir_endf(A, c);
     if (IS(".regs")) return dir_regs(A, c);
@@ -1083,6 +1183,8 @@ static MlwsType local_field_type(Asm *A, const char *sym) {
         const MStruct *st = &A->structs.v[VI(v)];
         for (uint32_t i = 0; i < st->nfields; i++)
             if (!strcmp(st->fields[i], dot + 1)) t = (MlwsType)st->types[i];
+    } else if (!strcmp(sname, "Error")) {
+        t = T_R; /* all built-in Error fields are references */
     }
     free(sname);
     return t;
@@ -1339,6 +1441,20 @@ static bool resolve_struct_name(Asm *A, const PLine *pl, int col, const char *na
         *out = (uint32_t)VI(v);
         return true;
     }
+    if (!strcmp(name, "Error")) { /* the built-in exception struct */
+        if (smap_get(&A->structmap, "B:Error", &v)) {
+            *out = (uint32_t)VI(v);
+            return true;
+        }
+        MStruct st;
+        memset(&st, 0, sizeof st);
+        st.name = xstrdup("Error");
+        st.flags = MSF_BUILTIN;
+        *out = (uint32_t)A->structs.n;
+        smap_put(&A->structmap, "B:Error", IV(A->structs.n));
+        VEC_PUSH(A->structs, st);
+        return true;
+    }
     uint32_t imp;
     const char *sym;
     if (!split_import(A, name, &imp, &sym))
@@ -1369,7 +1485,11 @@ static bool resolve_field_ref(Asm *A, const PLine *pl, AsmOp *o) {
     if (!ok) return false;
     const char *field = dot + 1;
     const MStruct *st = &A->structs.v[si];
-    if (!(st->flags & MSF_IMPORT)) {
+    if (st->flags & MSF_BUILTIN) {
+        if (strcmp(field, "code") && strcmp(field, "message") && strcmp(field, "trace"))
+            return aerr(A, pl, o->col, "E_ASM_UNDEF_SYM", "struct Error has no field '%s' (it has code, message, trace)",
+                        field);
+    } else if (!(st->flags & MSF_IMPORT)) {
         bool found = false;
         for (uint32_t i = 0; i < st->nfields; i++) found = found || !strcmp(st->fields[i], field);
         if (!found) return aerr(A, pl, o->col, "E_ASM_UNDEF_SYM", "struct %s has no field '%s'", st->name, field);
@@ -1453,6 +1573,8 @@ static Module *finish(Asm *A) {
         MFunc *mf = &m->funcs[f];
         *mf = af->mf;
         mf->name = xstrdup(af->name);
+        mf->handlers = xcalloc(af->mf.nhandlers + 1, sizeof(MHandler));
+        if (af->mf.nhandlers) memcpy(mf->handlers, af->mf.handlers, af->mf.nhandlers * sizeof(MHandler));
         mf->code_off = (uint32_t)code.n;
         mf->ninsns = (uint32_t)af->insns.n;
         mf->lines = xcalloc(af->insns.n, sizeof(uint32_t));
@@ -1518,6 +1640,10 @@ static void asm_free(Asm *A) {
         }
         VEC_FREE(af->insns);
         VEC_FREE(af->numlabels);
+        for (size_t i = 0; i < af->handlers.n; i++)
+            for (int k = 0; k < 3; k++) free(af->handlers.v[i].lbl[k]);
+        VEC_FREE(af->handlers);
+        free(af->mf.handlers);
         smap_free(&af->labels);
         smap_free(&af->aliases);
         free(af->name);

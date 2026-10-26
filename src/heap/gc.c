@@ -115,6 +115,7 @@ void gc_collect(Process *p) {
     mark_segment(p, &p->stack, 0);
     for (uint32_t i = 0; i < p->nglobals; i++) mark_segment(p, &p->globals[i], 0);
     for (size_t i = 0; i < p->handles.n; i++) mark(p, p->handles.v[i]);
+    mark(p, p->exception);
     while (p->markstack.n) scan(p, p->markstack.v[--p->markstack.n]);
     Obj **pp = &p->heap;
     while (*pp) {

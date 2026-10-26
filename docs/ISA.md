@@ -186,3 +186,10 @@ which preserves the type tag of a stack or global word.
 | `0x00D0` | `hnew` | `?, ?` | - | Make a handle: an i64 that keeps the object alive and can be stored anywhere, including raw memory. Freed handle numbers may be reused. |
 | `0x00D1` | `hget` | `?, int` | - | Get a handle's object. Traps E_BAD_HANDLE for an unknown or freed handle. |
 | `0x00D2` | `hfree` | `int` | - | Release a handle. The object becomes collectable if nothing else refers to it. |
+
+## Exceptions
+
+| Opcode | Mnemonic | Operands | Types | Description |
+|---|---|---|---|---|
+| `0x00E0` | `throw` | `?` | - | Raise an exception: any non-null reference, often an Error struct (`new R0, Error`). Control passes to the handler of the innermost enclosing .try region in this function or a caller, and frames without a handler are unwound. An uncaught exception ends the process. To rethrow, throw the caught value again. |
+| `0x00E1` | `catch` | `?` | - | At the start of a handler: dst = the exception being handled. Runtime faults arrive as Error structs whose code field holds the error code (e.g. "E_DIV_ZERO"). |

@@ -6,7 +6,7 @@
 #include "types.h"
 
 #define MLWSO_MAGIC "MLWS"
-#define MLWSO_VERSION 2
+#define MLWSO_VERSION 3
 
 /* A call has a target and an argc operand, leaving 30 for arguments/results. */
 #define MAX_PARAMS 30
@@ -19,6 +19,12 @@ typedef struct {
     uint32_t len;
     char *data;
 } MConst;
+
+/* An exception handler region: instructions [start, end) are protected by the
+ * handler at `target`. Indices are instruction numbers within the function. */
+typedef struct {
+    uint32_t start, end, target;
+} MHandler;
 
 /* Function flags */
 #define MF_EXPORT 0x01
@@ -36,6 +42,8 @@ typedef struct {
     uint32_t code_off, code_len; /* byte range within Module.code */
     uint32_t ninsns;
     uint32_t *lines;       /* source line per instruction (ninsns entries) */
+    uint32_t nhandlers;
+    MHandler *handlers;
 } MFunc;
 
 /* Data symbol flags */
@@ -60,6 +68,7 @@ typedef struct {
 /* Struct type flags */
 #define MSF_EXPORT 0x01
 #define MSF_IMPORT 0x02
+#define MSF_BUILTIN 0x04 /* provided by the VM (Error); name only */
 
 /* A struct type: defined here (fields listed), or imported by name. */
 typedef struct {

@@ -41,7 +41,10 @@ the message also names the macro and where it was expanded.
 
 ## Runtime traps
 
-Reported with a backtrace. `mlwsvm run` exits with status 70.
+Every runtime trap is raised as a catchable exception: an `Error` struct whose
+`code` field is the code below (see [ASSEMBLY.md §5.3](ASSEMBLY.md#53-exceptions)).
+If it is not caught, it is reported with a backtrace and `mlwsvm run` exits with
+status 70.
 
 | Code | Meaning |
 |---|---|
@@ -62,4 +65,5 @@ Reported with a backtrace. `mlwsvm run` exits with status 70.
 | `E_CALL_DEPTH` | More than the maximum number of nested calls |
 | `E_RET_COUNT` | A caller expects more results than the callee returned |
 | `E_ASSERT` | `assert` failed, or `test.fail` was called (as the `std/test.inc` macros do) |
+| `E_UNCAUGHT` | An exception that is not an `Error` struct (e.g. `throw "text"`) was not caught |
 | `E_INTERNAL` | A VM bug. Please report it |

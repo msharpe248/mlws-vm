@@ -13,7 +13,7 @@ file produces `E_LOAD_FORMAT` (or `E_VERIFY`) rather than a crash.
 
 ```
 magic        4 bytes  "MLWS"
-version      u16      2
+version      u16      3
 flags        u16      0
 name         str      dotted module name, e.g. "std.io"
 source       str      source file name (for backtraces); may be empty
@@ -38,6 +38,9 @@ functions    uleb n, then n × {
                  code_off uleb, code_len uleb        byte range in the code section
                  ninsns  uleb
                  lines   uleb × ninsns               source line of each instruction
+                 nhandlers uleb, then nhandlers × {start uleb, end uleb, target uleb}
+                                                     exception regions [start, end) -> target,
+                                                     as instruction indices
              }
 
 data symbols uleb n, then n × { name str, offset uleb, size uleb, flags uleb (1 = exported) }
@@ -51,7 +54,7 @@ natives      uleb n, then n × str           native names used by ncall
 
 structs      uleb n, then n × {
                name   str
-               flags  uleb   1 = exported, 2 = import
+               flags  uleb   1 = exported, 2 = import, 4 = built-in (Error; nothing follows)
                if import:
                  import_index uleb                    the struct is defined there
                else:
@@ -143,4 +146,5 @@ interpreter relies on.
 * Opcode numbers and mode bytes never change meaning. New ones are added in unused
   slots.
 * The version number changes if the layout above changes. Version 2 added the
-  struct and field-ref tables. Version 1 files must be re-assembled.
+  struct and field-ref tables, and version 3 the exception handler tables. Older
+  files must be re-assembled.

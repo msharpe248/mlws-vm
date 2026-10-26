@@ -13,6 +13,7 @@ void module_free(Module *m) {
     for (uint32_t i = 0; i < m->nfuncs; i++) {
         free(m->funcs[i].name);
         free(m->funcs[i].lines);
+        free(m->funcs[i].handlers);
     }
     free(m->funcs);
     for (uint32_t i = 0; i < m->nsyms; i++) free(m->syms[i].name);
@@ -93,6 +94,12 @@ void module_write(const Module *m, ByteBuf *b) {
         bb_uleb(b, f->code_len);
         bb_uleb(b, f->ninsns);
         for (uint32_t k = 0; k < f->ninsns; k++) bb_uleb(b, f->lines ? f->lines[k] : 0);
+        bb_uleb(b, f->nhandlers);
+        for (uint32_t k = 0; k < f->nhandlers; k++) {
+            bb_uleb(b, f->handlers[k].start);
+            bb_uleb(b, f->handlers[k].end);
+            bb_uleb(b, f->handlers[k].target);
+        }
     }
     bb_uleb(b, m->nsyms);
     for (uint32_t i = 0; i < m->nsyms; i++) {
@@ -119,6 +126,7 @@ void module_write(const Module *m, ByteBuf *b) {
         const MStruct *st = &m->structs[i];
         bb_str(b, st->name);
         bb_uleb(b, st->flags);
+        if (st->flags & MSF_BUILTIN) continue;
         if (st->flags & MSF_IMPORT) {
             bb_uleb(b, st->import_idx);
             continue;
@@ -228,7 +236,21 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
         f->ninsns = (uint32_t)ni;
         f->lines = xcalloc(ni, sizeof(uint32_t));
         for (uint32_t k = 0; k < f->ninsns; k++) f->lines[k] = (uint32_t)br_uleb(&r);
+        uint64_t nh = br_uleb(&r);
+        CHECK_COUNT(nh, 3);
+        f->nhandlers = (uint32_t)nh;
+        f->handlers = xcalloc(nh + 1, sizeof(MHandler));
+        for (uint32_t k = 0; k < f->nhandlers; k++) {
+            f->handlers[k].start = (uint32_t)br_uleb(&r);
+            f->handlers[k].end = (uint32_t)br_uleb(&r);
+            f->handlers[k].target = (uint32_t)br_uleb(&r);
+        }
         CHECK();
+        for (uint32_t k = 0; k < f->nhandlers; k++) {
+            const MHandler *h = &f->handlers[k];
+            if (h->start > h->end || h->end > f->ninsns || h->target >= f->ninsns)
+                FAIL("function %s: exception handler out of range", f->name);
+        }
         for (int k = 0; k < f->nparams; k++)
             if (f->params[k] == T_NONE || f->params[k] >= T__COUNT) FAIL("function %s: bad parameter type", f->name);
         for (int k = 0; k < f->nrets; k++)
@@ -283,6 +305,7 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
         st->name = br_str(&r);
         st->flags = (uint32_t)br_uleb(&r);
         CHECK();
+        if (st->flags & MSF_BUILTIN) continue;
         if (st->flags & MSF_IMPORT) {
             st->import_idx = (uint32_t)br_uleb(&r);
             CHECK();

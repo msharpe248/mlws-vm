@@ -163,6 +163,12 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
     lm->structs = xcalloc(m->nstructs + 1, sizeof(StructDef *));
     for (uint32_t i = 0; i < m->nstructs; i++) {
         const MStruct *st = &m->structs[i];
+        if (st->flags & MSF_BUILTIN) {
+            if (strcmp(st->name, "Error") != 0)
+                return mlws_err(err, "E_LINK_UNDEF", "module %s uses unknown built-in struct '%s'", m->name, st->name);
+            lm->structs[i] = &VM_ERROR_DEF;
+            continue;
+        }
         if (!(st->flags & MSF_IMPORT)) {
             StructDef *d = &lm->sdefs[i];
             d->name = st->name;

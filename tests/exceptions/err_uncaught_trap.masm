@@ -1,0 +1,12 @@
+; An uncaught fault keeps its own error code, even if it passed through a
+; handler that rethrew it.
+; expect-error: E_BOUNDS
+.func main
+.try h
+    anew.i64 R0, 1
+    mov R0[1], 0
+.endtry
+h:
+    catch R1
+    throw R1
+.endf

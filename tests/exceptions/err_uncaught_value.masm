@@ -1,0 +1,5 @@
+; A non-Error exception that nobody catches ends the process with E_UNCAUGHT.
+; expect-error: E_UNCAUGHT
+.func main
+    throw "nobody catches this"
+.endf

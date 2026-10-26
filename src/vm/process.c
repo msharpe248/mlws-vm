@@ -70,14 +70,75 @@ static void build_backtrace(Process *p) {
     }
 }
 
+static char *const ERROR_FIELDS[] = {"code", "message", "trace"};
+static uint8_t ERROR_TYPES[] = {T_R, T_R, T_R};
+const StructDef VM_ERROR_DEF = {"Error", "(builtin)", 3, (char **)ERROR_FIELDS, ERROR_TYPES};
+
+void proc_throw(Process *p, Obj *ex) {
+    if (!p->jb) {
+        fprintf(stderr, "mlwsvm: exception raised outside the interpreter\n");
+        abort();
+    }
+    build_backtrace(p);
+    p->exception = ex;
+    p->exceptions_thrown++;
+    longjmp(*p->jb, 1);
+}
+
 void vm_trap(Process *p, const char *code, const char *fmt, ...) {
-    snprintf(p->err.code, sizeof p->err.code, "%s", code);
+    char msg[1024];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(p->err.msg, sizeof p->err.msg, fmt, ap);
+    vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
     build_backtrace(p);
-    longjmp(*p->jb, 1);
+    ObjStruct *e = struct_new(p, &VM_ERROR_DEF);
+    e->fields[ERRF_CODE].r = str_new(p, code, strlen(code));
+    e->fields[ERRF_MESSAGE].r = str_new(p, msg, strlen(msg));
+    e->fields[ERRF_TRACE].r = str_new(p, p->backtrace.s ? p->backtrace.s : "", p->backtrace.n);
+    proc_throw(p, &e->h);
+}
+
+/* Find the innermost handler covering the faulting instruction, popping frames
+ * that have none. Returns false if the exception is uncaught. */
+static bool unwind(Process *p) {
+    while (p->nframes) {
+        Frame *fr = &p->frames[p->nframes - 1];
+        const MFunc *mf = fr->fn->mf;
+        uint32_t pc = fr->pc ? fr->pc - 1 : 0;
+        const MHandler *best = NULL;
+        for (uint32_t i = 0; i < mf->nhandlers; i++) {
+            const MHandler *h = &mf->handlers[i];
+            if (pc >= h->start && pc < h->end && (!best || h->end - h->start < best->end - best->start)) best = h;
+        }
+        if (best) {
+            fr->pc = best->target;
+            return true;
+        }
+        proc_pop_frame(p);
+    }
+    return false;
+}
+
+/* Describe an uncaught exception in p->err. */
+static void describe_uncaught(Process *p) {
+    Obj *ex = p->exception;
+    if (ex && ex->kind == OBJ_STRUCT && ((ObjStruct *)ex)->def == &VM_ERROR_DEF) {
+        ObjStruct *e = (ObjStruct *)ex;
+        Obj *code = e->fields[ERRF_CODE].r, *msg = e->fields[ERRF_MESSAGE].r;
+        snprintf(p->err.code, sizeof p->err.code, "%s",
+                 code && code->kind == OBJ_STRING ? ((ObjString *)code)->data : "E_UNCAUGHT");
+        snprintf(p->err.msg, sizeof p->err.msg, "%s",
+                 msg && msg->kind == OBJ_STRING ? ((ObjString *)msg)->data : "(no message)");
+        return;
+    }
+    snprintf(p->err.code, sizeof p->err.code, "E_UNCAUGHT");
+    if (ex && ex->kind == OBJ_STRING)
+        snprintf(p->err.msg, sizeof p->err.msg, "uncaught exception: \"%.1000s\"", ((ObjString *)ex)->data);
+    else if (ex && ex->kind == OBJ_STRUCT)
+        snprintf(p->err.msg, sizeof p->err.msg, "uncaught exception: a %s struct", ((ObjStruct *)ex)->def->name);
+    else
+        snprintf(p->err.msg, sizeof p->err.msg, "uncaught exception: a %s", ex ? obj_kind_name(ex->kind) : "null");
 }
 
 /* ---- frames ------------------------------------------------------------------ */
@@ -133,16 +194,19 @@ bool proc_run_main(Process *p, Function *fn) {
     jmp_buf jb;
     p->jb = &jb;
     p->state = PROC_RUNNING;
-    if (setjmp(jb)) {
-        p->state = PROC_FAILED;
-        p->jb = NULL;
-        return false;
-    }
+    if (setjmp(jb)) goto raised; /* every throw and trap lands here */
     proc_push_frame(p, fn, NULL);
+resume:
     interp_run(p);
     p->state = PROC_DONE;
     p->jb = NULL;
     return true;
+raised:
+    if (unwind(p)) goto resume;
+    describe_uncaught(p);
+    p->state = PROC_FAILED;
+    p->jb = NULL;
+    return false;
 }
 
 /* ---- memory ------------------------------------------------------------------ */

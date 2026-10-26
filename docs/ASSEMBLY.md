@@ -213,6 +213,37 @@ how arguments are bound.
 .endf
 ```
 
+### 5.3 Exceptions
+
+```asm
+.func parse_or_zero(ref s) -> i64
+.try bad                     ; block form: protect the code up to .endtry
+    parse.i64 I0, s          ; traps with E_PARSE on bad input
+.endtry
+    ret I0
+bad:
+    catch R0                 ; R0 = the exception (an Error struct for faults)
+    ret 0
+.endf
+```
+
+* `.try handler` ... `.endtry` protects the instructions between the two directives.
+  If anything inside them, including any function they call, raises an exception,
+  control jumps to `handler`. Blocks can nest.
+* `.try start, end, handler` names the region with labels instead. `end` is
+  exclusive. This form suits compilers that lay out code themselves. Numeric local
+  labels (`1f`) work in both forms.
+* `throw R0` raises any non-null reference. `catch dst`, at the start of a handler,
+  receives it. Rethrow by throwing the caught value again; a "finally" block is a
+  catch-all handler that cleans up and rethrows.
+* **Every runtime fault is catchable.** It arrives as a built-in `Error` struct with
+  three string fields: `R0->Error.code` (for example `"E_DIV_ZERO"`), `R0->Error.message`
+  and `R0->Error.trace` (the backtrace). `Error` is available in every module
+  without a declaration, and programs can create and throw their own:
+  `new R0, Error`.
+* Handlers are tables beside the code, so a `.try` costs nothing until something
+  is thrown. Unwinding rules are in [ABI.md §7](ABI.md#7-exceptions-and-traps).
+
 ## 6. Data (module globals)
 
 Data directives outside functions append to the module's **global segment**. Each
@@ -447,6 +478,7 @@ macro-only files use the `.inc` extension and are not modules.
 | `.export a, b, ...` | anywhere | Export functions, data symbols or struct types |
 | `.func ... / .endf` | top level | Define a function |
 | `.struct Name` ... `field: type` ... `.ends` | top level | Define a struct type |
+| `.try handler` ... `.endtry`, `.try start, end, handler` | in function | Exception handler region |
 | `.regs I=n, F=n, R=n, P=n` | in function | Minimum register window |
 | `.alias name, REG` | anywhere | Register alias (module-wide or function-local) |
 | `.i8` ... `.f64`, `.b`, `.c`, `.ascii`, `.asciz`, `.zero`, `.space`, `.align` | top level | Global data |

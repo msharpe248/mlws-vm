@@ -242,3 +242,9 @@ OP(HGET,   0x00D1, "hget",   "Handles", "XQ", 0, 0,
    "Get a handle's object. Traps E_BAD_HANDLE for an unknown or freed handle.")
 OP(HFREE,  0x00D2, "hfree",  "Handles", "Q", 0, 0,
    "Release a handle. The object becomes collectable if nothing else refers to it.")
+
+/* ---- exceptions ------------------------------------------------------------ */
+OP(THROW,  0x00E0, "throw",  "Exceptions", "O", 0, OPF_TERM,
+   "Raise an exception: any non-null reference, often an Error struct (`new R0, Error`). Control passes to the handler of the innermost enclosing .try region in this function or a caller, and frames without a handler are unwound. An uncaught exception ends the process. To rethrow, throw the caught value again.")
+OP(CATCH,  0x00E1, "catch",  "Exceptions", "X", 0, 0,
+   "At the start of a handler: dst = the exception being handled. Runtime faults arrive as Error structs whose code field holds the error code (e.g. \"E_DIV_ZERO\").")

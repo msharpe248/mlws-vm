@@ -1,0 +1,52 @@
+; Any non-null reference can be thrown: strings, user structs, built-in Errors.
+.include "std/test.inc"
+
+.struct MyError
+    code: i64
+    what: ref
+.ends
+
+.func fail_with(i64 kind)
+    jtab kind, str, mine, err
+    ret
+str:
+    throw "plain string"
+mine:
+    new R0, MyError
+    mov R0->MyError.code, 42
+    mov R0->MyError.what, "custom"
+    throw R0
+err:
+    new R0, Error                      ; programs can raise Error too
+    mov R0->Error.code, "E_APP"
+    mov R0->Error.message, "application error"
+    throw R0
+.endf
+
+.func classify(i64 kind) -> i64
+.try 1f
+    call fail_with (kind)
+.endtry
+    ret -1
+1:  catch R0
+    isa I0, R0, MyError
+    bz I0, 2f
+    ret R0->MyError.code
+2:  isa I0, R0, Error
+    bz I0, 3f
+    ret 100
+3:  typeof I0, R0                      ; 1 = string
+    ret I0
+.endf
+
+.func main
+    call classify (0) -> (I0)
+    ASSERT_EQ I0, 1
+    call classify (1) -> (I0)
+    ASSERT_EQ I0, 42
+    call classify (2) -> (I0)
+    ASSERT_EQ I0, 100
+    call classify (3) -> (I0)          ; no exception
+    ASSERT_EQ I0, -1
+    ret 0
+.endf

@@ -1,0 +1,22 @@
+; Runtime faults are catchable: they arrive as Error structs whose code field
+; holds the error code.
+; expect-stdout: caught E_DIV_ZERO: integer division by zero
+; expect-stdout: after
+.include "std/test.inc"
+.include "std/io.inc"
+.func main
+    mov I1, 0
+.try on_error
+    div I0, 10, I1                     ; traps
+    FAIL "not reached"
+.endtry
+    FAIL "not reached either"
+on_error:
+    catch R0
+    isa I2, R0, Error
+    ASSERT_TRUE I2
+    strcat R1, "caught ", R0->Error.code, ": ", R0->Error.message
+    PRINTLN_S R1
+    PRINTLN_S "after"
+    ret 0
+.endf

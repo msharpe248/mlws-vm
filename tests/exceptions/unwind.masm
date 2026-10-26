@@ -1,0 +1,40 @@
+; An exception unwinds through frames without handlers to the nearest one.
+; The catching frame's registers are intact, and SP is back to where it was when
+; the call that failed was made.
+.include "std/test.inc"
+
+.func level3(i64 depth)
+    push 1, 2, 3                       ; dropped by unwinding
+    anew.i64 R0, 2
+    mov R0[depth], 1                   ; depth 5 is out of bounds
+    ret
+.endf
+
+.func level2(i64 depth)
+    call level3 (depth)
+    ret
+.endf
+
+.func level1(i64 depth) -> i64
+    mov I5, 555
+    mov P1, SP
+.try handler
+    call level2 (depth)
+.endtry
+    ret 0
+handler:
+    catch R1
+    ASSERT_EQ I5, 555                  ; this frame's registers survived
+    ASSERT_EQ SP, P1, p                ; and SP is as it was at the call
+    strcmp I6, R1->Error.code, "E_BOUNDS"
+    ASSERT_EQ I6, 0
+    ret 1
+.endf
+
+.func main
+    call level1 (1) -> (I0)            ; in bounds: no exception
+    ASSERT_EQ I0, 0
+    call level1 (5) -> (I0)
+    ASSERT_EQ I0, 1
+    ret 0
+.endf
