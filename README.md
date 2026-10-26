@@ -103,6 +103,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/BINARY_FORMAT.md](docs/BINARY_FORMAT.md) | The `.mlwso` file and instruction encoding |
 | [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard and `top` |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks, results, and what was optimised (and why) |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Remaining work: calling C libraries, the standard library, platforms, deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
@@ -142,3 +143,4 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M9 Performance: single-thread interpreter (quickening, frames, `_setjmp`; 1.2–7.8× faster) | done |
 | M9 Performance: multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes) | done |
 | M9 Performance: generational GC, more specialised memory forms | deferred: measured as low value for now ([PERFORMANCE.md](docs/PERFORMANCE.md)) |
+| M10 Calling C libraries (extension API, FFI); M11 standard library | proposed ([ROADMAP.md](docs/ROADMAP.md)) |
