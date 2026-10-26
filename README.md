@@ -89,6 +89,7 @@ make check-tsan              # the tests on several threads, under ThreadSanitiz
 ./mlwsvm run examples/hello.masm
 ./mlwsvm run --stats examples/fib.masm
 ./mlwsvm run --threads 1 examples/workers.masm   # one worker thread: deterministic order
+./mlwsvm run examples/http_server.masm 8080     # a supervised HTTP server: a process per connection
 ./mlwsvm run --max-frames 1000000 --quota heap=256M prog.masm   # VM options (docs/TOOLING.md)
 ./mlwsvm run --profile examples/fib.masm
 ./mlwsvm debug examples/fib.masm          # then: break fib, run, bt, print I0, ...
@@ -161,4 +162,5 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M12 I/O core, files and the OS (`std.fs`, `std.os`) | done ([STDLIB.md](docs/STDLIB.md)) |
 | M13 networking (`std.net`: TCP, UDP, DNS; handle transfer between processes) | done |
 | M14 text and JSON (`text.format`, string utilities, UTF-8, `json.*`) | done |
-| M15 supervised HTTP server · M16 embedding API | planned ([ROADMAP.md](docs/ROADMAP.md#next-milestones)) |
+| M15 `std.proc` (registry, request/reply), `std.supervisor`, and a supervised HTTP server example (~29k requests/s) | done |
+| M16 embedding API | planned ([ROADMAP.md](docs/ROADMAP.md#next-milestones)) |

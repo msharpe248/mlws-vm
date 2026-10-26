@@ -72,6 +72,9 @@ void proc_free(Process *p) {
     vm->insns_retired += p->insns;
     VEC_FREE(p->mbox);
     for (size_t i = 0; i < p->inbox.n; i++) gc_free_list(p->inbox.v[i].objs);
+    if (p->reply_ready) gc_free_list(p->reply.objs);
+    for (size_t i = 0; i < p->names.n; i++) free(p->names.v[i]);
+    VEC_FREE(p->names);
     VEC_FREE(p->inbox);
     plat_lock_free(p->lock);
     VEC_FREE(p->links);
@@ -253,6 +256,10 @@ int proc_run_slice(Process *p, uint32_t budget) {
     p->jb = &jb;
     if (VM_SETJMP(jb)) { /* every throw and trap lands here */
         p->jb = NULL;
+        p->in_foreign = false; /* a built-in checked native may trap (on a worker thread) */
+        p->cur_native = NULL;
+        p->resumed = false;    /* whatever call was in progress is over */
+        p->fdwait.deadline = 0;
         if (p->pending_spawn) { /* spawn trapped while copying arguments */
             proc_free(p->pending_spawn);
             p->pending_spawn = NULL;

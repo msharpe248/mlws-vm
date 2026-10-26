@@ -506,6 +506,8 @@ static void record_exit(VM *vm, Process *p, bool failed) {
     }
 }
 
+static void unregister_all(VM *vm, Process *p); /* std.proc, below */
+
 /* A process has ended (on this thread, or claimed by kill_locked): notify its
  * monitors, take linked processes down with a failing one, and free it unless
  * it is main (freed by its runner, after collecting statistics). */
@@ -521,6 +523,7 @@ static void finish(Sched *s, Process *p, bool failed) {
     vm->live--;
     record_exit(vm, p, failed);
     plat_unlock(vm->lock);
+    if (p->names.n) unregister_all(vm, p); /* before the Downs: a restarted service can take its name again */
     for (size_t i = 0; i < mons.n; i++) send_down(s, mons.v[i], p, failed);
     bool observed = mons.n > 0 || links.n > 0;
     /* Linked processes die with a failing one; a normal exit just unlinks. */
@@ -624,6 +627,185 @@ void sched_set_quota(Process *p, int kind, uint64_t limit) {
     plat_unlock(p->lock);
 }
 
+/* ---- std.proc: the registry and request/reply calls ------------------------------- */
+
+static void reg_name_arg(Process *p, Word v, const char **name) {
+    Obj *o = v.r;
+    if (!o || o->kind != OBJ_STRING || !((ObjString *)o)->len)
+        vm_trap(p, "E_TYPE", "%s: the name must be a non-empty string", "proc.register");
+    *name = ((ObjString *)o)->data;
+}
+
+/* proc.register(name, pid): fails if the name belongs to a live process. */
+static void n_register(Process *p, Word *a, Word *r) {
+    (void)r;
+    VM *vm = p->vm;
+    const char *name;
+    reg_name_arg(p, a[0], &name);
+    uint64_t pid = a[1].u;
+    Process *t = pin(vm->sched, pid); /* held while its name list changes (lock order: process, then vm) */
+    if (!t || !accepts(t)) {
+        if (t) plat_unlock(t->lock);
+        vm_trap(p, "E_NOPROC", "proc.register: process %llu does not exist or has finished", (unsigned long long)pid);
+    }
+    plat_lock(vm->lock);
+    void *old = NULL;
+    /* A holder's names are released as it finishes, so any holder here is live. */
+    uint64_t holder = smap_get(&vm->registry, name, &old) ? (uint64_t)(uintptr_t)old : 0;
+    bool taken = holder && holder != pid;
+    if (!taken && holder != pid) {
+        smap_put(&vm->registry, name, (void *)(uintptr_t)pid);
+        VEC_PUSH(t->names, xstrdup(name)); /* so the name goes when it ends */
+    }
+    plat_unlock(vm->lock);
+    plat_unlock(t->lock);
+    if (taken) vm_trap(p, "E_EXISTS", "proc.register: \"%s\" is already registered to process %llu", name, (unsigned long long)holder);
+}
+
+static void n_unregister(Process *p, Word *a, Word *r) {
+    (void)r;
+    const char *name;
+    reg_name_arg(p, a[0], &name);
+    plat_lock(p->vm->lock);
+    if (smap_has(&p->vm->registry, name)) smap_put(&p->vm->registry, name, NULL);
+    plat_unlock(p->vm->lock);
+}
+
+/* proc.whereis(name) -> pid, or 0 */
+static void n_whereis(Process *p, Word *a, Word *r) {
+    const char *name;
+    reg_name_arg(p, a[0], &name);
+    void *v = NULL;
+    plat_lock(p->vm->lock);
+    smap_get(&p->vm->registry, name, &v);
+    plat_unlock(p->vm->lock);
+    r[0].u = (uint64_t)(uintptr_t)v;
+}
+
+/* Drop a finishing process's names (with the process lock not held). */
+static void unregister_all(VM *vm, Process *p) {
+    plat_lock(vm->lock);
+    for (size_t i = 0; i < p->names.n; i++) {
+        void *v = NULL;
+        if (smap_get(&vm->registry, p->names.v[i], &v) && (uint64_t)(uintptr_t)v == p->pid)
+            smap_put(&vm->registry, p->names.v[i], NULL);
+        free(p->names.v[i]);
+    }
+    p->names.n = 0;
+    plat_unlock(vm->lock);
+}
+
+/* proc.call(pid, request, timeout_ms) -> reply: send Call{from, id, body} and
+ * wait for proc.reply's answer, which goes to a reply slot, never the mailbox
+ * (so the caller needs no selective receive, and a late reply to a call that
+ * timed out is dropped). A checked native: it asks to wait and runs again. */
+static void n_call(Process *p, Word *a, Word *r) {
+    Sched *s = p->vm->sched;
+    if (!p->resumed) {
+        uint64_t pid = a[0].u;
+        if (pid == p->pid) {
+            native_fail(p, "E_DEADLOCK", "proc.call: a process cannot call itself");
+            return;
+        }
+        Process *f = my_worker(s)->frag;
+        frag_reset(f);
+        Word body = a[1].r ? msg_copy(p, f, a[1], T_R) : a[1]; /* traps (E_TYPE) for unsendable values */
+        ObjStruct *c = struct_new(f, &VM_BUILTIN_DEFS[BUILTIN_CALL]);
+        c->fields[CALLF_FROM].u = p->pid;
+        c->fields[CALLF_ID].u = ++p->call_seq;
+        c->fields[CALLF_BODY] = body;
+        InMsg m = frag_take(f, (Word){.r = c}, T_R);
+        plat_lock(p->lock);
+        p->call_id = p->call_seq;
+        p->reply_ready = false;
+        plat_unlock(p->lock);
+        Process *to = pin(s, pid);
+        if (!to || !accepts(to)) {
+            if (to) plat_unlock(to->lock);
+            gc_free_list(m.objs);
+            plat_lock(p->lock);
+            p->call_id = 0;
+            plat_unlock(p->lock);
+            native_fail(p, "E_NOPROC", "proc.call: process %llu does not exist or has finished", (unsigned long long)pid);
+            return;
+        }
+        push_locked(s, to, &m);
+        plat_unlock(to->lock);
+        p->call_deadline = a[2].i >= 0 ? plat_now_ns() + (uint64_t)a[2].i * 1000000u : 0;
+    }
+    plat_lock(p->lock);
+    if (p->reply_ready) { /* the answer */
+        gc_adopt(p, p->reply.objs, p->reply.bytes, p->reply.nobjs);
+        r[0] = p->reply.v;
+        p->reply_ready = false;
+        p->call_id = 0;
+        plat_unlock(p->lock);
+        p->deadline_set = false;
+        return;
+    }
+    bool deadlock = p->deadlock;
+    p->deadlock = false;
+    bool late = p->call_deadline && plat_now_ns() >= p->call_deadline;
+    if (deadlock || late) p->call_id = 0; /* a reply from now on is dropped */
+    plat_unlock(p->lock);
+    if (deadlock || late) {
+        p->deadline_set = false;
+        if (deadlock) native_fail(p, "E_DEADLOCK", "proc.call: every process is waiting: no reply can ever arrive");
+        else native_fail(p, "E_TIMEOUT", "proc.call: no reply within %lld ms", (long long)a[2].i);
+        return;
+    }
+    p->native_req = NREQ_WAIT_REPLY; /* wait (as in recv), woken by the reply or the deadline */
+    p->deadline_set = p->call_deadline != 0;
+    p->wake_at = p->call_deadline;
+}
+
+/* proc.reply(call, value): answer a Call received from proc.call. */
+static void n_reply(Process *p, Word *a, Word *r) {
+    (void)r;
+    ObjStruct *c = a[0].r;
+    if (!c || c->h.kind != OBJ_STRUCT || c->def != &VM_BUILTIN_DEFS[BUILTIN_CALL])
+        vm_trap(p, "E_TYPE", "proc.reply: expected a Call (a message from proc.call)");
+    Sched *s = p->vm->sched;
+    Process *f = my_worker(s)->frag;
+    frag_reset(f);
+    Word v = a[1].r ? msg_copy(p, f, a[1], T_R) : a[1];
+    InMsg m = frag_take(f, v, T_R);
+    Process *to = pin(s, c->fields[CALLF_FROM].u);
+    if (to && accepts(to) && to->call_id == c->fields[CALLF_ID].u && !to->reply_ready) {
+        to->reply = m;
+        to->reply_ready = true;
+        if (to->state == PROC_WAITING) ready_locked(s, to);
+        plat_unlock(to->lock);
+        return;
+    }
+    if (to) plat_unlock(to->lock);
+    gc_free_list(m.objs); /* the caller gave up, or has gone */
+}
+
+#define PN(name, np, pt, nr, rt, fn, flags, doc) {name, np, pt, nr, rt, fn, doc, flags, NULL, NULL, NULL}
+#define PT(...) {__VA_ARGS__}
+static const NativeDef PROC_NATIVES[] = {
+    PN("proc.register", 2, PT(T_R, T_I64), 0, PT(0), n_register, 0,
+       "Give a process a name (E_EXISTS if a live process has it); the name goes when the process ends."),
+    PN("proc.unregister", 1, PT(T_R), 0, PT(0), n_unregister, 0, "Remove a name."),
+    PN("proc.whereis", 1, PT(T_R), 1, PT(T_I64), n_whereis, 0, "The pid with a name, or 0."),
+    PN("proc.call", 3, PT(T_I64, T_R, T_I64), 1, PT(T_R), n_call, NF_CHECKED,
+       "Send Call{from, id, body} and wait for proc.reply's answer, up to a timeout in ms (negative: none; "
+       "E_TIMEOUT). The answer does not go through the mailbox."),
+    PN("proc.reply", 2, PT(T_R, T_R), 0, PT(0), n_reply, 0, "Answer a Call."),
+};
+#undef PN
+#undef PT
+
+void natives_register_proc(VM *vm) {
+    for (size_t i = 0; i < sizeof PROC_NATIVES / sizeof PROC_NATIVES[0]; i++) vm_register_native(vm, &PROC_NATIVES[i]);
+}
+
+const NativeDef *natives_proc_table(size_t *n) {
+    *n = sizeof PROC_NATIVES / sizeof PROC_NATIVES[0];
+    return PROC_NATIVES;
+}
+
 /* ---- stop the world ------------------------------------------------------------ */
 
 static void park_locked(Sched *s, PlatCond *cv, uint64_t timeout_ns) {
@@ -684,6 +866,7 @@ static void idle(Worker *w) {
     VM *vm = w->vm;
     Sched *s = vm->sched;
     timers_service(s, plat_now_ns()); /* also drops stale timers, so `next_timer` is real */
+    vm_flush(vm); /* nothing to run: let output reach the terminal or file (servers log while idle) */
     bool poller = w->id == 0 && vm->poll;
     bool deadlock = false;
     uint64_t poll_wait = 0;
@@ -900,7 +1083,7 @@ static bool after_slice(Worker *w, Process *p, int r) {
     switch (r) {
     case SLICE_YIELD: ready_locked(s, p); break;
     case SLICE_BLOCK:
-        if (p->inbox.n) { /* a message arrived after recv looked */
+        if (p->inbox.n || p->reply_ready) { /* a message (or proc.call's reply) arrived after it looked */
             ready_locked(s, p);
             break;
         }

@@ -219,4 +219,5 @@ void natives_register_builtin(VM *vm) {
     for (size_t i = 0; i < sizeof BUILTINS / sizeof BUILTINS[0]; i++) vm_register_native(vm, &BUILTINS[i]);
     natives_register_os(vm);
     natives_register_text(vm);
+    natives_register_proc(vm);
 }

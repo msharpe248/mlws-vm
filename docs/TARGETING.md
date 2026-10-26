@@ -211,7 +211,9 @@ directly:
 | actor `send` / channel write to a known receiver | `send pid, value` (deep copy) |
 | actor `receive` / channel read | `recv dst`, or `recvt dst, ms, Ltimeout` |
 | `await task` | `spawnm f (x) -> (pid)`, then `recv` the result message, then the `Down` |
-| a supervisor | `spawnm` / `monitor` (to observe) or `spawnl` / `link` (to fail together) |
+| a supervisor | `std.supervisor` (restart strategies and limits), or by hand: `spawnm` / `monitor` (to observe), `spawnl` / `link` (to fail together) |
+| a server's API / an actor's methods | `proc.call` (with a timeout) and `proc.reply`; find services by name with `proc.register` / `proc.whereis` |
+| async I/O / `await socket.read()` | just call `fs.read` / `net.accept`: the process waits in the poller, holding no thread |
 | a sandbox | spawn a wrapper that executes `quota` and then calls the real code |
 
 * Messages are values, not shared objects. For a request/reply protocol, send a

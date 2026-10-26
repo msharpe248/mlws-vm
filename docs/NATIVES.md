@@ -39,6 +39,11 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `math.log10` | f64 | f64 | Base-10 logarithm. |
 | `math.pow` | f64, f64 | f64 | x raised to y. |
 | `math.hypot` | f64, f64 | f64 | sqrt(x*x + y*y) without undue overflow. |
+| `proc.register` | r, i64 | - | Give a process a name (E_EXISTS if a live process has it); the name goes when the process ends. |
+| `proc.unregister` | r | - | Remove a name. |
+| `proc.whereis` | r | i64 | The pid with a name, or 0. |
+| `proc.call` | i64, r, i64 | r | Send Call{from, id, body} and wait for proc.reply's answer, up to a timeout in ms (negative: none; E_TIMEOUT). The answer does not go through the mailbox. |
+| `proc.reply` | r, r | - | Answer a Call. |
 
 ## Files, the operating system and the network (`fs.*`, `os.*`, `net.*`)
 

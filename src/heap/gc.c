@@ -34,7 +34,14 @@ static uint64_t gc_threshold(Process *p, uint64_t live) {
     uint64_t min = p->vm->gc_min_threshold ? p->vm->gc_min_threshold : GC_MIN_THRESHOLD;
     uint64_t t = live * 2 > min ? live * 2 : min;
     uint64_t q = p->quota[QUOTA_HEAP];
-    if (q != UINT64_MAX && t > q / 4 * 3) t = q / 4 * 3;
+    if (q != UINT64_MAX) {
+        if (t > q / 4 * 3) t = q / 4 * 3; /* collect well before the quota... */
+        /* ...but always let the heap grow by an eighth first: a heap whose live
+         * data is near its quota must not be collected at every allocation
+         * (that is quadratic). It reaches the quota after a few collections. */
+        uint64_t room = live + live / 8 + 4096;
+        if (t < room) t = room < q ? room : q;
+    }
     return t;
 }
 

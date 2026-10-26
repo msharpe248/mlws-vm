@@ -41,7 +41,7 @@ typedef void (*NativeFn)(Process *p, Word *args, Word *rets);
 
 /* What a checked native may ask for instead of finishing (Process.native_req):
  * wait for a descriptor and run again, or run again on the I/O thread pool. */
-enum { NREQ_NONE = 0, NREQ_WAIT_FD, NREQ_BLOCKING, NREQ_EXIT };
+enum { NREQ_NONE = 0, NREQ_WAIT_FD, NREQ_BLOCKING, NREQ_EXIT, NREQ_WAIT_REPLY };
 
 struct ExtLib;
 
@@ -194,6 +194,7 @@ typedef struct VM {
     _Atomic bool exit_requested; /* os.exit was called: the program ends with exit_code */
     _Atomic int64_t exit_code;
     VEC(FdTicket) tickets;       /* handles given away with fs.give, not yet taken (under `lock`) */
+    StrMap registry;             /* proc.register: name -> pid (0 once released), under `lock` */
 } VM;
 
 /* ---- processes ------------------------------------------------------------- */
@@ -345,6 +346,12 @@ struct Process {
     bool resumed;                /* the native is being run again after a wait (not counted again) */
     FdWait fdwait;               /* PROC_IOWAIT */
     uint64_t os_calls;
+    VEC(char *) names;           /* registered names (under vm->lock) */
+    /* proc.call: waiting for a reply, which goes to `reply`, never the mailbox */
+    uint64_t call_seq, call_deadline;
+    uint64_t call_id;            /* [L] the call being waited for, or 0 */
+    bool reply_ready;            /* [L] */
+    InMsg reply;                 /* [L] detached until taken */
     uint64_t cpu_ns, msgs_sent, msgs_received;
 };
 
@@ -354,6 +361,7 @@ void vm_free(VM *vm);
 void vm_add_libpath(VM *vm, const char *dir);
 void vm_register_native(VM *vm, const NativeDef *nd);
 void vm_write(VM *vm, const char *s, size_t n);
+void vm_flush(VM *vm); /* flush buffered program output (when the VM is idle, and at exit) */
 
 /* options.c: settings by command-line name, without the "--": stack-words,
  * threads, max-frames, slice, gc-min, quota. vm_new applies MLWSVM_<NAME>. */
@@ -450,6 +458,9 @@ void native_run_blocking(Process *p);
 /* osio.c: std.fs and std.os */
 void natives_register_os(VM *vm);
 const NativeDef *natives_os_table(size_t *n);
+/* sched.c: std.proc (the registry, request/reply calls) */
+void natives_register_proc(VM *vm);
+const NativeDef *natives_proc_table(size_t *n);
 /* text.c: std.text and std.json */
 void natives_register_text(VM *vm);
 const NativeDef *natives_text_table(size_t *n);

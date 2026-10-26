@@ -70,6 +70,15 @@ Each step was chosen from a profile (`sample` on macOS), not guessed.
 semantics at the edges: overflow, negative divisors, unsigned compares,
 `INT64_MIN / -1`, mixed-bank calls, and results written to memory.
 
+5. **No collection storm near a heap quota.** The collection threshold is
+   capped at three-quarters of a process's heap quota, so the collector runs
+   before the quota is hit. Once the live data was above that cap, every
+   allocation triggered a full collection, which is quadratic: a process
+   filling its last few megabytes took about a second normally, and 20 minutes
+   under ThreadSanitizer. Now the heap may always grow by an eighth of its live
+   data before the next collection, so a process near its quota collects a
+   handful of times and then gets its `E_QUOTA`.
+
 ## The multi-threaded scheduler
 
 Processes run on N worker threads (`--threads N`; default one per core). The

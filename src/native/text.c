@@ -161,11 +161,12 @@ static bool tag_is_int(uint8_t t) { return t >= T_B && t <= T_U64; }
 
 static void format_one(Process *p, StrBuf *out, const Spec *sp, Word v, uint8_t tag) {
     StrBuf t = {0};
+#define FAIL(...) (sb_free(&t), sb_free(out), vm_trap(p, __VA_ARGS__)) /* nothing may leak past a trap */
     bool numeric = tag_is_int(tag) && tag != T_B && tag != T_C;
     char ty = sp->type;
     if (tag == T_F32 || tag == T_F64) numeric = true;
     if (ty == 'x' || ty == 'X' || ty == 'o' || ty == 'b' || ty == 'd') {
-        if (!tag_is_int(tag)) vm_trap(p, "E_TYPE", "text.format: {:%c} needs an integer", ty);
+        if (!tag_is_int(tag)) FAIL("E_TYPE", "text.format: {:%c} needs an integer", ty);
         bool sgn = tag >= T_I8 && tag <= T_I64;
         uint64_t u = sgn && v.i < 0 ? (uint64_t)0 - v.u : v.u;
         if (sgn && v.i < 0) sb_putc(&t, '-');
@@ -189,16 +190,16 @@ static void format_one(Process *p, StrBuf *out, const Spec *sp, Word v, uint8_t 
         else if (tag >= T_I8 && tag <= T_I64) d = (double)v.i;
         else if (tag_is_int(tag)) d = (double)v.u;
         else if (tag == T_R && v.r && (((Obj *)v.r)->kind == OBJ_BIG || ((Obj *)v.r)->kind == OBJ_DEC)) d = num_to_f64(v.r);
-        else vm_trap(p, "E_TYPE", "text.format: {:%c} needs a number", ty);
+        else FAIL("E_TYPE", "text.format: {:%c} needs a number", ty);
         char fmt[16];
         snprintf(fmt, sizeof fmt, "%%%s.%d%c", sp->plus ? "+" : "", sp->prec >= 0 ? sp->prec : 6, ty);
         sb_printf(&t, fmt, d);
         numeric = true;
     } else if (ty == 'q') {
-        uint32_t n;
-        if (tag != T_R) vm_trap(p, "E_TYPE", "text.format: {:q} needs a string");
-        const char *s = str_arg(p, v, &n);
-        put_quoted(&t, s, n);
+        Obj *o = tag == T_R ? v.r : NULL;
+        if (!o || (o->kind != OBJ_STRING && o->kind != OBJ_BYTES)) FAIL("E_TYPE", "text.format: {:q} needs a string");
+        if (o->kind == OBJ_STRING) put_quoted(&t, ((ObjString *)o)->data, ((ObjString *)o)->len);
+        else put_quoted(&t, (const char *)((ObjBytes *)o)->data, ((ObjBytes *)o)->len);
         numeric = false;
     } else if (ty == 0 || ty == 's') {
         if (sp->prec >= 0 && (tag == T_F32 || tag == T_F64)) sb_printf(&t, "%.*f", sp->prec, v.f);
@@ -218,10 +219,11 @@ static void format_one(Process *p, StrBuf *out, const Spec *sp, Word v, uint8_t 
             }
         }
     } else {
-        vm_trap(p, "E_TYPE", "text.format: unknown format type '%c'", ty);
+        FAIL("E_TYPE", "text.format: unknown format type '%c'", ty);
     }
     pad_out(out, sp, t.s ? t.s : "", t.n, numeric);
     sb_free(&t);
+#undef FAIL
 }
 
 /* text.format(fmt, args): {} takes the next argument, {2} a given one;
@@ -233,11 +235,12 @@ static void n_format(Process *p, Word *a, Word *r) {
     ObjList *args = a[1].r ? list_arg(p, a[1]) : NULL;
     uint32_t nargs = args ? args->len : 0, next = 0;
     StrBuf out = {0};
+#define FAIL(...) (sb_free(&out), vm_trap(p, __VA_ARGS__))
     for (uint32_t i = 0; i < n; i++) {
         char c = f[i];
         if (c == '}') {
             if (i + 1 < n && f[i + 1] == '}') i++;
-            else vm_trap(p, "E_TYPE", "text.format: unmatched '}' at %u", i);
+            else FAIL("E_TYPE", "text.format: unmatched '}' at %u", i);
             sb_putc(&out, '}');
             continue;
         }
@@ -275,15 +278,16 @@ static void n_format(Process *p, Word *a, Word *r) {
             }
             if (j < n && f[j] != '}') sp.type = f[j++];
         }
-        if (j >= n || f[j] != '}') vm_trap(p, "E_TYPE", "text.format: bad placeholder at %u", i);
+        if (j >= n || f[j] != '}') FAIL("E_TYPE", "text.format: bad placeholder at %u", i);
         if (argi >= nargs)
-            vm_trap(p, "E_BOUNDS", "text.format: placeholder %u needs argument %u, but only %u were given", i, argi,
+            FAIL("E_BOUNDS", "text.format: placeholder %u needs argument %u, but only %u were given", i, argi,
                     nargs);
         format_one(p, &out, &sp, args->items[argi], args->tags[argi]);
         if (!indexed) next++;
         i = j;
     }
     r[0] = sb_string(p, &out);
+#undef FAIL
 }
 
 /* ---- strings ------------------------------------------------------------------------------ */

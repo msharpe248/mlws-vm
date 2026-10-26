@@ -89,7 +89,11 @@ void native_complete(Process *p) {
 void native_call(Process *p, const NativeDef *nd, Word *args, Word *rets) {
     native_count_call(p, nd);
     native_invoke(p, nd, args, rets);
-    if (p->foreign_err) p->native_req = NREQ_NONE; /* an error ends the call */
+    if (p->foreign_err) { /* an error ends the call: the next one starts afresh */
+        p->native_req = NREQ_NONE;
+        p->resumed = false;
+        p->fdwait.deadline = 0;
+    }
     native_complete(p);
 }
 

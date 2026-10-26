@@ -102,6 +102,7 @@ void vm_free(VM *vm) {
     VEC_FREE(vm->prog_args);
     for (size_t i = 0; i < vm->tickets.n; i++) plat_fd_close(vm->tickets.v[i].fd); /* given, never taken */
     VEC_FREE(vm->tickets);
+    smap_free(&vm->registry);
     copy_state_free();
     smap_free(&vm->natives);
     plat_lock_free(vm->lock);
@@ -116,6 +117,13 @@ void vm_add_libpath(VM *vm, const char *dir) {
 }
 
 void vm_register_native(VM *vm, const NativeDef *nd) { smap_put(&vm->natives, nd->name, (void *)nd); }
+
+void vm_flush(VM *vm) {
+    if (vm->out != default_out) return; /* captured output (tests, tools) has no buffer */
+    plat_lock(vm->out_lock);
+    fflush(stdout);
+    plat_unlock(vm->out_lock);
+}
 
 void vm_write(VM *vm, const char *s, size_t n) {
     plat_lock(vm->out_lock);

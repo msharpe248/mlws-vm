@@ -13,6 +13,7 @@ restricts them.
 | `os` | M12 | arguments, the environment, exit, running commands |
 | `net` | M13 | TCP, UDP, DNS |
 | `text`, `json` | M14 | formatting, string utilities, UTF-8, JSON |
+| `proc`, `std.supervisor` | M15 | a name registry, request/reply calls, supervisors |
 
 ## How I/O waits
 
@@ -169,6 +170,76 @@ BigInts and decimals (exactly), booleans and null. `indent` 0 gives compact
 output, and n > 0 indents by n spaces per level. NaN, infinity, non-UTF-8 text
 and cycles are refused with `E_JSON`.
 
+## Processes: names, calls and supervisors
+
+### The registry
+
+`proc.register(name, pid)` names a process, `proc.whereis(name)` looks one up
+(0 if none), and `proc.unregister(name)` removes a name. A name belongs to one
+live process at a time (`E_EXISTS` otherwise), and is released automatically
+when its process ends, so a restarted service simply registers again.
+
+### Request and reply
+
+```asm
+    ncall "proc.call" (server, request, 1000) -> (R0)   ; wait up to 1 s for the answer
+
+; in the server:
+    recv R1
+    isa I0, R1, Call                    ; Call{from, id, body}
+    ...
+    ncall "proc.reply" (R1, answer)
+```
+
+`proc.call` sends a built-in `Call` struct (`from`, `id`, `body`) to the server's
+mailbox and waits, like `recv`, for the answer. The answer goes to the caller's
+**reply slot**, not its mailbox. So the caller never has to pick the reply out
+from other messages (MLWSVM has no selective receive), and a reply that arrives
+after its call timed out (`E_TIMEOUT`) is dropped, never mistaken for the
+answer to a later call. A call to a process that does not exist raises
+`E_NOPROC`. A call that can never be answered (every process waiting) raises
+`E_DEADLOCK`, as `recv` does. Requests and replies are references (wrap
+numbers in a list or struct), deep-copied like any message.
+
+### Supervisors (`std.supervisor`)
+
+```asm
+.import std.supervisor as sup
+    closure worker (config) -> (R0)            ; each child: a closure with no parameters
+    lnew R1
+    lpush R1, R0
+    call sup.start (R1, 0, 5, 10000) -> (I0)   ; one-for-one; at most 5 restarts in 10 s
+```
+
+A supervisor starts each child monitored (`spawnim`). When one fails, it
+restarts that child (strategy 0, one-for-one) or all of them (1, one-for-all). A
+child that exits normally is left alone; when all have, the supervisor exits
+normally. More than `max_restarts` failures within `period_ms` means restarting
+is not helping: the supervisor kills its children and fails with `E_RESTARTS`,
+so whatever supervises *it* can react. This is the restart intensity of
+Erlang/OTP. A supervisor answers the call `"children"` with the current child
+pids, and stops on the message `"stop"`. It is written in MLWSVM assembly
+(`lib/std/supervisor.masm`), on top of the instructions and natives in this
+document.
+
+### Example: `examples/http_server.masm`
+
+A small HTTP/1.1 server (keep-alive, `/`, `/json`, and two routes that fail on
+purpose) that puts the pieces together:
+
+* one process per connection, each with its own 8 MB heap quota. `GET /crash`
+  (an uncaught exception) and `GET /hog` (the heap quota) end only that
+  handler; the VM reports it on stderr, and other connections never notice.
+* the acceptor runs under a supervisor; the logger is found by name.
+* `mlwsvm run examples/http_server.masm 8080` serves for real; with no
+  arguments it tests itself (25 concurrent clients, the acceptor killed
+  halfway, every request still answered), which is what `make test` runs.
+
+On an Apple M5 Pro laptop, ApacheBench (`ab -n 20000 -c 50 [-k]`) measures
+about 29,000 requests per second, with or without keep-alive, including a new
+process per connection and an access-log line per request. ab itself is
+single-threaded, so this is a lower bound.
+
 ## Errors
 
 Every failure raises an ordinary, catchable `Error`. The message names the call
@@ -189,6 +260,8 @@ and the path, and gives the OS's description:
 | `E_IO` | any other OS error |
 | `E_TYPE` | a wrong argument (a handle of another kind, a bad mode or format spec) |
 | `E_JSON` | malformed JSON (with line and column), or a value with no JSON form |
+| `E_TIMEOUT`, `E_NOPROC`, `E_DEADLOCK` | `proc.call`: no reply in time, no such process, or no reply possible |
+| `E_RESTARTS` | a supervisor gave up: its children failed too often |
 
 ## Commands
 

@@ -874,7 +874,10 @@ static void convert_num(Ctx *c, const Insn *in) {
     } else if (!num_to_int(n, to, &w)) {
         StrBuf b = {0};
         num_format(&b, n);
-        vm_trap(c->p, "E_OVERFLOW", "%.60s does not fit in %s", b.s, type_name(to));
+        char shown[64]; /* copied out: the trap does not return to free the buffer */
+        snprintf(shown, sizeof shown, "%.60s", b.s);
+        sb_free(&b);
+        vm_trap(c->p, "E_OVERFLOW", "%s does not fit in %s", shown, type_name(to));
     }
     wr_loc(c, &d, to, w);
 }
@@ -1510,6 +1513,12 @@ int interp_run(Process *p, uint32_t budget) {
                         fr->pc--;
                         p->insns--;
                         return SLICE_IOWAIT;
+                    }
+                    if (req == NREQ_WAIT_REPLY) { /* proc.call: wait like recv; then this instruction runs again */
+                        p->resumed = true;
+                        fr->pc--;
+                        p->insns--;
+                        return SLICE_BLOCK;
                     }
                     if (req == NREQ_EXIT) { /* os.exit: the program ends (sched_request_exit) */
                         p->exit_code = vm->exit_code;

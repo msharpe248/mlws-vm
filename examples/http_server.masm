@@ -1,0 +1,337 @@
+; http_server.masm - a small HTTP/1.1 server built from isolated processes.
+;
+;     mlwsvm run examples/http_server.masm 8080     serve http://localhost:8080/
+;     mlwsvm run examples/http_server.masm          a self-test (what `make test` runs)
+;
+; * Every connection is served by its own process, with its own 8 MB heap quota,
+;   so a handler that crashes (GET /crash) or runs out of memory (GET /hog) ends
+;   only itself: the other connections never notice.
+; * The acceptor (listen, accept, hand each connection to a new handler with
+;   fs.give / fs.take) runs under std.supervisor, which restarts it if it fails.
+; * A logger process, found by name with proc.whereis, counts the requests.
+;   GET /json reports the process count; watch it all with --monitor and
+;   `mlwsvm top`.
+;
+; The self-test starts the server on a free port, runs 25 client processes
+; (each making 20 requests over one keep-alive connection), kills the acceptor
+; halfway, and checks that every request was answered.
+;
+; expect-stdout: 500 requests answered
+; expect-stdout: 2 failing handlers contained
+; expect-stdout: the acceptor was restarted by its supervisor
+.include "std/io.inc"
+.import std.supervisor as sup
+
+.const HEAP = 0
+.const CLIENTS = 25
+.const REQUESTS = 20
+
+; ---- the server ---------------------------------------------------------------
+
+; Write a response. keep: whether the connection stays open.
+.func respond(ref conn, ref status, ref ctype, ref body, i64 keep)
+    len I1, body
+    mov R4, "keep-alive"
+    bnz keep, 1f
+    mov R4, "close"
+1:  lnew R5
+    lpush R5, status, ctype, I1, R4
+    ncall "text.format" ("HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n", R5) -> (R6)
+    ncall "fs.write" (conn, R6)
+    ncall "fs.write" (conn, body)
+    ret
+.endf
+
+; Tell the logger (if there is one) about a request.
+.func log_request(ref method, ref path)
+    ncall "proc.whereis" ("log") -> (I0)
+    bz I0, 1f
+    lnew R2
+    lpush R2, method, path
+    send I0, R2
+1:  ret
+.endf
+
+; Serve one connection: requests until the client closes it (or a timeout).
+.func handler(i64 ticket)
+    quota HEAP, 8000000                ; this connection's limit, not the server's
+    ncall "fs.take" (ticket) -> (R0)
+    ncall "fs.set_timeout" (R0, 30000) ; an idle connection is dropped after 30 s
+.try gone
+next:
+    ncall "fs.read_line" (R0) -> (R1)  ; the request line: METHOD PATH VERSION
+    bz.r R1, done
+    ncall "text.split" (R1, " ") -> (R2)
+    len I1, R2
+    blt I1, 3, bad
+    mov R3, R2[0]
+    mov R4, R2[1]
+    mov R5, R2[2]
+    mov I2, 1                          ; keep-alive: HTTP/1.1's default
+    strcmp I3, R5, "HTTP/1.0"
+    bnz I3, headers
+    mov I2, 0
+headers:
+    ncall "fs.read_line" (R0) -> (R6)
+    bz.r R6, done
+    len I4, R6
+    bz I4, route                       ; a blank line ends the headers
+    ncall "text.lower" (R6) -> (R6)
+    ncall "text.starts_with" (R6, "connection:") -> (I5)
+    bz I5, headers
+    ncall "text.find" (R6, "close", 0) -> (I6)
+    blt I6, 0, headers
+    mov I2, 0
+    jmp headers
+route:
+    call log_request (R3, R4)
+    strcmp I7, R4, "/"
+    bz I7, root
+    strcmp I7, R4, "/json"
+    bz I7, json
+    strcmp I7, R4, "/crash"
+    bz I7, crash
+    strcmp I7, R4, "/hog"
+    bz I7, hog
+    call respond (R0, "404 Not Found", "text/plain", "not found\n", I2)
+    jmp after
+root:
+    call respond (R0, "200 OK", "text/plain", "Hello from MLWSVM\n", I2)
+    jmp after
+json:
+    mnew R7
+    mset R7, "pid", PID
+    ncall "proc.count" () -> (I8)
+    mset R7, "processes", I8
+    mset R7, "path", R4
+    ncall "json.stringify" (R7, 0) -> (R8)
+    call respond (R0, "200 OK", "application/json", R8, I2)
+    jmp after
+after:
+    bnz I2, next
+done:
+    ncall "fs.close" (R0)
+    ret
+bad:
+    call respond (R0, "400 Bad Request", "text/plain", "bad request\n", 0)
+    jmp done
+.endtry
+gone:                                  ; the client went away, or the connection timed out
+    catch R9
+    ret
+crash:                                 ; outside the .try: this process fails, and only it
+    throw "a request handler failed (deliberately: GET /crash)"
+hog:                                   ; runs into the heap quota: E_QUOTA ends this process only
+    lnew R10
+    mov I9, 0
+1:  tostr R11, I9
+    lpush R10, R11
+    inc I9
+    jmp 1b
+.endf
+
+; Listen and accept, handing each connection to its own handler. A closure:
+; UP[0] = host, UP[1] = port (the supervisor restarts it on the same port).
+.func acceptor
+    ncall "proc.register" ("acceptor", PID)
+    ncall "net.listen" (UP[0], UP[1]) -> (R0)
+1:  ncall "net.accept" (R0) -> (R1)
+    ncall "fs.give" (R1) -> (I1)
+    spawn handler (I1)
+    jmp 1b
+.endf
+
+; Count requests; print them if verbose. Answers the Call "count".
+.func logger(i64 verbose)
+    mov I1, 0
+1:  recv R0
+    isa I2, R0, Call
+    bnz I2, 2f
+    inc I1
+    bz verbose, 1b
+    mov R1, R0[0]
+    mov R2, R0[1]
+    PRINT_S R1
+    PRINT_S " "
+    PRINTLN_S R2
+    jmp 1b
+2:  lnew R3
+    lpush R3, I1
+    ncall "proc.reply" (R0, R3)
+    jmp 1b
+.endf
+
+; Start the logger and a supervised acceptor.
+.func start_server(ref host, i64 port, i64 verbose)
+    spawn logger (verbose) -> (I2)
+    ncall "proc.register" ("log", I2)
+    closure acceptor (host, port) -> (R1)
+    lnew R2
+    lpush R2, R1
+    call sup.start (R2, 0, 10, 10000) -> (I3)   ; one-for-one: up to 10 restarts in 10 s
+    ret
+.endf
+
+; ---- the self-test ------------------------------------------------------------
+
+; Read a response: the status line, the headers, and Content-Length bytes.
+; Returns the status line and the body.
+.func read_response(ref conn) -> (ref, ref)
+    ncall "fs.read_line" (conn) -> (R1)
+    bz.r R1, eof
+    mov I1, 0
+1:  ncall "fs.read_line" (conn) -> (R2)
+    len I2, R2
+    bz I2, 2f
+    ncall "text.lower" (R2) -> (R2)
+    ncall "text.starts_with" (R2, "content-length:") -> (I3)
+    bz I3, 1b
+    ncall "text.slice" (R2, 15, 100) -> (R3)
+    ncall "text.trim" (R3) -> (R3)
+    parse.i64 I1, R3
+    jmp 1b
+2:  bufnew R4, 0                       ; the body: exactly Content-Length bytes
+3:  len I4, R4
+    bge I4, I1, 4f
+    sub I5, I1, I4
+    ncall "fs.read" (conn, I5) -> (R5)
+    bufcat R4, R5
+    jmp 3b
+4:  strcat R6, R4
+    ret R1, R6
+eof:
+    ret null, null
+.endf
+
+; Connect, retrying while the acceptor is being restarted.
+.func connect(i64 port) -> ref
+    mov I1, 0
+.try retry
+1:  ncall "net.connect" ("127.0.0.1", port, 2000) -> (R0)
+.endtry
+    ret R0
+retry:
+    catch R1
+    inc I1
+    bge I1, 200, 2f
+    sleep 5
+    jmp 1b
+2:  throw R1
+.endf
+
+; REQUESTS requests on one connection; sends the parent ["answered", n]. (Reports
+; are tagged: those of different clients arrive in any order.)
+.func client(i64 parent, i64 port)
+    call connect (port) -> (R0)
+    mov I2, 0                          ; answered
+    mov I3, 0
+1:  and I4, I3, 1
+    mov R1, "GET / HTTP/1.1\r\nHost: test\r\n\r\n"
+    bz I4, 2f
+    mov R1, "GET /json HTTP/1.1\r\nHost: test\r\n\r\n"
+2:  ncall "fs.write" (R0, R1)
+    call read_response (R0) -> (R2, R3)
+    bz.r R2, 4f
+    strcmp I5, R2, "HTTP/1.1 200 OK"
+    bnz I5, 3f
+    inc I2
+3:  inc I3
+    blt I3, REQUESTS, 1b
+4:  ncall "fs.close" (R0)
+    lnew R4
+    lpush R4, "answered", I2
+    send parent, R4
+    ret
+.endf
+
+; Ask for a path that makes the handler fail: the connection just closes.
+; Sends the parent ["contained", 1] if it did.
+.func failing_client(i64 parent, i64 port, ref path)
+    call connect (port) -> (R1)
+    strcat R2, "GET ", path, " HTTP/1.1\r\n\r\n"
+    ncall "fs.write" (R1, R2)
+    mov I2, 0
+.try closed
+    ncall "fs.read_line" (R1) -> (R3)
+.endtry
+    bnz.r R3, 1f
+    mov I2, 1                          ; end of input: the handler is gone
+    jmp 1f
+closed:
+    catch R4                           ; or the connection was reset: also gone
+    mov I2, 1
+1:  lnew R5
+    lpush R5, "contained", I2
+    send parent, R5
+    ret
+.endf
+
+.func self_test
+    ncall "net.listen" ("127.0.0.1", 0) -> (R0)   ; find a free port
+    ncall "net.port" (R0) -> (I0)
+    ncall "fs.close" (R0)
+    call start_server ("127.0.0.1", I0, 0)
+    mov I1, 0
+1:  ncall "proc.whereis" ("acceptor") -> (I2)     ; wait for the acceptor to be up
+    bnz I2, 2f
+    sleep 1
+    jmp 1b
+2:  mov I3, 0                          ; clients, part one
+3:  spawn client (PID, I0)
+    inc I3
+    blt I3, CLIENTS / 2, 3b
+    spawn failing_client (PID, I0, "/crash")
+    spawn failing_client (PID, I0, "/hog")
+    sleep 20
+    kill I2                            ; kill the acceptor: its supervisor starts another
+4:  ncall "proc.whereis" ("acceptor") -> (I4)
+    beq I4, I2, 5f
+    bnz I4, 6f
+5:  sleep 1
+    jmp 4b
+6:  mov I3, CLIENTS / 2                ; clients, part two: through the new acceptor
+7:  spawn client (PID, I0)
+    inc I3
+    blt I3, CLIENTS, 7b
+    mov I5, 0                          ; requests answered
+    mov I6, 0                          ; failing handlers contained
+    mov I3, 0
+8:  recv R3                            ; CLIENTS + 2 reports, in any order
+    mov R4, R3[0]
+    mov I7, R3[1]
+    strcmp I8, R4, "answered"
+    bnz I8, 9f
+    add I5, I7
+    jmp 10f
+9:  add I6, I7
+10: inc I3
+    blt I3, CLIENTS + 2, 8b
+    lnew R1
+    lpush R1, I5
+    ncall "text.format" ("{} requests answered", R1) -> (R2)
+    PRINTLN_S R2
+    lnew R1
+    lpush R1, I6
+    ncall "text.format" ("{} failing handlers contained", R1) -> (R2)
+    PRINTLN_S R2
+    PRINTLN_S "the acceptor was restarted by its supervisor"
+    ret
+.endf
+
+.func main
+    ncall "os.args" () -> (R0)
+    len I0, R0
+    bnz I0, serve
+    call self_test ()
+    ncall "os.exit" (0)                ; stop the server too
+serve:
+    mov R1, R0[0]
+    parse.i64 I1, R1
+    call start_server ("", I1, 1)
+    lnew R2
+    lpush R2, I1
+    ncall "text.format" ("serving http://localhost:{}/  (try /json, /crash, /hog)", R2) -> (R3)
+    PRINTLN_S R3
+    recv I2                            ; forever
+    ret 0
+.endf

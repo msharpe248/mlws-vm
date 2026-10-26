@@ -1,0 +1,158 @@
+; std.supervisor - keep processes running: restart children that fail.
+;
+;     .import std.supervisor as sup
+;     closure worker (...) -> (R0)          ; each child is a closure with no parameters
+;     lnew R1
+;     lpush R1, R0, ...
+;     call sup.start (R1, 0, 5, 10000) -> (I0)   ; one-for-one, at most 5 restarts in 10 s
+;
+; Strategies: 0 one-for-one, 1 one-for-all.
+;
+; The supervisor monitors each child from the start (spawnim). When a child
+; fails, the supervisor restarts it (ONE_FOR_ONE), or kills and restarts every
+; child (ONE_FOR_ALL). A child that exits normally is not restarted, and when
+; all of them have, the supervisor exits normally too. If more than
+; `max_restarts` failures happen within `period_ms`, something is wrong that
+; restarting will not fix: the supervisor kills its children and fails itself
+; with E_RESTARTS, so a supervisor above it (or a link) notices. This is the
+; restart intensity of Erlang/OTP supervisors.
+;
+; Messages the supervisor understands besides Down: a Call (proc.call) whose
+; body is "children" is answered with the list of current child pids (0 for one
+; that has exited normally); the string "stop" kills the children and ends it.
+
+.module std.supervisor
+.export start
+
+.const ONE_FOR_ONE = 0
+.const ONE_FOR_ALL = 1
+
+; Start a supervisor process; returns its pid.
+.func start(ref children, i64 strategy, i64 max_restarts, i64 period_ms) -> i64
+    spawn run (children, strategy, max_restarts, period_ms) -> (I2)
+    ret I2
+.endf
+
+; Start child i (a closure in children[i]), monitored; returns its pid.
+.func start_child(ref children, i64 i) -> i64
+    mov R1, children[i]
+    spawnim R1 () -> (I1)
+    ret I1
+.endf
+
+; The index of pid in pids, or -1.
+.func find(ref pids, i64 pid) -> i64
+    len I1, pids
+    mov I2, 0
+1:  bge I2, I1, 2f
+    mov I3, pids[I2]
+    beq I3, pid, 3f
+    inc I2
+    jmp 1b
+2:  ret -1
+3:  ret I2
+.endf
+
+; Kill every live child.
+.func kill_all(ref pids)
+    len I1, pids
+    mov I2, 0
+1:  bge I2, I1, 2f
+    mov I3, pids[I2]
+    bz I3, 3f
+    kill I3
+3:  inc I2
+    jmp 1b
+2:  ret
+.endf
+
+; Record a failure at `now`; drop those older than the period. Returns how
+; many remain within the period.
+.func count_restart(ref times, i64 now, i64 period_ms) -> i64
+    lpush times, now
+    mul I3, period_ms, 1000000
+    sub I3, now, I3                    ; the start of the window
+1:  len I4, times
+    bz I4, 2f
+    mov I5, times[0]
+    bge I5, I3, 2f
+    ldel times, 0                      ; too old
+    jmp 1b
+2:  len I4, times
+    ret I4
+.endf
+
+.func run(ref children, i64 strategy, i64 max_restarts, i64 period_ms)
+    lnew R4                            ; child pids, by index
+    lnew R5                            ; recent failure times (ns)
+    len I4, children
+    mov I5, 0
+1:  bge I5, I4, loop
+    call start_child (children, I5) -> (I6)
+    lpush R4, I6
+    inc I5
+    jmp 1b
+
+loop:
+    recv R6
+    isa I7, R6, Down
+    bnz I7, down
+    isa I7, R6, Call
+    bnz I7, call_
+    typeof I7, R6
+    bne I7, 1, loop                    ; not a string: ignore
+    strcmp I7, R6, "stop"
+    bnz I7, loop
+    call kill_all (R4)
+    ret
+
+call_:
+    mov R7, R6->Call.body
+    typeof I7, R7
+    bne I7, 1, loop
+    strcmp I7, R7, "children"
+    bnz I7, loop
+    ncall "proc.reply" (R6, R4)
+    jmp loop
+
+down:
+    call find (R4, R6->Down.pid) -> (I8)
+    blt I8, 0, loop                    ; not a current child (one we killed to restart)
+    mov R7, R6->Down.code
+    bnz.r R7, failed
+    mov R4[I8], 0                      ; a normal exit: not restarted
+    len I4, R4                         ; all done?
+    mov I5, 0
+2:  bge I5, I4, finished
+    mov I6, R4[I5]
+    bnz I6, loop
+    inc I5
+    jmp 2b
+finished:
+    ret
+
+failed:
+    ncall "time.now_ns" () -> (I9)
+    call count_restart (R5, I9, period_ms) -> (I10)
+    bgt I10, max_restarts, give_up
+    beq strategy, ONE_FOR_ALL, all
+    call start_child (children, I8) -> (I6)
+    mov R4[I8], I6
+    jmp loop
+all:
+    call kill_all (R4)                 ; their Downs arrive later, and are ignored
+    len I4, children
+    mov I5, 0
+3:  bge I5, I4, loop
+    call start_child (children, I5) -> (I6)
+    mov R4[I5], I6
+    inc I5
+    jmp 3b
+
+give_up:
+    call kill_all (R4)
+    new R8, Error
+    mov R8->Error.code, "E_RESTARTS"
+    mov R8->Error.message, "a child failed too often: more than the allowed restarts in the period"
+    throw R8
+.endf

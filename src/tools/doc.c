@@ -108,8 +108,9 @@ static void native_rows(StrBuf *b, const NativeDef *t, size_t n) {
 }
 
 static void gen_natives(StrBuf *b) {
-    size_t n, nos, ntext;
-    const NativeDef *t = natives_builtin_table(&n), *os = natives_os_table(&nos), *text = natives_text_table(&ntext);
+    size_t n, nos, ntext, nproc;
+    const NativeDef *t = natives_builtin_table(&n), *os = natives_os_table(&nos), *text = natives_text_table(&ntext),
+                    *procs = natives_proc_table(&nproc);
     sb_puts(b, "# MLWSVM Built-in Natives\n\n"
                "> Generated from `src/native/natives.c` by `mlwsvm doc natives`. Do not edit by hand.\n\n"
                "Natives are host functions called with `ncall \"name\" (args...) -> (results...)`.\n"
@@ -118,6 +119,7 @@ static void gen_natives(StrBuf *b) {
                "wrappers in `lib/std/*.masm` instead of directly.\n\n"
                "| Name | Parameters | Results | Description |\n|---|---|---|---|\n");
     native_rows(b, t, n);
+    native_rows(b, procs, nproc);
     sb_puts(b, "\n## Files, the operating system and the network (`fs.*`, `os.*`, `net.*`)\n\n"
                "> Generated from `src/native/osio.c`. See [STDLIB.md](STDLIB.md) for how they wait,\n"
                "> their errors, and the OS-call quota (kind 5).\n\n"

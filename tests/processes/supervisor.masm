@@ -1,0 +1,61 @@
+; std.supervisor: children that fail are restarted; normal exits are not; and
+; a child that keeps failing makes the supervisor give up with E_RESTARTS.
+.include "std/test.inc"
+.import std.supervisor as sup
+; Report our pid to the parent (in a list: every message here is a reference),
+; then crash after UP[1] ms, or wait to be killed.
+.func flaky
+    lnew R0
+    lpush R0, PID
+    send UP[0], R0
+    sleep UP[1]
+    bz UP[2], 1f
+    throw "flaky failed"
+1:  recv I0
+    ret
+.endf
+.func done_at_once
+    send UP[0], 0
+    ret
+.endf
+.func main
+    ; ONE_FOR_ONE: a child that crashes once gets a new pid; its sibling keeps its own.
+    closure flaky (PID, 30, 1) -> (R0)  ; crashes after 30 ms
+    closure flaky (PID, 0, 0) -> (R1)   ; stays up
+    lnew R2
+    lpush R2, R0, R1
+    call sup.start (R2, 0, 3, 60000) -> (I0)   ; 0: one-for-one
+    recv R5                            ; the first two pids
+    mov I1, R5[0]
+    recv R5
+    mov I2, R5[0]
+    recv R5                            ; the crasher, restarted (and it will crash again...)
+    mov I3, R5[0]
+    ASSERT_NE I3, I1
+    ASSERT_NE I3, I2
+    lnew R3
+    ncall "proc.call" (I0, "children", 1000) -> (R3)
+    len I4, R3
+    ASSERT_EQ I4, 2
+    ; ...three restarts allowed in the period: the fourth failure ends the supervisor.
+    monitor I0
+1:  recv R4
+    isa I5, R4, Down
+    bz I5, 1b                          ; (pids of further restarts)
+    strcmp I6, R4->Down.code, "E_RESTARTS"
+    ASSERT_EQ I6, 0
+
+    ; Children that exit normally are not restarted; then the supervisor ends.
+    closure done_at_once (PID) -> (R0)
+    lnew R2
+    lpush R2, R0, R0
+    call sup.start (R2, 1, 3, 60000) -> (I0)   ; 1: one-for-all
+    monitor I0
+    recv I1
+    recv I1
+2:  recv R4
+    isa I5, R4, Down
+    bz I5, 2b
+    ASSERT_FALSE R4->Down.code, r      ; a normal exit
+    ret 0
+.endf

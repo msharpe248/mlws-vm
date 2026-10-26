@@ -1,0 +1,99 @@
+; std.proc: a name registry, and request/reply calls with timeouts. A reply
+; goes to the caller's reply slot, not its mailbox, so unrelated messages
+; never get in the way, and a late reply to a call that timed out is dropped.
+.include "std/test.inc"
+; A key-value server: answers ["put", k, v] and ["get", k] calls.
+.func kv
+    mnew R9
+1:  recv R0
+    isa I0, R0, Call
+    bz I0, 1b                          ; (ignore anything else)
+    mov R1, R0->Call.body
+    mov R2, R1[0]
+    mov R3, R1[1]
+    strcmp I1, R2, "put"
+    bnz I1, 2f
+    mov I2, R1[2]
+    mset R9, R3, I2
+    ncall "proc.reply" (R0, "ok")
+    jmp 1b
+2:  lnew R4
+    mget I3, R9, R3
+    lpush R4, I3
+    ncall "proc.reply" (R0, R4)
+    jmp 1b
+.endf
+; Answers every call after `ms` milliseconds, with the call's id.
+.func slow(i64 ms)
+1:  recv R0
+    sleep ms
+    lnew R1
+    lpush R1, R0->Call.id
+    ncall "proc.reply" (R0, R1)
+    jmp 1b
+.endf
+.func silent
+    recv R0                            ; takes the call, never answers
+    recv R0
+    ret
+.endf
+.func main
+    spawnm kv -> (I0)
+    ncall "proc.register" ("kv", I0)
+    ncall "proc.whereis" ("kv") -> (I1)
+    ASSERT_EQ I1, I0
+    ncall "proc.whereis" ("nobody") -> (I1)
+    ASSERT_EQ I1, 0
+.try h1
+    ncall "proc.register" ("kv", PID)  ; taken by a live process
+.endtry
+    FAIL "registered a name twice"
+h1: catch R8
+    strcmp I9, R8->Error.code, "E_EXISTS"
+    ASSERT_EQ I9, 0
+
+    send PID, 12345                    ; an unrelated message waiting in our mailbox
+    lnew R0
+    lpush R0, "put", "a", 42
+    ncall "proc.whereis" ("kv") -> (I1)
+    ncall "proc.call" (I1, R0, 1000) -> (R1)
+    strcmp I2, R1, "ok"
+    ASSERT_EQ I2, 0
+    lnew R0
+    lpush R0, "get", "a"
+    ncall "proc.call" (I1, R0, 1000) -> (R1)
+    mov I3, R1[0]
+    ASSERT_EQ I3, 42
+    recv I4                            ; the unrelated message is still there
+    ASSERT_EQ I4, 12345
+
+    spawn slow (100) -> (I5)           ; a call that times out...
+.try h2
+    ncall "proc.call" (I5, null, 20) -> (R1)
+.endtry
+    FAIL "the call did not time out"
+h2: catch R8
+    strcmp I9, R8->Error.code, "E_TIMEOUT"
+    ASSERT_EQ I9, 0
+    ncall "proc.call" (I5, null, 1000) -> (R1)   ; ...and its late reply is not taken for the next one
+    mov I6, R1[0]
+    ASSERT_EQ I6, 4                    ; this call's id (put 1, get 2, the timed-out one 3), not 3
+    mlen I7                            ; and nothing leaked into the mailbox
+    ASSERT_EQ I7, 0
+
+    kill I0                            ; a name goes when its process ends
+    recv R2                            ; kv's Down
+    ncall "proc.whereis" ("kv") -> (I1)
+    ASSERT_EQ I1, 0
+    kill I5
+
+    spawn silent -> (I8)               ; nobody can ever answer: deadlock, not a hang
+.try h3
+    ncall "proc.call" (I8, null, -1) -> (R1)
+.endtry
+    FAIL "a call that can never be answered returned"
+h3: catch R8
+    strcmp I9, R8->Error.code, "E_DEADLOCK"
+    ASSERT_EQ I9, 0
+    ret 0
+.endf
