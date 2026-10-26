@@ -1,0 +1,7 @@
+; A struct parameter names a .cstruct, which must be declared before the
+; .extern that uses it.
+; expect-error: E_ASM_UNDEF_SYM
+.extern c.timegm, "", "timegm" (struct* Tm) -> (i64)
+.func main
+    ret 0
+.endf

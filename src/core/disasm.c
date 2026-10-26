@@ -198,15 +198,55 @@ static void disasm_data(StrBuf *b, const Module *m) {
     }
 }
 
+/* An FFI type as .extern and .cstruct write it. */
+static void put_ffi_type(StrBuf *b, uint8_t kind, const char *tag) {
+    static const char *const K[] = {"void", "i8",  "i16", "i32",  "i64", "u8",  "u16",
+                                    "u32",  "u64", "f32", "f64", "cstr", "buf", "ptr"};
+    uint8_t k = kind & (uint8_t)~FFI_OUT;
+    if (kind & FFI_OUT) sb_puts(b, "out ");
+    if (k == FFI_STRUCT || k == FFI_STRUCTP) {
+        sb_printf(b, "struct%s %s", k == FFI_STRUCTP ? "*" : "", tag ? tag : "?");
+        return;
+    }
+    sb_puts(b, k < FFI_STRUCT ? K[k] : "?");
+    if (tag) sb_printf(b, "<%s>", tag);
+}
+
+static bool is_cstruct(const Module *m, const char *name) {
+    for (uint32_t i = 0; i < m->ncstructs; i++)
+        if (!strcmp(m->cstructs[i].name, name)) return true;
+    return false;
+}
+
 bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
     op_init();
     sb_printf(b, "; disassembly of module %s (source: %s)\n", m->name, m->source && *m->source ? m->source : "?");
     sb_printf(b, ".module %s\n", m->name);
     for (uint32_t i = 0; i < m->nimports; i++) sb_printf(b, ".import %s\n", m->imports[i]);
     for (uint32_t i = 0; i < m->nextensions; i++) sb_printf(b, ".extension \"%s\"\n", m->extensions[i]);
+    for (uint32_t i = 0; i < m->nffrees; i++) {
+        sb_printf(b, ".ffi_free %s, ", m->ffrees[i].tag);
+        sb_put_quoted(b, m->ffrees[i].lib, strlen(m->ffrees[i].lib));
+        sb_puts(b, ", ");
+        sb_put_quoted(b, m->ffrees[i].sym, strlen(m->ffrees[i].sym));
+        sb_putc(b, '\n');
+    }
+    /* C structs come first: the externs after them name them. */
+    for (uint32_t i = 0; i < m->ncstructs; i++) {
+        const MCStruct *c = &m->cstructs[i];
+        for (uint32_t s = 0; s < m->nstructs; s++)
+            if (!strcmp(m->structs[s].name, c->name) && m->structs[s].flags & MSF_EXPORT)
+                sb_printf(b, ".export %s\n", c->name);
+        sb_printf(b, ".cstruct %s\n", c->name);
+        for (uint32_t k = 0; k < c->nfields; k++) {
+            sb_printf(b, "    %s: ", c->fields[k]);
+            put_ffi_type(b, c->kinds[k], c->tags[k]);
+            if (c->counts[k]) sb_printf(b, "[%u]", c->counts[k]);
+            sb_putc(b, '\n');
+        }
+        sb_puts(b, ".ends\n");
+    }
     for (uint32_t i = 0; i < m->nexterns; i++) {
-        static const char *const K[] = {"void", "i8",  "i16", "i32",  "i64", "u8",  "u16",
-                                        "u32",  "u64", "f32", "f64", "cstr", "buf", "ptr"};
         const MExtern *x = &m->externs[i];
         sb_printf(b, ".extern %s, ", x->name);
         sb_put_quoted(b, x->lib, strlen(x->lib));
@@ -214,14 +254,14 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
         sb_put_quoted(b, x->sym, strlen(x->sym));
         sb_puts(b, " (");
         for (int k = 0; k < x->nargs; k++) {
-            uint8_t kind = x->args[k] & (uint8_t)~FFI_OUT;
-            sb_printf(b, "%s%s%s", k ? ", " : "", x->args[k] & FFI_OUT ? "out " : "", kind < FFI__COUNT ? K[kind] : "?");
-            if (x->tags[k]) sb_printf(b, "<%s>", x->tags[k]);
+            if (k) sb_puts(b, ", ");
+            if (k == x->nfixed) sb_puts(b, "..., ");
+            put_ffi_type(b, x->args[k], x->tags[k]);
         }
         sb_puts(b, ")");
         if (x->ret != FFI_VOID) {
-            sb_printf(b, " -> (%s", x->ret < FFI__COUNT ? K[x->ret] : "?");
-            if (x->ret_tag) sb_printf(b, "<%s>", x->ret_tag);
+            sb_puts(b, " -> (");
+            put_ffi_type(b, x->ret, x->ret_tag);
             sb_puts(b, ")");
         }
         if (x->flags & MX_BLOCKING) sb_puts(b, ", blocking");
@@ -234,7 +274,7 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
         if (m->syms[i].flags & MS_EXPORT) sb_printf(b, ".export %s\n", m->syms[i].name);
     for (uint32_t i = 0; i < m->nstructs; i++) {
         const MStruct *st = &m->structs[i];
-        if (st->flags & (MSF_IMPORT | MSF_BUILTIN)) continue;
+        if (st->flags & (MSF_IMPORT | MSF_BUILTIN) || is_cstruct(m, st->name)) continue;
         if (st->flags & MSF_EXPORT) sb_printf(b, ".export %s\n", st->name);
         sb_printf(b, "\n.struct %s\n", st->name);
         for (uint32_t k = 0; k < st->nfields; k++)

@@ -1,0 +1,7 @@
+; After `...`, C promotes small integers and f32 (to int and double), so an
+; .extern cannot pass them there as declared: the assembler refuses them.
+; expect-error: E_ASM_SYNTAX
+.extern c.printf, "", "printf" (cstr, ..., f32) -> (i32)
+.func main
+    ret 0
+.endf

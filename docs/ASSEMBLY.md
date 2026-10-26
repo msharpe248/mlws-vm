@@ -571,6 +571,8 @@ macro-only files use the `.inc` extension and are not modules.
 | `.import name [as alias]` | top level | Load and link another module |
 | `.extension "name"` | top level | Load an installed native extension ([EXTENDING.md](EXTENDING.md)) |
 | `.extern name, "lib", "sym" (types) -> (type) [, blocking] [, serial]` | top level | Make a C function a native (the FFI; [EXTENDING.md](EXTENDING.md)) |
+| `.cstruct Name` … `.ends` | top level | A C struct's layout (`field: type` lines), and a struct of the same name, for `.extern` `struct Name` / `struct* Name` / `out struct Name` ([EXTENDING.md](EXTENDING.md#c-structs)) |
+| `.ffi_free tag, "lib", "sym"` | top level | Give `ptr<tag>` handles a finalizer: `sym(ptr)` when collected or released ([EXTENDING.md](EXTENDING.md#handles-that-free-themselves)) |
 | `.export a, b, ...` | anywhere | Export functions, data symbols or struct types |
 | `.func ... / .endf` | top level | Define a function |
 | `.struct Name` ... `field: type` ... `.ends` | top level | Define a struct type |

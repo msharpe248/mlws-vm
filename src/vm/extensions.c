@@ -232,8 +232,6 @@ ExtLib *ext_ffi_library(VM *vm, const char *spec, MlwsError *err) {
     return NULL;
 }
 
-void ffi_free_data(void *data);
-
 void ext_free_all(VM *vm) {
     for (size_t i = 0; i < vm->foreign_natives.n; i++) {
         NativeDef *nd = vm->foreign_natives.v[i];
@@ -262,4 +260,7 @@ void ext_free_all(VM *vm) {
             free(t);
         }
     smap_free(&vm->ffi_types);
+    for (size_t i = 0; i < vm->ffi_structs.cap; i++)
+        if (vm->ffi_structs.keys && vm->ffi_structs.keys[i]) ffi_free_struct(vm->ffi_structs.vals[i]);
+    smap_free(&vm->ffi_structs);
 }

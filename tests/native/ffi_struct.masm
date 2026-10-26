@@ -1,0 +1,174 @@
+; C structs in the declarative FFI. `.cstruct NAME ... .ends` describes a C
+; struct's fields in C order; the VM lays it out exactly as C does (each field
+; aligned to its size, the whole padded to its largest alignment). It also
+; declares an MLWSVM struct of the same name, so the program builds and reads
+; these as ordinary structs (new R0, Tm / R0->Tm.tm_year).
+;
+; An .extern then passes one as:
+;   struct S      by value (C copies it into registers or onto the stack)
+;   struct* S     a pointer to a temporary copy; whatever C writes is copied
+;                 back into the MLWSVM struct after the call (null passes NULL)
+;   out struct S  no argument: C fills a zeroed temporary, which becomes an
+;                 extra result, a new S
+; and a function may return a struct by value: `-> (struct S)`.
+; requires: ffi
+; option: --ext-path build/test-ext
+.include "std/test.inc"
+
+; div_t and ldiv_t: what div() and ldiv() return, by value (small structs come
+; back in registers).
+.cstruct DivT
+    quot: i32
+    rem: i32
+.ends
+.cstruct LDivT
+    quot: i64
+    rem: i64
+.ends
+
+; struct in_addr, which inet_ntoa takes by value: the IPv4 address in network
+; byte order. These tests run on little-endian machines, where 127.0.0.1 is
+; the u32 0x0100007F.
+.cstruct InAddr
+    s_addr: u32
+.ends
+
+; struct tm, as C declares it on Linux (glibc) and macOS. tm_gmtoff (a long)
+; follows nine ints, so 4 bytes of padding come before it: the layout check
+; below only passes if the offsets are C's.
+.cstruct Tm
+    tm_sec: i32
+    tm_min: i32
+    tm_hour: i32
+    tm_mday: i32
+    tm_mon: i32                ; 0 = January
+    tm_year: i32               ; years since 1900
+    tm_wday: i32               ; 0 = Sunday
+    tm_yday: i32               ; 0 = January 1st
+    tm_isdst: i32
+    tm_gmtoff: i64
+    tm_zone: cstr              ; read back as a new string (null for NULL)
+.ends
+; A time_t, for the functions that take a pointer to one.
+.cstruct TimeT
+    t: i64
+.ends
+
+; Every kind of field: a nested struct, number arrays (u8 arrays are byte
+; buffers, others are lists), a cstr. C lays it out as
+;   tag 0, x 8, ids 16..22, inner 24..32 (Inner: a 0, b 4, size 8), name 32,
+;   raw 40..45, size 48 (a multiple of 8, x's alignment)
+.cstruct Inner
+    a: i32
+    b: u8
+.ends
+.cstruct Rec
+    tag: u8
+    x: f64
+    ids: u16[3]
+    inner: struct Inner
+    name: cstr
+    raw: u8[5]
+.ends
+
+.extern c.div, "", "div" (i32, i32) -> (struct DivT)
+.extern c.ldiv, "", "ldiv" (i64, i64) -> (struct LDivT)
+.extern c.inet_ntoa, "", "inet_ntoa" (struct InAddr) -> (cstr)
+.extern c.timegm, "", "timegm" (struct* Tm) -> (i64)
+.extern c.gmtime_r, "", "gmtime_r" (struct* TimeT, out struct Tm) -> (ptr)
+; memcpy copies one Rec into a fresh one: a round trip through C memory.
+.extern c.copy_rec, "", "memcpy" (out struct Rec, struct* Rec, u64) -> (ptr)
+
+.func main
+    ; ---- returned by value ----
+    ncall "c.div" (17, 5) -> (R0)
+    ASSERT_EQ R0->DivT.quot, 3
+    ASSERT_EQ R0->DivT.rem, 2
+    ncall "c.ldiv" (-10000000000, 3) -> (R0)
+    ASSERT_EQ R0->LDivT.quot, -3333333333
+    ASSERT_EQ R0->LDivT.rem, -1
+
+    ; ---- passed by value ----
+    new R1, InAddr
+    mov R1->InAddr.s_addr, 0x0100007F
+    ncall "c.inet_ntoa" (R1) -> (R2)
+    strcmp I0, R2, "127.0.0.1"
+    ASSERT_EQ I0, 0
+
+    ; ---- struct*: in and out ----
+    ; timegm reads a broken-down UTC time and normalizes it in place:
+    ; January 32nd 2000 becomes February 1st, a Tuesday, day 31 of the year.
+    new R3, Tm
+    mov R3->Tm.tm_mday, 32
+    mov R3->Tm.tm_mon, 0
+    mov R3->Tm.tm_year, 100
+    ncall "c.timegm" (R3) -> (I1)
+    ASSERT_EQ I1, 949363200            ; 2000-02-01T00:00:00Z
+    ASSERT_EQ R3->Tm.tm_mon, 1         ; copied back
+    ASSERT_EQ R3->Tm.tm_mday, 1
+    ASSERT_EQ R3->Tm.tm_wday, 2
+    ASSERT_EQ R3->Tm.tm_yday, 31
+
+    ; ---- out struct ----
+    new R4, TimeT
+    mov R4->TimeT.t, 951782400         ; 2000-02-29T00:00:00Z, a leap day
+    ncall "c.gmtime_r" (R4) -> (R5, R6) ; the return value first, then the out struct
+    ASSERT_TRUE R5, r
+    ASSERT_EQ R6->Tm.tm_year, 100
+    ASSERT_EQ R6->Tm.tm_mon, 1
+    ASSERT_EQ R6->Tm.tm_mday, 29
+    ASSERT_EQ R6->Tm.tm_yday, 59
+    ASSERT_EQ R6->Tm.tm_gmtoff, 0      ; after the padding: the layout is C's
+    typeof I2, R6->Tm.tm_zone          ; "GMT" or "UTC", depending on the C library
+    ASSERT_EQ I2, 1
+
+    ; ---- every kind of field, through C memory and back ----
+    new R7, Rec
+    mov R7->Rec.tag, 200
+    mov R7->Rec.x, 2.5
+    lnew R8
+    lpush.u16 R8, 1, 65535, 3
+    mov R7->Rec.ids, R8
+    new R9, Inner
+    mov R9->Inner.a, -42
+    mov R9->Inner.b, 7
+    mov R7->Rec.inner, R9
+    mov R7->Rec.name, "ok"
+    bufnew R10, 2                      ; a short buffer: the rest of raw is 0
+    mov R10[0], 9
+    mov R10[1], 8
+    mov R7->Rec.raw, R10
+    ncall "c.copy_rec" (R7, 48) -> (R11, R12)
+    ASSERT_EQ R12->Rec.tag, 200
+    ASSERT_EQ R12->Rec.x, 2.5
+    mov R13, R12->Rec.ids              ; a list of 3 u16 values
+    len I3, R13
+    ASSERT_EQ I3, 3
+    ASSERT_EQ R13[1], 65535
+    mov R14, R12->Rec.inner
+    ASSERT_EQ R14->Inner.a, -42
+    ASSERT_EQ R14->Inner.b, 7
+    strcmp I4, R12->Rec.name, "ok"
+    ASSERT_EQ I4, 0
+    mov R15, R12->Rec.raw              ; a byte buffer of all 5 bytes
+    len I5, R15
+    ASSERT_EQ I5, 5
+    ASSERT_EQ R15[1], 8
+    ASSERT_EQ R15[4], 0
+
+    ; a null nested struct is all zeros, and reads back as a new one
+    mov R7->Rec.inner, null
+    ncall "c.copy_rec" (R7, 48) -> (R11, R12)
+    mov R14, R12->Rec.inner
+    ASSERT_EQ R14->Inner.a, 0
+
+    ; ---- wrong arguments ----
+.try h1
+    ncall "c.inet_ntoa" (R3)           ; a Tm is not an InAddr
+.endtry
+    FAIL "a Tm was passed as an InAddr"
+h1: catch R16
+    strcmp I6, R16->Error.code, "E_TYPE"
+    ASSERT_EQ I6, 0
+    ret 0
+.endf

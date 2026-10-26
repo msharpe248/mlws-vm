@@ -149,18 +149,6 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
             return mlws_err(err, "E_LOAD_FORMAT", "module %s: malformed %s literal \"%s\"", m->name,
                             c->kind == CONST_BIG ? "BigInt" : "decimal", c->data);
     }
-    /* Native code this module brings in: extensions, then C functions (.extern). */
-    for (uint32_t i = 0; i < m->nextensions; i++)
-        if (!ext_load(vm, m->extensions[i], err)) return false;
-    for (uint32_t i = 0; i < m->nexterns; i++)
-        if (!ffi_define(vm, &m->externs[i], err)) return false;
-    lm->natives = xcalloc(m->nnatives + 1, sizeof(NativeDef *));
-    for (uint32_t i = 0; i < m->nnatives; i++) {
-        void *v;
-        if (!smap_get(&vm->natives, m->natives[i], &v))
-            return mlws_err(err, "E_LINK_NATIVE", "module %s uses unknown native function \"%s\"", m->name, m->natives[i]);
-        lm->natives[i] = v;
-    }
     lm->grefs = xcalloc(m->ngrefs + 1, sizeof(uint64_t));
     for (uint32_t i = 0; i < m->ngrefs; i++) {
         MGref *g = &m->grefs[i];
@@ -206,6 +194,23 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
             return mlws_err(err, "E_LINK_UNDEF", "module %s does not export struct '%s' (used by %s)", dep->m->name,
                             st->name, m->name);
         lm->structs[i] = dep->structs[si];
+    }
+    /* Native code this module brings in: extensions, then C structs and
+     * functions (.cstruct, .ffi_free, .extern), which need the struct types. */
+    for (uint32_t i = 0; i < m->nextensions; i++)
+        if (!ext_load(vm, m->extensions[i], err)) return false;
+    for (uint32_t i = 0; i < m->ncstructs; i++)
+        if (!ffi_define_struct(vm, lm, &m->cstructs[i], err)) return false;
+    for (uint32_t i = 0; i < m->nffrees; i++)
+        if (!ffi_define_free(vm, &m->ffrees[i], err)) return false;
+    for (uint32_t i = 0; i < m->nexterns; i++)
+        if (!ffi_define(vm, &m->externs[i], err)) return false;
+    lm->natives = xcalloc(m->nnatives + 1, sizeof(NativeDef *));
+    for (uint32_t i = 0; i < m->nnatives; i++) {
+        void *v;
+        if (!smap_get(&vm->natives, m->natives[i], &v))
+            return mlws_err(err, "E_LINK_NATIVE", "module %s uses unknown native function \"%s\"", m->name, m->natives[i]);
+        lm->natives[i] = v;
     }
     lm->frefs = xcalloc(m->nfrefs + 1, sizeof(FieldRef));
     for (uint32_t i = 0; i < m->nfrefs; i++) {

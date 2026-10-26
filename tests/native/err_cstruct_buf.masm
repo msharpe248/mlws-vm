@@ -1,0 +1,11 @@
+; A cstruct field cannot be a buf (a buf parameter is a byte buffer's own
+; bytes, and a struct has no buffer to point at): use u8[N] for bytes kept
+; inside the struct, or ptr for a pointer.
+; expect-error: E_ASM_SYNTAX
+.cstruct Msg
+    len: u64
+    data: buf
+.ends
+.func main
+    ret 0
+.endf

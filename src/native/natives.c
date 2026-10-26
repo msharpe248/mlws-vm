@@ -140,6 +140,13 @@ static void n_gc_collections(Process *p, Word *a, Word *r) {
     r[0].i = (int64_t)p->gc_count;
 }
 
+static void n_foreign_release(Process *p, Word *a, Word *r) {
+    (void)r;
+    Obj *o = a[0].r;
+    if (!o || o->kind != OBJ_FOREIGN) vm_trap(p, "E_TYPE", "foreign.release needs a foreign handle");
+    foreign_finalize(o); /* idempotent: the handle forgets its pointer */
+}
+
 static void n_test_fail(Process *p, Word *a, Word *r) {
     (void)r;
     ObjString *s = a[0].r;
@@ -191,6 +198,7 @@ static const NativeDef BUILTINS[] = {
     {"str.len", 1, {T_R}, 1, {T_I64}, n_str_len, "Length of a string or byte buffer in bytes (same as the len instruction)."},
     {"str.byte", 2, {T_R, T_I64}, 1, {T_U8}, n_str_byte, "Byte at an index of a string (bounds checked)."},
     {"test.fail", 1, {T_R}, 0, {0}, n_test_fail, "Trap with E_ASSERT and the given message."},
+    {"foreign.release", 1, {T_R}, 0, {0}, n_foreign_release, "Release a foreign handle now: run its finalizer (an extension's, or the tag's .ffi_free function) once; later uses see a released handle."},
     {"gc.collect", 0, {0}, 0, {0}, n_gc_collect, "Request a garbage collection; it runs before the next instruction."},
     {"gc.heap_bytes", 0, {0}, 1, {T_I64}, n_gc_heap_bytes, "Bytes currently allocated on this process's heap (live and not yet collected)."},
     {"gc.collections", 0, {0}, 1, {T_I64}, n_gc_collections, "Number of garbage collections so far in this process."},

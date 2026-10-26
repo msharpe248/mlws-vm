@@ -178,16 +178,95 @@ reported at load time and never crashes.
 | `f32`, `f64` | a float | `float`, `double` |
 | `cstr` | a string (its bytes, NUL-terminated) or a byte buffer (copied and NUL-terminated); as a result, the C string is copied into a new string; NULL is null | `const char *` |
 | `buf` | a byte buffer, passed as its own bytes, which C may change | `void *` |
-| `ptr`, `ptr<tag>` | an opaque foreign handle; as a result, a new handle (without a finalizer); NULL is null | `void *` |
+| `ptr`, `ptr<tag>` | an opaque foreign handle; as a result, a new handle (freed by the tag's `.ffi_free` function, if it has one); NULL is null | `void *` |
+| `struct NAME`, `struct* NAME` | a `.cstruct` (below): by value, or a pointer to a copy | `struct NAME`, `struct NAME *` |
 | `out T` | no argument: C gets a pointer to a temporary, whose value becomes an extra result (numbers and `ptr`) | `T *` |
 
 Tagged pointers keep different kinds of pointer apart: a `ptr<mem>` result can
 only be passed back as a `ptr<mem>`, so a `sqlite3 *` can never reach `free`.
 Pointers passed to C are valid only during the call: C must not keep them.
 
-Not supported yet: variadic functions (`printf`), structs passed by value, and
-callbacks from C into MLWSVM. Until then, wrap those in an extension. All three
-are planned; the designs are in [ROADMAP.md](ROADMAP.md) §1.
+### Handles that free themselves
+
+```asm
+.ffi_free db, "libsqlite3", "sqlite3_close"
+.extern sql.open, "libsqlite3", "sqlite3_open" (cstr, out ptr<db>) -> (i32)
+```
+
+`.ffi_free TAG, "LIBRARY", "SYMBOL"` gives every `ptr<TAG>` handle a finalizer.
+The C function is called with the pointer, once: when the handle is garbage
+collected, or earlier with `ncall "foreign.release" (handle)`. After that the
+handle is released, and passing it to C fails with `E_TYPE` instead of passing
+a dangling pointer. The function must take the pointer as its only argument
+(its result is ignored). Declare it only once per tag: another `.ffi_free` for
+the same tag must name the same function.
+
+Don't also declare the free function as an `.extern` and call it yourself:
+the handle would still free the pointer again later. Use `foreign.release`.
+
+### C structs
+
+```asm
+.cstruct Tm                      ; struct tm, fields in C order
+    tm_sec: i32
+    ...
+    tm_gmtoff: i64
+    tm_zone: cstr
+.ends
+.extern c.timegm,   "", "timegm"   (struct* Tm) -> (i64)
+.extern c.gmtime_r, "", "gmtime_r" (struct* TimeT, out struct Tm) -> (ptr)
+.extern c.div,      "", "div"      (i32, i32) -> (struct DivT)
+
+    new R0, Tm                   ; an ordinary MLWSVM struct
+    mov R0->Tm.tm_mday, 32
+    ncall "c.timegm" (R0) -> (I0) ; C normalizes it, and R0 sees the changes
+```
+
+`.cstruct NAME` … `.ends` describes a C struct, and also declares an MLWSVM
+struct of the same name to build and read it with. Fields are laid out exactly
+as a C compiler would: each aligned to its own size, and the whole padded to its
+largest alignment. Field types:
+
+| Field | In the MLWSVM struct | In C |
+|---|---|---|
+| `i8` … `u64`, `f32`, `f64` | that type | that type |
+| `cstr` | a string, or null | `const char *` (as for parameters) |
+| `ptr`, `ptr<tag>` | a foreign handle, or null | `void *` |
+| `struct NAME` | a NAME struct, or null (zeros) | the struct itself, nested |
+| `u8[N]`, `i8[N]` | a byte buffer | `uint8_t x[N]` |
+| other `T[N]` | a list of numbers | `T x[N]` |
+
+An array shorter than N is padded with zeros, and a longer one is truncated.
+Read back from C, arrays are always exactly N long. A nested `struct` must be
+declared first.
+
+A struct crosses into C in one of three ways:
+
+* `struct NAME`: **by value**, as C passes structs (in registers or on the
+  stack, as the platform's ABI says). A result may also be a `struct NAME`.
+* `struct* NAME`: **a pointer** to a copy that lives for the call. Whatever C
+  writes there is copied back into the MLWSVM struct afterwards. Fields that C
+  left alone keep their objects; a `cstr` or `ptr` that C changed becomes a new
+  string or handle. `null` passes NULL.
+* `out struct NAME`: no argument. C fills a zeroed struct, which becomes an
+  extra result.
+
+### Variadic functions
+
+```asm
+.extern c.snprintf, "", "snprintf" (buf, u64, cstr, ..., i64, f64, cstr) -> (i32)
+```
+
+`...` marks where the fixed parameters end. The types after it are the ones this
+declaration passes in the variadic part. To pass different ones, declare the
+function again under another name. C promotes small integers to `int` and
+`float` to `double` in a variadic call, so `i8`, `u8`, `i16`, `u16` and `f32`
+are refused after `...` (write `i32` or `f64`), as are `out` parameters and
+structs by value.
+
+Callbacks from C into MLWSVM are not supported yet; until then, wrap such an
+API in an extension. They are planned, and the design is in
+[ROADMAP.md](ROADMAP.md) §1.
 
 ---
 

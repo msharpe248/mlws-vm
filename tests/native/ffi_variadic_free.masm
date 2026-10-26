@@ -1,0 +1,81 @@
+; Variadic C functions, and handles that free themselves.
+;
+; `...` in an .extern marks where a variadic function's fixed parameters end;
+; the types after it are what this declaration passes there. C promotes small
+; integers and f32 in that part of a call, so they are refused: pass i32,
+; i64, f64, cstr, buf, ptr or struct* instead. To call a variadic function
+; with other argument types, declare it again under another name.
+;
+; `.ffi_free tag, "library", "symbol"` gives every ptr<tag> handle a
+; finalizer: the C function, called with the pointer, when the handle is
+; collected or released with foreign.release (once; later uses see a released
+; handle). It is how C resources get the same lifetime rules as MLWSVM objects.
+; requires: ffi
+; option: --ext-path build/test-ext
+.include "std/test.inc"
+.extern c.snprintf, "", "snprintf" (buf, u64, cstr, ..., i64, f64, cstr) -> (i32)
+.extern c.snprintf2, "", "snprintf" (buf, u64, cstr, ..., u32, u32) -> (i32)
+
+; stdio streams: fputs output stays in the FILE's buffer until fclose, so the
+; file's contents show whether the finalizer ran.
+.ffi_free file, "", "fclose"
+.extern c.fopen, "", "fopen" (cstr, cstr) -> (ptr<file>)
+.extern c.fputs, "", "fputs" (cstr, ptr<file>) -> (i32)
+
+; Write `text` to a new file through C stdio, and drop the handle unclosed.
+.func write_unclosed(ref path, ref text)
+    ncall "c.fopen" (path, "w") -> (R0)
+    ASSERT_TRUE R0, r
+    ncall "c.fputs" (text, R0) -> (I0)
+    ret
+.endf
+
+.func main
+    ; ---- variadic ----
+    bufnew R0, 64
+    ncall "c.snprintf" (R0, 64, "%lld|%.2f|%s", -12345678901, 3.14159, "pi") -> (I0)
+    ASSERT_EQ I0, 20                   ; the length, as C counts it
+    strcat R1, R0                      ; the buffer as a string: its first I0 bytes
+    substr R2, R1, 0, I0
+    strcmp I1, R2, "-12345678901|3.14|pi"
+    ASSERT_EQ I1, 0
+    ncall "c.snprintf2" (R0, 64, "%x-%u", 255, 7) -> (I0)
+    strcat R1, R0
+    substr R2, R1, 0, I0
+    strcmp I1, R2, "ff-7"
+    ASSERT_EQ I1, 0
+
+    ; ---- .ffi_free: run when the handle is collected ----
+    ncall "fs.exists" ("build/test-ffi") -> (I7)
+    bnz I7, 1f                         ; left over from an interrupted run
+    ncall "fs.mkdir" ("build/test-ffi")
+1:
+    call write_unclosed ("build/test-ffi/gc.txt", "collected")
+    ncall "fs.read_file" ("build/test-ffi/gc.txt") -> (R3)
+    len I2, R3
+    ASSERT_EQ I2, 0                    ; still buffered inside the FILE
+    ncall "gc.collect"                 ; the handle is garbage: fclose runs
+    ncall "fs.read_file" ("build/test-ffi/gc.txt") -> (R3)
+    strcmp I3, R3, "collected"
+    ASSERT_EQ I3, 0
+
+    ; ---- foreign.release: run it now ----
+    ncall "c.fopen" ("build/test-ffi/rel.txt", "w") -> (R4)
+    ncall "c.fputs" ("released", R4) -> (I4)
+    ncall "foreign.release" (R4)
+    ncall "fs.read_file" ("build/test-ffi/rel.txt") -> (R5)
+    strcmp I5, R5, "released"
+    ASSERT_EQ I5, 0
+    ncall "foreign.release" (R4)       ; a second release does nothing
+.try h
+    ncall "c.fputs" ("again", R4)      ; the handle no longer has a pointer
+.endtry
+    FAIL "a released handle was used"
+h:  catch R6
+    strcmp I6, R6->Error.code, "E_TYPE"
+    ASSERT_EQ I6, 0
+    ncall "fs.remove" ("build/test-ffi/gc.txt")
+    ncall "fs.remove" ("build/test-ffi/rel.txt")
+    ncall "fs.rmdir" ("build/test-ffi")
+    ret 0
+.endf

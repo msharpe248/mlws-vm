@@ -104,6 +104,10 @@ typedef struct {
     uint32_t seq;
     VEC(char *) extensions; /* .extension */
     VEC(MExtern) externs;   /* .extern */
+    VEC(MCStruct) cstructs; /* .cstruct */
+    MCStruct cur_cstruct;   /* the open .cstruct (when cur_struct is its struct) */
+    bool in_cstruct;
+    VEC(MFfiFree) ffrees;   /* .ffi_free */
 } Asm;
 
 typedef struct {
@@ -1027,6 +1031,36 @@ static bool ffi_type(Asm *A, Cur *c, bool param, uint8_t *kind, char **tag) {
         c->pos++;
     }
     Token *t = cur(c);
+    if (tok_ident(t, "struct")) { /* struct NAME, struct* NAME (in/out), out struct NAME */
+        c->pos++;
+        bool ptr = false;
+        if (tok_is(cur(c), "*")) {
+            ptr = true;
+            c->pos++;
+        }
+        if (cur(c)->kind != TK_IDENT) return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected a .cstruct name");
+        char *name = tokdup(cur(c));
+        bool known = false;
+        for (size_t i = 0; i < A->cstructs.n; i++) known = known || !strcmp(A->cstructs.v[i].name, name);
+        if (!known) {
+            aerr(A, c->pl, cur(c)->col, "E_ASM_UNDEF_SYM", "no .cstruct %s (declare it before the .extern)", name);
+            free(name);
+            return false;
+        }
+        c->pos++;
+        if (ptr && out) {
+            free(name);
+            return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "use `out struct NAME` or `struct* NAME`, not both");
+        }
+        *kind = ptr ? FFI_STRUCTP : FFI_STRUCT;
+        if (out) *kind |= FFI_OUT;
+        if (ptr && !param) {
+            free(name);
+            return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "a struct* cannot be a result (return the struct by value)");
+        }
+        *tag = name;
+        return true;
+    }
     int k = -1;
     for (size_t i = 0; i < sizeof K / sizeof K[0]; i++)
         if (tok_ident(t, K[i].name)) k = (int)i;
@@ -1084,12 +1118,33 @@ static bool dir_extern(Asm *A, Cur *c) {
     c->pos++;
     if (!expect_punct(A, c, "(")) goto out;
     int nin = 0, nout = 0;
+    bool variadic = false;
     while (!tok_is(cur(c), ")")) {
+        if (tok_is(cur(c), "...") || tok_ident(cur(c), "...")) { /* the variadic part follows */
+            if (variadic || !x.nargs) {
+                aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "`...` comes once, after at least one fixed parameter");
+                goto out;
+            }
+            variadic = true;
+            x.nfixed = x.nargs;
+            c->pos++;
+            if (tok_is(cur(c), ",")) c->pos++;
+            continue;
+        }
         if (x.nargs == FFI_MAX_ARGS) {
             aerr(A, c->pl, cur(c)->col, "E_ASM_RANGE", "at most %d parameters", FFI_MAX_ARGS);
             goto out;
         }
         if (!ffi_type(A, c, true, &x.args[x.nargs], &x.tags[x.nargs])) goto out;
+        if (variadic) { /* C promotes these in a variadic call, so they cannot be passed as they are */
+            uint8_t vk = x.args[x.nargs];
+            if (vk == FFI_I8 || vk == FFI_I16 || vk == FFI_U8 || vk == FFI_U16 || vk == FFI_F32 || (vk & FFI_OUT) ||
+                vk == FFI_STRUCT) {
+                aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX",
+                     "after `...` use i32/u32/i64/u64, f64, cstr, buf, ptr or struct* (C promotes smaller types)");
+                goto out;
+            }
+        }
         if (x.args[x.nargs] & FFI_OUT) nout++;
         else nin++;
         x.nargs++;
@@ -1100,6 +1155,7 @@ static bool dir_extern(Asm *A, Cur *c) {
         }
     }
     c->pos++;
+    if (!variadic) x.nfixed = x.nargs;
     x.ret = FFI_VOID;
     if (tok_is(cur(c), "->")) {
         c->pos++;
@@ -1137,6 +1193,122 @@ out:
     for (int k = 0; k < FFI_MAX_ARGS; k++) free(x.tags[k]);
     free(x.ret_tag);
     return ok;
+}
+
+/* `.ffi_free tag, "library", "symbol"`: how ptr<tag> handles are freed. */
+static bool dir_ffi_free(Asm *A, Cur *c) {
+    if (A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".ffi_free must be outside a .func");
+    if (cur(c)->kind != TK_IDENT) return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected a ptr tag name");
+    MFfiFree f = {tokdup(cur(c)), NULL, NULL};
+    c->pos++;
+    if (!expect_punct(A, c, ",") || cur(c)->kind != TK_STRING) goto bad;
+    f.lib = xstrndup(cur(c)->sval, cur(c)->slen);
+    c->pos++;
+    if (!expect_punct(A, c, ",") || cur(c)->kind != TK_STRING || !cur(c)->slen) goto bad;
+    f.sym = xstrndup(cur(c)->sval, cur(c)->slen);
+    c->pos++;
+    if (!expect_eol(A, c)) goto bad;
+    VEC_PUSH(A->ffrees, f);
+    return true;
+bad:
+    if (!A->err->code[0]) aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected .ffi_free tag, \"library\", \"symbol\"");
+    free(f.tag);
+    free(f.lib);
+    free(f.sym);
+    return false;
+}
+
+static bool dir_struct(Asm *A, Cur *c);
+
+/* `.cstruct NAME` ... `.ends`: a C struct layout, and a struct of that name. */
+static bool dir_cstruct(Asm *A, Cur *c) {
+    if (!dir_struct(A, c)) return false;
+    memset(&A->cur_cstruct, 0, sizeof A->cur_cstruct);
+    A->cur_cstruct.name = xstrdup(A->cur_struct->name);
+    A->in_cstruct = true;
+    return true;
+}
+
+/* Inside .cstruct: `name: TYPE`, TYPE an integer or float type, cstr, ptr,
+ * ptr<tag>, struct NAME, or an array of numbers: u8[16]. */
+static bool cstruct_line(Asm *A, Cur *c) {
+    Token *t = cur(c);
+    if (t->kind == TK_EOF) return true;
+    MCStruct *cs = &A->cur_cstruct;
+    if (tok_ident(t, ".ends")) {
+        c->pos++;
+        if (!cs->nfields) return aerr(A, A->struct_pl, 0, "E_ASM_SYNTAX", "cstruct %s has no fields", cs->name);
+        VEC_PUSH(A->cstructs, *cs);
+        memset(cs, 0, sizeof *cs);
+        A->cur_struct = NULL;
+        A->in_cstruct = false;
+        return expect_eol(A, c);
+    }
+    if (t->kind != TK_IDENT || t->start[0] == '.' || !tok_is(peekn(c, 1), ":"))
+        return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "expected 'field: type' or .ends inside .cstruct");
+    char *fname = tokdup(t);
+    c->pos += 2;
+    uint8_t kind;
+    char *tag = NULL;
+    MlwsType vt = T_R;
+    uint32_t count = 0;
+    if (tok_ident(cur(c), "struct")) {
+        c->pos++;
+        if (cur(c)->kind != TK_IDENT) goto bad;
+        tag = tokdup(cur(c));
+        c->pos++;
+        bool known = false;
+        for (size_t i = 0; i < A->cstructs.n; i++) known = known || !strcmp(A->cstructs.v[i].name, tag);
+        if (!known) {
+            aerr(A, c->pl, t->col, "E_ASM_UNDEF_SYM", "no .cstruct %s (declare it first)", tag);
+            goto fail;
+        }
+        kind = FFI_STRUCT;
+    } else {
+        if (!ffi_type(A, c, true, &kind, &tag)) goto fail;
+        if (kind & FFI_OUT || kind == FFI_STRUCT || kind == FFI_BUF) goto bad; /* a buf field has no buffer to point at */
+        if (kind <= FFI_F64) {
+            static const MlwsType T[] = {T_NONE, T_I8, T_I16, T_I32, T_I64, T_U8, T_U16, T_U32, T_U64, T_F32, T_F64};
+            vt = T[kind];
+        }
+        if (tok_is(cur(c), "[")) { /* an array of numbers */
+            c->pos++;
+            int64_t n;
+            int col = cur(c)->col;
+            if (kind > FFI_F64 || !eval_int(A, c, &n)) goto bad;
+            if (n <= 0 || n > 65536) {
+                aerr(A, c->pl, col, "E_ASM_RANGE", "array length must be 1 to 65536");
+                goto fail;
+            }
+            if (!expect_punct(A, c, "]")) goto fail;
+            count = (uint32_t)n;
+            vt = T_R; /* a byte buffer (i8/u8), or a list */
+        }
+    }
+    {
+        MStruct *st = A->cur_struct;
+        st->fields = xrealloc(st->fields, (st->nfields + 1) * sizeof(char *));
+        st->types = xrealloc(st->types, st->nfields + 1);
+        st->fields[st->nfields] = xstrdup(fname);
+        st->types[st->nfields] = (uint8_t)vt;
+        st->nfields++;
+        cs->fields = xrealloc(cs->fields, (cs->nfields + 1) * sizeof(char *));
+        cs->kinds = xrealloc(cs->kinds, cs->nfields + 1);
+        cs->tags = xrealloc(cs->tags, (cs->nfields + 1) * sizeof(char *));
+        cs->counts = xrealloc(cs->counts, (cs->nfields + 1) * sizeof(uint32_t));
+        cs->fields[cs->nfields] = fname;
+        cs->kinds[cs->nfields] = kind;
+        cs->tags[cs->nfields] = tag;
+        cs->counts[cs->nfields] = count;
+        cs->nfields++;
+    }
+    return expect_eol(A, c);
+bad:
+    aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "a cstruct field is a number type, cstr, ptr, ptr<tag>, struct NAME, or u8[N]");
+fail:
+    free(fname);
+    free(tag);
+    return false;
 }
 
 static bool dir_struct(Asm *A, Cur *c) {
@@ -1277,6 +1449,8 @@ static bool directive(Asm *A, Cur *c) {
     if (IS(".import")) return dir_import(A, c);
     if (IS(".extension")) return dir_extension(A, c);
     if (IS(".extern")) return dir_extern(A, c);
+    if (IS(".cstruct")) return dir_cstruct(A, c);
+    if (IS(".ffi_free")) return dir_ffi_free(A, c);
     if (IS(".module")) {
         Token *nt = cur(c);
         if (nt->kind != TK_IDENT) return aerr(A, c->pl, nt->col, "E_ASM_SYNTAX", "expected a module name");
@@ -1546,7 +1720,7 @@ static bool statement(Asm *A, const PLine *pl) {
     A->seq++;
     bool ok = true;
     if (A->cur_struct) {
-        ok = struct_line(A, &c);
+        ok = A->in_cstruct ? cstruct_line(A, &c) : struct_line(A, &c);
         tokvec_free(&tv);
         return ok;
     }
@@ -1825,6 +1999,14 @@ static Module *finish(Asm *A) {
     m->externs = A->externs.v ? A->externs.v : xcalloc(1, sizeof(MExtern));
     A->externs.v = NULL;
     A->externs.n = 0;
+    m->ncstructs = (uint32_t)A->cstructs.n;
+    m->cstructs = A->cstructs.v ? A->cstructs.v : xcalloc(1, sizeof(MCStruct));
+    A->cstructs.v = NULL;
+    A->cstructs.n = 0;
+    m->nffrees = (uint32_t)A->ffrees.n;
+    m->ffrees = A->ffrees.v ? A->ffrees.v : xcalloc(1, sizeof(MFfiFree));
+    A->ffrees.v = NULL;
+    A->ffrees.n = 0;
     m->gsize = (uint32_t)A->gdata.n;
     m->gdata = xcalloc(m->gsize + 1, 1);
     if (m->gsize) memcpy(m->gdata, A->gdata.b, m->gsize); /* (no globals: the source pointer is NULL) */
@@ -1877,6 +2059,19 @@ static void asm_free(Asm *A) {
         free(x->ret_tag);
     }
     VEC_FREE(A->externs);
+    for (size_t i = 0; i < A->cstructs.n; i++) {
+        MCStruct *cs = &A->cstructs.v[i];
+        for (uint32_t k = 0; k < cs->nfields; k++) free(cs->fields[k]), free(cs->tags[k]);
+        free(cs->name), free(cs->fields), free(cs->kinds), free(cs->tags), free(cs->counts);
+    }
+    VEC_FREE(A->cstructs);
+    {
+        MCStruct *cs = &A->cur_cstruct; /* an unterminated .cstruct */
+        for (uint32_t k = 0; k < cs->nfields; k++) free(cs->fields[k]), free(cs->tags[k]);
+        free(cs->name), free(cs->fields), free(cs->kinds), free(cs->tags), free(cs->counts);
+    }
+    for (size_t i = 0; i < A->ffrees.n; i++) free(A->ffrees.v[i].tag), free(A->ffrees.v[i].lib), free(A->ffrees.v[i].sym);
+    VEC_FREE(A->ffrees);
     for (size_t i = 0; i < A->grefs.n; i++) free(A->grefs.v[i].sym);
     VEC_FREE(A->grefs);
     for (size_t i = 0; i < A->ifuncs.n; i++) free(A->ifuncs.v[i].name);

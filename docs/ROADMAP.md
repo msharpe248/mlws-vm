@@ -17,9 +17,15 @@ easy to show off. The scripting language is a separate project.
 | **M15 Showcase: a supervised HTTP server** (done) | `std.proc` (a name → pid registry, request/reply calls with timeouts, supervisors with restart strategies); `examples/http`: one process per connection, per-connection quotas, a crash in a handler is contained and logged, watched live with `mlwsvm top`; a load-test benchmark | The example serves requests under load while handlers are killed and restarted |
 | **M16 Embedding API** (done) | `libmlwsvm` (static and shared) and `include/mlwsvm/embed.h`: create a VM, set options, load modules from files or memory, call functions, send messages, register natives (reusing the extension API), and an example C host program | A C program embeds the VM and calls MLWSVM code both ways |
 
-Later, when real use asks for them: the FFI additions (section 1), the rest of
-the standard library (section 2), Windows (section 3), and the performance work
-(section 4).
+Then, in order (Windows is set aside until there is a machine to test on):
+
+| Milestone | Contents |
+|---|---|
+| **M17 FFI shapes** (done) | variadic C functions (1.1); structs by value and by pointer, `.cstruct` (1.2); finalizers for `.extern` handles (1.5) |
+| **M18 Callbacks** | C calling back into MLWSVM during a call, through a re-entrant interpreter (1.3); asynchronous callbacks delivered as messages, and `api->post` for extensions (1.4) |
+| **M19 Standard library II** | `std.time`, `std.hash`, `std.random`, `std.encoding` (hex, base64, URL, CSV), `std.collections` (sorting with a comparator closure, using M18's re-entrant calls), more `std.math` (section 2) |
+| **M20 Bindgen** | `mlwsvm bindgen header.h`: `.extern`, `.cstruct` and `.callback` declarations from clang's JSON AST (1.5) |
+| **M21 Performance** | a size-class allocator first, then what measurements call for (section 4) |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -28,57 +34,32 @@ Done: the native-extension API (`include/mlwsvm/mlwsvm.h`), the declarative FFI
 trusted installation (`mlwsvm ext`, SHA-256 pinning, permission checks), and
 the foreign-call quota. See [EXTENDING.md](EXTENDING.md).
 
-Still to do, in suggested order. The three FFI limitations can all be removed:
-libffi supports each of them directly, and the work is on the VM side.
+Variadic functions (1.1), C structs (1.2) and finalizers for `.extern`
+handles were added in M17; the rest is still to do.
 
-### 1.1 Variadic functions (small)
+### 1.1 Variadic functions (M17: done)
 
-libffi calls them with `ffi_prep_cif_var`. This matters on Apple arm64, where
-variadic arguments go on the stack even when registers are free, so treating
-`printf` as an ordinary function would be wrong there. The types of the
-variadic part are fixed per declaration; declare one extern per shape you
-need:
+`...` in an `.extern` parameter list ends the fixed parameters, and the call
+goes through `ffi_prep_cif_var`. That matters on Apple arm64, where variadic
+arguments go on the stack even when registers are free. Each declaration fixes
+the variadic part's types, and C's promotions are enforced: `f32` and integers
+narrower than `int` are refused after `...`. Format strings remain trusted
+input: a wrong `%s` or a `%n` crashes or corrupts memory as it would in C.
+`text.format` is the safe way for MLWSVM code to format text.
 
-```asm
-.extern c.printf_si, "", "printf" (cstr, ..., cstr, i32) -> (i32)
-.extern c.printf_f,  "", "printf" (cstr, ..., f64) -> (i32)
-```
+### 1.2 Structs by value and by pointer (M17: done)
 
-* Parsing `...` in the parameter list, and recording the fixed-argument
-  count in the module (format version 5).
-* C's default promotions are checked: `f32` and integers narrower than
-  `int` are not allowed after `...`, because C would promote them.
-* Caveat: format strings remain trusted input. A wrong `%s` or a `%n` crashes
-  or corrupts memory as it would in C. The standard library's own `format`
-  (section 2) is the safe way for MLWSVM code to format text.
+`.cstruct NAME` … `.ends` declares a C layout and a struct of the same name;
+`.extern` passes it as `struct NAME` (by value, and as a result),
+`struct* NAME` (a pointer to a copy, copied back after the call) or
+`out struct NAME`. Fields are numbers, `cstr`, `ptr<tag>`, nested structs and
+fixed arrays of numbers (`u8[N]` as a byte buffer, others as a list). A struct
+crosses the boundary as a copy, so pointers into VM memory never escape. The
+VM computes C's offsets itself and checks them against libffi's size.
 
-### 1.2 Structs by value and by pointer (medium)
-
-libffi describes a struct as an `ffi_type` with element types, and computes
-its size, alignment and field offsets (`ffi_get_struct_offsets`). The VM needs
-a way to declare C layouts and to convert them:
-
-```asm
-.cstruct timespec
-    tv_sec:  i64
-    tv_nsec: i64
-.ends
-.extern c.nanosleep, "", "nanosleep" (struct* timespec, struct* timespec) -> (i32), blocking
-.extern m.div,       "", "div" (i32, i32) -> (struct div_t)          ; returned by value
-```
-
-* `.cstruct` fields use the FFI types (integers, floats, `ptr<tag>`, `cstr`
-  read-only), nested `.cstruct`s, and fixed arrays (`buf[16]`).
-* `struct NAME` passes a value; `struct* NAME` passes a pointer to a
-  temporary; `out struct NAME` returns one through a pointer. On the MLWSVM
-  side the value is an ordinary `.struct` with the same field names, or a
-  byte buffer holding the raw bytes.
-* A C struct crosses the boundary as a copy, so pointers into VM memory never
-  escape.
-* Not expressible in libffi, so not supported: bitfields, `#pragma pack`, and
-  unions (a union can be declared as a byte buffer of its size). Layouts that
-  differ by platform (`struct stat`) are best generated from the system
-  headers (see 1.5).
+Not supported: bitfields, `#pragma pack` and unions (declare a union as a
+`u8[N]` of its size). Layouts that differ by platform (`struct stat`) are best
+generated from the system headers (see 1.5).
 
 ### 1.3 Callbacks during a call (medium to large)
 
@@ -136,9 +117,9 @@ So these callbacks become **messages**:
   `.cstruct` and `.callback` declarations for a C header, in the spirit of
   Rust's bindgen and ctypesgen. Most practical through libclang's JSON AST dump
   (`clang -Xclang -ast-dump=json`). It also solves platform-dependent layouts.
-* **Finalizers for `.extern` handles**: `ptr<tag>` freed by a named C function
-  (`.extern ... -> (ptr<db> free=sqlite3_close)`), so FFI resources are not
-  leaked when MLWSVM code forgets to close them.
+* **Finalizers for `.extern` handles** (M17: done): `.ffi_free db,
+  "libsqlite3", "sqlite3_close"` frees every `ptr<db>` when it is collected or
+  released with `foreign.release`.
 * **Windows**: ACL checks in `plat_path_trusted` (POSIX permission checks are
   done).
 

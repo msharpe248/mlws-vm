@@ -33,6 +33,18 @@ void module_free(Module *m) {
         free(x->ret_tag);
     }
     free(m->externs);
+    for (uint32_t i = 0; i < m->ncstructs; i++) {
+        MCStruct *c = &m->cstructs[i];
+        for (uint32_t k = 0; k < c->nfields; k++) free(c->fields[k]), free(c->tags[k]);
+        free(c->name);
+        free(c->fields);
+        free(c->kinds);
+        free(c->tags);
+        free(c->counts);
+    }
+    free(m->cstructs);
+    for (uint32_t i = 0; i < m->nffrees; i++) free(m->ffrees[i].tag), free(m->ffrees[i].lib), free(m->ffrees[i].sym);
+    free(m->ffrees);
     for (uint32_t i = 0; i < m->nstructs; i++) {
         MStruct *st = &m->structs[i];
         free(st->name);
@@ -167,6 +179,7 @@ void module_write(const Module *m, ByteBuf *b) {
         bb_str(b, x->lib);
         bb_str(b, x->sym);
         bb_uleb(b, x->flags);
+        bb_u8(b, x->nfixed);
         bb_u8(b, x->nargs);
         for (int k = 0; k < x->nargs; k++) {
             bb_u8(b, x->args[k]);
@@ -174,6 +187,24 @@ void module_write(const Module *m, ByteBuf *b) {
         }
         bb_u8(b, x->ret);
         bb_str(b, x->ret_tag ? x->ret_tag : "");
+    }
+    bb_uleb(b, m->ncstructs);
+    for (uint32_t i = 0; i < m->ncstructs; i++) {
+        const MCStruct *c = &m->cstructs[i];
+        bb_str(b, c->name);
+        bb_uleb(b, c->nfields);
+        for (uint32_t k = 0; k < c->nfields; k++) {
+            bb_str(b, c->fields[k]);
+            bb_u8(b, c->kinds[k]);
+            bb_str(b, c->tags[k] ? c->tags[k] : "");
+            bb_uleb(b, c->counts[k]);
+        }
+    }
+    bb_uleb(b, m->nffrees);
+    for (uint32_t i = 0; i < m->nffrees; i++) {
+        bb_str(b, m->ffrees[i].tag);
+        bb_str(b, m->ffrees[i].lib);
+        bb_str(b, m->ffrees[i].sym);
     }
 }
 
@@ -397,22 +428,66 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
         x->lib = br_str(&r);
         x->sym = br_str(&r);
         x->flags = (uint32_t)br_uleb(&r);
+        x->nfixed = br_u8(&r);
         x->nargs = br_u8(&r);
         CHECK();
-        if (x->nargs > FFI_MAX_ARGS) FAIL("extern %s: too many parameters", x->name);
+        if (x->nargs > FFI_MAX_ARGS || x->nfixed > x->nargs) FAIL("extern %s: bad parameter counts", x->name);
         for (int k = 0; k < x->nargs; k++) {
             x->args[k] = br_u8(&r);
             x->tags[k] = br_str(&r);
             CHECK();
             if (!*x->tags[k]) free(x->tags[k]), x->tags[k] = NULL;
             uint8_t kind = x->args[k] & (uint8_t)~FFI_OUT;
-            if (kind == FFI_VOID || kind >= FFI__COUNT) FAIL("extern %s: bad parameter kind", x->name);
+            bool out = x->args[k] & FFI_OUT;
+            /* the assembler's rules: out parameters are numbers, ptr or a struct */
+            if (kind == FFI_VOID || kind >= FFI__COUNT ||
+                (out && (kind == FFI_CSTR || kind == FFI_BUF || kind == FFI_STRUCTP)) ||
+                ((kind == FFI_STRUCT || kind == FFI_STRUCTP) && !x->tags[k]))
+                FAIL("extern %s: bad parameter kind", x->name);
         }
         x->ret = br_u8(&r);
         x->ret_tag = br_str(&r);
         CHECK();
         if (!*x->ret_tag) free(x->ret_tag), x->ret_tag = NULL;
-        if (x->ret >= FFI__COUNT) FAIL("extern %s: bad result kind", x->name);
+        if (x->ret >= FFI__COUNT || x->ret == FFI_BUF || x->ret == FFI_STRUCTP || (x->ret == FFI_STRUCT && !x->ret_tag))
+            FAIL("extern %s: bad result kind", x->name);
+    }
+    n = br_uleb(&r);
+    CHECK_COUNT(n, 2);
+    m->ncstructs = (uint32_t)n;
+    m->cstructs = xcalloc(n + 1, sizeof(MCStruct));
+    for (uint32_t i = 0; i < m->ncstructs; i++) {
+        MCStruct *c = &m->cstructs[i];
+        c->name = br_str(&r);
+        uint64_t nf = br_uleb(&r);
+        CHECK_COUNT(nf, 3);
+        c->nfields = (uint32_t)nf;
+        c->fields = xcalloc(nf + 1, sizeof(char *));
+        c->kinds = xcalloc(nf + 1, 1);
+        c->tags = xcalloc(nf + 1, sizeof(char *));
+        c->counts = xcalloc(nf + 1, sizeof(uint32_t));
+        for (uint32_t k = 0; k < c->nfields; k++) {
+            c->fields[k] = br_str(&r);
+            c->kinds[k] = br_u8(&r);
+            c->tags[k] = br_str(&r);
+            c->counts[k] = (uint32_t)br_uleb(&r);
+            CHECK();
+            if (!*c->tags[k]) free(c->tags[k]), c->tags[k] = NULL;
+            if (c->kinds[k] == FFI_VOID || c->kinds[k] >= FFI__COUNT || c->kinds[k] == FFI_STRUCTP || c->kinds[k] == FFI_BUF ||
+                (c->kinds[k] == FFI_STRUCT && !c->tags[k]) ||
+                (c->counts[k] && (c->kinds[k] > FFI_F64 || c->counts[k] > 65536))) /* arrays: of numbers */
+                FAIL("cstruct %s: bad field kind", c->name);
+        }
+    }
+    n = br_uleb(&r);
+    CHECK_COUNT(n, 3);
+    m->nffrees = (uint32_t)n;
+    m->ffrees = xcalloc(n + 1, sizeof(MFfiFree));
+    for (uint32_t i = 0; i < m->nffrees; i++) {
+        m->ffrees[i].tag = br_str(&r);
+        m->ffrees[i].lib = br_str(&r);
+        m->ffrees[i].sym = br_str(&r);
+        CHECK();
     }
     if (r.pos != r.n) FAIL("trailing bytes after the module");
 

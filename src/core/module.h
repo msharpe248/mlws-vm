@@ -6,7 +6,7 @@
 #include "types.h"
 
 #define MLWSO_MAGIC "MLWS"
-#define MLWSO_VERSION 4
+#define MLWSO_VERSION 5
 
 /* A call has a target and an argc operand, leaving 30 for arguments/results. */
 #define MAX_PARAMS 30
@@ -96,6 +96,8 @@ enum {
     FFI_CSTR, /* const char *: a string or byte buffer (copied, NUL-terminated); returned: copied into a string */
     FFI_BUF,  /* void *: a byte buffer's own bytes (the callee may write them) */
     FFI_PTR,  /* void *: an opaque foreign handle, optionally tagged ptr<tag> */
+    FFI_STRUCT,  /* a .cstruct by value (tag: its name); with FFI_OUT, returned through a pointer */
+    FFI_STRUCTP, /* a pointer to a .cstruct: copied in, and copied back after the call */
     FFI__COUNT
 };
 #define FFI_OUT 0x80
@@ -110,12 +112,30 @@ enum {
 typedef struct MExtern {
     char *name, *lib, *sym;
     uint32_t flags;
+    uint8_t nfixed;             /* parameters before `...` (= nargs if not variadic) */
     uint8_t nargs;
     uint8_t args[FFI_MAX_ARGS]; /* FFI_* | FFI_OUT */
     char *tags[FFI_MAX_ARGS];   /* ptr<tag>, or NULL */
     uint8_t ret;                /* FFI_* (FFI_VOID: none) */
     char *ret_tag;
 } MExtern;
+
+/* `.cstruct NAME`: a C struct's fields, in order. A struct of the same name
+ * is defined in the module's struct table, for MLWSVM code to use. */
+typedef struct MCStruct {
+    char *name;
+    uint32_t nfields;
+    char **fields;
+    uint8_t *kinds;   /* FFI_* (not OUT/STRUCTP) */
+    char **tags;      /* ptr<tag> / nested struct name, or NULL */
+    uint32_t *counts; /* > 0: a fixed array of that many */
+} MCStruct;
+
+/* `.ffi_free tag, "library", "symbol"`: handles tagged ptr<tag> are freed by
+ * calling symbol(ptr) when they are collected. */
+typedef struct MFfiFree {
+    char *tag, *lib, *sym;
+} MFfiFree;
 
 typedef struct Module {
     char *name;   /* dotted module name, e.g. "std.io" */
@@ -145,6 +165,10 @@ typedef struct Module {
     uint32_t nextensions;
     MExtern *externs;
     uint32_t nexterns;
+    MCStruct *cstructs;
+    uint32_t ncstructs;
+    MFfiFree *ffrees;
+    uint32_t nffrees;
 } Module;
 
 void module_free(Module *m);

@@ -189,6 +189,7 @@ typedef struct VM {
     VEC(ExtLib *) extlibs;
     VEC(NativeDef *) foreign_natives; /* owned NativeDefs of extensions and the FFI */
     StrMap ffi_types;            /* FFI handle tag -> its MlwsForeignType */
+    StrMap ffi_structs;          /* .cstruct name -> its C layout (ffi.c) */
     /* the program's view of the OS (std.os) */
     StrVec prog_args;            /* os.args: the arguments after the program file */
     _Atomic bool exit_requested; /* os.exit was called: the program ends with exit_code */
@@ -488,7 +489,14 @@ ExtLib *ext_ffi_library(VM *vm, const char *spec, MlwsError *err); /* `.extern` 
 void ext_free_all(VM *vm);
 /* ffi.c: an `.extern` declaration as a native (false if built without libffi). */
 struct MExtern;
+struct MCStruct;
+struct MFfiFree;
+struct LModule;
 bool ffi_define(VM *vm, const struct MExtern *x, MlwsError *err);
+bool ffi_define_struct(VM *vm, struct LModule *lm, const struct MCStruct *c, MlwsError *err); /* `.cstruct` */
+bool ffi_define_free(VM *vm, const struct MFfiFree *f, MlwsError *err);                        /* `.ffi_free` */
+void ffi_free_data(void *data);   /* an `.extern` native's call data */
+void ffi_free_struct(void *v);    /* a `.cstruct` layout */
 bool ffi_available(void);
 
 #endif
