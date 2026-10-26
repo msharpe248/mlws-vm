@@ -194,7 +194,7 @@ static const NativeDef BUILTINS[] = {
     {"io.print_b", 1, {T_B}, 0, {0}, n_print_b, "Print `true` or `false`."},
     {"io.print_p", 1, {T_P}, 0, {0}, n_print_p, "Print a pointer for debugging."},
     {"io.nl", 0, {0}, 0, {0}, n_nl, "Print a newline."},
-    {"time.now_ns", 0, {0}, 1, {T_I64}, n_now_ns, "Monotonic clock in nanoseconds."},
+    {"time.now_ns", 0, {0}, 1, {T_I64}, n_now_ns, "Monotonic clock in nanoseconds (the same as time.monotonic)."},
     {"str.len", 1, {T_R}, 1, {T_I64}, n_str_len, "Length of a string or byte buffer in bytes (same as the len instruction)."},
     {"str.byte", 2, {T_R, T_I64}, 1, {T_U8}, n_str_byte, "Byte at an index of a string (bounds checked)."},
     {"test.fail", 1, {T_R}, 0, {0}, n_test_fail, "Trap with E_ASSERT and the given message."},
@@ -228,5 +228,6 @@ void natives_register_builtin(VM *vm) {
     for (size_t i = 0; i < sizeof BUILTINS / sizeof BUILTINS[0]; i++) vm_register_native(vm, &BUILTINS[i]);
     natives_register_os(vm);
     natives_register_text(vm);
+    natives_register_util(vm);
     natives_register_proc(vm);
 }

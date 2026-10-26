@@ -109,6 +109,15 @@ encoding.
 |---|---|---|
 | `libmlwsvm`: load from files or memory, call exported functions, host natives, background runs fed with `mlws_send` | **Lua**'s embedding API; CPython's embedding API; Wasmtime and V8 embedders; Erlang ports and `enif_send` | Host natives use the same table as extensions, so one wrapper serves both. Each call is a fresh program run with its own processes, and a background run can be fed messages from any host thread. The VM's quotas make an embedded script a sandbox. |
 
+### Standard library (M12–M19)
+
+| MLWSVM | Influences | How MLWSVM differs |
+|---|---|---|
+| `time.*`: an `i64` of ns since the epoch, offsets in minutes, VM-computed calendar | Go's `time` (monotonic and wall clocks kept apart), Java's `java.time`, RFC 3339; Howard Hinnant's `days_from_civil` | No time-zone database: only offsets, plus the OS's local offset. Calendar results do not depend on the platform. |
+| `random.*`: xoshiro256\*\* per process; `random.bytes` from the OS | Blackman and Vigna's xoshiro; Go's and Python's split between a fast generator and `crypto/rand` / `secrets` | Each process has its own generator, seeded from entropy, so processes never share a sequence. |
+| `hash.siphash` | Aumasson and Bernstein's SipHash, as used by Python, Rust and Perl for hash tables | Exposed with an explicit key, for hash tables that must resist flooding. |
+| `list.sort` / `list.bsearch` with closures | Python's `list.sort(key=...)` and `bisect`, Java's `Comparator`, C's `qsort`/`bsearch` | The comparator runs on the re-entrant path used by C callbacks: its exceptions come out of the native unchanged, and it cannot block. |
+
 ### Performance
 
 | MLWSVM | Influences | How MLWSVM differs |
@@ -188,6 +197,7 @@ run 8.2× faster on the laptop's 18 cores than on one thread.
 | M16 | Lua's and CPython's embedding APIs; Erlang's `enif_send` for messages from host threads |
 | M17 | ctypes `Structure`, cffi `cdef` and `ffi.gc`, LuaJIT `ffi.cdef`, Java Panama `MemoryLayout` and `Cleaner`; libffi struct types and `ffi_prep_cif_var` |
 | M18 | ctypes `CFUNCTYPE`, cffi callbacks, Java FFM upcalls, libffi closures; Erlang `enif_send`, libuv `uv_async_send` |
+| M19 | Go's `time` and RFC 3339; Hinnant's civil-date algorithms; xoshiro256\*\* and SipHash; RFC 4648 (base64), RFC 3986 (URLs), RFC 4180 (CSV); Python's `bisect` |
 
 ## References
 

@@ -1,0 +1,100 @@
+; std.encoding: hex, base64 (both alphabets), URL percent-encoding, and CSV.
+; expect-stdout: 01ab7f
+; expect-stdout: TWFu TWE= TQ== +/8= -_8
+; expect-stdout: a%20b%26c%3Dd%2F%C3%A9
+; expect-stdout: a b&c=d/é
+; expect-stdout: name,note
+; expect-stdout: Ada,"says ""hi"", twice"
+; expect-stdout: 42,"two
+; expect-stdout: lines"
+; expect-stdout: ,2.5
+.include "std/test.inc"
+.include "std/io.inc"
+.include "expect.inc"
+.func main
+    ; ---- hex ----
+    bufnew R0, 3
+    mov R0[0], 0x01
+    mov R0[1], 0xAB
+    mov R0[2], 0x7F
+    ncall "hex.encode" (R0) -> (R1)
+    PRINTLN_S R1
+    ncall "hex.decode" ("01AB7f") -> (R2)      ; either case
+    strcmp I0, R2, R0
+    ASSERT_EQ I0, 0
+    EXPECT_ERROR "E_PARSE", ncall "hex.decode" ("abc") -> (R2)
+    EXPECT_ERROR "E_PARSE", ncall "hex.decode" ("zz") -> (R2)
+
+    ; ---- base64 ----
+    ncall "base64.encode" ("Man", false) -> (R3)
+    PRINT_S R3
+    ncall "base64.encode" ("Ma", false) -> (R3)
+    PRINT_S " "
+    PRINT_S R3
+    ncall "base64.encode" ("M", false) -> (R3)
+    PRINT_S " "
+    PRINT_S R3
+    bufnew R4, 2
+    mov R4[0], 0xFB
+    mov R4[1], 0xFF
+    ncall "base64.encode" (R4, false) -> (R3)
+    PRINT_S " "
+    PRINT_S R3
+    ncall "base64.encode" (R4, true) -> (R5)   ; URL-safe, unpadded
+    PRINT_S " "
+    PRINTLN_S R5
+    ncall "base64.decode" (R5) -> (R6)         ; either alphabet, padding optional
+    strcmp I1, R6, R4
+    ASSERT_EQ I1, 0
+    ncall "base64.decode" ("TW\nFu") -> (R6)   ; whitespace is ignored
+    strcmp I1, R6, "Man"
+    ASSERT_EQ I1, 0
+    ncall "base64.decode" ("") -> (R6)
+    len I2, R6
+    ASSERT_EQ I2, 0
+    EXPECT_ERROR "E_PARSE", ncall "base64.decode" ("TWF") -> (R6) ; leftover bits
+    EXPECT_ERROR "E_PARSE", ncall "base64.decode" ("T*==") -> (R6)
+
+    ; ---- URL encoding ----
+    ncall "url.encode" ("a b&c=d/é") -> (R7)
+    PRINTLN_S R7
+    ncall "url.decode" (R7, false) -> (R8)
+    PRINTLN_S R8
+    ncall "url.decode" ("a+b%2b", true) -> (R8) ; form data: + is a space
+    strcmp I3, R8, "a b+"
+    ASSERT_EQ I3, 0
+    EXPECT_ERROR "E_PARSE", ncall "url.decode" ("100%", false) -> (R8)
+
+    ; ---- CSV ----
+    ncall "csv.parse" ("a,b\n\"c,d\",\"e\"\"f\"\r\n,\nlast") -> (R9)
+    len I4, R9
+    ASSERT_EQ I4, 4
+    mov R10, R9[1]
+    strcmp I5, R10[0], "c,d"                   ; quoted: commas inside
+    ASSERT_EQ I5, 0
+    strcmp I5, R10[1], "e\"f"                  ; "" is a quote
+    ASSERT_EQ I5, 0
+    mov R10, R9[2]                             ; ",": two empty fields
+    len I6, R10
+    ASSERT_EQ I6, 2
+    EXPECT_ERROR "E_PARSE", ncall "csv.parse" ("\"open") -> (R9)
+    ; format: quoting only where needed; numbers and null too
+    lnew R11
+    lnew R12
+    lpush R12, "name", "note"
+    lnew R13
+    lpush R13, "Ada", "says \"hi\", twice"
+    lnew R14
+    lpush R14, 42, "two\nlines"
+    lnew R15
+    mov R19, null
+    lpush R15, R19, 2.5                        ; a null reference: an empty field
+    lpush R11, R12, R13, R14, R15
+    ncall "csv.format" (R11) -> (R16)
+    PRINT_S R16
+    ncall "csv.parse" (R16) -> (R17)           ; and it reads back
+    mov R18, R17[1]
+    strcmp I7, R18[1], "says \"hi\", twice"
+    ASSERT_EQ I7, 0
+    ret 0
+.endf

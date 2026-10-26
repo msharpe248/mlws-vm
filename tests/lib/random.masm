@@ -1,0 +1,57 @@
+; std.random: each process has its own generator (xoshiro256**), seeded from
+; the OS's entropy, or with random.seed for a repeatable sequence. random.bytes
+; reads the OS's entropy source directly: use it for keys and tokens.
+.include "std/test.inc"
+.include "expect.inc"
+.func main
+    ; a seeded sequence repeats
+    ncall "random.seed" (42)
+    ncall "random.int" (1, 1000000) -> (I0)
+    ncall "random.float" -> (F0)
+    ncall "random.seed" (42)
+    ncall "random.int" (1, 1000000) -> (I1)
+    ncall "random.float" -> (F1)
+    ASSERT_EQ I0, I1
+    ASSERT_EQ F0, F1
+    ; values stay in range, and every value of a small range turns up
+    mnew R0
+    mov I2, 0
+1:  ncall "random.int" (-3, 3) -> (I3)
+    ASSERT_GE I3, -3
+    ASSERT_LE I3, 3
+    mset R0, I3, true
+    ncall "random.float" -> (F2)
+    ASSERT_GE F2, 0.0
+    ASSERT_LT F2, 1.0
+    inc I2
+    blt I2, 1000, 1b
+    len I4, R0
+    ASSERT_EQ I4, 7
+    ncall "random.int" (-9223372036854775808, 9223372036854775807) -> (I5) ; the whole range
+    ncall "random.int" (5, 5) -> (I5)
+    ASSERT_EQ I5, 5
+    EXPECT_ERROR "E_RANGE", ncall "random.int" (2, 1) -> (I5)
+    ; shuffling keeps the elements
+    lnew R1
+    mov I6, 0
+2:  lpush R1, I6
+    inc I6
+    blt I6, 100, 2b
+    ncall "random.shuffle" (R1)
+    mov I7, 0
+    mov I8, 0
+3:  mov I9, R1[I7]
+    add I8, I9
+    inc I7
+    blt I7, 100, 3b
+    ASSERT_EQ I8, 4950
+    ; entropy
+    ncall "random.bytes" (32) -> (R2)
+    len I10, R2
+    ASSERT_EQ I10, 32
+    ncall "random.bytes" (32) -> (R3)
+    strcmp I11, R2, R3                         ; (equal once in 2^256 runs)
+    ASSERT_NE I11, 0
+    ; a spawned process has a generator of its own: seeding here does not seed it
+    ret 0
+.endf

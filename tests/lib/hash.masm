@@ -1,0 +1,34 @@
+; std.hash: CRC-32, SHA-256 and SipHash-2-4, checked against their published
+; test vectors.
+; expect-stdout: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+.include "std/test.inc"
+.include "std/io.inc"
+.include "expect.inc"
+.func main
+    ncall "hash.crc32" ("123456789") -> (I0)
+    ASSERT_EQ I0, 0xCBF43926
+    ncall "hash.crc32" ("") -> (I0)
+    ASSERT_EQ I0, 0
+    ncall "hash.sha256" ("abc") -> (R0)        ; 32 bytes
+    len I1, R0
+    ASSERT_EQ I1, 32
+    ncall "hex.encode" (R0) -> (R1)
+    PRINTLN_S R1
+    ; SipHash-2-4 with the key 00 01 ... 0f (the paper's vectors)
+    bufnew R2, 16
+    mov I2, 0
+1:  mov R2[I2], I2
+    inc I2
+    blt I2, 16, 1b
+    ncall "hash.siphash" (R2, "") -> (I3)
+    ASSERT_EQ I3, 0x726fdb47dd0e0e31, u64
+    bufnew R3, 15                              ; the message 00 01 ... 0e
+    mov I2, 0
+2:  mov R3[I2], I2
+    inc I2
+    blt I2, 15, 2b
+    ncall "hash.siphash" (R2, R3) -> (I3)
+    ASSERT_EQ I3, 0xa129ca6149be45e5, u64
+    EXPECT_ERROR "E_RANGE", ncall "hash.siphash" ("short key", R3) -> (I3)
+    ret 0
+.endf

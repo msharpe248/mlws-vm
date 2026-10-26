@@ -361,7 +361,10 @@ struct Process {
     uint32_t cb_base;            /* frames below this belong to the code that made the call; 0: none */
     bool reentered;              /* a callback ran during the last native call: cached frame pointers are stale */
     struct PlatLock *serial_held; /* the serial library lock held by the call in progress */
+    Obj *cb_exception;           /* what a failed callback threw: rethrown when its caller returns */
     VEC(Obj *) pins;             /* objects C may be using during the call: GC roots */
+    uint64_t rng[4];             /* std.random's generator (util.c) */
+    bool rng_seeded;
     /* what the entry function returned (for embedding: mlws_call), or a callback */
     Word results[NATIVE_MAX_RETS];
     uint8_t result_types[NATIVE_MAX_RETS];
@@ -402,8 +405,8 @@ int proc_run_slice(Process *p, uint32_t budget);
 /* Run a closure to completion on top of the current frames: a callback from C
  * during a foreign call. It cannot wait (recv, sleep and waiting natives trap
  * E_CALLBACK inside it), and an exception it does not catch stops at its
- * frame. Returns false and fills p->err if it failed; otherwise its results
- * are in p->results. */
+ * frame. Returns false and fills p->err if it failed (and p->cb_exception with
+ * what it threw, if anything); otherwise its results are in p->results. */
 bool proc_callback(Process *p, ObjClosure *cl, const Word *args);
 /* Push the entry frame of a new process (running `closure`, or NULL), bind
  * its arguments, and hand it to the scheduler. */
@@ -485,6 +488,8 @@ void natives_register_proc(VM *vm);
 const NativeDef *natives_proc_table(size_t *n);
 /* text.c: std.text and std.json */
 void natives_register_text(VM *vm);
+void natives_register_util(VM *vm);
+const NativeDef *natives_util_table(size_t *n);
 const NativeDef *natives_text_table(size_t *n);
 /* sched.c: os.exit: end the whole program now with this exit code. */
 void sched_request_exit(VM *vm, int64_t code);

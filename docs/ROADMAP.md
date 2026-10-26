@@ -23,7 +23,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 |---|---|
 | **M17 FFI shapes** (done) | variadic C functions (1.1); structs by value and by pointer, `.cstruct` (1.2); finalizers for `.extern` handles (1.5) |
 | **M18 Callbacks** (done) | C calling back into MLWSVM during a call, through a re-entrant interpreter (1.3); asynchronous callbacks delivered as messages, and `api->post` for extensions (1.4) |
-| **M19 Standard library II** | `std.time`, `std.hash`, `std.random`, `std.encoding` (hex, base64, URL, CSV), `std.collections` (sorting with a comparator closure, using M18's re-entrant calls), more `std.math` (section 2) |
+| **M19 Standard library II** (done) | `std.time`, `std.hash`, `std.random`, `std.encoding` (hex, base64, URL, CSV), `std.collections` (sorting with a comparator closure, using M18's re-entrant calls), more `std.math` (section 2) |
 | **M20 Bindgen** | `mlwsvm bindgen header.h`: `.extern`, `.cstruct` and `.callback` declarations from clang's JSON AST (1.5) |
 | **M21 Performance** | a size-class allocator first, then what measurements call for (section 4) |
 
@@ -94,7 +94,12 @@ supported. It would have to block that thread until the process replied.
 * **Windows**: ACL checks in `plat_path_trusted` (POSIX permission checks are
   done).
 
-## 2. Standard library (M12–M15 cover the first part)
+## 2. Standard library (M12–M15 and M19: done)
+
+M19 added `time` (clocks, ISO 8601, calendar dates), `hash` (CRC-32, SHA-256,
+SipHash), `random`, the encodings (hex, base64, URL, CSV), `list.sort` and
+`list.bsearch` with closures, set operations on maps, and integer maths; see
+[STDLIB.md](STDLIB.md). The table below was the plan.
 
 Proposed scope: everything that needs the operating system, or must be fast and
 correct (parsing, formatting, hashing), lives in the VM's standard library. Pure

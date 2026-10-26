@@ -44,6 +44,21 @@ bool plat_list_dir(const char *path, char ***names, size_t *n) {
     return true;
 }
 
+int64_t plat_wall_ns(void) {
+    FILETIME ft; /* 100 ns units since 1601 */
+    GetSystemTimePreciseAsFileTime(&ft);
+    uint64_t t = (uint64_t)ft.dwHighDateTime << 32 | ft.dwLowDateTime;
+    return (int64_t)(t - 116444736000000000ull) * 100;
+}
+
+int64_t plat_local_offset_s(int64_t secs) {
+    TIME_ZONE_INFORMATION tz;
+    (void)secs; /* the current rule, not the one in force at secs */
+    DWORD r = GetTimeZoneInformation(&tz);
+    LONG bias = tz.Bias + (r == TIME_ZONE_ID_DAYLIGHT ? tz.DaylightBias : 0);
+    return -(int64_t)bias * 60;
+}
+
 uint64_t plat_now_ns(void) {
     static LARGE_INTEGER freq;
     LARGE_INTEGER c;

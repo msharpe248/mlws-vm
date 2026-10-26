@@ -85,8 +85,11 @@ void native_invoke(Process *p, const NativeDef *nd, Word *args, Word *rets) {
 }
 
 void native_complete(Process *p) {
+    Obj *ex = p->cb_exception;
+    p->cb_exception = NULL;
     if (p->foreign_err) {
         p->foreign_err = false;
+        if (ex) proc_throw(p, ex); /* a callback's exception, exactly as it was thrown */
         vm_trap(p, p->foreign_code, "%s", p->foreign_msg);
     }
     if (p->heap_bytes > p->quota[QUOTA_HEAP] && !p->raising)

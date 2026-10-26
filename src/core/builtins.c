@@ -12,6 +12,9 @@ static const char *const CALL_FIELDS[] = {"from", "id", "body"};
 static const uint8_t CALL_TYPES[] = {T_I64, T_I64, T_R};
 static const char *const CALLBACK_FIELDS[] = {"name", "args"};
 static const uint8_t CALLBACK_TYPES[] = {T_R, T_R};
+static const char *const DATE_FIELDS[] = {"year", "month", "day", "hour", "minute", "second", "nano", "weekday",
+                                          "yday", "offset"};
+static const uint8_t DATE_TYPES[] = {T_I64, T_I64, T_I64, T_I64, T_I64, T_I64, T_I64, T_I64, T_I64, T_I64};
 
 const BuiltinStruct BUILTIN_STRUCTS[BUILTIN__COUNT] = {
     {"Error", 3, ERROR_FIELDS, ERROR_TYPES},
@@ -19,6 +22,7 @@ const BuiltinStruct BUILTIN_STRUCTS[BUILTIN__COUNT] = {
     {"FileInfo", 4, FILEINFO_FIELDS, FILEINFO_TYPES},
     {"Call", 3, CALL_FIELDS, CALL_TYPES},
     {"Callback", 2, CALLBACK_FIELDS, CALLBACK_TYPES},
+    {"Date", 10, DATE_FIELDS, DATE_TYPES},
 };
 
 int builtin_struct_find(const char *name) {

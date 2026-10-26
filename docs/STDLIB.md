@@ -14,6 +14,7 @@ restricts them.
 | `net` | M13 | TCP, UDP, DNS |
 | `text`, `json` | M14 | formatting, string utilities, UTF-8, JSON |
 | `proc`, `std.supervisor` | M15 | a name registry, request/reply calls, supervisors |
+| `time`, `hash`, `random`, `hex`, `base64`, `url`, `csv`, `list`, `map`, `math` | M19 | dates and ISO 8601, CRC-32 / SHA-256 / SipHash, random numbers, encodings, sorting and searching, set operations, integer maths |
 
 ## How I/O waits
 
@@ -170,6 +171,115 @@ BigInts and decimals (exactly), booleans and null. `indent` 0 gives compact
 output, and n > 0 indents by n spaces per level. NaN, infinity, non-UTF-8 text
 and cycles are refused with `E_JSON`.
 
+## Time and dates
+
+A time is an `i64` of **nanoseconds since 1970-01-01T00:00:00Z**, which covers
+the years 1678 to 2261. An **offset** is minutes east of UTC (+60 for Central
+European winter time, −300 for New York). Calendar arithmetic is done by the
+VM, in the proleptic Gregorian calendar, so results are the same on every
+platform and do not depend on the time-zone database. Only
+`time.local_offset` asks the operating system.
+
+```asm
+    ncall "time.now" -> (I0)                        ; the wall clock
+    ncall "time.local_offset" (I0) -> (I1)          ; this machine's offset now
+    ncall "time.format" (I0, I1) -> (R0)            ; "2026-10-26T14:05:09.25+01:00"
+    ncall "time.parse" ("2026-10-26T14:05:09Z") -> (I2)
+    ncall "time.date" (I2, 0) -> (R1)               ; R1->Date.year, .month, .weekday, ...
+    add R1->Date.month, 1                           ; a month later
+    ncall "time.from_date" (R1) -> (I3)
+```
+
+* `time.now` is the wall clock, which can jump when the system clock is set.
+  `time.monotonic` never goes backwards: use it to measure durations.
+  `time.now_ns` is an older name for `time.monotonic`.
+* `time.format(t, offset)` writes RFC 3339 / ISO 8601, with as many fraction
+  digits as the time needs (none, 3, 6 or 9), and `Z` for offset 0.
+* `time.parse` accepts a date (`2026-10-26`, midnight UTC), or a date and time
+  separated by `T` or a space, with optional seconds, a fraction (`.` or `,`,
+  up to 9 digits) and an offset (`Z`, `+01:00`, `-0500`). With no offset, the
+  time is UTC. Anything else, or an impossible date, is `E_PARSE`.
+* `time.date(t, offset)` returns a built-in `Date` struct: `year`, `month`
+  (1–12), `day`, `hour`, `minute`, `second`, `nano`, `weekday` (ISO: 1 Monday
+  … 7 Sunday), `yday` (1–366) and `offset`. `time.from_date` turns one back
+  into a time. Fields out of range carry over, as with C's `mktime`: month 13
+  is January of the next year, and day 0 is the last day of the month before.
+  `weekday` and `yday` are ignored.
+
+## Hashes
+
+| Native | Result | Use |
+|---|---|---|
+| `hash.crc32(data)` | `u32` | Checksums: the CRC-32 of zlib, PNG and Ethernet |
+| `hash.sha256(data)` | 32 bytes | Content addressing and integrity (`hex.encode` for text) |
+| `hash.siphash(key, data)` | `u64` | Hash tables keyed with a secret 16-byte key (`random.bytes(16)`), so that input chosen by an attacker cannot make them slow |
+
+`data` is a string or a byte buffer.
+
+## Random numbers
+
+Each process has its own generator (xoshiro256\*\*). It is seeded from the
+OS's entropy source when first used, so two processes never share a sequence.
+`random.seed(n)` makes a process's sequence repeatable. `random.int(lo, hi)`
+is uniform over the inclusive range, without modulo bias, and
+`random.float()` is uniform in [0, 1) with 53 random bits. `random.shuffle`
+shuffles a list in place.
+
+The generator is fast but predictable from its output: use
+`random.bytes(n)`, which reads the OS's entropy source directly, for keys,
+tokens, nonces and passwords.
+
+## Encodings
+
+| Natives | Format |
+|---|---|
+| `hex.encode`, `hex.decode` | Lower-case hex out; either case in |
+| `base64.encode(data, url)`, `base64.decode` | RFC 4648. `url` true: the URL-safe alphabet (`-` `_`) without padding. Decoding accepts both alphabets, with or without padding, and ignores whitespace |
+| `url.encode`, `url.decode(text, plus)` | Percent-encoding (RFC 3986): everything except `A-Z a-z 0-9 - . _ ~` is escaped. `plus` true decodes `+` as a space (HTML form data) |
+| `csv.parse`, `csv.format` | RFC 4180: a list of rows, each a list of strings. Quoted fields may hold commas, line breaks and `""` for a quote. Rows end in `\n` or `\r\n` when read, and in `\n` when written. `csv.format` quotes only the fields that need it, writes other values as `tostr` does, and null as an empty field |
+
+Malformed input is `E_PARSE`, with the offset of the problem.
+
+## Sorting, searching and sets
+
+```asm
+.func by_length(ref a, ref b) -> i64
+    len I0, a
+    len I1, b
+    sub I2, I0, I1
+    ret I2
+.endf
+    closure by_length () -> (R1)
+    ncall "list.sort" (R0, R1)          ; stable, in place
+    ncall "list.sort" (R0, null)        ; numbers or strings in natural order
+```
+
+* `list.sort(list, cmp)` is a stable merge sort. `cmp(a, b)` returns negative,
+  0 or positive. Its parameter types must match the elements (`E_TYPE`
+  otherwise). With `null`, numbers sort by value (NaN last) and strings and
+  byte buffers bytewise. A mix of the two is `E_TYPE`.
+* `list.bsearch(list, probe)` searches a sorted list. `probe(x)` returns
+  negative if `x` comes before what is sought, 0 if `x` is it, and positive if
+  after. The result is the index, or `-(insertion point) - 1`. A probe
+  usually captures what it looks for: `closure probe (key) -> (R1)`.
+* The closures run during the native, through the same re-entrant path as C
+  callbacks ([EXTENDING.md](EXTENDING.md#callbacks)). So they cannot wait
+  (`E_CALLBACK`), and an exception they do not catch comes out of the native
+  exactly as it was thrown. The list may be changed by the comparator, but if
+  its length changes, `list.sort` fails with `E_BOUNDS`.
+* `map.union(a, b)`, `map.intersect(a, b)` and `map.difference(a, b)` return
+  new maps. Union has the entries of both (b's value wins). Intersection keeps
+  a's entries whose keys b has, and difference keeps those it does not have.
+  Keys keep their order.
+
+## Integer maths
+
+`math.powmod(b, e, m)` computes b^e mod m without overflow, and the result is in
+[0, m). `math.gcd` and `math.lcm` work on the absolute values, and `math.lcm`
+raises `E_OVERFLOW` when the result does not fit in an `i64`. `std.math`
+(`lib/std/math.masm`) has more, written in assembly: `ipow`, `isqrt`,
+`fact` and `clamp`.
+
 ## Processes: names, calls and supervisors
 
 ### The registry
@@ -268,6 +378,10 @@ and the path, and gives the OS's description:
 | `E_JSON` | malformed JSON (with line and column), or a value with no JSON form |
 | `E_TIMEOUT`, `E_NOPROC`, `E_DEADLOCK` | `proc.call`: no reply in time, no such process, or no reply possible |
 | `E_RESTARTS` | a supervisor gave up: its children failed too often |
+| `E_PARSE` | malformed text for `time.parse`, `hex.decode`, `base64.decode`, `url.decode` or `csv.parse` |
+| `E_RANGE` | an argument out of range (an offset beyond a day, `random.int` with lo > hi, a SipHash key that is not 16 bytes) |
+| `E_OVERFLOW` | a result that does not fit (`math.lcm`) |
+| `E_CALLBACK` | a comparator, probe or C callback tried to wait |
 
 ## Commands
 

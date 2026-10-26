@@ -1,0 +1,22 @@
+; Integer math: powmod without overflow, gcd and lcm.
+.include "std/test.inc"
+.include "expect.inc"
+.func main
+    ncall "math.powmod" (2, 100, 1000000007) -> (I0)
+    ASSERT_EQ I0, 976371285
+    ncall "math.powmod" (-2, 3, 5) -> (I0)     ; -8 mod 5: the result is never negative
+    ASSERT_EQ I0, 2
+    ncall "math.powmod" (7, 0, 1) -> (I0)      ; anything mod 1 is 0
+    ASSERT_EQ I0, 0
+    ncall "math.powmod" (3037000500, 2, 9223372036854775807) -> (I0) ; the square overflows i64
+    ASSERT_EQ I0, 145474193
+    EXPECT_ERROR "E_RANGE", ncall "math.powmod" (2, -1, 7) -> (I0)
+    ncall "math.gcd" (-12, 18) -> (I1)
+    ASSERT_EQ I1, 6
+    ncall "math.gcd" (0, 0) -> (I1)
+    ASSERT_EQ I1, 0
+    ncall "math.lcm" (4, 6) -> (I2)
+    ASSERT_EQ I2, 12
+    EXPECT_ERROR "E_OVERFLOW", ncall "math.lcm" (9223372036854775807, 2) -> (I2)
+    ret 0
+.endf

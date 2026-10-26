@@ -14,6 +14,8 @@ bool plat_is_dir(const char *path);
 bool plat_list_dir(const char *path, char ***names, size_t *n);
 /* Monotonic clock in nanoseconds. */
 uint64_t plat_now_ns(void);
+int64_t plat_wall_ns(void);                  /* the wall clock: ns since 1970-01-01T00:00:00Z */
+int64_t plat_local_offset_s(int64_t secs);   /* the local time zone's offset from UTC at a time */
 void plat_sleep_ns(uint64_t ns);
 /* Absolute path of the running executable (malloc'd), or NULL. */
 char *plat_exe_path(const char *argv0);

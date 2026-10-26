@@ -551,7 +551,9 @@ static void sync_trampoline(ffi_cif *cif, void *res, void **cargs, void *ud) {
     }
     if (!proc_callback(p, s->cl, w)) {
         s->failed = true;
+        bool first = !p->foreign_err; /* the first error wins */
         native_fail(p, p->err.code, "in callback %s: %s", s->cl->fn->name, p->err.msg);
+        if (!first) p->cb_exception = NULL;
         return;
     }
     if (!put_result(s, res)) {

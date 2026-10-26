@@ -18,7 +18,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `io.print_b` | b | - | Print `true` or `false`. |
 | `io.print_p` | p | - | Print a pointer for debugging. |
 | `io.nl` | - | - | Print a newline. |
-| `time.now_ns` | - | i64 | Monotonic clock in nanoseconds. |
+| `time.now_ns` | - | i64 | Monotonic clock in nanoseconds (the same as time.monotonic). |
 | `str.len` | r | i64 | Length of a string or byte buffer in bytes (same as the len instruction). |
 | `str.byte` | r, i64 | u8 | Byte at an index of a string (bounds checked). |
 | `test.fail` | r | - | Trap with E_ASSERT and the given message. |
@@ -126,3 +126,41 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `json.parse` | r | r | Parse JSON whose top level is an object (a map) or array (a list). Integers are i64 (BigInt if larger), fractions f64, true/false bool, null null. |
 | `json.parse_any` | r | r | Parse any JSON value, returned as the only element of a list (so numbers and booleans keep their types). |
 | `json.stringify` | r, i64 | r | JSON for a map, list, array, struct (an object of its fields), string, number or null; indent 0 is compact. |
+
+## Time, hashes, random numbers, encodings and collections
+
+> Generated from `src/native/util.c`. See [STDLIB.md](STDLIB.md#time-and-dates).
+
+| Name | Parameters | Results | Description |
+|---|---|---|---|
+| `time.now` | - | i64 | The wall clock: nanoseconds since 1970-01-01T00:00:00Z. |
+| `time.monotonic` | - | i64 | A clock that never goes backwards, in nanoseconds from an arbitrary start: for measuring durations. |
+| `time.format` | i64, i64 | r | A time as ISO 8601 (RFC 3339) at an offset in minutes east of UTC: 2026-10-26T14:05:09.25+01:00, or ...Z for 0. |
+| `time.parse` | r | i64 | Parse ISO 8601: a date (2026-10-26), or a date and time with optional seconds, fraction and offset (no offset: UTC). |
+| `time.date` | i64, i64 | r | A time as a Date at an offset: year, month 1-12, day, hour, minute, second, nano, weekday (1 Monday - 7 Sunday), yday (1-366), offset. |
+| `time.from_date` | r | i64 | The time a Date names (weekday and yday are ignored; other fields out of range carry over). |
+| `time.local_offset` | i64 | i64 | The local time zone's offset from UTC, in minutes east, at a time. |
+| `hash.crc32` | r | u32 | CRC-32 (as zlib, PNG and Ethernet) of a string or byte buffer. |
+| `hash.sha256` | r | r | SHA-256 of a string or byte buffer, as 32 bytes. |
+| `hash.siphash` | r, r | u64 | SipHash-2-4 of data with a 16-byte key: a keyed hash that resists hash flooding. |
+| `random.seed` | i64 | - | Seed this process's generator, for a repeatable sequence (it starts from OS entropy). |
+| `random.int` | i64, i64 | i64 | A uniformly random integer in [lo, hi]. |
+| `random.float` | - | f64 | A uniformly random float in [0, 1). |
+| `random.bytes` | i64 | r | n bytes from the OS's entropy source: for keys, tokens and nonces. |
+| `random.shuffle` | r | - | Shuffle a list in place. |
+| `hex.encode` | r | r | Lower-case hex of a string or byte buffer. |
+| `hex.decode` | r | r | Bytes from hex (either case). |
+| `base64.encode` | r, b | r | Base64 (RFC 4648), padded; with url true, the URL-safe alphabet without padding. |
+| `base64.decode` | r | r | Bytes from base64 in either alphabet; padding is optional and whitespace is ignored. |
+| `url.encode` | r | r | Percent-encode every byte except A-Z a-z 0-9 - . _ ~ (RFC 3986). |
+| `url.decode` | r, b | r | Decode %XX escapes; with plus true, + is a space too (HTML form data). |
+| `csv.parse` | r | r | CSV (RFC 4180) as a list of rows, each a list of strings. |
+| `csv.format` | r | r | A list of rows as CSV: fields quoted when needed, other values as tostr writes them, rows ending in \n. |
+| `list.sort` | r, r | - | Sort a list in place, stably: with a comparator closure cmp(a, b) -> negative, 0 or positive, or null for numbers and strings in natural order. |
+| `list.bsearch` | r, r | i64 | Binary search of a sorted list with probe(x) -> negative (x is before), 0 (found) or positive: the index, or -(insertion point) - 1. |
+| `map.union` | r, r | r | A new map with the entries of both (b's values win). |
+| `map.intersect` | r, r | r | A new map of a's entries whose keys b has too. |
+| `map.difference` | r, r | r | A new map of a's entries whose keys b does not have. |
+| `math.powmod` | i64, i64, i64 | i64 | b^e mod m, without overflow (e >= 0, m > 0). |
+| `math.gcd` | i64, i64 | i64 | Greatest common divisor (of the absolute values). |
+| `math.lcm` | i64, i64 | i64 | Least common multiple (E_OVERFLOW if it does not fit). |

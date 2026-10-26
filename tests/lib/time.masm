@@ -1,0 +1,87 @@
+; std.time: clocks, ISO 8601 text, and calendar dates. A time is an i64 of
+; nanoseconds since 1970-01-01T00:00:00Z (the years 1678 to 2261 fit); an
+; offset is minutes east of UTC. Dates are computed by the VM (the proleptic
+; Gregorian calendar), so they are the same on every platform.
+; expect-stdout: 1970-01-01T00:00:00Z
+; expect-stdout: 2023-11-14T23:13:20.123+01:00
+; expect-stdout: 1969-12-31T23:59:59.999999999Z
+; expect-stdout: 2023-11-14T22:13:20.000123Z
+; expect-stdout: 2023-11-14T16:43:20-05:30
+; expect-stdout: 2024-03-02T22:13:20Z
+.include "std/test.inc"
+.include "std/io.inc"
+.include "expect.inc"
+.const T = 1700000000000000000           ; 2023-11-14T22:13:20Z, a Tuesday
+.func main
+    ; ---- formatting: as few fraction digits as the time needs ----
+    ncall "time.format" (0, 0) -> (R0)
+    PRINTLN_S R0
+    ncall "time.format" (T + 123000000, 60) -> (R0)
+    PRINTLN_S R0
+    ncall "time.format" (-1, 0) -> (R0)        ; before 1970
+    PRINTLN_S R0
+    ncall "time.format" (T + 123000, 0) -> (R0)
+    PRINTLN_S R0
+    ncall "time.format" (T, -330) -> (R0)
+    PRINTLN_S R0
+
+    ; ---- parsing ----
+    ncall "time.parse" ("2023-11-14T23:13:20.123+01:00") -> (I0)
+    ASSERT_EQ I0, T + 123000000
+    ncall "time.parse" ("2023-11-14 22:13:20") -> (I0)   ; a space; no offset is UTC
+    ASSERT_EQ I0, T
+    ncall "time.parse" ("2023-11-14T17:13:20-0500") -> (I0)
+    ASSERT_EQ I0, T
+    ncall "time.parse" ("2023-11-14T22:13Z") -> (I0)      ; no seconds
+    ASSERT_EQ I0, T - 20000000000
+    ncall "time.parse" ("2000-02-29") -> (I0)             ; a date alone: midnight UTC
+    ASSERT_EQ I0, 951782400000000000
+    EXPECT_ERROR "E_PARSE", ncall "time.parse" ("2023-02-29") -> (I0)   ; not a leap year
+    EXPECT_ERROR "E_PARSE", ncall "time.parse" ("2023-11-14T24:00") -> (I0)
+    EXPECT_ERROR "E_PARSE", ncall "time.parse" ("2023-11-14T22:13:20+01:00 ") -> (I0)
+    EXPECT_ERROR "E_PARSE", ncall "time.parse" ("14/11/2023") -> (I0)
+
+    ; ---- dates ----
+    ncall "time.date" (T, 0) -> (R1)
+    ASSERT_EQ R1->Date.year, 2023
+    ASSERT_EQ R1->Date.month, 11
+    ASSERT_EQ R1->Date.day, 14
+    ASSERT_EQ R1->Date.hour, 22
+    ASSERT_EQ R1->Date.minute, 13
+    ASSERT_EQ R1->Date.second, 20
+    ASSERT_EQ R1->Date.weekday, 2              ; ISO: Monday is 1
+    ASSERT_EQ R1->Date.yday, 318
+    ASSERT_EQ R1->Date.offset, 0
+    ncall "time.date" (T + 5, 330) -> (R2)     ; India: already the 15th
+    ASSERT_EQ R2->Date.day, 15
+    ASSERT_EQ R2->Date.hour, 3
+    ASSERT_EQ R2->Date.minute, 43
+    ASSERT_EQ R2->Date.nano, 5
+    ncall "time.from_date" (R2) -> (I1)        ; and back
+    ASSERT_EQ I1, T + 5
+    ; fields out of range carry over: "February 31st 2024" is March 2nd
+    mov R1->Date.year, 2024
+    mov R1->Date.month, 2
+    mov R1->Date.day, 31
+    ncall "time.from_date" (R1) -> (I2)
+    ncall "time.format" (I2, 0) -> (R0)
+    PRINTLN_S R0
+    EXPECT_ERROR "E_RANGE", ncall "time.format" (T, 100000) -> (R0)  ; offsets are within a day
+    mov R1->Date.year, 3000                    ; past 2261: does not fit in an i64 of ns
+    EXPECT_ERROR "E_RANGE", ncall "time.from_date" (R1) -> (I2)
+    mov R1->Date.year, 2024
+    mov R1->Date.hour, 100000000000000         ; huge fields are refused, not overflowed
+    mov R1->Date.minute, -6000000000000000
+    EXPECT_ERROR "E_RANGE", ncall "time.from_date" (R1) -> (I2)
+
+    ; ---- clocks ----
+    ncall "time.now" -> (I3)
+    ASSERT_GT I3, T                            ; after the time this test was written
+    ncall "time.monotonic" -> (I4)
+    ncall "time.monotonic" -> (I5)
+    ASSERT_LE I4, I5
+    ncall "time.local_offset" (I3) -> (I6)     ; depends on the machine's time zone
+    ASSERT_GE I6, -1440
+    ASSERT_LE I6, 1440
+    ret 0
+.endf

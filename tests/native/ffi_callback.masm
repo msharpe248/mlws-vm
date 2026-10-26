@@ -91,6 +91,11 @@ calls:  .i64 0                         ; comparisons made (a global: per process
     ret I2
 .endf
 
+; A comparator that throws a value of its own.
+.func compare_throwing(ref a, ref b) -> i32
+    throw "no order today"
+.endf
+
 ; A comparator that catches its own exception, and goes on.
 .func compare_careful(ref a, ref b) -> i32
 .try h
@@ -232,6 +237,16 @@ h:  catch R5
 h1: catch R9
     strcmp I2, R9->Error.code, "E_DIV_ZERO"
     ASSERT_EQ I2, 0
+
+    ; the exception arrives exactly as thrown
+    closure compare_throwing () -> (R16)
+.try h4
+    ncall "c.qsort" (R1, 13, 4, R16)
+.endtry
+    FAIL "the thrown value was lost"
+h4: catch R17
+    strcmp I5, R17, "no order today"
+    ASSERT_EQ I5, 0
 
     ; waiting inside a callback
     closure compare_waiting () -> (R10)

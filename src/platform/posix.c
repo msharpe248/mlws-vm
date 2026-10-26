@@ -60,6 +60,19 @@ bool plat_list_dir(const char *path, char ***names, size_t *n) {
     return true;
 }
 
+int64_t plat_wall_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000000000ll + ts.tv_nsec;
+}
+
+int64_t plat_local_offset_s(int64_t secs) {
+    time_t t = (time_t)secs;
+    struct tm tm;
+    if (!localtime_r(&t, &tm)) return 0;
+    return (int64_t)tm.tm_gmtoff;
+}
+
 uint64_t plat_now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

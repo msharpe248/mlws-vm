@@ -315,7 +315,8 @@ When the call returns, the pointer is freed: C must not keep it.
 * **Exceptions stop at the boundary.** An exception the closure catches is
   ordinary. One it does not catch never unwinds C's frames. Instead, that call
   returns 0 to C, later calls of the same pointer return 0 without running, and
-  the exception is raised when the foreign call returns, with its original code.
+  the exception is raised when the foreign call returns, exactly as it was
+  thrown.
 * **No waiting.** C is waiting for the callback, so the callback cannot wait in
   turn: `recv` with no message, `sleep`, and natives that would wait (network
   and pipe I/O, `proc.call`) trap `E_CALLBACK` inside it. Everything else

@@ -290,6 +290,7 @@ bool proc_callback(Process *p, ObjClosure *cl, const Word *args) {
     volatile bool entered = false, ok = false;
     jmp_buf jb;
     p->cb_base = base;
+    p->cb_exception = NULL;
     p->in_foreign = false; /* the callback is MLWSVM code: it traps and is counted as usual */
     p->cur_native = NULL;
     p->resumed = false;
@@ -307,6 +308,7 @@ bool proc_callback(Process *p, ObjClosure *cl, const Word *args) {
             }
             if (unwind(p)) continue; /* caught inside the callback: run on */
             describe_uncaught(p);
+            p->cb_exception = p->exception; /* for the caller to rethrow as it was */
             break;
         }
         if (!entered) {
