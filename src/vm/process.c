@@ -20,6 +20,7 @@ Process *proc_new(VM *vm) {
     p->stack.live = 1;
     p->sp = p->fp = PTR_MAKE(SEG_STACK, 1, bytes);
     p->stack_low_off = bytes;
+    p->stack_ref_lo = vm->stack_words;
     p->nglobals = (uint32_t)vm->mods.n;
     p->globals = xcalloc(p->nglobals + 1, sizeof(Segment));
     for (uint32_t i = 0; i < p->nglobals; i++) {

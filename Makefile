@@ -24,6 +24,11 @@ BIN     ?= mlwsvm
 
 SRC := $(wildcard src/*.c src/*/*.c)
 
+# A collection at every allocation is quadratic in a growing heap: the HTTP
+# example takes about 3 minutes under AddressSanitizer, and longer on slow CI
+# machines, so the GC-stress runs get more than the default 300 s per test.
+STRESS_TIMEOUT := 1200
+
 # LeakSanitizer is only available on Linux.
 ifeq ($(shell uname -s),Linux)
 ASAN_ENV := ASAN_OPTIONS=detect_leaks=1
@@ -143,14 +148,14 @@ check-bindgen: $(BIN) test-ext
 	echo "check-bindgen: OK"
 
 check-gc: $(BIN) test-ext
-	MLWSVM_GC_STRESS=1 ./$(BIN) test tests examples
+	MLWSVM_TEST_TIMEOUT=$(STRESS_TIMEOUT) MLWSVM_GC_STRESS=1 ./$(BIN) test tests examples
 
 check-asan: test-ext
 	$(MAKE) BUILD=build-asan BIN=mlwsvm-asan \
 	    CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
 	    LDFLAGS="-fsanitize=address,undefined"
 	$(ASAN_ENV) ./mlwsvm-asan test tests examples
-	$(ASAN_ENV) MLWSVM_GC_STRESS=1 ./mlwsvm-asan test tests examples
+	$(ASAN_ENV) MLWSVM_TEST_TIMEOUT=$(STRESS_TIMEOUT) MLWSVM_GC_STRESS=1 ./mlwsvm-asan test tests examples
 	$(MAKE) BUILD=build-asan BIN=mlwsvm-asan \
 	    CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
 	    LDFLAGS="-fsanitize=address,undefined" build-asan/embed-host

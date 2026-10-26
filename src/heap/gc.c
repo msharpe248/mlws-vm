@@ -252,8 +252,9 @@ void gc_collect(Process *p) {
     uint64_t t0 = plat_now_ns();
     for (uint32_t i = 0; i < p->rtop[BANK_R]; i++) mark(p, p->rreg[i]);
     for (uint32_t i = 0; i < p->nframes; i++) mark(p, p->frames[i].closure); /* closures being run */
-    /* The whole stack: code may legally write references below SP. */
-    mark_segment(p, &p->stack, 0);
+    /* The stack from the lowest word ever tagged as a reference: code may legally
+     * write references below SP, so SP is not the bound. */
+    mark_segment(p, &p->stack, p->stack_ref_lo);
     for (uint32_t i = 0; i < p->nglobals; i++) mark_segment(p, &p->globals[i], 0);
     for (size_t i = 0; i < p->handles.n; i++) mark(p, p->handles.v[i]);
     mark(p, p->exception);

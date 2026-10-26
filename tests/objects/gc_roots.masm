@@ -1,6 +1,7 @@
 ; Every kind of root keeps objects alive across a forced collection: R
-; registers in this and outer frames, stack slots, globals, struct fields,
-; list elements, map keys and values, arrays of references and handles.
+; registers in this and outer frames, stack slots (also below SP), globals,
+; struct fields, list elements, map keys and values, arrays of references and
+; handles.
 .include "std/test.inc"
 
 gslot:  .i64 0                         ; a global that will hold a reference
@@ -84,5 +85,13 @@ gslot:  .i64 0                         ; a global that will hold a reference
     CHECK R4, "handle"
     call deep (50) -> (R10)
     CHECK R10, "frame"
+    ; Below SP, deeper than the stack has ever been: code may store references
+    ; there, so the collector scans from the lowest reference ever written.
+    MAKE R4, "below"
+    mov.r SP[-1000], R4
+    mov R4, null
+    COLLECT
+    mov.r R4, SP[-1000]
+    CHECK R4, "below"
     ret 0
 .endf

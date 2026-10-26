@@ -338,6 +338,7 @@ static void mem_write(Ctx *c, const Loc *L, MlwsType t, Word w) {
         uint32_t first = L->off / 8, last = (L->off + (uint32_t)width - 1) / 8;
         if (L->off % 8 == 0) {
             L->seg->tags[first] = (uint8_t)t;
+            if (t == T_R && L->seg->kind == SEGK_STACK && first < c->p->stack_ref_lo) c->p->stack_ref_lo = first;
         } else {
             for (uint32_t i = first; i <= last; i++) L->seg->tags[i] = TAG_RAW;
         }

@@ -310,6 +310,7 @@ struct Process {
     uint64_t insns;
     uint64_t raw_bytes, raw_peak, raw_allocs, raw_frees;
     uint32_t stack_low_off; /* lowest SP offset seen (stack high-water mark) */
+    uint32_t stack_ref_lo;  /* lowest stack word ever tagged as a reference: the GC scans from here */
     uint32_t max_depth;
     /* garbage-collected heap (heap/gc.c) */
     Obj *heap;

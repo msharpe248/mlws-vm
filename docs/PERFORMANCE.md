@@ -218,6 +218,13 @@ only what paid (milliseconds, best of five):
    arithmetic directly on elements (`nbody`). `tests/perf/quickened_slots.masm`
    checks every fallback.
 
+The collector also stopped scanning the whole 1 MB data stack of a process at
+every collection. Code may store references below `SP`, so `SP` cannot bound
+the scan; instead each process records the lowest stack word ever tagged as a
+reference, and the scan starts there. Collection time in `binarytrees` fell by
+about 7%, and a GC-stress run of the HTTP example by 13%
+(`tests/objects/gc_roots.masm` checks a reference stored far below `SP`).
+
 One experiment was rejected: caching `min(frame capacity, call-depth limit)`
 in the process saved 1.5% on `fib` but would go stale if an embedder changed
 the limit while processes exist.

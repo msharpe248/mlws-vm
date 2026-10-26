@@ -634,7 +634,10 @@ which independent processes run (see [ABI.md](ABI.md) §1.1).
 
 A test still running after `MLWSVM_TEST_TIMEOUT` seconds (default 300) is
 reported as `TIMEOUT path`, and the run ends with exit code 3. A hung VM cannot
-be stopped from outside, so the run cannot go on.
+be stopped from outside, so the run cannot go on. `make check-gc` and the
+GC-stress run of `make check-asan` allow 1,200 seconds per test, because
+collecting at every allocation is quadratic in a growing heap
+(`examples/http_server.masm` takes about 3 minutes under AddressSanitizer).
 
 See [TOOLING.md](TOOLING.md) for the debugger, profiler, tracer, monitor and
 `bindgen`, and [EXTENDING.md](EXTENDING.md) for `ext`.
