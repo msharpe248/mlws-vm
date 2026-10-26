@@ -585,12 +585,12 @@ macro-only files use the `.inc` extension and are not modules.
 ## 11. Tools
 
 ```
-mlwsvm run  [-L dir] [--stats] [--profile] [--trace FILE] [--monitor PORT] [--threads N] prog.masm|prog.mlwso
+mlwsvm run  [-L dir] [--stats] [--profile] [--trace FILE] [--monitor PORT] [VM options] prog.masm|prog.mlwso
 mlwsvm debug [-L dir] prog.masm|prog.mlwso
 mlwsvm top  [HOST:PORT] [--once]
 mlwsvm asm  [-L dir] [-o out.mlwso] [-E] prog.masm
 mlwsvm dis  [-L dir] prog.masm|prog.mlwso
-mlwsvm test [-L dir] [-v] [--threads N] [paths...]
+mlwsvm test [-L dir] [-v] [VM options] [paths...]
 mlwsvm doc  isa|natives [-o file]
 ```
 
@@ -604,6 +604,7 @@ Expectations are written as comments in the test file:
 ; expect-error: E_DIV_ZERO                (an assembler, loader or runtime error code)
 ; skip: reason
 ; threads: 4                              (run on this many worker threads, whatever --threads says)
+; option: --max-frames 500               (repeatable: a VM option, as on the command line)
 ; debug-script: break main               (repeatable: run under the debugger; stdout = transcript)
 ```
 

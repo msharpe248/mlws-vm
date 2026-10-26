@@ -272,6 +272,12 @@ void vm_add_libpath(VM *vm, const char *dir);
 void vm_register_native(VM *vm, const NativeDef *nd);
 void vm_write(VM *vm, const char *s, size_t n);
 
+/* options.c: settings by command-line name, without the "--": stack-words,
+ * threads, max-frames, slice, gc-min, quota. vm_new applies MLWSVM_<NAME>. */
+bool vm_option_known(const char *name);
+bool vm_set_option(VM *vm, const char *name, const char *value, MlwsError *err);
+void vm_options_from_env(VM *vm);
+
 /* loader.c */
 LModule *vm_load_root(VM *vm, const char *path, MlwsError *err);
 LModule *vm_require(VM *vm, const char *name, MlwsError *err);

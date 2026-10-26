@@ -12,6 +12,7 @@ dashboard and a `top`-style terminal view.
 | Debugger | `mlwsvm debug prog.masm` | — |
 | Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] prog.masm` | none |
 | Terminal view | `mlwsvm top [HOST:PORT] [--once] [--interval MS]` | — |
+| VM options | `mlwsvm run --max-frames N --quota heap=64M ... prog.masm` | — |
 
 The profiler, tracer and debugger use one per-instruction hook, which is
 installed only while one of them is active. A program run under them uses a
@@ -23,6 +24,36 @@ briefly pauses the other worker threads at their next time-slice boundary ("stop
 the world"), so the numbers it reports are a consistent snapshot.
 
 ---
+
+## VM options
+
+Settings for the VM itself. Each can be given on the command line (`mlwsvm run`
+and `mlwsvm test`), as an environment variable (`MLWSVM_` plus the name in
+capitals with `_` for `-`, e.g. `MLWSVM_MAX_FRAMES=500000`), or in a test file as
+`; option: --max-frames 500000`. The command line overrides the environment, and
+a test file's own lines override both.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--threads N` | one per core | worker threads (1 to 256) |
+| `--stack-words N` | 131072 | each process's data stack, in 8-byte words |
+| `--max-frames N` | 100000 | call depth limit (`E_CALL_DEPTH`) |
+| `--slice N` | 2000 | time slice, in instructions, before another process gets a turn |
+| `--gc-min BYTES` | 1M | the heap size below which no collection runs |
+| `--quota LIST` | unlimited | starting limits for every process, e.g. `heap=64M,raw=1G,mailbox=1000,insns=5000000`; any subset, `unlimited` resets one |
+
+Sizes take an optional `K`, `M` or `G` suffix (powers of 1024). A bad value is
+an error (exit code 2) on the command line, a failing test in a test file, and a
+warning that is otherwise ignored in the environment.
+
+```
+$ mlwsvm run --max-frames 1000000 deep_recursion.masm
+$ MLWSVM_QUOTA=heap=256M,insns=10000000000 mlwsvm run untrusted.masm
+```
+
+A backtrace from a runaway recursion stays short: runs of identical frames are
+collapsed (`... repeated 99998 more times`), and a very deep stack shows only its
+innermost 40 and outermost 10 frames.
 
 ## Statistics: `--stats`
 

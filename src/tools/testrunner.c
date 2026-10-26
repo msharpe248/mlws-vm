@@ -23,6 +23,8 @@ typedef struct {
     char error_want[32];
     char *skip;
     int threads; /* `; threads: N` - run on N worker threads */
+    StrVec options; /* `; option: --name value`, as name, value pairs */
+    char *option_error;
     StrVec script; /* debugger commands */
 } Expect;
 
@@ -115,6 +117,14 @@ static void parse_expect(const char *text, Expect *e) {
             VEC_PUSH(e->script, xstrdup(v));
         } else if ((v = after_key(line, "threads:"))) {
             e->threads = atoi(v);
+        } else if ((v = after_key(line, "option:"))) {
+            char name[64], value[256];
+            if (sscanf(v, "--%63s %255s", name, value) == 2 && vm_option_known(name)) {
+                VEC_PUSH(e->options, xstrdup(name));
+                VEC_PUSH(e->options, xstrdup(value));
+            } else if (!e->option_error) {
+                e->option_error = xstrdup(v);
+            }
         } else if ((v = after_key(line, "skip:"))) {
             free(e->skip);
             e->skip = xstrdup(v);
@@ -126,12 +136,15 @@ static void parse_expect(const char *text, Expect *e) {
 
 int tool_test(int argc, char **argv, const ToolEnv *env) {
     bool verbose = false;
-    int threads = 0;
+    StrVec opts = {0}; /* VM options from the command line: name, value pairs */
     StrVec files = {0};
     VEC(const char *) roots = {0};
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "-v")) verbose = true;
-        else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
+        else if (!strncmp(argv[i], "--", 2) && vm_option_known(argv[i] + 2) && i + 1 < argc) {
+            VEC_PUSH(opts, argv[i] + 2);
+            VEC_PUSH(opts, argv[++i]);
+        }
         else VEC_PUSH(roots, argv[i]);
     }
     if (roots.n == 0) VEC_PUSH(roots, "tests");
@@ -153,10 +166,19 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
             if (verbose) printf("SKIP %s (%s)\n", path, e.skip);
             free(e.skip);
             sb_free(&e.stdout_want);
+            for (size_t k = 0; k < e.options.n; k++) free(e.options.v[k]);
+            VEC_FREE(e.options);
+            free(e.option_error);
             continue;
         }
         VM *vm = vm_new();
-        if (threads > 0) vm->threads = threads;
+        StrBuf why = {0};
+        MlwsError oerr;
+        for (size_t k = 0; k < opts.n && !why.n; k += 2)
+            if (!vm_set_option(vm, opts.v[k], opts.v[k + 1], &oerr)) sb_printf(&why, "%s", oerr.msg);
+        for (size_t k = 0; k < e.options.n && !why.n; k += 2) /* the test's own settings win */
+            if (!vm_set_option(vm, e.options.v[k], e.options.v[k + 1], &oerr)) sb_printf(&why, "%s", oerr.msg);
+        if (e.option_error && !why.n) sb_printf(&why, "bad '; option:' line: %s (expected --name value)", e.option_error);
         if (e.threads > 0) vm->threads = e.threads; /* the test needs this many */
         StrBuf out = {0};
         vm->out = capture;
@@ -169,11 +191,13 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         free(dir);
         tool_env_libpaths(env, vm);
         RunResult r;
-        if (e.script.n) run_debug_script(vm, path, &e, &out, &r);
+        memset(&r, 0, sizeof r);
+        if (why.n) { /* a bad option: not run */
+        } else if (e.script.n) run_debug_script(vm, path, &e, &out, &r);
         else vm_run_file(vm, path, &r);
-        StrBuf why = {0};
         const char *got_code = r.status == RUN_OK ? "" : r.err.code;
-        if (e.error_want[0]) {
+        if (why.n) {
+        } else if (e.error_want[0]) {
             if (strcmp(got_code, e.error_want) != 0) {
                 if (r.status == RUN_OK) sb_printf(&why, "expected error %s, but the program succeeded", e.error_want);
                 else sb_printf(&why, "expected error %s, got %s: %s", e.error_want, got_code, r.err.msg);
@@ -199,6 +223,9 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         sb_free(&errs);
         for (size_t k = 0; k < e.script.n; k++) free(e.script.v[k]);
         VEC_FREE(e.script);
+        for (size_t k = 0; k < e.options.n; k++) free(e.options.v[k]);
+        VEC_FREE(e.options);
+        free(e.option_error);
         sb_free(&e.stdout_want);
         run_result_free(&r);
         vm_free(vm);
@@ -206,5 +233,6 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
     printf("%d passed, %d failed, %d skipped (%zu files)\n", passed, failed, skipped, files.n);
     for (size_t i = 0; i < files.n; i++) free(files.v[i]);
     VEC_FREE(files);
+    VEC_FREE(opts);
     return failed ? 1 : 0;
 }

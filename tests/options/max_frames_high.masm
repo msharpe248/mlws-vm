@@ -1,0 +1,16 @@
+; Raising the call depth limit (default 100,000) allows deeper recursion.
+; option: --max-frames 200000
+.include "std/test.inc"
+.func down(i64 n) -> i64
+    bz n, 1f
+    sub I1, n, 1
+    call down (I1) -> (I2)
+    add I2, 1
+    ret I2
+1:  ret 0
+.endf
+.func main
+    call down (150000) -> (I0)
+    ASSERT_EQ I0, 150000
+    ret 0
+.endf

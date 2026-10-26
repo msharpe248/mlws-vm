@@ -1,0 +1,37 @@
+; --quota sets the starting limits of every process, main included; spawned
+; processes inherit them, and `quota` can only lower them further.
+; option: --quota heap=256K,mailbox=2
+.include "std/test.inc"
+.const HEAP = 0
+.func sleeper
+    recv I0
+    ret
+.endf
+.func hog -> i64
+    lnew R0
+.try h
+1:  lpush R0, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    jmp 1b
+.endtry
+h:  catch R1
+    strcmp I0, R1->Error.code, "E_QUOTA"
+    ret I0
+.endf
+.func main
+    spawn sleeper -> (I0)
+    send I0, 1
+    send I0, 2
+.try full
+    send I0, 3                         ; a third message: over the mailbox quota
+.endtry
+    FAIL "the mailbox quota was not applied"
+full:
+    catch R0
+    strcmp I1, R0->Error.code, "E_QUOTA"
+    ASSERT_EQ I1, 0
+    quota HEAP, 1000000000             ; raising is ignored: the limit stays 256K
+    spawnm hog -> (I2)                 ; the child inherits the heap quota
+    recv R1
+    ASSERT_EQ R1->Down.exit, 0         ; hog caught E_QUOTA
+    ret 0
+.endf

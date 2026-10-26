@@ -16,20 +16,25 @@ static void usage(FILE *f) {
           "        --profile [--flame FILE]        hot functions, lines and opcodes; collapsed stacks\n"
           "        --trace FILE|- [--trace-limit N] log every instruction\n"
           "        --monitor [HOST:]PORT [--hold]  serve the web dashboard and /api while running\n"
+          "        --gc-stress                     collect garbage at every allocation (VM testing)\n"
+          "      VM options (also for test; or MLWSVM_<NAME>, e.g. MLWSVM_MAX_FRAMES=500000):\n"
           "        --threads N                     worker threads (default: one per core)\n"
-          "        --gc-stress  --stack-words N\n"
+          "        --stack-words N                 data stack per process, in 8-byte words (131072)\n"
+          "        --max-frames N                  call depth limit (100000)\n"
+          "        --slice N                       time slice, in instructions (2000)\n"
+          "        --gc-min BYTES                  smallest heap that triggers a collection (1M)\n"
+          "        --quota heap=B,raw=B,mailbox=N,insns=N   starting limits for every process\n"
           "  debug [-L dir] file.(masm|mlwso)      interactive debugger (type 'help')\n"
           "  top   [HOST:PORT] [--once]            live process table of a VM run with --monitor\n"
           "  asm  [-L dir] [-o out.mlwso] [-E] file.masm                   assemble (-E: preprocess only)\n"
           "  dis  [-L dir] file.(masm|mlwso)                               disassemble\n"
-          "  test [-L dir] [-v] [--threads N] [paths...]                 run assembly tests (default: tests/)\n"
+          "  test [-L dir] [-v] [VM options] [paths...]                  run assembly tests (default: tests/)\n"
           "  doc  isa|natives [-o file]                                  generate reference docs\n"
           "  version\n"
           "\n"
           "Libraries are searched in: the program's directory, -L dirs, $MLWSVM_PATH, and lib/\n"
           "next to the mlwsvm executable. MLWSVM_GC_STRESS=1 collects garbage at every\n"
-          "instruction boundary after an allocation (for testing the VM). MLWSVM_THREADS=N\n"
-          "sets the default number of worker threads.\n",
+          "instruction boundary after an allocation (for testing the VM).\n",
           f);
 }
 
@@ -91,8 +96,7 @@ static int cmd_run(int argc, char **argv) {
     bool stats = false, gc_stress = false, profile = false, hold = false;
     const char *trace = NULL, *flame = NULL, *monitor = NULL;
     uint64_t trace_limit = 0;
-    uint32_t stack_words = 0;
-    int threads = 0;
+    VEC(const char *) opts = {0}; /* VM options: name, value pairs */
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--stats")) stats = true;
         else if (!strcmp(argv[i], "--profile")) profile = true;
@@ -102,22 +106,38 @@ static int cmd_run(int argc, char **argv) {
         else if (!strcmp(argv[i], "--trace-limit") && i + 1 < argc) trace_limit = strtoull(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor = argv[++i];
         else if (!strcmp(argv[i], "--gc-stress")) gc_stress = true;
-        else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--stack-words") && i + 1 < argc) stack_words = (uint32_t)strtoul(argv[++i], NULL, 10);
-        else if (!file) file = argv[i];
+        else if (!strncmp(argv[i], "--", 2) && vm_option_known(argv[i] + 2)) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "mlwsvm run: %s needs a value\n", argv[i]);
+                VEC_FREE(opts);
+                return 2;
+            }
+            VEC_PUSH(opts, argv[i] + 2);
+            VEC_PUSH(opts, argv[++i]);
+        } else if (!file) file = argv[i];
         else {
             fprintf(stderr, "mlwsvm run: unexpected argument '%s'\n", argv[i]);
+            VEC_FREE(opts);
             return 2;
         }
     }
     if (!file) {
         usage(stderr);
+        VEC_FREE(opts);
         return 2;
     }
     VM *vm = vm_new();
-    if (stack_words) vm->stack_words = stack_words;
+    for (size_t i = 0; i < opts.n; i += 2) {
+        MlwsError err;
+        if (!vm_set_option(vm, opts.v[i], opts.v[i + 1], &err)) {
+            fprintf(stderr, "mlwsvm run: %s\n", err.msg);
+            VEC_FREE(opts);
+            vm_free(vm);
+            return 2;
+        }
+    }
+    VEC_FREE(opts);
     if (gc_stress) vm->gc_stress = true;
-    if (threads > 0) vm->threads = threads;
     if (trace && !tools_trace(vm, trace, trace_limit)) {
         fprintf(stderr, "mlwsvm run: cannot write trace file %s\n", trace);
         vm_free(vm);

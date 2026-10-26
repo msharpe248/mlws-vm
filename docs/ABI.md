@@ -90,7 +90,9 @@ when its entry function returns or it executes `halt`.
 ### 1.4 Quotas
 
 `quota kind, limit` lowers one of the current process's limits; a process can't
-raise its own limits. Processes inherit the limits of the process that spawned
+raise its own limits. Every process starts with the VM's default limits:
+unlimited, unless set with the `--quota` option, which therefore also limits
+`main`. Processes inherit the limits of the process that spawned
 them, so to sandbox untrusted code, spawn a wrapper that sets quotas and then calls
 it.
 
@@ -219,12 +221,19 @@ the verifier. Natives do not create a frame.
 
 ### 2.8 Limits
 
+Limits marked *option* can be changed with a VM option (`--max-frames N` on the
+command line, `MLWSVM_MAX_FRAMES=N` in the environment, or `; option:` in a test;
+see [TOOLING.md](TOOLING.md#vm-options)). The others are fixed by the instruction
+encoding, the pointer layout or the object headers.
+
 | Limit | Value |
 |---|---|
 | Registers per bank | 32 |
 | Operands per instruction | 32 (calls: target + count + 30 arguments/results) |
-| Call depth | 100,000 frames (`E_CALL_DEPTH`) |
-| Data stack | 131,072 words (1 MiB) by default |
+| Call depth | 100,000 frames (`E_CALL_DEPTH`); *option* `--max-frames`. Frames live on the heap, not the C stack, so a deeper limit only costs memory |
+| Data stack | 131,072 words (1 MiB) per process; *option* `--stack-words` |
+| Time slice | 2,000 instructions; *option* `--slice` |
+| Starting quotas | unlimited; *option* `--quota heap=…,raw=…,mailbox=…,insns=…` (§1.4) |
 | Raw block size | < 4 GiB |
 | Modules per VM | 4,094 |
 | Elements in a string, buffer, array, list or map | < 2^31 |

@@ -1,0 +1,14 @@
+; `; option:` lines set VM options for one test, as on the command line. A
+; call depth limit of 50 stops a recursion 100 deep.
+; option: --max-frames 50
+; expect-error: E_CALL_DEPTH
+.func down(i64 n)
+    bz n, 1f
+    sub I1, n, 1
+    call down (I1)
+1:  ret
+.endf
+.func main
+    call down (100)
+    ret 0
+.endf

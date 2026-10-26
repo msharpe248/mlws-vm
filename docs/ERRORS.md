@@ -39,6 +39,12 @@ the message also names the macro and where it was expanded.
 | `E_LINK_NO_MAIN` | The program has no `main`, or `main` takes parameters |
 | `E_VERIFY` | Bytecode verification failed: an operand shape, a register outside the window, a branch target, call or native arity or argument kinds, `ret` versus declared results, or code that runs off the end. Reported with source file, line and function |
 
+## VM options
+
+| Code | Meaning |
+|---|---|
+| `E_BAD_OPTION` | A VM option (`--max-frames`, `--quota`, ...) has a bad name or value. Reported by `mlwsvm run` (exit code 2) and by the test runner; never raised at run time |
+
 ## Runtime traps
 
 Every runtime trap is raised as a catchable exception: an `Error` struct whose

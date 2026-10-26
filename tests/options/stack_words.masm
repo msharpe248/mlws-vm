@@ -1,0 +1,8 @@
+; --stack-words sets each process's data stack (in 8-byte words): 64 words
+; overflow when 100 are reserved.
+; option: --stack-words 64
+; expect-error: E_STACK_OVERFLOW
+.func main
+    enter 100
+    ret 0
+.endf

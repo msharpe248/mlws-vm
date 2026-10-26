@@ -96,16 +96,48 @@ void proc_free(Process *p) {
     free(p);
 }
 
+static void frame_line(StrBuf *b, const Frame *fr) {
+    const Function *f = fr->fn;
+    uint32_t pc = fr->pc ? fr->pc - 1 : 0;
+    uint32_t line = f->mf->lines && pc < f->mf->ninsns ? f->mf->lines[pc] : 0;
+    const char *src = f->mod->m->source && *f->mod->m->source ? f->mod->m->source : f->mod->path;
+    sb_printf(b, "  at %s.%s (%s:%u)\n", f->mod->m->name, f->name, src, line);
+}
+
+/* Innermost frame first. Runs of identical frames (direct recursion) are
+ * collapsed, and a very deep stack keeps only its innermost and outermost
+ * frames, so a runaway recursion gives a short report. */
+#define BT_INNER 40
+#define BT_OUTER 10
 static void build_backtrace(Process *p) {
-    p->backtrace.n = 0;
+    StrBuf *b = &p->backtrace;
+    b->n = 0;
+    if (b->s) b->s[0] = 0;
+    uint32_t entries = 0; /* distinct lines printed so far */
+    StrBuf cur = {0}, next = {0};
     for (uint32_t i = p->nframes; i-- > 0;) {
-        const Frame *fr = &p->frames[i];
-        const Function *f = fr->fn;
-        uint32_t pc = fr->pc ? fr->pc - 1 : 0;
-        uint32_t line = f->mf->lines && pc < f->mf->ninsns ? f->mf->lines[pc] : 0;
-        const char *src = f->mod->m->source && *f->mod->m->source ? f->mod->m->source : f->mod->path;
-        sb_printf(&p->backtrace, "  at %s.%s (%s:%u)\n", f->mod->m->name, f->name, src, line);
+        if (entries == BT_INNER && i >= BT_OUTER) { /* skip to the outermost frames */
+            sb_printf(b, "  ... %u more frames ...\n", i - BT_OUTER + 1);
+            i = BT_OUTER;
+            entries++;
+            continue;
+        }
+        cur.n = 0;
+        frame_line(&cur, &p->frames[i]);
+        uint32_t repeat = 0;
+        while (i > 0) { /* identical callers below this frame */
+            next.n = 0;
+            frame_line(&next, &p->frames[i - 1]);
+            if (strcmp(next.s, cur.s) != 0) break;
+            repeat++;
+            i--;
+        }
+        sb_puts(b, cur.s);
+        if (repeat) sb_printf(b, "  ... repeated %u more time%s\n", repeat, repeat == 1 ? "" : "s");
+        entries++;
     }
+    sb_free(&cur);
+    sb_free(&next);
 }
 
 StructDef VM_BUILTIN_DEFS[BUILTIN__COUNT];

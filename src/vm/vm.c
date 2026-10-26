@@ -43,8 +43,7 @@ VM *vm_new(void) {
     for (int i = 0; i < QUOTA__COUNT; i++) vm->default_quota[i] = UINT64_MAX;
     const char *stress = getenv("MLWSVM_GC_STRESS");
     vm->gc_stress = stress && *stress && strcmp(stress, "0") != 0;
-    const char *threads = getenv("MLWSVM_THREADS");
-    if (threads && *threads) vm->threads = atoi(threads);
+    vm_options_from_env(vm); /* MLWSVM_THREADS, MLWSVM_MAX_FRAMES, ... */
     vm->lock = plat_lock_new();
     vm->out_lock = plat_lock_new();
     op_init();
