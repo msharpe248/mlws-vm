@@ -315,6 +315,13 @@ static Word mem_read(Ctx *c, const Loc *L, MlwsType t) {
     return w;
 }
 
+/* The collector scans the stack from the lowest word ever tagged as a reference.
+ * Out of line: inside mem_write, this one comparison made GCC's build run
+ * bench/loop.masm (which never stores a reference) 27% slower. */
+static MLWS_COLD void note_stack_ref(Process *p, uint32_t word) {
+    if (word < p->stack_ref_lo) p->stack_ref_lo = word;
+}
+
 static void mem_write(Ctx *c, const Loc *L, MlwsType t, Word w) {
     int width = type_size(t);
     uint8_t *m = mem_ptr(c, L, width);
@@ -322,6 +329,7 @@ static void mem_write(Ctx *c, const Loc *L, MlwsType t, Word w) {
         if (!L->seg->tags || L->off % 8)
             vm_trap(c->p, "E_TYPE", "references can only be stored in word-aligned stack or global slots");
         memcpy(m, &w.r, sizeof w.r);
+        if (L->seg->kind == SEGK_STACK) note_stack_ref(c->p, L->off / 8);
     } else if (t == T_F32) {
         float f = (float)w.f;
         uint32_t u;
@@ -338,7 +346,6 @@ static void mem_write(Ctx *c, const Loc *L, MlwsType t, Word w) {
         uint32_t first = L->off / 8, last = (L->off + (uint32_t)width - 1) / 8;
         if (L->off % 8 == 0) {
             L->seg->tags[first] = (uint8_t)t;
-            if (t == T_R && L->seg->kind == SEGK_STACK && first < c->p->stack_ref_lo) c->p->stack_ref_lo = first;
         } else {
             for (uint32_t i = first; i <= last; i++) L->seg->tags[i] = TAG_RAW;
         }

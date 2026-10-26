@@ -1,13 +1,29 @@
 # MLWSVM Roadmap
 
-Milestones M0–M22 are complete (see [README.md](../README.md#status-and-roadmap)).
-What remains is Windows (section 3) and the deferred performance work (section 4).
-The aim of milestones M11–M21 was to make MLWSVM worth targeting: programs on it
-should be able to do real work (files, the OS, the network, text and data), and
-its distinctive feature (isolated, parallel, supervised processes) should be
-easy to show off. The scripting language is a separate project.
+Milestones M0–M22 are complete. What remains is Windows (section 3) and the
+deferred performance work (section 4). M0–M10 built the VM itself. The aim of
+M11–M22 was to make MLWSVM worth targeting: programs on it should be able to do
+real work (files, the OS, the network, text and data), and its distinctive
+feature (isolated, parallel, supervised processes) should be easy to show off.
+The scripting language is a separate project.
 
-## Milestones M11–M21
+## Milestones M0–M10
+
+| Milestone | Contents |
+|---|---|
+| **M0 Skeleton** | build, opcode table, encoding, disassembler |
+| **M1 Assembler** | labels, expressions, directives, macros, includes |
+| **M2 Loader and interpreter** | register windows, data stack, all addressing modes, verifier, test runner |
+| **M3 Libraries** | imports and exports, library path, `lib/std` |
+| **M4 GC heap** | strings, byte buffers, arrays, structs, lists, maps, handles |
+| **M5 Structured exceptions** | |
+| **M6 Processes** | many concurrent isolated processes: scheduler, messages, quotas, accounting |
+| **M7 Tooling** | `mlwsvm top`, debugger, trace and profiler, web dashboard |
+| **M8 Advanced types** | closures, BigInt, decimal |
+| **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
+| **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
+
+## Milestones M11–M22
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -26,7 +42,8 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M18 Callbacks** (done) | C calling back into MLWSVM during a call, through a re-entrant interpreter (1.3); asynchronous callbacks delivered as messages, and `api->post` for extensions (1.4) |
 | **M19 Standard library II** (done) | `std.time`, `std.hash`, `std.random`, `std.encoding` (hex, base64, URL, CSV), `std.collections` (sorting with a comparator closure, using M18's re-entrant calls), more `std.math` (section 2) |
 | **M20 Bindgen** (done) | `mlwsvm bindgen header.h`: `.extern`, `.cstruct` and `.callback` declarations from clang's JSON AST (1.5) |
-| **M21 Performance** (done: the allocator) | a size-class allocator first, then what measurements call for (section 4) |
+| **M21 Performance** (done) | a per-process size-class allocator for small objects (`binarytrees` and `maps` 17–25% faster on Linux, `binarytrees` 9% on macOS) |
+| **M22 Performance** (done) | a faster interpreter loop: the program counter in a CPU register, threaded dispatch, calls that copy arguments straight between windows, compact operands, field and element fast paths (`fib` 26–41% and the tight loop 55–63% less time) |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -140,11 +157,9 @@ untrusted process cannot reach the OS at all (compare Deno's permissions).
 
 Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 
-* ~~A size-class allocator for the GC heap~~ (M21: done; `binarytrees` and
-  `maps` take 17–25% less time on Linux, `binarytrees` 9% less on macOS).
+* ~~A size-class allocator for the GC heap~~ (M21: done).
 * ~~Threaded dispatch, cheaper calls, compact operands for the quickened
-  forms, field and element shapes~~ (M22: done; `fib` 26–41% less time, the
-  tight loop 55–63%; see [PERFORMANCE.md](PERFORMANCE.md#a-faster-interpreter-loop-m22)).
+  forms, field and element shapes~~ (M22: done).
 * More specialised shapes (arithmetic directly on elements, raw memory),
   chosen from what the scripting-language compiler actually emits.
 * A compact decoded form for every instruction. Quickened instructions carry a
@@ -154,7 +169,7 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   starts at the caller's argument registers, while MLWSVM sets up a window per
   register bank ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)).
 * A generational collector, if collection grows past roughly 10% of real
-  workloads (it is 12% of `binarytrees` since M22).
+  workloads (it is 11% of `binarytrees`).
 * Lock-free run queues and spinning before sleeping, for many-thread,
   message-heavy programs.
 

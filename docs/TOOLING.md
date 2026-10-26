@@ -58,7 +58,7 @@ Two environment variables are for testing the VM itself: `MLWSVM_GC_STRESS=1`
 (or `mlwsvm run --gc-stress`) collects garbage at every instruction boundary
 after an allocation, and `MLWSVM_NO_SLABS=1` allocates every object with
 `malloc` instead of the small-object allocator
-([PERFORMANCE.md](PERFORMANCE.md#the-small-object-allocator-m21)). For
+([PERFORMANCE.md](PERFORMANCE.md#the-small-object-allocator)). For
 development, `mlwsvm run --unsafe-native` (or `MLWSVM_UNSAFE_NATIVE=1`) loads
 native code without the trust checks ([EXTENDING.md](EXTENDING.md#security)).
 

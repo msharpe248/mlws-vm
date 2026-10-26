@@ -5,8 +5,8 @@ the instructions each VM executes. The results are in docs/REGISTER_VS_STACK.md.
 
 Usage: python3 bench/compare/compare.py [runs]       (default: best of 5)
 
-Needs lua, java/javac (JAVA_HOME, PATH, or Homebrew's openjdk) and a built
-./mlwsvm. Times are wall-clock milliseconds, minus the same VM's start-up time
+Needs lua and a built ./mlwsvm; java/javac (JAVA_HOME, PATH, or Homebrew's
+openjdk) is optional, and the JVM rows are skipped without it. Times are wall-clock milliseconds, minus the same VM's start-up time
 (a run with n = 1, or an empty MLWSVM program). The JVM's counts are not
 measured: a normal JVM build cannot count bytecodes, so they are counted along
 the paths of `javap -c` output in the document instead.
@@ -42,11 +42,12 @@ def main():
     lua = os.environ.get("LUA", "lua")
     java = find_java()
     classes = tempfile.mkdtemp()
-    subprocess.run([os.path.join(java, "javac"), "-d", classes, "Fib.java", "Loop.java"], cwd=HERE, check=True)
+    if java:
+        subprocess.run([os.path.join(java, "javac"), "-d", classes, "Fib.java", "Loop.java"], cwd=HERE, check=True)
     empty = os.path.join(classes, "empty.masm")
     with open(empty, "w") as f:
         f.write(".func main\n    ret 0\n.endf\n")
-    jv = [os.path.join(java, "java"), "-cp", classes]
+    jv = [os.path.join(java or "", "java"), "-cp", classes]
     vms = [  # name, fib command, loop command, start-up command
         ("MLWSVM", [mlw, "run", "--threads", "1", f"{ROOT}/bench/fib.masm"],
          [mlw, "run", "--threads", "1", f"{ROOT}/bench/loop.masm"], [mlw, "run", "--threads", "1", empty]),
@@ -56,6 +57,8 @@ def main():
         ("JVM (JIT)", jv + ["Fib"], jv + ["Loop"], jv + ["Fib", "1"]),
         ("CPython", [sys.executable, "fib.py"], [sys.executable, "loop.py"], [sys.executable, "fib.py", "1"]),
     ]
+    if not java:
+        vms = [v for v in vms if not v[0].startswith("JVM")]
     print(f"Wall time in ms, best of {RUNS}, start-up subtracted")
     for name, fib, loop, start in vms:
         s, _ = best(start)

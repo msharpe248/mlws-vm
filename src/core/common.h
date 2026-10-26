@@ -14,9 +14,11 @@
 #if defined(__GNUC__) || defined(__clang__)
 #define MLWS_PRINTF(f, a) __attribute__((format(printf, f, a)))
 #define MLWS_NORETURN __attribute__((noreturn))
+#define MLWS_COLD __attribute__((cold, noinline))
 #else
 #define MLWS_PRINTF(f, a)
 #define MLWS_NORETURN
+#define MLWS_COLD
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)

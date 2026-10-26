@@ -6,15 +6,19 @@ signature), plus the assembly wrappers in `lib/std`. This document explains
 how they behave: how they wait, what errors they raise, and how a sandbox
 restricts them.
 
-| Module | Status | Contents |
-|---|---|---|
-| `io`, `math`, `str`, `gc`, `proc`, `time`, `test` | since M2–M8 | printing, maths, string bytes, the collector, process count, the clock |
-| `fs` | M12 | files, standard streams, directories, metadata |
-| `os` | M12 | arguments, the environment, exit, running commands |
-| `net` | M13 | TCP, UDP, DNS |
-| `text`, `json` | M14 | formatting, string utilities, UTF-8, JSON |
-| `proc`, `std.supervisor` | M15 | a name registry, request/reply calls, supervisors |
-| `time`, `hash`, `random`, `hex`, `base64`, `url`, `csv`, `list`, `map`, `math` | M19 | dates and ISO 8601, CRC-32 / SHA-256 / SipHash, random numbers, encodings, sorting and searching, set operations, integer maths |
+| Module | Contents |
+|---|---|
+| `io`, `str`, `gc`, `test` | printing, string bytes, the collector, test failures |
+| `fs` | files, standard streams, directories, metadata |
+| `os` | arguments, the environment, exit, running commands |
+| `net` | TCP, UDP, DNS |
+| `text`, `json` | formatting, string utilities, UTF-8, JSON |
+| `proc`, `std.supervisor` | the process count, a name registry, request/reply calls, supervisors |
+| `time` | clocks, dates and ISO 8601 |
+| `hash`, `random` | CRC-32, SHA-256, SipHash; random numbers |
+| `hex`, `base64`, `url`, `csv` | encodings |
+| `list`, `map` | sorting and searching, set operations |
+| `math` | floating-point and integer maths |
 
 ## How I/O waits
 
@@ -22,7 +26,7 @@ I/O never holds up a worker thread, so many processes can each do I/O at once.
 There are three ways a call waits:
 
 * **Pipes and sockets the VM created** (pipes from `os.spawn`, and the sockets
-  of M13) are non-blocking. When one is not ready, the process waits in the
+  of `std.net`) are non-blocking. When one is not ready, the process waits in the
   **poller** (kqueue on macOS and the BSDs, epoll on Linux), in the state `io`,
   exactly as a process waits in `recv`. It holds no thread, so 10,000 waiting
   processes cost 10,000 small processes, not 10,000 threads. The monitor shows
@@ -192,7 +196,7 @@ platform and do not depend on the time-zone database. Only
 
 * `time.now` is the wall clock, which can jump when the system clock is set.
   `time.monotonic` never goes backwards: use it to measure durations.
-  `time.now_ns` is an older name for `time.monotonic`.
+  `time.now_ns` is the same clock as `time.monotonic`.
 * `time.format(t, offset)` writes RFC 3339 / ISO 8601, with as many fraction
   digits as the time needs (none, 3, 6 or 9), and `Z` for offset 0.
 * `time.parse` accepts a date (`2026-10-26`, midnight UTC), or a date and time
@@ -346,10 +350,10 @@ purpose) that puts the pieces together:
   arguments it tests itself (25 concurrent clients, the acceptor killed
   halfway, every request still answered), which is what `make test` runs.
 
-On an Apple M5 Pro laptop, ApacheBench (`ab -n 20000 -c 50 [-k]`) measures
-about 29,000 requests per second (ab itself is single-threaded, so this is a
-lower bound). Across two Linux desktops, with `examples/http_load.masm` as the
-client, it serves about 168,000 requests per second over 200 or 1,000
+On an Apple M5 Pro laptop, ApacheBench (`ab -n 20000 -c 50`) measures about
+36,000 requests per second (ab itself is single-threaded, so this is a lower
+bound). Across two Linux desktops, with `examples/http_load.masm` as the
+client, it serves about 170,000 requests per second over 200 or 1,000
 connections, and keeps doing so while handlers are made to fail
 ([PERFORMANCE.md](PERFORMANCE.md#http)).
 

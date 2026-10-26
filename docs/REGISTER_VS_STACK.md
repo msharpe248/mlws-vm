@@ -25,17 +25,16 @@ instead of a fixed three.
   three times as many instructions, because each of its instructions costs a third
   of a nanosecond. How cheaply a VM executes each instruction matters as much as
   how many it needs.
-* **MLWSVM was not the fastest interpreter here, and then was.** With MLWSVM M21,
-  Lua 5.5 ran `fib` 2.3× faster and the loop 12% faster on the Mac. MLWSVM's
-  instructions did more each, but each cost more, most of all its calls. M22
-  rebuilt the interpreter loop: on the Mac, MLWSVM now runs the loop 2.4× faster
-  than Lua and `fib` faster than the JVM's interpreter, while Lua stays 1.4×
-  faster on `fib` (1.5× on Linux, where the JVM's interpreter is faster too).
+* **MLWSVM is the fastest of these interpreters on the loop, but not on calls.**
+  On the Mac it runs the loop 2.4× faster than Lua 5.5 and 2.1× faster than the
+  JVM's interpreter. Lua runs `fib` 1.4× faster (1.5× on Linux, where the JVM's
+  interpreter is faster too), because an MLWSVM call sets up a register window
+  in each bank the callee uses.
 * **Variable arity costs nothing measurable at run time.** Storing the first three
   operands inside the instruction, as a fixed format would, was no faster on
   macOS and up to 5% slower on Linux. Its costs are one byte per instruction in the
   file (about 11% of the code) and some complexity in the toolchain. Restricting
-  calls to three operands would make `fib` 22–23% slower, unless the compiler
+  calls to three operands would make `fib` 13–17% slower, unless the compiler
   computes each argument in place as Lua's does, which MLWSVM's typed register banks
   make hard.
 
@@ -395,83 +394,63 @@ with Shi et al.
 
 ### Time
 
-Wall time in milliseconds, best of five, with each VM's start-up time subtracted.
-These measurements were first taken with MLWSVM M21. They led to M22's
-interpreter work, whose results are in the second row and in
-[After M22](#after-m22) below.
+Wall time in milliseconds, best of five, with each VM's start-up time subtracted:
 
 | | Kind | `fib` (Mac) | `loop` (Mac) | `fib` (Linux) | `loop` (Linux) |
 |---|---|---|---|---|---|
-| MLWSVM M21 | register | 115 | 234 | 204 | 472 |
-| MLWSVM M22 | register | 69 | **87** | 152 | **183** |
-| Lua 5.5 | register, fixed 3 | **49** | 209 | **100** | 289 |
-| JVM, interpreter only (`-Xint`) | stack | 88 | 183 | 104 | 396 |
-| CPython | stack | 126 | 1,167 | 186 | 2,374 |
-| JVM with its JIT compiler | (machine code) | 2 | 15 | 8 | 32 |
+| MLWSVM | register | 69 | **87** | 151 | **183** |
+| Lua 5.5 | register, fixed 3 | **49** | 210 | **100** | 289 |
+| JVM, interpreter only (`-Xint`) | stack | 87 | 183 | 104 | 396 |
+| CPython | stack | 128 | 1,211 | 186 | 2,374 |
+| JVM with its JIT compiler | (machine code) | 2 | 16 | 8 | 32 |
 
 The Mac is an Apple M5 Pro with Lua 5.5.1, OpenJDK 27 and CPython 3.14. Linux is
 an Intel i7-11700KF running Ubuntu 26.04 with Lua 5.5.0, OpenJDK 25 and CPython
 3.13 (a pyenv build). The JIT row is there for scale: compiled machine code is
-another 10–25× faster than the fastest interpreter.
+another 5–25× faster than the fastest interpreter.
 
 Time per instruction executed, in nanoseconds (Mac):
 
-| | MLWSVM M21 | MLWSVM M22 | Lua 5.5 | JVM `-Xint` | CPython |
-|---|---|---|---|---|---|
-| `fib` | 3.6 | 2.2 | 1.3 | 1.25 | 1.6 |
-| `loop` | 1.3 | 0.48 | 1.0 | 0.32 | 2.2 |
+| | MLWSVM | Lua 5.5 | JVM `-Xint` | CPython |
+|---|---|---|---|---|
+| `fib` | 2.2 | 1.3 | 1.2 | 1.6 |
+| `loop` | 0.48 | 1.0 | 0.32 | 2.2 |
 
-### What the measurements showed (M21)
+### What the measurements show
 
 1. **The instruction counts favour registers, as expected.** Both register VMs
    need about half as many instructions per call, and a third as many per loop
    iteration.
 2. **The cost of each instruction varies by more than the counts do.** The JVM's
    template interpreter executes a bytecode in a third of a nanosecond (one or two
-   clock cycles) in the loop on the Mac. That is fast enough to beat both register
-   VMs there while executing three times as many instructions. (On the Intel
-   machine it beats MLWSVM but not Lua.) A stack machine with an excellent
-   interpreter beats a register machine with an ordinary one.
-3. **Lua shows what a lean register VM achieves.** Its instructions are 32-bit
-   words decoded with shifts, its values live in one array, and calls slide the
-   register window without copying. It runs `fib` 2.3× faster than MLWSVM on the
-   Mac and 2× faster on Linux, while executing 22% more instructions.
-4. **MLWSVM's calls are expensive.** A `fib` call costs about 16 ns in MLWSVM
-   against 7 ns in Lua. Each call pushes a frame, sizes and zeroes a register window
-   for each bank in use, and copies arguments and results between banks. Lua does
-   none of that copying. On the loop, which makes no calls, MLWSVM is within 12% of
-   Lua on the Mac.
+   clock cycles) in the loop on the Mac, fast enough to beat Lua there while
+   executing nearly three times as many instructions. A stack machine with an
+   excellent interpreter beats a register machine with an ordinary one.
+3. **With cheap instructions, the register machine wins the loop.** MLWSVM's
+   loop costs about half a nanosecond per instruction, within 1.5× of the JVM's
+   template interpreter. Since it needs a third of the JVM's instructions, it
+   finishes in under half the time, and 2.4× faster than Lua on the Mac (1.6× on
+   Linux). Its program counter stays in a CPU register, common instructions
+   dispatch straight to the next handler (threaded code, as Lua does), and
+   each carries a compact copy of its operands
+   ([PERFORMANCE.md](PERFORMANCE.md#how-the-interpreter-is-made-fast)).
+4. **Calls are where Lua stays ahead.** A `fib` call costs about 10 ns in MLWSVM
+   against 7 ns in Lua, so Lua runs `fib` 1.4× faster on the Mac while executing
+   22% more instructions. On the Intel machine with GCC, the JVM's interpreter is
+   faster on `fib` too. Lua's callee window starts at the caller's argument
+   registers, on a single stack of values, so a call copies nothing. An MLWSVM
+   call copies its arguments straight into the callee's registers, but it still
+   sets up and zeroes a separate window in each register bank the callee uses,
+   and restores four bank tops on return.
 5. **CPython is slow on the loop for a different reason.** Its integers are heap
    objects of arbitrary size, so each arithmetic operation does more work. Its
    cost per instruction on `fib` is close to Lua's.
 
 The general lesson: the register-versus-stack choice sets how many instructions
 a program needs. How fast each instruction runs depends on the interpreter's
-implementation, and that difference can be larger. For MLWSVM, the measurements
-pointed at calls and at the cost of each instruction as the places to improve,
-not at the instruction set.
-
-### After M22
-
-M22 rebuilt the interpreter's inner loop around those findings
-([PERFORMANCE.md](PERFORMANCE.md#a-faster-interpreter-loop-m22)): the program
-counter stays in a CPU register, quickened forms dispatch directly to the next
-handler (threaded code, as Lua does), each instruction carries a compact copy of
-its operands, and calls copy arguments and results straight between register
-windows. The instruction set did not change, and neither did the instruction
-counts above.
-
-* **The loop** now costs about half a nanosecond per instruction, within 1.5× of
-  the JVM's template interpreter, and since MLWSVM needs a third of the JVM's
-  instructions it finishes in under half the time. It is 2.4× faster than Lua on
-  the Mac (1.6× on Linux), which is the register-machine advantage the
-  instruction counts promised, now that each instruction is cheap.
-* **`fib`** went from 115 to 69 ms on the Mac, faster than the JVM's interpreter.
-  Lua is still 1.4× faster there. On the Intel machine with GCC, `fib` gained
-  less (204 to 152 ms), and Lua (100) and the JVM's interpreter (104) are both
-  faster. A call costs about 10 ns in MLWSVM
-  against 7 in Lua: MLWSVM still sets up a separate window in each register bank
-  the callee uses, where Lua slides one window over a single stack.
+implementation, and that difference can be larger. Register machines win when
+each instruction is cheap; their extra decoding work has to be paid once, at
+load time, not on every instruction.
 
 ## Part 3: Where MLWSVM sits
 
@@ -542,13 +521,15 @@ Elsewhere none do.
 ### What variable arity costs
 
 **At run time: nothing measurable.** Instructions are decoded once, at load
-time, into an `Insn` (16 bytes in M21, when this was measured) with a pointer to
-its array of decoded operands. A fixed format would keep the operands inside the instruction and
-save following that pointer. To measure that, a test build stored up to three
-operands inline in each `Insn`, and the quickened handlers (the fast paths for
-common shapes; see [PERFORMANCE.md](PERFORMANCE.md)) read them from there.
+time, into an `Insn` with a pointer to its array of decoded operands. A fixed
+format would keep the operands inside the instruction and save following that
+pointer. To measure that, a test build of the interpreter (with `switch`
+dispatch, and 16-byte `Insn`s without the compact copy described below) stored
+up to three full operands inline in each `Insn`, and the quickened handlers (the
+fast paths for common shapes; see [PERFORMANCE.md](PERFORMANCE.md)) read them
+from there.
 
-| Benchmark | macOS: M21 | Inline | Inline, read directly | Linux: M21 | Inline | Inline, read directly |
+| Benchmark | macOS: pointer | Inline | Inline, read directly | Linux: pointer | Inline | Inline, read directly |
 |---|---|---|---|---|---|---|
 | fib | 117 | 119 | 120 | 206 | 209 | 208 |
 | loop | 237 | 249 | 238 | 476 | 482 | 485 |
@@ -579,9 +560,9 @@ be variable-length, since each operand carries its own mode byte and an
 LEB128-encoded payload.
 
 **In complexity: some.** The assembler parses call blocks (`(args) -> (results)`),
-the verifier checks each opcode's minimum and maximum operand count, and the call
-and return paths count arguments and results and copy them through a `Word[32]`
-array.
+the verifier checks each opcode's minimum and maximum operand count, and the
+generic call and return paths count arguments and results and copy them through
+a `Word[32]` array. (Quickened calls copy straight between register windows.)
 
 ### What fixed arity would cost
 
@@ -599,8 +580,9 @@ register before the call, and each result is moved out afterwards:
 | | fib | fib, fixed-3 style |
 |---|---|---|
 | Instructions executed | 31.7M | 45.8M (+44%) |
-| macOS | 114 ms | 139 ms (+22%) |
-| Linux | 206 ms | 252 ms (+23%) |
+| macOS, Apple M5 Pro | 69 ms | 80 ms (+17%) |
+| Linux, Intel i7, GCC | 152 ms | 172 ms (+13%) |
+| Linux, AMD Ryzen, Clang | 137 ms | 160 ms (+17%) |
 
 Across the benchmarks, the extra instructions a fixed format would need range
 from 0% (best case, with every argument computed in place, as Lua does) to 43–44%
@@ -613,7 +595,7 @@ instructions, because `add I0, I0, I1, 1` becomes two adds.
 Supporting up to 32 operands costs about a byte per instruction in the file and
 some code in the toolchain, but nothing measurable when running. Restricting
 instructions to three operands would save that byte and that code. It would also
-make call-heavy code up to a fifth slower, unless the compiler places every
+make call-heavy code up to a sixth slower, unless the compiler places every
 argument exactly, which typed banks make hard. The variable format stays.
 
 The measurements did point at two other costs:
@@ -622,13 +604,14 @@ The measurements did point at two other costs:
   because it has room for every addressing mode. `fib`'s 8 instructions occupy
   about 1.7 KB in memory, against Lua's 60 bytes. The benchmarks fit in cache, so
   this does not show in them yet. The Linux slowdown from a larger `Insn` above
-  suggests that it would show in programs with a lot of hot code. The fix would be
-  a compact decoded form for the quickened shapes, not fewer operands. M22 added
-  one: a 16-byte copy of a quickened instruction's operands inside the `Insn`.
-  It made no difference with the old `switch` dispatch, but once dispatch was
-  threaded it took the loop from 113 to 93 ms.
-* **Calls cost twice as much as Lua's** (Part 2). Binding arguments into fresh
-  per-bank windows is where `fib`'s time went. M22 brought the gap down to 1.4×.
+  suggests that it would show in programs with a lot of hot code. The fix is a
+  compact decoded form, not fewer operands. The quickened shapes have one: a
+  16-byte copy of the instruction's register numbers, branch target and
+  immediate inside its 32-byte `Insn`. With `switch` dispatch it made no
+  difference, but with threaded dispatch it saves 18% on the loop: once
+  dispatch is cheap, the pointer chase shows.
+* **Calls cost more than Lua's** (Part 2). Setting up a window in each register
+  bank is where `fib`'s time goes, and Lua stays 1.4× faster there.
 
 What remains of both is listed in [ROADMAP.md](ROADMAP.md) §4.
 

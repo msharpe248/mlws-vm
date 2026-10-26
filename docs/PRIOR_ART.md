@@ -34,7 +34,7 @@ civil-date conversions.
 
 | MLWSVM | Influences | How MLWSVM differs |
 |---|---|---|
-| Register machine, not a stack machine | Lua 5, Dalvik/ART, Parrot; the stack-vs-register debate (Shi, Gregg, Beatty and Ertl, *Virtual Machine Showdown: Stack Versus Registers*) | Most register VMs use small, fixed-size, mostly three-operand instructions for fast decoding. MLWSVM uses variable-length instructions with 0–32 operands and decodes them once, at load time. Measured, this costs no run time, while a fixed 3-operand format would make call-heavy code about 20% slower ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)). |
+| Register machine, not a stack machine | Lua 5, Dalvik/ART, Parrot; the stack-vs-register debate (Shi, Gregg, Beatty and Ertl, *Virtual Machine Showdown: Stack Versus Registers*) | Most register VMs use small, fixed-size, mostly three-operand instructions for fast decoding. MLWSVM uses variable-length instructions with 0–32 operands and decodes them once, at load time. Measured, this costs no run time, while a fixed 3-operand format would make call-heavy code 13–17% slower ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)). |
 | Four typed banks: `I` int, `F` float, `R` GC reference, `P` raw pointer, 32 each | **Parrot**'s four register sets (`I` int, `N` number, `S` string, `P` PMC) are the closest precedent; hardware int/float register files in general | The `R`/`P` split, managed references versus checked raw pointers, is a safety boundary. Narrow integer types are kept canonical (sign- or zero-extended) within the `I` bank. |
 | Fresh register window per call, sized per function | Lua 5's register window on the value stack; SPARC register windows | Arguments are bound *per bank* (first int arg to `I0`, first float to `F0`, ...). There are no callee- or caller-saved conventions at all. |
 | Variadic arithmetic (`add dst, s1..s31`) and the two-operand shorthand | Two-operand forms are a CISC tradition (x86, VAX); variadic operations resemble Lisp `(+ a b c)` | Unusual in a VM ISA. It lets one instruction fold a whole expression. |
@@ -171,19 +171,19 @@ Experiments that would show whether the combination pays off:
 | Question | Experiment |
 |---|---|
 | Is code denser than a stack VM's? | Answered for two small programs ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)): MLWSVM executes 55–68% fewer instructions than the JVM and CPython, and 18% fewer than Lua, but its code is 1.7–2.9× the size of the JVM's. Still to do: real compiler output |
-| How much do rich operands cost the interpreter? | Partly answered: once decoded and quickened, very little. Since M22, MLWSVM runs a tight loop 2.4× faster than Lua 5.5, while Lua runs `fib` 1.4× faster because MLWSVM's calls set up a window per register bank ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md), [PERFORMANCE.md](PERFORMANCE.md#a-faster-interpreter-loop-m22)). Still to do: sieve, nbody and binary-trees against Lua |
+| How much do rich operands cost the interpreter? | Partly answered: once decoded and quickened, very little. Since M22, MLWSVM runs a tight loop 2.4× faster than Lua 5.5, while Lua runs `fib` 1.4× faster because MLWSVM's calls set up a window per register bank ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md), [PERFORMANCE.md](PERFORMANCE.md#how-the-interpreter-is-made-fast)). Still to do: sieve, nbody and binary-trees against Lua |
 | What do the tags cost? | Memory overhead (1/8 extra on the stack and globals), and the time spent on tag checks (a profile with tag checks disabled) |
 | Is it easier to target? | Lines of code for a code generator from a small language to MLWSVM, compared with a JVM or WebAssembly backend |
 | How do process copies scale? | Message throughput and latency against message size (deep copy cost), compared with BEAM for similar workloads |
-| Is the GC simpler but competitive? | Pause times and throughput on allocation-heavy benchmarks; the cost of whole-stack tag scanning as stacks grow |
+| Is the GC simpler but competitive? | Pause times and throughput on allocation-heavy benchmarks; the cost of scanning stack tags as stacks grow |
 
 Current data points since M22 (see [PERFORMANCE.md](PERFORMANCE.md)): about 2.1G
 instructions/s on a tight register loop and about 460M/s on recursive `fib`, on an
-Apple Silicon laptop with one thread. On the loop that is 13× faster than CPython
+Apple Silicon laptop with one thread. On the loop that is 14× faster than CPython
 3.14, 2.4× faster than Lua 5.5 and 2.1× faster than the JVM's interpreter. On
-`fib` it is 1.8× faster than CPython and 1.3× faster than the JVM's interpreter,
-while Lua is 1.4× faster than MLWSVM. A two-process ping-pong reaches about 19M
-messages/s, and 16 independent CPU-bound processes run 7.5× faster on the
+`fib` it is 1.9× faster than CPython and 1.3× faster than the JVM's interpreter,
+while Lua is 1.4× faster than MLWSVM. A two-process ping-pong reaches about 18M
+messages/s, and 16 independent CPU-bound processes run 7.8× faster on the
 laptop's 18 cores than on one thread. Instructions with up
 to 32 operands cost nothing measurable against a fixed three, and save up to 44%
 of the instructions in call-heavy code.

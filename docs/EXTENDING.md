@@ -158,9 +158,7 @@ pthread_create(&t->thread, NULL, worker, t);   /* worker: api->post_int(t->host,
 While a hold is taken, a process waiting in `recv` is not reported as
 deadlocked, since messages may still arrive. The host stays valid until the VM
 is freed, so join posting threads before the program can end (`demo.ticker`
-and `demo.ticker_join` in `extensions/demo/demo.c` show how). These functions
-were added after version 1 was first released: check
-`api->size >= offsetof(MlwsApi, hold) + sizeof api->hold` before using them.
+and `demo.ticker_join` in `extensions/demo/demo.c` show how).
 
 The table is versioned: `MLWSVM_API_VERSION` and `api->size`. A later version
 only appends functions. An extension built for a different API version exports a

@@ -132,9 +132,9 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/STDLIB.md](docs/STDLIB.md) | The standard library: files, commands, networking, text and JSON, time, hashes, random numbers, encodings, sorting, and how I/O waits |
 | [docs/EMBEDDING.md](docs/EMBEDDING.md) | Running MLWSVM inside a C or C++ program (`libmlwsvm`) |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
-| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks, results, and what was optimised (and why) |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks and results, how the interpreter and scheduler are made fast, and what is left alone (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M11–M22 and what remains: Windows and the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M22 and what remains: Windows and the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
@@ -163,32 +163,10 @@ examples/       runnable, self-checking example programs (examples/embed: a C ho
 `src/core/opcodes.def` is the single source of truth for the instruction set. The
 assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 
-## Status and roadmap
+## Status
 
-| Milestone | Status |
-|---|---|
-| M0 Skeleton: build, opcode table, encoding, disassembler | done |
-| M1 Assembler: labels, expressions, directives, macros, includes | done |
-| M2 Loader and interpreter: register windows, data stack, all addressing modes, verifier, test runner | done |
-| M3 Libraries: imports/exports, library path, `lib/std` | done |
-| M4 GC heap: strings, byte buffers, arrays, structs, lists, maps, handles | done |
-| M5 Structured exceptions | done |
-| M6 Many concurrent isolated processes: scheduler, messages, quotas, accounting | done |
-| M7 Tooling: `mlwsvm top`, debugger, trace/profiler, web dashboard | done |
-| M8 Closures, BigInt, decimal | done |
-| M9 Performance: single-thread interpreter (quickening, frames, `_setjmp`; 1.2–7.8× faster) | done |
-| M9 Performance: multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes) | done |
-| M9 Performance: generational GC, more specialised memory forms | deferred: measured as low value for now ([PERFORMANCE.md](docs/PERFORMANCE.md)) |
-| M10 Calling C: extension API, declarative FFI, trusted installation (`mlwsvm ext`) | done ([EXTENDING.md](docs/EXTENDING.md)) |
-| M11 Linux and CI | done (GitHub Actions: Linux GCC/Clang, macOS) |
-| M12 I/O core, files and the OS (`std.fs`, `std.os`) | done ([STDLIB.md](docs/STDLIB.md)) |
-| M13 networking (`std.net`: TCP, UDP, DNS; handle transfer between processes) | done |
-| M14 text and JSON (`text.format`, string utilities, UTF-8, `json.*`) | done |
-| M15 `std.proc` (registry, request/reply), `std.supervisor`, and a supervised HTTP server example (~168k requests/s between two Linux machines) | done |
-| M16 Embedding API (`libmlwsvm`, `embed.h`: load, call, host natives, background services) | done ([EMBEDDING.md](docs/EMBEDDING.md)) |
-| M17 FFI shapes: variadic calls, `.cstruct` by value and by pointer, `.ffi_free` finalizers | done |
-| M18 Callbacks: a re-entrant interpreter, closures as C function pointers, async callbacks as messages, `api->post` | done |
-| M19 Standard library II: time, hashes, random, encodings, sorting and searching, set operations | done ([STDLIB.md](docs/STDLIB.md)) |
-| M20 `mlwsvm bindgen`: FFI declarations from a C header (clang's JSON syntax tree) | done ([TOOLING.md](docs/TOOLING.md)) |
-| M21 Performance: a per-process small-object allocator (`binarytrees` and `maps` take 17–25% less time on Linux, `binarytrees` 9% less on macOS) | done ([PERFORMANCE.md](docs/PERFORMANCE.md)) |
-| M22 Performance: a faster interpreter loop (threaded dispatch, direct calls, compact operands, field and element fast paths; `fib` 26–41% and the tight loop 55–63% less time) | done ([PERFORMANCE.md](docs/PERFORMANCE.md#a-faster-interpreter-loop-m22)) |
+Everything described in `docs/` is implemented and tested on macOS and Linux
+(GitHub Actions: Linux GCC and Clang, macOS Clang), in every test mode: the
+plain suite, GC stress, AddressSanitizer, ThreadSanitizer, the tools, and builds
+without libffi or computed goto. Windows support is written but untested.
+[docs/ROADMAP.md](docs/ROADMAP.md) lists the milestones and what remains.

@@ -338,7 +338,7 @@ them by emitting these shapes; nothing else changes.
   `i64`/`f64`/`r` arrays and list elements, indexed by a register. Arithmetic
   directly on a field or element works, but takes the general path. Loading
   into registers, computing there and storing back is much faster in a loop:
-  `bench/nbody.masm` runs in 92 ms with element operands and in 24 ms rewritten
+  `bench/nbody.masm` runs in 94 ms with element operands and in 23 ms rewritten
   that way, although it executes more instructions.
 * **Null tests:** `bz R0, L` and `bnz R0, L`.
 
@@ -346,18 +346,14 @@ Where it matters, prefer one instruction to several (`blt a, b, L` over `slt` +
 `bnz`), and keep hot values in registers rather than in `SP[...]` or globals. See
 [PERFORMANCE.md](PERFORMANCE.md) for measurements.
 
-## 13. Stability and what is coming
+## 13. What is coming
 
-These are stable and safe to target now: the assembly syntax, the operand forms,
-the opcode numbers, the calling convention, the heap object model (M4),
-exceptions (M5), processes (M6), closures and arbitrary-precision numbers (M8),
-and the FFI (M10, M17, M18). The `.mlwso` layout is versioned (version 6 since
-M18), and the loader refuses other versions, so ship `.masm` or re-assemble
-after upgrading ([BINARY_FORMAT.md](BINARY_FORMAT.md)). What is still planned is
-performance work, done when measurements call for it
-([ROADMAP.md](ROADMAP.md#4-performance-when-measurements-call-for-it)), and will
-only be *additions*:
-
-| Planned | Adds |
-|---|---|
-| Performance | specialised memory and array operand forms (chosen from what compilers emit), a generational GC, computed-goto dispatch (the multi-threaded scheduler and the small-object allocator are done, and needed no changes to programs) |
+The remaining planned work is performance, done when measurements call for it
+([ROADMAP.md](ROADMAP.md#4-performance-when-measurements-call-for-it)): more
+specialised forms for arithmetic on fields, elements and raw memory, cheaper
+calls, a smaller decoded form, and possibly a generational collector. These need
+no changes to generated code, but which forms get specialised should follow what
+compilers actually emit, so the scripting-language compiler's output will decide
+them. Ship `.masm`, or assemble `.mlwso` files with the VM that will run them:
+the loader accepts only its own format version
+([BINARY_FORMAT.md](BINARY_FORMAT.md)).

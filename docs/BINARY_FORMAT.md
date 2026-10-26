@@ -181,12 +181,8 @@ re-encoded freely. The loader decodes each function once into an internal form
 with resolved operands, and the verifier then checks every invariant the
 interpreter relies on.
 
-## Compatibility rules
+## Versions
 
-* Opcode numbers and mode bytes never change meaning. New ones are added in unused
-  slots.
-* The version number changes if the layout above changes. Version 2 added the
-  struct and field-ref tables, version 3 the exception handler tables, and
-  version 4 the extension and extern tables, version 5 variadic externs, the
-  cstruct table and `.ffi_free`, and version 6 the callback table. Older files
-  must be re-assembled.
+The header's version number identifies this layout, and the loader refuses a
+file with any other version. Assemble `.mlwso` files with the VM that will run
+them, or ship `.masm`.

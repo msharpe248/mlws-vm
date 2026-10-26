@@ -354,11 +354,10 @@ static uint64_t timers_service(Sched *s, uint64_t now) {
         if (s->timers.n && s->timers.v[0].at == t.at && s->timers.v[0].pid == t.pid) timer_pop(s);
         timers_changed(s);
         plat_mutex_unlock(s->lock);
-        if (live && p->state == PROC_IOWAIT) { /* an I/O timeout: the native runs again and reports it */
-            p->fdwait.timed_out = true;
-            s->io_waiting--;
-        }
-        if (live) ready_locked(s, p); /* recvt re-executes and sees that its deadline passed */
+        bool io = live && p->state == PROC_IOWAIT;
+        if (io) p->fdwait.timed_out = true; /* an I/O timeout: the native runs again and reports it */
+        if (live) ready_locked(s, p);       /* recvt re-executes and sees that its deadline passed */
+        if (io) s->io_waiting--;            /* only once it is queued: see idle() */
         if (p) plat_unlock(p->lock);
     }
 }
@@ -889,11 +888,17 @@ static void idle(Worker *w) {
             park_locked(s, s->resume_cv, 0);
             continue;
         }
+        /* Read what could still wake a process before looking for work. Whoever
+         * wakes a process from I/O queues it first and then decrements its
+         * counter, so a counter that reads 0 here means the work is visible
+         * below. (Checking work first left a window between the two steps in
+         * which every process looked stuck, and a busy server was stopped with
+         * E_DEADLOCK.) */
+        bool quiet = !s->io_inflight && !s->io_waiting && !vm->external_input && !atomic_load(&vm->async_sources);
         if (work_available(s)) break;
         uint64_t nt = s->next_timer, now = plat_now_ns();
         if (nt && nt <= now) break;
-        if (!nt && s->nidle == s->nrun && !s->io_inflight && !s->io_waiting && !vm->external_input &&
-            !atomic_load(&vm->async_sources)) {
+        if (!nt && s->nidle == s->nrun && quiet) {
             /* nothing can ever run again */
             deadlock = true;
             break;
@@ -1021,8 +1026,8 @@ static void poll_main(void *arg) {
             Process *p = pin(s, tokens[i] >> 16);
             if (!p) continue;
             if (p->state == PROC_IOWAIT && (p->fdwait.gen & 0xFFFFu) == (tokens[i] & 0xFFFFu)) {
-                s->io_waiting--;
                 ready_locked(s, p);
+                s->io_waiting--; /* only once it is queued: see idle() */
             }
             plat_unlock(p->lock);
         }
@@ -1055,8 +1060,8 @@ static void wait_for_fd(Sched *s, Process *p) {
     p->fdwait.gen++;
     uint64_t token = p->pid << 16 | (p->fdwait.gen & 0xFFFFu);
     if (!poller_ready(s) || !plat_poller_arm(s->poller, p->fdwait.fd, p->fdwait.events, token)) {
-        s->io_waiting--; /* cannot wait: run again now, and the operation reports the error */
-        ready_locked(s, p);
+        ready_locked(s, p); /* cannot wait: run again now, and the operation reports the error */
+        s->io_waiting--;
         return;
     }
     if (p->fdwait.deadline) {

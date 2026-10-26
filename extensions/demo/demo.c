@@ -196,10 +196,6 @@ static void ticker_finalize(void *p) {
 static const MlwsForeignType TICKER = {"demo.ticker", ticker_finalize};
 
 static void ticker(MlwsCtx *cx, const MlwsValue *a, MlwsValue *r) {
-    if (api->size < offsetof(MlwsApi, hold) + sizeof api->hold) {
-        api->error(cx, "E_DEMO", "this VM cannot post messages from other threads");
-        return;
-    }
     Ticker *t = calloc(1, sizeof *t);
     t->host = api->host(cx);
     t->pid = a[0].u;

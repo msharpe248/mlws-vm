@@ -161,8 +161,6 @@ typedef struct MlwsApi {
     void (*foreign_release)(MlwsCtx *cx, MlwsValue ref); /* finalize now; idempotent */
 
     /* ---- messages from any thread, at any time ----
-     * Added after the first release of version 1: check that
-     * api->size >= offsetof(MlwsApi, hold) + sizeof api->hold before use.
      * host() is called during a call; the MlwsHost stays valid until the VM is
      * freed, so join any thread that posts before the program can end. A post
      * to a process that has ended returns false. While a hold is taken, a
