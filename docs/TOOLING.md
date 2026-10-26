@@ -14,6 +14,7 @@ dashboard and a `top`-style terminal view.
 | Terminal view | `mlwsvm top [HOST:PORT] [--once] [--interval MS]` | — |
 | VM options | `mlwsvm run --max-frames N --quota heap=64M ... prog.masm` | — |
 | Native code | `mlwsvm ext list\|install\|remove\|allow-ffi\|deny-ffi` ([EXTENDING.md](EXTENDING.md)) | — |
+| Bindings generator | `mlwsvm bindgen [-l LIB] [-p PREFIX] [-o OUT] header.h` | — |
 
 The profiler, tracer and debugger use one per-instruction hook, which is
 installed only while one of them is active. A program run under them uses a
@@ -205,6 +206,66 @@ recent exits:
 prints one snapshot and exits; there, %CPU is measured over the VM's whole uptime.
 It fetches `/top` from the monitor, so it works against any VM started with
 `--monitor`.
+
+## Bindings generator: `mlwsvm bindgen`
+
+```
+mlwsvm bindgen [-l LIB] [-p PREFIX] [-o OUT] [--all] [--no-check] [--cc CLANG]
+               [--ast FILE.json] header.h [-- clang options...]
+```
+
+`bindgen` writes the FFI declarations for a C header ([EXTENDING.md](EXTENDING.md#the-declarative-ffi)):
+`.extern` for its functions, `.cstruct` for its structs, `.callback` for
+function-pointer parameters, and `.const` for enum constants. Clang does the
+parsing (`clang -Xclang -ast-dump=json -fsyntax-only`, so the header is read
+exactly as a C compiler reads it, macros, conditionals and includes included).
+`-l` names the library (`""`, the default, is the program's own symbols, which
+include the C library), and `-p` the natives' prefix (default: the header's
+name). Pass include paths and defines after `--`. `--ast` reads a syntax tree
+saved earlier with that clang command, and `--cc` names another clang.
+
+```sh
+mlwsvm bindgen -l libsqlite3 -p sql -o sqlite.inc /usr/include/sqlite3.h
+```
+
+```asm
+.include "sqlite.inc"     ; then: ncall "sql.sqlite3_open" ("db", ...) -> (...)
+```
+
+Only the header's own declarations are written, not those of the headers it
+includes (`--all` writes everything). Structs it uses that are defined elsewhere
+are written too, when they are needed. How C types become FFI types:
+
+| C | FFI | |
+|---|---|---|
+| integers, `_Bool`, enums | `i8` … `u64`, `u8`, `i32` | at this machine's sizes (`long` is 8 bytes on LP64) |
+| `float`, `double` | `f32`, `f64` | `long double` cannot be passed: skipped |
+| `const char *` | `cstr` | a string in; as a result, copied into a string |
+| `char *` parameter | `buf` | C may write into it (an output buffer) |
+| `void *`, `T *` (numbers) parameter | `buf` | memory; change to `out T` for a single value, or `ptr` for a handle |
+| `struct S *` | `struct* S` (parameter) or `ptr<S>` (result) | `ptr<S>` when `S` cannot be described (opaque handles) |
+| `struct S **` parameter | `out ptr<S>` | C hands back a handle |
+| `struct S` | `struct S` | by value |
+| function pointer parameter | `callback NAME` | named after its typedef, or `FUNCTION_PARAM` |
+| `T (*)(...)` result, other pointers | `ptr` | |
+
+What cannot be expressed is written as a comment that gives the reason:
+functions using `long double`, unions passed by value, or more than 8
+parameters, and structs with unions, bitfields or arrays of structs (they are
+then passed only as `ptr<S>`). `static` and `inline` functions are left out,
+since they have no symbol to call. When the library can be opened, each
+function is looked up in it, and missing ones are left out with a comment:
+compiler intrinsics such as `alloca`, or functions this platform lacks
+(`--no-check` keeps them). A function declared with an asm label calls the
+label's symbol (glibc's `scanf` is `__isoc99_scanf`). A variadic function gets
+`...` with nothing after it: add the types to pass, one declaration per
+combination.
+
+C declarations do not say who owns a returned pointer, whether an `int *` is an
+array or an out parameter, or how long C keeps a pointer it is given. Review
+the output, and adjust it (`.ffi_free` for handles the program must free) before
+use. `make check-bindgen` generates bindings for `tests/_bindgen/libc.h`,
+compares them with `libc.expected`, and calls them.
 
 ## Testing the tools
 

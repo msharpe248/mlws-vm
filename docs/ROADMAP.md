@@ -24,7 +24,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M17 FFI shapes** (done) | variadic C functions (1.1); structs by value and by pointer, `.cstruct` (1.2); finalizers for `.extern` handles (1.5) |
 | **M18 Callbacks** (done) | C calling back into MLWSVM during a call, through a re-entrant interpreter (1.3); asynchronous callbacks delivered as messages, and `api->post` for extensions (1.4) |
 | **M19 Standard library II** (done) | `std.time`, `std.hash`, `std.random`, `std.encoding` (hex, base64, URL, CSV), `std.collections` (sorting with a comparator closure, using M18's re-entrant calls), more `std.math` (section 2) |
-| **M20 Bindgen** | `mlwsvm bindgen header.h`: `.extern`, `.cstruct` and `.callback` declarations from clang's JSON AST (1.5) |
+| **M20 Bindgen** (done) | `mlwsvm bindgen header.h`: `.extern`, `.cstruct` and `.callback` declarations from clang's JSON AST (1.5) |
 | **M21 Performance** | a size-class allocator first, then what measurements call for (section 4) |
 
 ## 1. Calling existing libraries (M10: done)
@@ -84,10 +84,10 @@ supported. It would have to block that thread until the process replied.
 
 ### 1.5 Other
 
-* **A binding generator**: `mlwsvm bindgen header.h`, which writes `.extern`,
-  `.cstruct` and `.callback` declarations for a C header, in the spirit of
-  Rust's bindgen and ctypesgen. Most practical through libclang's JSON AST dump
-  (`clang -Xclang -ast-dump=json`). It also solves platform-dependent layouts.
+* **A binding generator** (M20: done): `mlwsvm bindgen header.h` writes
+  `.extern`, `.cstruct`, `.callback` and `.const` declarations from clang's
+  JSON syntax tree ([TOOLING.md](TOOLING.md#bindings-generator-mlwsvm-bindgen)).
+  Run on the target machine, it also solves platform-dependent layouts.
 * **Finalizers for `.extern` handles** (M17: done): `.ffi_free db,
   "libsqlite3", "sqlite3_close"` frees every `ptr<db>` when it is collected or
   released with `foreign.release`.

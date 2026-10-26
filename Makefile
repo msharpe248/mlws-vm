@@ -45,7 +45,7 @@ DL_LIBS := -ldl -lpthread
 endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: all test test-ext check-gc check-tools check-asan check-tsan bench docs clean lib embed-example check-embed
+.PHONY: all test test-ext check-gc check-tools check-asan check-tsan check-bindgen bench docs clean lib embed-example check-embed
 
 all: $(BIN)
 
@@ -126,6 +126,16 @@ test: $(BIN) test-ext
 
 check-tools: $(BIN)
 	sh tests/tools/check_tools.sh ./$(BIN)
+
+# Generate bindings for tests/_bindgen/libc.h (needs clang), compare them with
+# the expected output, and call them.
+check-bindgen: $(BIN) test-ext
+	@mkdir -p build/bindgen
+	@if ! command -v clang >/dev/null 2>&1; then echo "check-bindgen: skipped (no clang)"; exit 0; fi; \
+	./$(BIN) bindgen -l "" -p c -o build/bindgen/libc.inc tests/_bindgen/libc.h 2>/dev/null && \
+	diff -u tests/_bindgen/libc.expected build/bindgen/libc.inc && \
+	./$(BIN) run -L build/bindgen --ext-path $(TEST_EXT) tests/_bindgen/use.masm && \
+	echo "check-bindgen: OK"
 
 check-gc: $(BIN) test-ext
 	MLWSVM_GC_STRESS=1 ./$(BIN) test tests examples

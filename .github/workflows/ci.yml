@@ -51,6 +51,9 @@ jobs:
       - name: Tools (monitor, top, profiler, tracer)
         run: make CC=$CC check-tools
 
+      - name: Bindings generator (clang)
+        run: make CC=$CC check-bindgen
+
       - name: AddressSanitizer + UBSan (+ LeakSanitizer on Linux)
         run: make CC=$CC check-asan
 

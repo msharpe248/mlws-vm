@@ -18,6 +18,7 @@ int tool_ext(int argc, char **argv, const ToolEnv *env); /* `mlwsvm ext` */
 int tool_test(int argc, char **argv, const ToolEnv *env);
 int tool_doc(int argc, char **argv);
 int tool_top(int argc, char **argv);
+int tool_bindgen(int argc, char **argv); /* `mlwsvm bindgen` */
 
 /* --trace / --profile (hooks.c) */
 bool tools_trace(VM *vm, const char *path, uint64_t limit);

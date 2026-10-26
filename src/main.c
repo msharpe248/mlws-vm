@@ -33,6 +33,7 @@ static void usage(FILE *f) {
           "  test [-L dir] [-v] [VM options] [paths...]                  run assembly tests (default: tests/)\n"
           "  doc  isa|natives [-o file]                                  generate reference docs\n"
           "  ext  list|install|remove|allow-ffi|deny-ffi [--dir D] ...  manage trusted native code\n"
+          "  bindgen [-l LIB] [-p PREFIX] [-o OUT] [--all] header.h       FFI declarations from a C header (clang)\n"
           "  version\n"
           "\n"
           "Libraries are searched in: the program's directory, -L dirs, $MLWSVM_PATH, and lib/\n"
@@ -375,6 +376,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "top")) rc = tool_top(n, args);
     else if (!strcmp(cmd, "doc")) rc = tool_doc(n, args);
     else if (!strcmp(cmd, "ext")) rc = tool_ext(n, args, &g_env);
+    else if (!strcmp(cmd, "bindgen")) rc = tool_bindgen(n, args);
     else if (!strcmp(cmd, "version") || !strcmp(cmd, "--version")) {
         printf("mlwsvm %s\n", MLWSVM_VERSION);
         rc = 0;

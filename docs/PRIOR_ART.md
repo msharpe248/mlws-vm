@@ -101,6 +101,7 @@ encoding.
 | `.callback`: closures as C function pointers during a call, on a re-entrant interpreter (M18) | ctypes `CFUNCTYPE`, cffi `@ffi.callback`, LuaJIT callbacks, Java FFM upcall stubs, JNI calls back into Java; libffi closures | An uncaught exception stops at the callback and is raised when the C function returns, so C frames are never unwound (ctypes prints and drops it; LuaJIT forbids errors there). Waiting inside a callback is an error instead of a deadlock. |
 | Async callbacks as messages; `api->post_*` and `api->hold` | Erlang's `enif_send` and port drivers; libuv's `uv_async_send`; GUI toolkits' "post to the main loop" | A C thread never runs MLWSVM code: its calls arrive in a process's mailbox, so process isolation holds even for multi-threaded libraries. |
 | `.ffi_free` finalizers and `foreign.release` | ctypes/cffi `ffi.gc(ptr, destructor)`; Java's `Cleaner`; Rust's `Drop` | Declared once per pointer tag, so every handle of that kind is covered; a released handle refuses further calls instead of passing a dangling pointer. |
+| `mlwsvm bindgen`: FFI declarations from clang's JSON syntax tree (M20) | Rust's bindgen (libclang), ctypesgen, cffi's `cdef` from headers, Zig's `@cImport`, SWIG | Writes plain assembly declarations to review, with every skipped declaration explained in a comment, and checks each symbol against the library as it goes. |
 | Trusted extension directories, SHA-256 pinning, permission checks | SSH's `StrictModes` checks of `~/.ssh`; lockfile and trust-on-first-use pinning; Deno's explicit permissions | Native code is opt-in per directory and per library, and a sandboxed process can be denied native code completely with a quota (kind 4). |
 
 ### Embedding (M16)
@@ -198,6 +199,7 @@ run 8.2× faster on the laptop's 18 cores than on one thread.
 | M17 | ctypes `Structure`, cffi `cdef` and `ffi.gc`, LuaJIT `ffi.cdef`, Java Panama `MemoryLayout` and `Cleaner`; libffi struct types and `ffi_prep_cif_var` |
 | M18 | ctypes `CFUNCTYPE`, cffi callbacks, Java FFM upcalls, libffi closures; Erlang `enif_send`, libuv `uv_async_send` |
 | M19 | Go's `time` and RFC 3339; Hinnant's civil-date algorithms; xoshiro256\*\* and SipHash; RFC 4648 (base64), RFC 3986 (URLs), RFC 4180 (CSV); Python's `bisect` |
+| M20 | Rust's bindgen, ctypesgen, Zig's `@cImport`; clang's `-ast-dump=json` |
 
 ## References
 

@@ -187,6 +187,9 @@ reported at load time and never crashes.
 
 `.extern NAME, "LIBRARY", "SYMBOL" (PARAMS) -> (RESULT) [, blocking] [, serial]`
 
+`mlwsvm bindgen header.h` writes these declarations for a whole C header
+([TOOLING.md](TOOLING.md#bindings-generator-mlwsvm-bindgen)).
+
 * **NAME** is the native's name. It needs a prefix (`m.pow`). Another module may
   declare the same name only with an identical declaration.
 * **LIBRARY** names a shared library. Write alternatives separated by `|`, which

@@ -102,6 +102,7 @@ make lib check-embed         # the embedding library, and its example host progr
 ./mlwsvm dis prog.mlwso          # disassemble
 ./mlwsvm asm -E prog.masm      # show the source after macro expansion
 ./mlwsvm test tests/           # run assembly tests
+./mlwsvm bindgen -l libz -p z /usr/include/zlib.h -o zlib.inc   # FFI declarations for a C header
 make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 ```
 
@@ -117,8 +118,8 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/NATIVES.md](docs/NATIVES.md) | Host functions (generated) |
 | [docs/ERRORS.md](docs/ERRORS.md) | Error codes |
 | [docs/BINARY_FORMAT.md](docs/BINARY_FORMAT.md) | The `.mlwso` file and instruction encoding |
-| [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard and `top` |
-| [docs/STDLIB.md](docs/STDLIB.md) | The standard library: files, commands, the OS, and how I/O waits |
+| [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard, `top`, and the bindings generator |
+| [docs/STDLIB.md](docs/STDLIB.md) | The standard library: files, commands, networking, text and JSON, time, hashes, random numbers, encodings, sorting, and how I/O waits |
 | [docs/EMBEDDING.md](docs/EMBEDDING.md) | Running MLWSVM inside a C or C++ program (`libmlwsvm`) |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks, results, and what was optimised (and why) |

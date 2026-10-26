@@ -1,0 +1,55 @@
+; use.masm - calls the bindings that `mlwsvm bindgen` wrote for libc.h, to
+; check they work as generated: `make check-bindgen` runs
+;     mlwsvm bindgen -l "" -p c -o build/bindgen/libc.inc tests/_bindgen/libc.h
+;     mlwsvm run -L build/bindgen --ext-path build/test-ext tests/_bindgen/use.masm
+; (This directory starts with '_', so `mlwsvm test` does not run it alone.)
+.include "std/test.inc"
+.include "libc.inc"
+
+; Store v as an 8-byte little-endian integer in a new buffer (a time_t).
+.func time_t_buf(i64 v) -> ref
+    bufnew R0, 8
+    mov I1, v
+    mov I2, 0
+1:  and I3, I1, 0xFF
+    mov R0[I2], I3
+    shr I1, I1, 8
+    inc I2
+    blt I2, 8, 1b
+    ret R0
+.endf
+
+.func main
+    ncall "c.strlen" ("hello") -> (I0)
+    ASSERT_EQ I0, 5
+    ncall "c.abs" (-3) -> (I0)
+    ASSERT_EQ I0, 3
+    ncall "c.ldexp" (0.75, 4) -> (F0)
+    ASSERT_EQ F0, 12.0
+    ncall "c.div" (17, 5) -> (R0)              ; div_t, by value
+    ASSERT_EQ R0->div_t.quot, 3
+    ASSERT_EQ R0->div_t.rem, 2
+    ncall "c.strchr" ("a=b", '=') -> (R1)
+    strcmp I1, R1, "=b"
+    ASSERT_EQ I1, 0
+    mov I2, MID                                ; an enum constant
+    ASSERT_EQ I2, 10
+
+    new R2, tm                                 ; struct tm, through struct*
+    mov R2->tm.tm_mday, 32
+    mov R2->tm.tm_year, 100
+    ncall "c.timegm" (R2) -> (I3)
+    ASSERT_EQ I3, 949363200                    ; 2000-02-01
+    ASSERT_EQ R2->tm.tm_mon, 1                 ; normalized in place
+    call time_t_buf (951782400) -> (R3)        ; const time_t *: a buffer
+    new R4, tm
+    ncall "c.gmtime_r" (R3, R4) -> (R5)        ; fills R4, returns a pointer to it
+    ASSERT_EQ R4->tm.tm_mday, 29
+    ASSERT_EQ R4->tm.tm_mon, 1
+
+    bufnew R6, 16                              ; char *: an output buffer
+    ncall "c.snprintf" (R6, 16, "plain") -> (I4)
+    ASSERT_EQ I4, 5
+    ASSERT_EQ R6[0], 'p'
+    ret 0
+.endf
