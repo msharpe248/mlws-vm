@@ -531,6 +531,9 @@ static void finish(Sched *s, Process *p, bool failed) {
     vm->live--;
     record_exit(vm, p, failed);
     plat_unlock(vm->lock);
+    /* Before the Downs: whoever restarts a service can open its port and files
+     * again at once, so close the dead process's now, not when it is freed. */
+    heap_release_foreign(p);
     if (p->names.n) unregister_all(vm, p); /* before the Downs: a restarted service can take its name again */
     for (size_t i = 0; i < mons.n; i++) send_down(s, mons.v[i], p, failed);
     bool observed = mons.n > 0 || links.n > 0;

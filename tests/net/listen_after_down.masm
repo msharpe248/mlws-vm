@@ -1,0 +1,27 @@
+; When a process ends, its files and sockets are closed before its monitors and
+; links hear about it. So a supervisor that restarts a server as soon as it
+; gets the Down can listen on the same port again at once (and is not refused
+; with E_ADDR_IN_USE because the dead server's socket is still open).
+.include "std/test.inc"
+; Listen on a free port, report it, and fail when told to.
+.func server(i64 parent)
+    ncall "net.listen" ("127.0.0.1", 0) -> (R0)
+    ncall "net.port" (R0) -> (I1)
+    send parent, I1
+    recv I2
+    throw "stopped"
+.endf
+.func main
+    mov I0, 0
+1:  mov I9, PID
+    spawnm server (I9) -> (I1)
+    recv I2                            ; its port
+    send I1, 1                         ; fail now (on its own thread)
+    recv R0                            ; the Down
+    ASSERT_TRUE R0->Down.code, r
+    ncall "net.listen" ("127.0.0.1", I2) -> (R1)   ; the port is free again
+    ncall "fs.close" (R1)
+    inc I0
+    blt I0, 30, 1b
+    ret 0
+.endf

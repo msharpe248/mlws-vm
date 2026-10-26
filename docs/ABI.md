@@ -85,6 +85,10 @@ when its entry function returns or it executes `halt`.
   `spawnl` (`spawnil`) starts a process already linked.
 * A child process that fails with nobody monitoring or linked prints a crash
   report on stderr, so failures are never silent.
+* By the time a `Down` arrives (or a linked process is killed), the process's
+  files, sockets and other foreign handles are closed and its registered names
+  are gone. So a supervisor can restart a server at once, on the same port and
+  under the same name.
 * `kill` stops a waiting or ready process at once. A process that is running on
   another thread at that moment stops at the end of its time slice, at most 2,000
   instructions later; `alive` reports it dead straight away, and messages sent to

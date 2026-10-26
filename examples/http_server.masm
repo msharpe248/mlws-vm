@@ -175,12 +175,13 @@ hog:                                   ; runs into the heap quota: E_QUOTA ends 
 ; ---- the self-test ------------------------------------------------------------
 
 ; Read a response: the status line, the headers, and Content-Length bytes.
-; Returns the status line and the body.
+; Returns the status line and the body, or null if the connection ended.
 .func read_response(ref conn) -> (ref, ref)
     ncall "fs.read_line" (conn) -> (R1)
     bz.r R1, eof
     mov I1, 0
 1:  ncall "fs.read_line" (conn) -> (R2)
+    bz.r R2, eof
     len I2, R2
     bz I2, 2f
     ncall "text.lower" (R2) -> (R2)
@@ -195,6 +196,8 @@ hog:                                   ; runs into the heap quota: E_QUOTA ends 
     bge I4, I1, 4f
     sub I5, I1, I4
     ncall "fs.read" (conn, I5) -> (R5)
+    len I6, R5
+    bz I6, eof                         ; the end of input, before the whole body
     bufcat R4, R5
     jmp 3b
 4:  strcat R6, R4
@@ -220,23 +223,39 @@ retry:
 .endf
 
 ; REQUESTS requests on one connection; sends the parent ["answered", n]. (Reports
-; are tagged: those of different clients arrive in any order.)
+; are tagged: those of different clients arrive in any order.) A connection the
+; kernel had queued but the acceptor had not yet accepted is reset when the
+; acceptor is killed (its listening socket closes), so if the connection ends,
+; the client reconnects and asks again, as a browser would.
 .func client(i64 parent, i64 port)
     call connect (port) -> (R0)
     mov I2, 0                          ; answered
     mov I3, 0
+    mov I6, 0                          ; reconnections
 1:  and I4, I3, 1
     mov R1, "GET / HTTP/1.1\r\nHost: test\r\n\r\n"
     bz I4, 2f
     mov R1, "GET /json HTTP/1.1\r\nHost: test\r\n\r\n"
-2:  ncall "fs.write" (R0, R1)
+2:
+.try lost
+    ncall "fs.write" (R0, R1)
     call read_response (R0) -> (R2, R3)
-    bz.r R2, 4f
+.endtry
+    bz.r R2, again                     ; the connection ended
     strcmp I5, R2, "HTTP/1.1 200 OK"
     bnz I5, 3f
     inc I2
 3:  inc I3
     blt I3, REQUESTS, 1b
+    jmp 4f
+lost:
+    catch R5                           ; reset by the other end
+again:
+    inc I6
+    bge I6, 20, 4f                     ; give up: the report shows the shortfall
+    ncall "fs.close" (R0)
+    call connect (port) -> (R0)
+    jmp 1b                             ; the same request again
 4:  ncall "fs.close" (R0)
     lnew R4
     lpush R4, "answered", I2
@@ -276,28 +295,37 @@ closed:
     bnz I2, 2f
     sleep 1
     jmp 1b
-2:  mov I3, 0                          ; clients, part one
-3:  spawn client (PID, I0)
+2:  mov I3, 0                          ; clients, part one (monitored: one that
+3:  spawnm client (PID, I0) -> (I9)    ; fails is reported, rather than missed)
     inc I3
     blt I3, CLIENTS / 2, 3b
-    spawn failing_client (PID, I0, "/crash")
-    spawn failing_client (PID, I0, "/hog")
+    spawnm failing_client (PID, I0, "/crash") -> (I9)
+    spawnm failing_client (PID, I0, "/hog") -> (I9)
     sleep 20
     kill I2                            ; kill the acceptor: its supervisor starts another
+    mov I8, 0
 4:  ncall "proc.whereis" ("acceptor") -> (I4)
     beq I4, I2, 5f
     bnz I4, 6f
-5:  sleep 1
+5:  inc I8
+    bge I8, 5000, 12f                  ; not back after 5 s: the supervisor gave up
+    sleep 1
     jmp 4b
+12: throw "the acceptor was not restarted"
 6:  mov I3, CLIENTS / 2                ; clients, part two: through the new acceptor
-7:  spawn client (PID, I0)
+7:  spawnm client (PID, I0) -> (I9)
     inc I3
     blt I3, CLIENTS, 7b
     mov I5, 0                          ; requests answered
     mov I6, 0                          ; failing handlers contained
     mov I3, 0
 8:  recv R3                            ; CLIENTS + 2 reports, in any order
-    mov R4, R3[0]
+    isa I9, R3, Down                   ; a client ended: fine, unless it failed
+    bz I9, 11f
+    bz.r R3->Down.code, 8b
+    strcat R4, "a client failed: ", R3->Down.code, ": ", R3->Down.message
+    throw R4                           ; say so, rather than wait forever
+11: mov R4, R3[0]
     mov I7, R3[1]
     strcmp I8, R4, "answered"
     bnz I8, 9f

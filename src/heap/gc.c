@@ -212,6 +212,11 @@ void gc_collect(Process *p) {
     p->gc_ns += plat_now_ns() - t0;
 }
 
+void heap_release_foreign(Process *p) {
+    for (Obj *o = p->heap; o; o = o->next)
+        if (o->kind == OBJ_FOREIGN) foreign_finalize(o); /* idempotent: the handle forgets its pointer */
+}
+
 void heap_free_all(Process *p) {
     while (p->heap) {
         Obj *o = p->heap;
