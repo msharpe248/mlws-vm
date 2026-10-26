@@ -1,0 +1,63 @@
+# Build MLWSVM and run every test mode on Linux (GCC and Clang) and macOS.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / ${{ matrix.cc }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, cc: gcc }
+          - { os: ubuntu-latest, cc: clang }
+          - { os: macos-latest, cc: clang }
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libffi (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libffi-dev pkg-config
+
+      # ThreadSanitizer cannot map its shadow memory with the kernel's default
+      # mmap randomisation on recent Ubuntu images.
+      - name: Allow ThreadSanitizer (Linux)
+        if: runner.os == 'Linux'
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Build
+        run: make CC=$CC -j4
+
+      - name: Tests
+        run: make CC=$CC test
+
+      - name: Tests on one worker thread
+        run: MLWSVM_THREADS=1 ./mlwsvm test tests examples
+
+      - name: GC stress
+        run: make CC=$CC check-gc
+
+      - name: Tools (monitor, top, profiler, tracer)
+        run: make CC=$CC check-tools
+
+      - name: AddressSanitizer + UBSan (+ LeakSanitizer on Linux)
+        run: make CC=$CC check-asan
+
+      - name: ThreadSanitizer
+        run: make CC=$CC check-tsan
+
+      - name: Without libffi
+        run: |
+          make CC=$CC BUILD=build-noffi BIN=mlwsvm-noffi FFI=0 -j4
+          ./mlwsvm-noffi test tests examples
+
+      - name: Benchmarks (output checks)
+        run: sh bench/run.sh ./mlwsvm

@@ -11,7 +11,8 @@ for f in bench/*.masm; do
     ms=$(echo "$stats" | sed -n 's/^wall time: *\([0-9.]*\) ms/\1/p')
     insns=$(echo "$stats" | sed -n 's/^all instructions: *\([0-9]*\).*/\1/p')
     rate=$(awk -v i="$insns" -v t="$ms" 'BEGIN { if (t > 0) printf "%.1f", i / t / 1000; }')
-    [ "$out" = "$want" ] && ok=ok || ok="WRONG: $out"
+    if [ "$out" = "$want" ]; then ok=ok; else ok="WRONG: $out"; bad=1; fi
     printf "%-14s %10s %12s %12s  %s\n" "$name" "$ms" "$insns" "$rate" "$ok"
 done
 rm -f "${TMPDIR:-/tmp}/mlwsvm-bench.$$"
+exit ${bad:-0}

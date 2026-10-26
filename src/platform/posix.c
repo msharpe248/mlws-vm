@@ -2,6 +2,9 @@
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE
+#ifdef __linux__
+#define _GNU_SOURCE /* RTLD_DEFAULT */
+#endif
 #include "platform.h"
 
 #include <arpa/inet.h>

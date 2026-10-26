@@ -149,4 +149,5 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M9 Performance: multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes) | done |
 | M9 Performance: generational GC, more specialised memory forms | deferred: measured as low value for now ([PERFORMANCE.md](docs/PERFORMANCE.md)) |
 | M10 Calling C: extension API, declarative FFI, trusted installation (`mlwsvm ext`) | done ([EXTENDING.md](docs/EXTENDING.md)) |
-| M11 Standard library | proposed ([ROADMAP.md](docs/ROADMAP.md)) |
+| M11 Linux and CI | in progress |
+| M12 I/O core, files and the OS · M13 networking · M14 text and JSON · M15 supervised HTTP server · M16 embedding API | planned ([ROADMAP.md](docs/ROADMAP.md#next-milestones)) |

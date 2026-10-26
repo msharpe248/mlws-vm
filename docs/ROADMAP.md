@@ -1,9 +1,25 @@
 # MLWSVM Roadmap
 
-What is left to do after milestones M0–M9, in suggested order. Milestones M0–M9
-are complete. Their status, and the measurements behind each deferral, are in
-[README.md](../README.md#status-and-roadmap) and
-[PERFORMANCE.md](PERFORMANCE.md).
+Milestones M0–M10 are complete (see [README.md](../README.md#status-and-roadmap)).
+The aim of the next milestones is to make MLWSVM worth targeting: programs on it
+should be able to do real work (files, the OS, the network, text and data), and
+its distinctive feature (isolated, parallel, supervised processes) should be
+easy to show off. The scripting language is a separate project.
+
+## Next milestones
+
+| Milestone | Contents | Done when |
+|---|---|---|
+| **M11 Linux and CI** | Build and pass every test mode on Linux. GitHub Actions on Linux and macOS: `test`, `check-gc`, `check-asan` (with LeakSanitizer on Linux), `check-tsan`, `check-tools`, and a build without libffi | CI is green on both |
+| **M12 I/O core, files and the OS** | An event loop inside the scheduler (kqueue on macOS and the BSDs, epoll on Linux): a process waiting for I/O waits like `recv`, costing no thread. `std.fs` (files, directories, metadata, stdin/stdout/stderr as streams), `std.os` (arguments, environment, exit status, running commands with pipes) | A program can copy files, walk directories and run a pipeline of commands, with many processes doing I/O at once |
+| **M13 Networking** | `std.net`: TCP listen/accept/connect/read/write, UDP, DNS (on the I/O thread pool), timeouts, all on the event loop | An echo server holds 10,000 idle connections as 10,000 processes |
+| **M14 Text and data** | `std.text`: a safe `format`, UTF-8 iteration and validation, case mapping, split/join/trim/find/replace. `std.json`: parse and serialize, with depth and size limits | JSON round-trips a test corpus; `format` covers integers, floats, strings and padding |
+| **M15 Showcase: a supervised HTTP server** | `std.proc` (a name → pid registry, request/reply calls with timeouts, supervisors with restart strategies); `examples/http`: one process per connection, per-connection quotas, a crash in a handler is contained and logged, watched live with `mlwsvm top`; a load-test benchmark | The example serves requests under load while handlers are killed and restarted |
+| **M16 Embedding API** | `libmlwsvm` (static and shared) and `include/mlwsvm/embed.h`: create a VM, set options, load modules from files or memory, call functions, send messages, register natives (reusing the extension API), and an example C host program | A C program embeds the VM and calls MLWSVM code both ways |
+
+Later, when real use asks for them: the FFI additions (section 1), the rest of
+the standard library (section 2), Windows (section 3), and the performance work
+(section 4).
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -126,7 +142,7 @@ So these callbacks become **messages**:
 * **Windows**: ACL checks in `plat_path_trusted` (POSIX permission checks are
   done).
 
-## 2. Standard library (proposed: M11)
+## 2. Standard library (M12–M15 cover the first part)
 
 Proposed scope: everything that needs the operating system, or must be fast and
 correct (parsing, formatting, hashing), lives in the VM's standard library. Pure
@@ -156,9 +172,10 @@ untrusted process cannot reach the OS at all (compare Deno's permissions).
 
 ## 3. Platform
 
-* Build and test on Windows (`src/platform/win32.c` is written but untested,
-  including the thread layer), and on Linux in CI (LeakSanitizer runs there).
-* Continuous integration running `make test check-gc check-asan check-tsan`.
+* Linux and CI: M11.
+* Windows: `src/platform/win32.c` is written but untested, including the
+  thread layer. It needs CI on Windows, MSVC or clang-cl builds, C11 atomics
+  there, and an IOCP backend for the M12 event loop.
 
 ## 4. Performance (when measurements call for it)
 
