@@ -1,5 +1,6 @@
 ; monitor delivers a Down message when the watched process ends: normal exits
-; carry the exit code, failures the error code and message.
+; carry the exit code, failures the error code and message. spawnm monitors
+; from the start, so even a child that ends at once is reported properly.
 .include "std/test.inc"
 .func ok -> i64
     ret 7
@@ -14,15 +15,13 @@
     ret
 .endf
 .func main
-    spawn ok -> (I0)
-    monitor I0
+    spawnm ok -> (I0)
     recv R0
     ASSERT_EQ R0->Down.pid, I0
     ASSERT_EQ R0->Down.exit, 7
     ASSERT_FALSE R0->Down.code, r       ; null: a normal exit
 
-    spawn boom -> (I1)
-    monitor I1
+    spawnm boom -> (I1)
     recv R1
     strcmp I2, R1->Down.code, "E_BOUNDS"
     ASSERT_EQ I2, 0

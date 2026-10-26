@@ -43,6 +43,10 @@ VM *vm_new(void) {
     for (int i = 0; i < QUOTA__COUNT; i++) vm->default_quota[i] = UINT64_MAX;
     const char *stress = getenv("MLWSVM_GC_STRESS");
     vm->gc_stress = stress && *stress && strcmp(stress, "0") != 0;
+    const char *threads = getenv("MLWSVM_THREADS");
+    if (threads && *threads) vm->threads = atoi(threads);
+    vm->lock = plat_lock_new();
+    vm->out_lock = plat_lock_new();
     op_init();
     natives_register_builtin(vm);
     return vm;
@@ -77,6 +81,7 @@ static void lmodule_free(LModule *lm) {
 void vm_free(VM *vm) {
     if (!vm) return;
     if (vm->tools_free) vm->tools_free(vm);
+    sched_free(vm); /* every remaining process */
     for (size_t i = 0; i < vm->mods.n; i++) lmodule_free(vm->mods.v[i]);
     VEC_FREE(vm->mods);
     smap_free(&vm->modmap);
@@ -84,13 +89,11 @@ void vm_free(VM *vm) {
     VEC_FREE(vm->libpaths);
     for (size_t i = 0; i < vm->loading.n; i++) free(vm->loading.v[i]);
     VEC_FREE(vm->loading);
-    for (size_t i = 0; i < vm->procs.n; i++) proc_free(vm->procs.v[i]);
-    VEC_FREE(vm->procs);
-    VEC_FREE(vm->runq);
-    VEC_FREE(vm->timers);
     VEC_FREE(vm->exits);
-    copy_state_free(vm);
+    copy_state_free();
     smap_free(&vm->natives);
+    plat_lock_free(vm->lock);
+    plat_lock_free(vm->out_lock);
     free(vm);
 }
 
@@ -102,4 +105,8 @@ void vm_add_libpath(VM *vm, const char *dir) {
 
 void vm_register_native(VM *vm, const NativeDef *nd) { smap_put(&vm->natives, nd->name, (void *)nd); }
 
-void vm_write(VM *vm, const char *s, size_t n) { vm->out(vm->out_ctx, s, n); }
+void vm_write(VM *vm, const char *s, size_t n) {
+    plat_lock(vm->out_lock);
+    vm->out(vm->out_ctx, s, n);
+    plat_unlock(vm->out_lock);
+}

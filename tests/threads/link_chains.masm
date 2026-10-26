@@ -1,0 +1,43 @@
+; threads: 4
+; 50 chains of 6 linked processes. Killing the head of each chain takes the
+; whole chain down, across threads; main monitors each tail and must see 50
+; Down messages with E_LINKED.
+.include "std/test.inc"
+; Link to our parent first, then grow the chain; the tail reports to main,
+; which proves every link of its chain is in place.
+.func chain(i64 main, i64 parent, i64 depth)
+    bz parent, 1f
+    link parent
+1:  bz depth, 2f
+    sub I3, depth, 1
+    spawn chain (main, PID, I3)
+    recv I4                            ; never arrives
+2:  send main, PID
+    recv I4
+    ret
+.endf
+.func main
+    alloc P0, 50 * 8
+    mov I0, 0
+1:  spawn chain (PID, 0, 5) -> (I1)
+    mov P0[I0], I1
+    inc I0
+    blt I0, 50, 1b
+    mov I0, 0
+2:  recv I2                            ; a tail
+    monitor I2
+    inc I0
+    blt I0, 50, 2b
+    mov I0, 0
+3:  mov I1, P0[I0]
+    kill I1
+    inc I0
+    blt I0, 50, 3b
+    mov I0, 0
+4:  recv R0
+    strcmp I3, R0->Down.code, "E_LINKED"
+    ASSERT_EQ I3, 0
+    inc I0
+    blt I0, 50, 4b
+    ret 0
+.endf

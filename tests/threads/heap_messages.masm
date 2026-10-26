@@ -1,0 +1,41 @@
+; threads: 4
+; 16 producers on different threads each send 50 lists of 20 integers, built in
+; their own heaps. Each list is deep-copied into the receiver's heap; the
+; collector runs in every process while the copies are in flight.
+.include "std/test.inc"
+.func producer(i64 parent, i64 p)
+    mov I2, 0                          ; message n
+1:  lnew R0
+    mov I3, 0                          ; k
+2:  mul I4, p, 1000
+    mul I5, I2, 20
+    add I4, I4, I5, I3
+    lpush R0, I4
+    tostr R1, I4                       ; garbage, to keep the collector busy
+    inc I3
+    blt I3, 20, 2b
+    send parent, R0
+    inc I2
+    blt I2, 50, 1b
+    ret
+.endf
+.func main
+    mov I0, 0
+1:  spawn producer (PID, I0)
+    inc I0
+    blt I0, 16, 1b
+    mov I1, 0                          ; total
+    mov I0, 0                          ; messages received
+2:  recv R0
+    len I2, R0
+    ASSERT_EQ I2, 20
+    mov I3, 0
+3:  mov I4, R0[I3]
+    add I1, I4
+    inc I3
+    blt I3, 20, 3b
+    inc I0
+    blt I0, 16 * 50, 2b
+    ASSERT_EQ I1, 127992000
+    ret 0
+.endf

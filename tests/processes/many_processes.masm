@@ -18,8 +18,12 @@
     inc I0
     blt I0, 2000, 2b
     ASSERT_EQ I1, 2664667000
-    yield                              ; let the last workers finish
-    ncall "proc.count" () -> (I3)
-    ASSERT_EQ I3, 1
+    mov I4, 0                          ; the last workers may still be finishing,
+3:  ncall "proc.count" () -> (I3)      ; on other threads: wait (up to a second)
+    beq I3, 1, 4f
+    sleep 1
+    inc I4
+    blt I4, 1000, 3b
+4:  ASSERT_EQ I3, 1
     ret 0
 .endf

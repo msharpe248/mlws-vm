@@ -19,6 +19,12 @@
 #define MLWS_NORETURN
 #endif
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#define MLWS_THREAD_LOCAL __declspec(thread)
+#else
+#define MLWS_THREAD_LOCAL _Thread_local
+#endif
+
 void *xmalloc(size_t n);
 void *xcalloc(size_t n, size_t sz);
 void *xrealloc(void *p, size_t n);

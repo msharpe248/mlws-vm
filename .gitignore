@@ -5,3 +5,5 @@ build-asan/
 *.mlwso
 *.dSYM/
 .zvec-grep/
+build-tsan/
+/mlwsvm-tsan

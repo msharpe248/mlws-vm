@@ -207,15 +207,19 @@ directly:
 
 | Source construct | MLWSVM |
 |---|---|
-| `spawn f(x)` / `go f(x)` / a new actor | `spawn f (x) -> (pid)` |
+| `spawn f(x)` / `go f(x)` / a new actor | `spawn f (x) -> (pid)` (runs in parallel) |
 | actor `send` / channel write to a known receiver | `send pid, value` (deep copy) |
 | actor `receive` / channel read | `recv dst`, or `recvt dst, ms, Ltimeout` |
-| `await task` | `monitor pid` then `recv` the result message, then the `Down` |
-| a supervisor | `monitor` (to observe) or `link` (to fail together) |
+| `await task` | `spawnm f (x) -> (pid)`, then `recv` the result message, then the `Down` |
+| a supervisor | `spawnm` / `monitor` (to observe) or `spawnl` / `link` (to fail together) |
 | a sandbox | spawn a wrapper that executes `quota` and then calls the real code |
 
 * Messages are values, not shared objects. For a request/reply protocol, send a
   small struct or list that includes the reply-to pid (`PID`).
+* Processes run in parallel, so don't rely on the order in which independent
+  processes run: only messages order events. In particular, to observe a child,
+  start it with `spawnm` or `spawnl`; a child started with `spawn` can finish
+  before a following `monitor` (which then reports `E_NOPROC`).
 * For selective receive (Erlang `receive` with patterns), loop on `recv`, inspecting
   each message with `isa` / `typeof`, and keep the ones you don't want yet in a list.
 * `examples/workers.masm` shows a supervised worker pool.
@@ -300,4 +304,4 @@ planned, and will only be *additions*:
 
 | Milestone | Adds |
 |---|---|
-| M9 | Performance: computed-goto dispatch, multi-threaded scheduler, generational GC |
+| M9 | Performance: computed-goto dispatch, generational GC (the multi-threaded scheduler is done, and needed no changes to programs) |

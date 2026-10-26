@@ -3,12 +3,13 @@
 #include "vm.h"
 
 #include "../heap/heap.h"
+#include "../platform/platform.h"
 #include "proc_internal.h"
 
 Process *proc_new(VM *vm) {
     Process *p = xcalloc(1, sizeof *p);
     p->vm = vm;
-    p->pid = vm->next_pid++;
+    p->lock = plat_lock_new();
     uint32_t bytes = vm->stack_words * 8;
     p->stack.data = xcalloc(bytes, 1);
     p->stack.tags = xcalloc(vm->stack_words, 1);
@@ -34,16 +35,20 @@ Process *proc_new(VM *vm) {
     }
     for (int b = 0; b < NBANKS; b++) p->rcap[b] = 0;
     memcpy(p->quota, vm->default_quota, sizeof p->quota);
-    VEC_PUSH(vm->procs, p); /* pids are dense: pid - 1 indexes vm->procs */
+    /* The pid is assigned now; the process joins the table in sched_start. */
+    plat_lock(vm->lock);
+    p->pid = vm->next_pid++;
     vm->live++;
     vm->spawned++;
     if (vm->live > vm->max_live) vm->max_live = vm->live;
+    plat_unlock(vm->lock);
     return p;
 }
 
-void proc_start(Process *p, Function *fn, const Word *args, int nargs) {
+void proc_start(Process *p, Function *fn, Obj *closure, const Word *args, int nargs) {
     p->entry = fn;
     proc_push_frame(p, fn, NULL);
+    p->frames[0].closure = closure;
     const Frame *fr = &p->frames[p->nframes - 1];
     int cnt[NBANKS] = {0};
     for (int k = 0; k < nargs; k++) {
@@ -56,16 +61,19 @@ void proc_start(Process *p, Function *fn, const Word *args, int nargs) {
         default: p->preg[at] = args[k].p; break;
         }
     }
-    sched_ready(p->vm, p);
+    sched_start(p->vm, p);
 }
 
 void proc_free(Process *p) {
     if (!p) return;
     VM *vm = p->vm;
-    if (p->pid && p->pid <= vm->procs.n && vm->procs.v[p->pid - 1] == p) vm->procs.v[p->pid - 1] = NULL;
+    if (p->published) sched_unpublish(p);
     if (p->state != PROC_DONE && p->state != PROC_FAILED) vm->live--;
     vm->insns_retired += p->insns;
     VEC_FREE(p->mbox);
+    for (size_t i = 0; i < p->inbox.n; i++) gc_free_list(p->inbox.v[i].objs);
+    VEC_FREE(p->inbox);
+    plat_lock_free(p->lock);
     VEC_FREE(p->links);
     VEC_FREE(p->monitors);
     heap_free_all(p);
@@ -213,9 +221,9 @@ int proc_run_slice(Process *p, uint32_t budget) {
     p->jb = &jb;
     if (VM_SETJMP(jb)) { /* every throw and trap lands here */
         p->jb = NULL;
-        if (p->vm->pending_spawn) { /* spawn trapped while copying arguments */
-            proc_free(p->vm->pending_spawn);
-            p->vm->pending_spawn = NULL;
+        if (p->pending_spawn) { /* spawn trapped while copying arguments */
+            proc_free(p->pending_spawn);
+            p->pending_spawn = NULL;
         }
         if (unwind(p)) return SLICE_YIELD; /* continue at the handler next turn */
         describe_uncaught(p);

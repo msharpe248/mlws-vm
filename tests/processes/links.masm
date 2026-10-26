@@ -1,6 +1,7 @@
 ; Linked processes fail together; a normal exit does not propagate.
 .include "std/test.inc"
 .func quiet
+    recv I0                            ; exits when told to
     ret
 .endf
 .func partner(i64 n)
@@ -15,8 +16,11 @@
 .endf
 .func main
     spawn quiet -> (I0)
-    link I0                            ; quiet exits normally: we are unaffected
-    yield
+    link I0
+    monitor I0
+    send I0, 1                         ; quiet exits normally: we are unaffected
+    recv R0
+    ASSERT_FALSE R0->Down.code, r
     spawn partner (1) -> (I1)
     monitor I1
     spawn crashy (I1)

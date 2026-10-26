@@ -4,6 +4,7 @@
 #define MLWSVM_VM_H
 
 #include <setjmp.h>
+#include <stdatomic.h>
 
 /* POSIX setjmp may save the signal mask with a system call; the VM never
  * changes signal masks, so use the cheap variant (one setjmp per time slice). */
@@ -100,17 +101,15 @@ typedef struct {
 /* Called before every instruction while a tool (debugger, trace, profiler) is
  * active; returning true stops the scheduler before the instruction runs. */
 typedef bool (*InsnHook)(struct Process *p, uint32_t pc);
-/* Called by the scheduler between time slices (e.g. to serve the monitor);
+/* Called by worker thread 0 between time slices (e.g. to serve the monitor);
  * `wait_ns` > 0 means the VM is idle and may block for that long. */
 typedef void (*PollHook)(struct VM *vm, uint64_t wait_ns);
 
 /* Per-process resource limits (the `quota` instruction kinds). */
 enum { QUOTA_HEAP = 0, QUOTA_RAW = 1, QUOTA_MAILBOX = 2, QUOTA_INSNS = 3, QUOTA__COUNT };
 
-/* A timer heap entry: wake process `pid` at `at` (ns), if still applicable. */
-typedef struct {
-    uint64_t at, pid;
-} Timer;
+struct PlatLock;
+struct Sched;
 
 typedef struct VM {
     VEC(LModule *) mods;
@@ -122,20 +121,17 @@ typedef struct VM {
     void *out_ctx;
     uint32_t stack_words;
     uint32_t max_frames;
-    uint64_t next_pid;
+    uint64_t next_pid;           /* under `lock` */
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
     uint64_t gc_min_threshold;
     /* processes and scheduling (sched.c) */
-    VEC(struct Process *) procs; /* indexed by pid - 1; NULL once freed */
-    VEC(uint64_t) runq;          /* ring buffer of ready pids */
-    size_t runq_head, runq_len;
-    VEC(Timer) timers;           /* min-heap by wake time */
-    struct Process *current;     /* process executing an instruction, or NULL */
+    struct Sched *sched;         /* process table, run queues, timers, worker threads */
+    int threads;                 /* worker threads; 0 = one per core (MLWSVM_THREADS) */
+    struct PlatLock *lock;       /* pid allocation, counters, exit records */
+    struct PlatLock *out_lock;   /* program output and crash reports */
     uint64_t main_pid;           /* finishing it ends the program; freed by its runner */
-    void *copy_state;            /* scratch for msg_copy (heap/copy.c) */
-    struct Process *pending_spawn; /* child being set up by spawn (freed if that traps) */
-    uint64_t insns_retired;      /* instructions of processes already freed */
-    uint64_t live, spawned, max_live, slices;
+    _Atomic uint64_t insns_retired; /* instructions of processes already freed */
+    _Atomic uint64_t live, spawned, max_live, slices;
     uint32_t slice_insns;        /* time slice length in instructions */
     uint64_t default_quota[QUOTA__COUNT];
     OutputFn err_out;            /* crash reports of unobserved processes */
@@ -146,7 +142,7 @@ typedef struct VM {
     void *tools;                 /* tool state, owned by src/tools */
     void (*tools_free)(struct VM *vm);
     struct Process *stopped;     /* stopped by the hook; resumes first */
-    VEC(ExitRecord) exits;       /* ring of recent exits */
+    VEC(ExitRecord) exits;       /* ring of recent exits (under `lock`) */
     size_t exits_next;
     uint64_t start_ns;
     bool hold;                   /* --hold: keep serving the monitor after main ends */
@@ -195,6 +191,16 @@ typedef struct {
     uint8_t tag;
 } Message;
 
+/* A message delivered to a process but not yet taken into its heap: the
+ * sender copies the value into a detached list of objects (`objs`, totalling
+ * `bytes`), which the receiver adopts on its own thread. */
+typedef struct {
+    Word v;
+    uint8_t tag;
+    Obj *objs;
+    uint64_t bytes, nobjs;
+} InMsg;
+
 typedef VEC(uint64_t) PidVec;
 
 struct Process {
@@ -234,19 +240,28 @@ struct Process {
     VEC(Obj *) markstack;
     Obj *exception; /* being thrown or just caught (a GC root) */
     uint64_t exceptions_thrown;
-    /* processes (sched.c) */
+    /* processes (sched.c). Fields marked [L] are shared with other threads and
+     * guarded by `lock`; the rest belong to the thread running the process. */
     Function *entry;
-    VEC(Message) mbox;           /* GC roots */
+    struct PlatLock *lock;
+    VEC(Message) mbox;           /* taken messages, in this heap (GC roots) */
     size_t mbox_head;
+    VEC(InMsg) inbox;            /* [L] delivered, not yet taken */
+    _Atomic uint64_t mcount;     /* messages waiting: mbox + inbox */
     uint64_t wake_at;            /* SLEEPING, or WAITING with a recvt deadline */
     bool deadline_set;           /* recvt is waiting with a timeout */
-    bool deadlock;               /* recv must raise E_DEADLOCK */
-    bool kill_pending;           /* killed while running: stop at the next instruction */
-    bool in_runq;
+    bool deadlock;               /* [L] recv must raise E_DEADLOCK */
+    bool kill_pending;           /* killed by its own thread: stop at the next instruction */
+    bool kill_req;               /* [L] killed by another thread: stop after this slice */
+    bool in_runq;                /* [L] */
+    bool published;              /* in the process table */
     bool raising;                /* building an Error: exempt from the heap quota */
-    PidVec links;
-    PidVec monitors;             /* pids watching this process */
-    uint64_t quota[QUOTA__COUNT];
+    char kill_code[32];          /* [L] why kill_req was set */
+    char kill_msg[256];
+    PidVec links;                /* [L] */
+    PidVec monitors;             /* [L] pids watching this process */
+    struct Process *pending_spawn; /* child being set up by spawn (freed if that traps) */
+    uint64_t quota[QUOTA__COUNT]; /* the mailbox quota is [L] */
     uint64_t cpu_ns, msgs_sent, msgs_received;
 };
 
@@ -273,9 +288,10 @@ MLWS_NORETURN void proc_throw(Process *p, Obj *ex);
 /* Run up to `budget` instructions; returns a SLICE_* code. On SLICE_FAILED,
  * p->err describes the failure. */
 int proc_run_slice(Process *p, uint32_t budget);
-/* Push the entry frame of a new process and bind its arguments. */
-void proc_start(Process *p, Function *fn, const Word *args, int nargs);
-Process *vm_process(VM *vm, uint64_t pid); /* live process or NULL */
+/* Push the entry frame of a new process (running `closure`, or NULL), bind
+ * its arguments, and hand it to the scheduler. */
+void proc_start(Process *p, Function *fn, Obj *closure, const Word *args, int nargs);
+Process *vm_process(VM *vm, uint64_t pid); /* live process or NULL (tools; world stopped) */
 Segment *proc_segment(Process *p, uint64_t ptr);
 /* Inline fast path of proc_segment for valid pointers; errors go the slow way. */
 static inline Segment *proc_segment_fast(Process *p, uint64_t ptr) {
@@ -298,19 +314,32 @@ int interp_run(Process *p, uint32_t budget); /* SLICE_* */
 void interp_quicken(Insn *in);
 void interp_quicken_function(Function *f);
 
-/* sched.c */
-void sched_ready(VM *vm, Process *p);
-void sched_add_timer(VM *vm, Process *p);
+/* sched.c - see docs/ABI.md ("Scheduling"). The `p` arguments are the
+ * calling (running) process; errors trap in it. */
+void sched_start(VM *vm, Process *p); /* publish a new process and make it ready */
 /* Run the scheduler until `main` finishes (returns false) or a tool hook
  * stops it (returns true; call again to resume). */
 bool sched_run(VM *vm, Process *main);
-void sched_finish(VM *vm, Process *p, bool failed); /* notify links/monitors; frees non-main */
-void sched_kill(VM *vm, Process *target, const char *code, const char *msg);
-void sched_shutdown(VM *vm, Process *keep);
-void sched_down_noproc(VM *vm, Process *watcher, uint64_t pid);
+void sched_send(Process *p, uint64_t pid, Word v, uint8_t tag);
+void sched_take_inbox(Process *p); /* move delivered messages into p's mailbox */
+void sched_kill(Process *p, uint64_t pid, const char *code, const char *msg);
+void sched_link(Process *p, uint64_t pid);
+void sched_add_link(Process *p, uint64_t pid); /* p's side of a link only */
+void sched_monitor(Process *p, uint64_t pid);
+void sched_set_quota(Process *p, int kind, uint64_t limit);
+bool sched_alive(VM *vm, uint64_t pid);
+void sched_shutdown(VM *vm, Process *keep); /* free every process except `keep` */
+void sched_free(VM *vm);
+/* Pause every other worker thread at a time-slice boundary (tools that read
+ * other processes' state), and let them continue. No-ops when single-threaded. */
+void sched_stop_world(VM *vm);
+void sched_start_world(VM *vm);
+/* The process table, for tools: only while the world is stopped. */
+Process *vm_proc_at(VM *vm, uint64_t pid); /* any process still in the table */
+uint64_t vm_pid_end(VM *vm);               /* one past the highest pid assigned */
 /* Copy a value from one process into another's heap (heap/copy.c). */
 Word msg_copy(Process *from, Process *to, Word v, uint8_t tag);
-void copy_state_free(VM *vm);
+void copy_state_free(void); /* the calling thread's copy scratch */
 
 /* natives.c */
 void natives_register_builtin(VM *vm);

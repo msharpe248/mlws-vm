@@ -1,0 +1,30 @@
+; bench: 16 CPU-bound processes at once (4M loop iterations each), to measure
+; how the scheduler spreads independent work across worker threads
+; expect-stdout: 187999998
+.func worker(i64 parent, i64 seed)
+    mov I2, 0                  ; acc
+    mov I3, 0                  ; i
+1:  mul I4, I3, I3
+    add I4, seed
+    rem I4, 7
+    add I2, I4
+    inc I3
+    blt I3, 4000000, 1b
+    send parent, I2
+    ret
+.endf
+.func main
+    mov I0, 0
+1:  spawn worker (PID, I0)
+    inc I0
+    blt I0, 16, 1b
+    mov I1, 0
+    mov I0, 0
+2:  recv I2
+    add I1, I2
+    inc I0
+    blt I0, 16, 2b
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ret 0
+.endf

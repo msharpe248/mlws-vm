@@ -1,0 +1,52 @@
+; spawnm and spawnl set up the monitor or link before the child can run, so a
+; child that ends at once is still observed. (With `spawn` then `monitor`, a
+; child on another thread may already be gone: the Down says E_NOPROC.)
+.include "std/test.inc"
+.func quick(i64 n) -> i64
+    ret n
+.endf
+.func crash
+    throw "crash"
+.endf
+; Linked to a child that crashes at once: dies with E_LINKED.
+.func supervisor
+    spawnl crash
+    recv I0                            ; never arrives
+    ret 0
+.endf
+.func adder(i64 x) -> i64
+    add I1, UP[0], x
+    ret I1
+.endf
+.func supervisor_i
+    closure crash () -> (R0)
+    spawnil R0 ()
+    recv I0
+    ret 0
+.endf
+.func main
+    mov I0, 0                          ; 200 children that return at once
+1:  spawnm quick (I0) -> (I1)
+    recv R0
+    ASSERT_EQ R0->Down.pid, I1
+    ASSERT_EQ R0->Down.exit, I0
+    ASSERT_FALSE R0->Down.code, r
+    inc I0
+    blt I0, 200, 1b
+
+    spawnm supervisor
+    recv R1
+    strcmp I2, R1->Down.code, "E_LINKED"
+    ASSERT_EQ I2, 0
+
+    closure adder (40) -> (R2)         ; the closure forms
+    spawnim R2 (2) -> (I3)
+    recv R3
+    ASSERT_EQ R3->Down.pid, I3
+    ASSERT_EQ R3->Down.exit, 42
+    spawnm supervisor_i
+    recv R4
+    strcmp I2, R4->Down.code, "E_LINKED"
+    ASSERT_EQ I2, 0
+    ret 0
+.endf

@@ -1,0 +1,33 @@
+; threads: 4
+; Kill processes that are busy computing, likely on other threads: each stops
+; at the end of its time slice, and its monitor sees E_KILLED.
+.include "std/test.inc"
+.func spin
+    mov I0, 0
+1:  inc I0
+    jmp 1b
+.endf
+.func main
+    alloc P0, 8 * 8
+    mov I0, 0
+1:  spawn spin -> (I1)
+    monitor I1
+    mov P0[I0], I1
+    inc I0
+    blt I0, 8, 1b
+    sleep 5                            ; let them get going
+    mov I0, 0
+2:  mov I1, P0[I0]
+    kill I1
+    alive I2, I1                       ; dead as far as anyone can tell
+    ASSERT_FALSE I2
+    inc I0
+    blt I0, 8, 2b
+    mov I0, 0
+3:  recv R0
+    strcmp I3, R0->Down.code, "E_KILLED"
+    ASSERT_EQ I3, 0
+    inc I0
+    blt I0, 8, 3b
+    ret 0
+.endf

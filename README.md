@@ -49,9 +49,10 @@ base:
   arrays, structs declared in assembly (`R0->Point.x`), dynamically typed lists,
   insertion-ordered maps, closures, BigInts (`123n`) and exact decimals (`19.99d`).
   The collector is a precise, per-process mark-sweep.
-* **Many isolated processes**: preemptive scheduling, `spawn`/`send`/`recv` with
-  deep-copied messages, timeouts, Erlang-style `link`/`monitor` supervision, and
-  per-process quotas on heap, raw memory, mailbox size and CPU.
+* **Many isolated processes, in parallel**: preemptive scheduling on one worker
+  thread per core with work stealing, `spawn`/`send`/`recv` with deep-copied
+  messages, timeouts, Erlang-style `link`/`monitor` supervision, and per-process
+  quotas on heap, raw memory, mailbox size and CPU.
 * **Structured exceptions**: `.try` regions, `throw`/`catch`, and zero cost until
   something is thrown. Every runtime fault is catchable as an `Error`.
 * **Tooling**: a gdb-style debugger (`mlwsvm debug`), an exact profiler with
@@ -59,8 +60,9 @@ base:
   dashboard, JSON API and `mlwsvm top`.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 100+ test programs, also run under
-  AddressSanitizer and UBSan, and with a garbage collection at every allocation.
+* **Tested in its own assembly**: 160+ test programs, also run under
+  AddressSanitizer and UBSan, under ThreadSanitizer on several threads, and with a
+  garbage collection at every allocation.
 
 ## Build and run
 
@@ -71,9 +73,11 @@ make check-gc                # the same, collecting garbage at every allocation
 make check-tools             # smoke-test the monitor, top, profiler and tracer
 make bench                   # benchmarks, with output checks (docs/PERFORMANCE.md)
 make check-asan              # both of the above, under AddressSanitizer + UBSan
+make check-tsan              # the tests on several threads, under ThreadSanitizer
 
 ./mlwsvm run examples/hello.masm
 ./mlwsvm run --stats examples/fib.masm
+./mlwsvm run --threads 1 examples/workers.masm   # one worker thread: deterministic order
 ./mlwsvm run --profile examples/fib.masm
 ./mlwsvm debug examples/fib.masm          # then: break fib, run, bt, print I0, ...
 ./mlwsvm run --monitor 7070 --hold examples/workers.masm   # open http://127.0.0.1:7070/
@@ -135,5 +139,5 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M7 Tooling: `mlwsvm top`, debugger, trace/profiler, web dashboard | done |
 | M8 Closures, BigInt, decimal | done |
 | M9 Performance: single-thread interpreter (quickening, frames, `_setjmp`; 1.2–7.8× faster) | done |
-| M9 Performance: multi-threaded scheduler | next |
+| M9 Performance: multi-threaded scheduler (work stealing; 7.4× on 16 CPU-bound processes) | done |
 | M9 Performance: generational GC, more specialised memory forms | deferred: measured as low value for now ([PERFORMANCE.md](docs/PERFORMANCE.md)) |

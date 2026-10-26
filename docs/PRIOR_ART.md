@@ -79,6 +79,9 @@ encoding.
 | MLWSVM | Influences | How MLWSVM differs |
 |---|---|---|
 | Isolated processes; mailboxes; deep-copied messages; preemption by instruction count | **Erlang/BEAM**: processes, mailboxes, copying message passing, reduction counting | Our processes have *typed registers and mutable memory*. BEAM processes run a functional language with immutable terms. |
+| N worker threads, per-thread run queues, work stealing; a woken receiver is queued on the sender's thread | **BEAM** SMP schedulers (one per core, run-queue migration and stealing); **Go**'s scheduler (per-P queues, stealing half a victim's queue, the `runnext` slot); work stealing (Blumofe and Leiserson, Cilk); **Pony**'s actor scheduler | Nothing in a process is shared, so there are no locks on the interpreter's fast path. Only a process's inbox, links, monitors and scheduling state are locked. Another worker is woken only when a queue has a backlog, so a message ping-pong stays on one thread. |
+| Messages copied into a detached block of objects that the receiver adopts into its own heap | **BEAM** heap fragments ("m-bufs"), used when the receiver's heap is busy | Always done this way, so no heap is ever touched by two threads, and the collector needs no locks at all. |
+| Stop the world only for tools | Safepoints in the JVM and BEAM | The program itself never stops the world; only the monitor does, and only at time-slice boundaries. |
 | `link` / `monitor` / `Down` messages / unobserved crash reports | **BEAM**: links, monitors, `DOWN` messages, OTP supervision | `Down` is an ordinary struct, inspected with the same field operands as any other. |
 | The program ends when `main` ends; deadlock detection | **Go** (main returning ends the program; "all goroutines are asleep") | The deadlock is a *catchable* exception in `main`. |
 | Quotas that can only be lowered, inherited by children | Unix `setrlimit` (soft and hard limits); BEAM's `max_heap_size` | Covers heap, raw memory, mailbox size and instruction count. A sandbox is just a wrapper that lowers its own limits before calling untrusted code. |
@@ -98,8 +101,8 @@ encoding.
 | Binary format with LEB128 integers, branch targets as instruction indices | **WebAssembly**, DWARF (LEB128) | Branch targets are indices rather than byte offsets, so code can be re-encoded freely. |
 | One opcode table that generates the assembler, disassembler, verifier and docs | X-macro tables (LLVM's TableGen in spirit) | |
 | Debugger (`break`/`step`/`next`/`finish`/`bt`), profiler, tracer | **gdb**; flame graphs and the collapsed-stack format (Brendan Gregg); pprof-style hot lists | Breakpoints and stepping are per instruction across many processes; debugger sessions are scriptable from test files (`; debug-script:`) |
-| Live monitor, web dashboard, `top` | **Erlang's observer** and `etop`; Unix `top`; JVM JMX/VisualVM | Served from inside the single-threaded scheduler by polling a socket between time slices, so no extra thread or locks; plain JSON plus a text view |
-| Tests written in the VM's own assembly, with `; expect-*` comments | LLVM `lit`/FileCheck-style golden tests | Also run with a collection at every allocation (`make check-gc`) and under ASan/UBSan. |
+| Live monitor, web dashboard, `top` | **Erlang's observer** and `etop`; Unix `top`; JVM JMX/VisualVM | Served by the first worker thread, polling a socket between time slices, so no extra thread; other workers pause briefly per request for a consistent snapshot; plain JSON plus a text view |
+| Tests written in the VM's own assembly, with `; expect-*` comments | LLVM `lit`/FileCheck-style golden tests | Also run with a collection at every allocation (`make check-gc`), under ASan/UBSan, and on several threads under ThreadSanitizer. |
 
 ---
 
@@ -142,7 +145,8 @@ Current data points (see [PERFORMANCE.md](PERFORMANCE.md)): about 800M
 instructions/s on a tight register loop and about 290M/s on recursive `fib`, after
 quickening, on an Apple Silicon laptop with one thread. That is 10× faster than
 CPython 3.14 on the loop and about the same speed on `fib`. A two-process
-ping-pong reaches about 16M messages/s.
+ping-pong reaches about 19M messages/s, and 16 independent CPU-bound processes
+run 8.2× faster on the laptop's 18 cores than on one thread.
 
 ## Milestone log
 
@@ -154,7 +158,7 @@ ping-pong reaches about 16M messages/s.
 | M6 | Erlang/BEAM processes, mailboxes, links and monitors; Go's main-ends-program rule and deadlock detection; `setrlimit`-style quotas |
 | M7 | gdb's command set; Brendan Gregg's collapsed stacks for flame graphs; Erlang observer/etop and Unix top for the monitor |
 | M8 | Lua upvalues and flat closures; Knuth's Algorithm D (via Hacker's Delight); Java BigDecimal / Python decimal; JavaScript's `n` literal suffix |
-| M9 | Quickening: "quick" bytecodes in Smalltalk and early JVMs, Brunthaler's work on quickening, and CPython 3.11's specialising adaptive interpreter (PEP 659) |
+| M9 | Quickening: "quick" bytecodes in Smalltalk and early JVMs, Brunthaler's work on quickening, and CPython 3.11's specialising adaptive interpreter (PEP 659). Multi-threaded scheduler: BEAM SMP schedulers and heap fragments, Go's work-stealing scheduler and `runnext`, Cilk-style work stealing |
 
 ## References
 
@@ -172,3 +176,7 @@ ping-pong reaches about 16M messages/s.
 - Donald E. Knuth, *The Art of Computer Programming, Vol. 2: Seminumerical Algorithms*, §4.3.1 (Algorithm D); Henry S. Warren, *Hacker's Delight*, 2nd ed., ch. 9 (`divmnu`).
 - The Java `BigDecimal` documentation; Mike Cowlishaw, *General Decimal Arithmetic Specification*.
 - The Vale language's "generational references" design notes.
+- Robert D. Blumofe and Charles E. Leiserson, *Scheduling Multithreaded Computations by Work Stealing*, JACM, 1999.
+- Dmitry Vyukov, *Scalable Go Scheduler Design Doc*, 2012, and the Go runtime's `proc.go` (`runqsteal`, `runnext`).
+- Kenneth Lundin, *Inside the Erlang VM, with focus on SMP*, Erlang User Conference, 2008; the ERTS documentation on schedulers and heap fragments.
+- Sylvan Clebsch et al., *Deny Capabilities for Safe, Fast Actors* (Pony), AGERE 2015.

@@ -17,7 +17,7 @@ bool vm_run_file(VM *vm, const char *path, RunResult *res) {
     }
     Process *p = proc_new(vm);
     vm->main_pid = p->pid;
-    proc_start(p, main_fn, NULL, 0);
+    proc_start(p, main_fn, NULL, NULL, 0);
     uint64_t t0 = plat_now_ns();
     while (sched_run(vm, p)) {} /* a `break` with tools active stops; just resume */
     bool ok = p->state == PROC_DONE;

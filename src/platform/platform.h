@@ -30,4 +30,28 @@ bool plat_sock_write_all(int fd, const void *buf, size_t n);
 void plat_sock_close(int fd);
 bool plat_is_tty(void);                       /* stdout is a terminal */
 
+/* Threads (pthreads on POSIX, Win32 threads/SRW locks/condition variables). */
+typedef struct PlatThread PlatThread;
+/* A lock for short critical sections (os_unfair_lock on macOS); PlatMutex is
+ * the one to use with a condition variable. */
+typedef struct PlatLock PlatLock;
+PlatLock *plat_lock_new(void);
+void plat_lock_free(PlatLock *l);
+void plat_lock(PlatLock *l);
+void plat_unlock(PlatLock *l);
+typedef struct PlatMutex PlatMutex;
+typedef struct PlatCond PlatCond;
+PlatThread *plat_thread_start(void (*fn)(void *), void *arg);
+void plat_thread_join(PlatThread *t);
+PlatMutex *plat_mutex_new(void);
+void plat_mutex_free(PlatMutex *m);
+void plat_mutex_lock(PlatMutex *m);
+void plat_mutex_unlock(PlatMutex *m);
+PlatCond *plat_cond_new(void);
+void plat_cond_free(PlatCond *c);
+void plat_cond_wait(PlatCond *c, PlatMutex *m, uint64_t timeout_ns); /* 0 = no timeout */
+void plat_cond_signal(PlatCond *c);
+void plat_cond_broadcast(PlatCond *c);
+int plat_cpu_count(void);
+
 #endif

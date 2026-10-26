@@ -1,7 +1,8 @@
 /* monitor.c - `--monitor HOST:PORT`: a tiny HTTP/1.0 server polled by the
- * scheduler between time slices, so it needs no extra threads or locks. It
- * serves read-only JSON statistics, a plain-text table for `mlwsvm top`, and the
- * embedded web dashboard. See docs/TOOLING.md. */
+ * first worker thread between time slices, so it needs no thread of its own.
+ * Each request is served with the other workers paused (sched_stop_world), so
+ * it can read every process. It serves read-only JSON statistics, a plain-text
+ * table for `mlwsvm top`, and the embedded web dashboard. See docs/TOOLING.md. */
 #include "../heap/heap.h"
 #include "../platform/platform.h"
 #include "tools.h"
@@ -58,7 +59,7 @@ static void proc_json(StrBuf *b, const Process *p, bool detail) {
               "\"gc_count\":%llu,\"gc_ns\":%llu,\"exceptions\":%llu,\"objects\":%llu",
               (unsigned long long)p->insns, (unsigned long long)p->cpu_ns, (unsigned long long)p->heap_bytes,
               (unsigned long long)p->heap_peak, (unsigned long long)p->raw_bytes, stack_bytes(p), p->nframes,
-              p->mbox.n - p->mbox_head, (unsigned long long)p->msgs_sent, (unsigned long long)p->msgs_received,
+              (size_t)p->mcount, (unsigned long long)p->msgs_sent, (unsigned long long)p->msgs_received,
               (unsigned long long)p->gc_count, (unsigned long long)p->gc_ns, (unsigned long long)p->exceptions_thrown,
               (unsigned long long)(p->objects_allocated - p->gc_freed_objects));
     sb_puts(b, ",\"links\":[");
@@ -92,8 +93,8 @@ static void proc_json(StrBuf *b, const Process *p, bool detail) {
 
 static void vm_json(StrBuf *b, VM *vm) {
     uint64_t insns = vm->insns_retired, heap = 0, raw = 0;
-    for (size_t i = 0; i < vm->procs.n; i++) {
-        const Process *p = vm->procs.v[i];
+    for (uint64_t pid = 1, end = vm_pid_end(vm); pid < end; pid++) {
+        const Process *p = vm_proc_at(vm, pid);
         if (!p) continue;
         insns += p->insns;
         heap += p->heap_bytes;
@@ -141,8 +142,9 @@ static int cmp_cpu(const void *a, const void *b) {
 static void top_text(StrBuf *b, Monitor *mon, VM *vm) {
     uint64_t now = plat_now_ns(), insns = vm->insns_retired, heap = 0;
     VEC(Process *) ps = {0};
-    for (size_t i = 0; i < vm->procs.n; i++) {
-        Process *p = vm->procs.v[i];
+    uint64_t end = vm_pid_end(vm);
+    for (uint64_t pid = 1; pid < end; pid++) {
+        Process *p = vm_proc_at(vm, pid);
         if (!p) continue;
         insns += p->insns;
         heap += p->heap_bytes;
@@ -178,15 +180,15 @@ static void top_text(StrBuf *b, Monitor *mon, VM *vm) {
             sb_printf(&loc, "%s.%s+%u (%s:%u)", fr->fn->mod->m->name, fr->fn->name, fr->pc, path_basename(src), line);
         }
         sb_printf(b, "%6llu %-8s %5.1f %8s %8s %8s %7u %5zu %11s %4llu  %s\n", (unsigned long long)p->pid,
-                  STATE_NAMES[p->state], cpu, in, h, r, stack_bytes(p), p->mbox.n - p->mbox_head, msgs,
+                  STATE_NAMES[p->state], cpu, in, h, r, stack_bytes(p), (size_t)p->mcount, msgs,
                   (unsigned long long)p->gc_count, loc.s ? loc.s : "-");
         sb_free(&loc);
     }
     if (ps.n > 40) sb_printf(b, "   ... %zu more\n", ps.n - 40);
     /* remember CPU totals for the next sample */
-    VEC_GROW(mon->last_cpu, vm->procs.n);
-    for (size_t i = mon->last_cpu.n; i < vm->procs.n; i++) mon->last_cpu.v[i] = 0;
-    mon->last_cpu.n = vm->procs.n;
+    VEC_GROW(mon->last_cpu, end - 1);
+    for (size_t i = mon->last_cpu.n; i < end - 1; i++) mon->last_cpu.v[i] = 0;
+    mon->last_cpu.n = end - 1;
     for (size_t i = 0; i < ps.n; i++) mon->last_cpu.v[ps.v[i]->pid - 1] = ps.v[i]->cpu_ns;
     mon->last_top_ns = now;
     if (vm->exits.n) {
@@ -241,8 +243,8 @@ static void serve(Monitor *mon, VM *vm, int fd) {
     } else if (!strcmp(path, "/api/procs")) {
         sb_putc(&b, '[');
         bool first = true;
-        for (size_t i = 0; i < vm->procs.n; i++) {
-            const Process *p = vm->procs.v[i];
+        for (uint64_t pid = 1, end = vm_pid_end(vm); pid < end; pid++) {
+            const Process *p = vm_proc_at(vm, pid);
             if (!p) continue;
             if (!first) sb_putc(&b, ',');
             first = false;
@@ -251,7 +253,7 @@ static void serve(Monitor *mon, VM *vm, int fd) {
         sb_putc(&b, ']');
     } else if (!strncmp(path, "/api/proc/", 10)) {
         uint64_t pid = strtoull(path + 10, NULL, 10);
-        const Process *p = pid && pid <= vm->procs.n ? vm->procs.v[pid - 1] : NULL;
+        const Process *p = vm_proc_at(vm, pid);
         if (!p) {
             respond(fd, 404, json, "{\"error\":\"no such process\"}", 27);
             return;
@@ -277,7 +279,9 @@ static void monitor_poll(VM *vm, uint64_t wait_ns) {
     if (wait_ns) plat_wait_readable(mon->fd, wait_ns); /* idle: sleep until a request or the timer */
     int c;
     while ((c = plat_tcp_accept(mon->fd)) >= 0) {
+        sched_stop_world(vm); /* other worker threads pause while we read their processes */
         serve(mon, vm, c);
+        sched_start_world(vm);
         plat_sock_close(c);
     }
 }

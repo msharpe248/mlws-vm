@@ -14,10 +14,13 @@ dashboard and a `top`-style terminal view.
 | Terminal view | `mlwsvm top [HOST:PORT] [--once] [--interval MS]` | — |
 
 The profiler, tracer and debugger use one per-instruction hook, which is
-installed only while one of them is active. The monitor needs no hook: the
-scheduler polls its socket about once a millisecond between time slices, and
-while waiting when the VM is idle. That is why it needs no extra thread and no
-locks.
+installed only while one of them is active. A program run under them uses a
+single worker thread, so traces and profiles are deterministic and the debugger
+can stop the whole program. The monitor needs no hook: the first worker thread
+polls its socket about once a millisecond between time slices, and while it waits
+when idle, so the monitor needs no thread of its own. To answer a request it
+briefly pauses the other worker threads at their next time-slice boundary ("stop
+the world"), so the numbers it reports are a consistent snapshot.
 
 ---
 

@@ -137,6 +137,86 @@ bool plat_sock_write_all(int fd, const void *buf, size_t n) {
 void plat_sock_close(int fd) { closesocket((SOCKET)fd); }
 
 bool plat_is_tty(void) { return _isatty(1) != 0; }
+
+struct PlatThread {
+    HANDLE h;
+    void (*fn)(void *);
+    void *arg;
+};
+struct PlatMutex {
+    SRWLOCK l;
+};
+struct PlatCond {
+    CONDITION_VARIABLE c;
+};
+struct PlatLock {
+    SRWLOCK l;
+};
+
+PlatLock *plat_lock_new(void) {
+    PlatLock *l = xcalloc(1, sizeof *l);
+    InitializeSRWLock(&l->l);
+    return l;
+}
+
+void plat_lock_free(PlatLock *l) { free(l); }
+void plat_lock(PlatLock *l) { AcquireSRWLockExclusive(&l->l); }
+void plat_unlock(PlatLock *l) { ReleaseSRWLockExclusive(&l->l); }
+
+static DWORD WINAPI thread_main(LPVOID x) {
+    PlatThread *t = x;
+    t->fn(t->arg);
+    return 0;
+}
+
+PlatThread *plat_thread_start(void (*fn)(void *), void *arg) {
+    PlatThread *t = xcalloc(1, sizeof *t);
+    t->fn = fn;
+    t->arg = arg;
+    t->h = CreateThread(NULL, 0, thread_main, t, 0, NULL);
+    if (!t->h) {
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+void plat_thread_join(PlatThread *t) {
+    WaitForSingleObject(t->h, INFINITE);
+    CloseHandle(t->h);
+    free(t);
+}
+
+PlatMutex *plat_mutex_new(void) {
+    PlatMutex *m = xcalloc(1, sizeof *m);
+    InitializeSRWLock(&m->l);
+    return m;
+}
+
+void plat_mutex_free(PlatMutex *m) { free(m); }
+void plat_mutex_lock(PlatMutex *m) { AcquireSRWLockExclusive(&m->l); }
+void plat_mutex_unlock(PlatMutex *m) { ReleaseSRWLockExclusive(&m->l); }
+
+PlatCond *plat_cond_new(void) {
+    PlatCond *c = xcalloc(1, sizeof *c);
+    InitializeConditionVariable(&c->c);
+    return c;
+}
+
+void plat_cond_free(PlatCond *c) { free(c); }
+
+void plat_cond_wait(PlatCond *c, PlatMutex *m, uint64_t timeout_ns) {
+    SleepConditionVariableSRW(&c->c, &m->l, timeout_ns ? (DWORD)((timeout_ns + 999999) / 1000000) : INFINITE, 0);
+}
+
+void plat_cond_signal(PlatCond *c) { WakeConditionVariable(&c->c); }
+void plat_cond_broadcast(PlatCond *c) { WakeAllConditionVariable(&c->c); }
+
+int plat_cpu_count(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwNumberOfProcessors > 0 ? (int)si.dwNumberOfProcessors : 1;
+}
 #else
 typedef int mlwsvm_win32_unused; /* ISO C forbids an empty translation unit */
 #endif

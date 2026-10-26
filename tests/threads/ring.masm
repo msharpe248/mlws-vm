@@ -1,0 +1,39 @@
+; threads: 4
+; A ring of 200 processes passes a counter around 20 times. Every hop is a
+; message from one process to the next, so the ring spreads across worker
+; threads; the last hop goes back to main.
+.include "std/test.inc"
+.const NODES = 200
+.const HOPS = NODES * 20
+; Wait for the next node's pid, then forward every counter, plus one.
+.func node(i64 main)
+    recv I1                            ; next node
+1:  recv I2
+    inc I2
+    bge I2, HOPS, 2f
+    send I1, I2
+    jmp 1b
+2:  send main, I2
+    jmp 1b
+.endf
+.func main
+    alloc P0, NODES * 8
+    mov I0, 0
+1:  spawn node (PID) -> (I1)
+    mov P0[I0], I1
+    inc I0
+    blt I0, NODES, 1b
+    mov I0, 0                          ; tell node k about node k+1 (the last about the first)
+2:  add I2, I0, 1
+    rem I2, NODES
+    mov I3, P0[I2]
+    mov I4, P0[I0]
+    send I4, I3
+    inc I0
+    blt I0, NODES, 2b
+    mov I4, P0[0]
+    send I4, 0                         ; start the counter
+    recv I5
+    ASSERT_EQ I5, HOPS
+    ret 0                              ; the program ends with main: the ring is stopped
+.endf

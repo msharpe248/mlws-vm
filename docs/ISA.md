@@ -198,7 +198,7 @@ which preserves the type tag of a stack or global word.
 
 | Opcode | Mnemonic | Operands | Types | Description |
 |---|---|---|---|---|
-| `0x0100` | `spawn` | `func (args...) -> (results...)` | - | Start a new process running a function: `spawn worker (a, b) -> (I0)` puts the new process id in I0. Arguments are copied into the new process; references are deep-copied, and pointers cannot be passed. The new process inherits this process's quotas and starts at its next turn. |
+| `0x0100` | `spawn` | `func (args...) -> (results...)` | - | Start a new process running a function: `spawn worker (a, b) -> (I0)` puts the new process id in I0. Arguments are copied into the new process; references are deep-copied, and pointers cannot be passed. The new process inherits this process's quotas and may start running at once, on another thread. To watch or link to it, use spawnm or spawnl: with `spawn` followed by `monitor`, a quick child can finish first. |
 | `0x0101` | `send` | `int, val` | int float r p | `send pid, value`: append a copy of value to the mailbox of process pid. References are deep-copied, preserving sharing and cycles. Sending to a finished process does nothing. Traps E_QUOTA if the receiver's mailbox is full and E_TYPE for a pointer. |
 | `0x0102` | `recv` | `dst` | int float r p | Take the oldest message from this process's mailbox, waiting until one arrives. The message keeps its type (as list elements do). Traps E_DEADLOCK if every process is waiting and none can ever send. |
 | `0x0103` | `recvt` | `dst, int, label` | int float r p | `recvt dst, ms, Ltimeout`: like recv, but if no message arrives within ms milliseconds, jump to Ltimeout instead. ms = 0 polls. |
@@ -210,6 +210,8 @@ which preserves the type tag of a stack or global word.
 | `0x0109` | `alive` | `bool_dst, int` | - | dst = true if the process exists and has not finished. |
 | `0x010A` | `quota` | `n, int` | - | `quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed. Processes it spawns inherit its limits. Exceeding a limit traps E_QUOTA. |
 | `0x010B` | `mlen` | `?` | - | dst = the number of messages waiting in this process's mailbox. |
+| `0x010C` | `spawnl` | `func (args...) -> (results...)` | - | Like spawn, and the new process is linked to this one before it starts (see link), so it cannot fail unnoticed in between. |
+| `0x010D` | `spawnm` | `func (args...) -> (results...)` | - | Like spawn, and this process monitors the new one from the start (see monitor): a Down message reports how it ends, however quickly. |
 
 ## Closures
 
@@ -219,3 +221,5 @@ which preserves the type tag of a stack or global word.
 | `0x0111` | `calli` | `func (args...) -> (results...)` | - | Call through a closure: `calli R0 (args) -> (results)`. Arguments are read with the function's parameter types; the count and register banks are checked at run time (E_TYPE). |
 | `0x0112` | `tcalli` | `func (args...) -> (results...)` | - | Tail call through a closure (like tcall). |
 | `0x0113` | `spawni` | `func (args...) -> (results...)` | - | Start a new process running a closure: `spawni R0 (args) -> (pid)`. The closure and its captures are deep-copied into the new process. |
+| `0x0114` | `spawnil` | `func (args...) -> (results...)` | - | spawni, linked to the new process from the start (as spawnl). |
+| `0x0115` | `spawnim` | `func (args...) -> (results...)` | - | spawni, monitoring the new process from the start (as spawnm). |

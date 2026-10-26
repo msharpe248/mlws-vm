@@ -41,9 +41,9 @@ void gc_account(Process *p, int64_t delta) {
     p->heap_bytes = (uint64_t)((int64_t)p->heap_bytes + delta);
     if (p->heap_bytes > p->heap_peak) p->heap_peak = p->heap_bytes;
     if (p->heap_bytes >= p->next_gc || p->vm->gc_stress) p->gc_pending = true;
-    /* Only the running process can trap; copies into other processes' heaps
-     * (messages) are counted and caught at the receiver's next allocation. */
-    if (delta > 0 && p->heap_bytes > p->quota[QUOTA_HEAP] && p == p->vm->current && !p->raising)
+    /* Only the running process can trap; copies into other heaps (spawn
+     * arguments, messages) are counted and caught at their next allocation. */
+    if (delta > 0 && p->heap_bytes > p->quota[QUOTA_HEAP] && p->state == PROC_RUNNING && !p->raising)
         vm_trap(p, "E_QUOTA", "heap quota of %llu bytes exceeded", (unsigned long long)p->quota[QUOTA_HEAP]);
 }
 
@@ -63,8 +63,7 @@ Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
     return o;
 }
 
-static void obj_free(Process *p, Obj *o) {
-    p->heap_bytes -= obj_footprint(o);
+static void obj_release(Obj *o) {
     switch (o->kind) {
     case OBJ_BYTES: free(((ObjBytes *)o)->data); break;
     case OBJ_LIST:
@@ -78,6 +77,33 @@ static void obj_free(Process *p, Obj *o) {
     default: break;
     }
     free(o);
+}
+
+static void obj_free(Process *p, Obj *o) {
+    p->heap_bytes -= obj_footprint(o);
+    obj_release(o);
+}
+
+void gc_free_list(Obj *list) {
+    while (list) {
+        Obj *o = list;
+        list = o->next;
+        obj_release(o);
+    }
+}
+
+void gc_adopt(Process *p, Obj *list, uint64_t bytes, uint64_t nobjs) {
+    if (!list) return;
+    Obj *tail = list;
+    while (tail->next) tail = tail->next;
+    tail->next = p->heap;
+    p->heap = list;
+    p->objects_allocated += nobjs;
+    if (!p->next_gc) p->next_gc = gc_threshold(p, 0);
+    /* Like gc_account, but never traps: a heap quota is caught at the next allocation. */
+    p->heap_bytes += bytes;
+    if (p->heap_bytes > p->heap_peak) p->heap_peak = p->heap_bytes;
+    if (p->heap_bytes >= p->next_gc || p->vm->gc_stress) p->gc_pending = true;
 }
 
 static void mark(Process *p, Obj *o) {

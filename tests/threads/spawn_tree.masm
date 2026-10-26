@@ -1,0 +1,23 @@
+; threads: 4
+; Every process spawns two children until depth 8: 511 processes, created from
+; many threads at once. Each reports the size of its subtree to its parent.
+.include "std/test.inc"
+.func tree(i64 parent, i64 depth)
+    mov I2, 1
+    bz depth, 1f
+    sub I3, depth, 1
+    spawn tree (PID, I3)
+    spawn tree (PID, I3)
+    recv I4
+    recv I5
+    add I2, I4, I5
+    inc I2
+1:  send parent, I2
+    ret
+.endf
+.func main
+    spawn tree (PID, 8)
+    recv I0
+    ASSERT_EQ I0, 511
+    ret 0
+.endf

@@ -22,6 +22,7 @@ typedef struct {
     int64_t exit_want;
     char error_want[32];
     char *skip;
+    int threads; /* `; threads: N` - run on N worker threads */
     StrVec script; /* debugger commands */
 } Expect;
 
@@ -112,6 +113,8 @@ static void parse_expect(const char *text, Expect *e) {
             while (s > e->error_want && isspace((unsigned char)s[-1])) *--s = 0;
         } else if ((v = after_key(line, "debug-script:"))) {
             VEC_PUSH(e->script, xstrdup(v));
+        } else if ((v = after_key(line, "threads:"))) {
+            e->threads = atoi(v);
         } else if ((v = after_key(line, "skip:"))) {
             free(e->skip);
             e->skip = xstrdup(v);
@@ -123,10 +126,12 @@ static void parse_expect(const char *text, Expect *e) {
 
 int tool_test(int argc, char **argv, const ToolEnv *env) {
     bool verbose = false;
+    int threads = 0;
     StrVec files = {0};
     VEC(const char *) roots = {0};
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "-v")) verbose = true;
+        else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
         else VEC_PUSH(roots, argv[i]);
     }
     if (roots.n == 0) VEC_PUSH(roots, "tests");
@@ -151,6 +156,8 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
             continue;
         }
         VM *vm = vm_new();
+        if (threads > 0) vm->threads = threads;
+        if (e.threads > 0) vm->threads = e.threads; /* the test needs this many */
         StrBuf out = {0};
         vm->out = capture;
         vm->out_ctx = &out;

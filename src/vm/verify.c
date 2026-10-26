@@ -96,7 +96,7 @@ static bool verify_function(LModule *lm, Function *f, MlwsError *err) {
                     if (!check_operand(&in->ops[2 + argc + k], 2 + argc + k, (MlwsType)cm->rets[k], true, &ce))
                         return verr(err, lm, f, pc, "result %d of call to %s: %s", k + 1, callee->name, ce.msg);
             }
-        } else if (in->op == OP_SPAWN) {
+        } else if (op_is_spawn(in->op)) {
             const Function *callee = in->ops[0].rv.ptr;
             const MFunc *cm = callee->mf;
             int argc = (int)in->ops[1].imm;
@@ -117,7 +117,7 @@ static bool verify_function(LModule *lm, Function *f, MlwsError *err) {
             int argc = (int)in->ops[1].imm;
             if (in->nops - 2 - argc != 1) return verr(err, lm, f, pc, "closure has exactly one result: the closure");
             if (!check_operand(&in->ops[2 + argc], 2 + argc, T_R, true, &ce)) return verr(err, lm, f, pc, "closure result: %s", ce.msg);
-        } else if (in->op == OP_SPAWNI) {
+        } else if (op_is_spawni(in->op)) {
             int argc = (int)in->ops[1].imm;
             int nres = in->nops - 2 - argc;
             if (nres > 1) return verr(err, lm, f, pc, "spawni has one result: the new process id");

@@ -9,6 +9,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <pthread.h>
+#ifdef __APPLE__
+#include <os/lock.h>
+#endif
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -156,6 +160,121 @@ bool plat_sock_write_all(int fd, const void *buf, size_t n) {
 void plat_sock_close(int fd) { close(fd); }
 
 bool plat_is_tty(void) { return isatty(1); }
+
+struct PlatThread {
+    pthread_t t;
+    void (*fn)(void *);
+    void *arg;
+};
+struct PlatMutex {
+    pthread_mutex_t m;
+};
+struct PlatLock {
+#ifdef __APPLE__
+    os_unfair_lock l;
+#else
+    pthread_mutex_t m;
+#endif
+};
+struct PlatCond {
+    pthread_cond_t c;
+};
+
+static void *thread_main(void *x) {
+    PlatThread *t = x;
+    t->fn(t->arg);
+    return NULL;
+}
+
+PlatThread *plat_thread_start(void (*fn)(void *), void *arg) {
+    PlatThread *t = xcalloc(1, sizeof *t);
+    t->fn = fn;
+    t->arg = arg;
+    if (pthread_create(&t->t, NULL, thread_main, t) != 0) {
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+void plat_thread_join(PlatThread *t) {
+    pthread_join(t->t, NULL);
+    free(t);
+}
+
+PlatMutex *plat_mutex_new(void) {
+    PlatMutex *m = xcalloc(1, sizeof *m);
+    pthread_mutex_init(&m->m, NULL);
+    return m;
+}
+
+void plat_mutex_free(PlatMutex *m) {
+    if (!m) return;
+    pthread_mutex_destroy(&m->m);
+    free(m);
+}
+
+void plat_mutex_lock(PlatMutex *m) { pthread_mutex_lock(&m->m); }
+
+PlatLock *plat_lock_new(void) {
+    PlatLock *l = xcalloc(1, sizeof *l);
+#ifdef __APPLE__
+    l->l = OS_UNFAIR_LOCK_INIT;
+#else
+    pthread_mutex_init(&l->m, NULL);
+#endif
+    return l;
+}
+
+void plat_lock_free(PlatLock *l) {
+    if (!l) return;
+#ifndef __APPLE__
+    pthread_mutex_destroy(&l->m);
+#endif
+    free(l);
+}
+
+#ifdef __APPLE__
+void plat_lock(PlatLock *l) { os_unfair_lock_lock(&l->l); }
+void plat_unlock(PlatLock *l) { os_unfair_lock_unlock(&l->l); }
+#else
+void plat_lock(PlatLock *l) { pthread_mutex_lock(&l->m); }
+void plat_unlock(PlatLock *l) { pthread_mutex_unlock(&l->m); }
+#endif
+void plat_mutex_unlock(PlatMutex *m) { pthread_mutex_unlock(&m->m); }
+
+PlatCond *plat_cond_new(void) {
+    PlatCond *c = xcalloc(1, sizeof *c);
+    pthread_cond_init(&c->c, NULL);
+    return c;
+}
+
+void plat_cond_free(PlatCond *c) {
+    if (!c) return;
+    pthread_cond_destroy(&c->c);
+    free(c);
+}
+
+void plat_cond_wait(PlatCond *c, PlatMutex *m, uint64_t timeout_ns) {
+    if (!timeout_ns) {
+        pthread_cond_wait(&c->c, &m->m);
+        return;
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts); /* pthread_cond_timedwait uses the realtime clock */
+    uint64_t ns = (uint64_t)ts.tv_nsec + timeout_ns;
+    ts.tv_sec += (time_t)(ns / 1000000000ull);
+    ts.tv_nsec = (long)(ns % 1000000000ull);
+    pthread_cond_timedwait(&c->c, &m->m, &ts);
+}
+
+void plat_cond_signal(PlatCond *c) { pthread_cond_signal(&c->c); }
+void plat_cond_broadcast(PlatCond *c) { pthread_cond_broadcast(&c->c); }
+
+int plat_cpu_count(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int)n : 1;
+}
 #else
 typedef int mlwsvm_posix_unused; /* ISO C forbids an empty translation unit */
 #endif

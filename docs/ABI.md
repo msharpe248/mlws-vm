@@ -23,17 +23,29 @@ immutable and shared. Everything else belongs to exactly one process.
 * `mlwsvm run` starts `main` as process 1. More are started with
   `spawn f (args) -> (pid)`. Process ids are positive and never reused.
 * Scheduling is **preemptive**. Each process runs for a time slice of 2,000
-  instructions, then the next ready process runs, round robin. A process in an
-  endless loop never starves the others.
+  instructions, then the next ready process runs. A process in an endless loop
+  never starves the others.
+* Processes run **in parallel** on several OS worker threads: one per CPU core by
+  default, or `mlwsvm run --threads N` (also `MLWSVM_THREADS=N`). A process runs
+  on one thread at a time, but may move to another thread between time slices.
+  Each thread has its own queue of ready processes; a thread with nothing to do
+  takes half of another thread's queue (work stealing).
 * A process that executes `recv` with an empty mailbox, or `sleep`, stops using
-  the CPU until a message or its timer arrives. When only timers are pending the
-  scheduler sleeps the OS thread.
-* The scheduler runs on one OS thread today. Milestone M9 spreads processes
-  across threads; because processes share nothing, programs won't need to change.
+  the CPU until a message or its timer arrives. A process woken by a message is
+  queued on the sender's thread, so a pair of processes talking to each other
+  tends to stay on one thread. Threads with no work sleep.
+* **Ordering.** With one thread, scheduling is deterministic round robin. With
+  more, the only ordering is what messages impose: messages from one process to
+  another arrive in the order they were sent, and a process's messages arrive
+  before the `Down` sent when it ends. Anything else (which of two processes runs
+  first, how output from different processes interleaves) can vary from run to
+  run. Each native call such as `io.print` writes its output in one piece.
 * **The program ends when `main` ends.** Any processes still running are stopped,
   and the exit code is `main`'s. If `main` waits in `recv` while every other process
   is also waiting, so no message can ever arrive, `main` gets a catchable
   `E_DEADLOCK`.
+* The debugger, tracer and profiler see every instruction, so a program run under
+  them uses one thread.
 
 ### 1.2 Messages
 
@@ -48,6 +60,10 @@ immutable and shared. Everything else belongs to exactly one process.
   strings are shared, since they are immutable. Raw pointers are process-local and
   cannot be sent (`E_TYPE`). `spawn` arguments are copied the same way.
 * Sending to a finished or unknown process silently does nothing.
+* The sender copies a message into a separate block of objects, and the receiver
+  links that block into its own heap when it next runs (or at `recv`). So a heap
+  is only ever touched by its own process's thread, and messages count towards
+  the receiver's heap (and its heap quota) from then on.
 
 ### 1.3 Failure: links and monitors
 
@@ -58,12 +74,18 @@ when its entry function returns or it executes `halt`.
 * `monitor pid`: when that process ends, this one receives a `Down` struct with
   fields `pid`, `exit` (the exit code), and `code` / `message`, which are null for a
   normal exit and the error otherwise. Monitoring a process that no longer exists
-  delivers a `Down` immediately, with code `E_NOPROC`.
+  delivers a `Down` immediately, with code `E_NOPROC`. `spawnm` (and `spawnim` for
+  closures) starts a process already monitored, so its `Down` is never missed.
 * `link pid`: the two processes fail together. When one fails, the other is
   killed with `E_LINKED`, and so on along chains of links. A normal exit just
   removes the link. If a failure reaches `main`, the program ends with that error.
+  `spawnl` (`spawnil`) starts a process already linked.
 * A child process that fails with nobody monitoring or linked prints a crash
   report on stderr, so failures are never silent.
+* `kill` stops a waiting or ready process at once. A process that is running on
+  another thread at that moment stops at the end of its time slice, at most 2,000
+  instructions later; `alive` reports it dead straight away, and messages sent to
+  it are dropped.
 
 ### 1.4 Quotas
 

@@ -1,0 +1,31 @@
+; threads: 4
+; 64 CPU-bound workers run in parallel on four worker threads. Each is
+; preempted many times (and may be stolen by another thread between slices);
+; the results arrive in any order, but their sum is fixed.
+.include "std/test.inc"
+.func worker(i64 parent, i64 seed)
+    mov I2, 0                          ; acc
+    mov I3, 0                          ; i
+1:  mul I4, I3, I3
+    add I4, seed
+    rem I4, 1000
+    add I2, I4
+    inc I3
+    blt I3, 100000, 1b
+    send parent, I2
+    ret
+.endf
+.func main
+    mov I0, 0
+1:  spawn worker (PID, I0)
+    inc I0
+    blt I0, 64, 1b
+    mov I1, 0
+    mov I0, 0
+2:  recv I2
+    add I1, I2
+    inc I0
+    blt I0, 64, 2b
+    ASSERT_EQ I1, 3027200000
+    ret 0
+.endf

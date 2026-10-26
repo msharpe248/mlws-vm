@@ -1,0 +1,16 @@
+; threads: 4
+; Deadlock is detected with several threads too: when every worker is idle,
+; no timer is pending and main waits, main's recv raises E_DEADLOCK.
+; expect-error: E_DEADLOCK
+.func stuck
+    recv I0
+    ret
+.endf
+.func main
+    mov I0, 0
+1:  spawn stuck
+    inc I0
+    blt I0, 10, 1b
+    recv I1
+    ret 0
+.endf

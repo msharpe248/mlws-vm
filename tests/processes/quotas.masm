@@ -29,13 +29,11 @@ h:  catch R1
 .endf
 
 .func main
-    spawn hog -> (I0)
-    monitor I0
+    spawnm hog -> (I0)
     recv R0
     ASSERT_EQ R0->Down.exit, 0         ; hog caught its E_QUOTA and exited normally
 
-    spawn spin -> (I1)
-    monitor I1
+    spawnm spin -> (I1)
     recv R1
     strcmp I2, R1->Down.code, "E_QUOTA"
     ASSERT_EQ I2, 0

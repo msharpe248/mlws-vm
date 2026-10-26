@@ -4,9 +4,9 @@
  * Constant-pool strings are immortal and shared rather than copied. Raw
  * pointers are process-local, so meeting one traps E_TYPE in the sender.
  *
- * The map and worklist live in the VM, not on the C stack, so a trap partway
- * through leaks nothing: the half-built copy is unreachable garbage in the
- * receiver's heap. */
+ * The map and worklist are per-thread scratch, not on the C stack, so a trap
+ * partway through leaks nothing: the half-built copy is unreachable garbage in
+ * the target heap. */
 #include "heap.h"
 #include "numeric.h"
 
@@ -19,6 +19,8 @@ struct CopyState {
     size_t cap, n;
     VEC(CopyPair) work;
 };
+
+static MLWS_THREAD_LOCAL struct CopyState *tls_copy;
 
 static uint32_t ptr_hash(const void *p) {
     uint64_t x = (uint64_t)(uintptr_t)p;
@@ -140,9 +142,8 @@ static Word copy_slot(Process *from, Process *to, struct CopyState *cs, Word v, 
 Word msg_copy(Process *from, Process *to, Word v, uint8_t tag) {
     no_pointer(from, tag);
     if (!type_is_ref(tag) || !v.r) return v;
-    VM *vm = from->vm;
-    if (!vm->copy_state) vm->copy_state = xcalloc(1, sizeof(struct CopyState));
-    struct CopyState *cs = vm->copy_state;
+    if (!tls_copy) tls_copy = xcalloc(1, sizeof(struct CopyState));
+    struct CopyState *cs = tls_copy;
     if (cs->cap) memset(cs->slots, 0, cs->cap * sizeof *cs->slots);
     cs->n = 0;
     cs->work.n = 0;
@@ -192,11 +193,11 @@ Word msg_copy(Process *from, Process *to, Word v, uint8_t tag) {
     return out;
 }
 
-void copy_state_free(VM *vm) {
-    struct CopyState *cs = vm->copy_state;
+void copy_state_free(void) {
+    struct CopyState *cs = tls_copy;
     if (!cs) return;
     free(cs->slots);
     VEC_FREE(cs->work);
     free(cs);
-    vm->copy_state = NULL;
+    tls_copy = NULL;
 }

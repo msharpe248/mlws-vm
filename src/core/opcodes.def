@@ -253,7 +253,7 @@ OP(CATCH,  0x00E1, "catch",  "Exceptions", "X", 0, 0,
 
 /* ---- processes ------------------------------------------------------------- */
 OP(SPAWN,  0x0100, "spawn",  "Processes", "FC", 0, OPF_CALL,
-   "Start a new process running a function: `spawn worker (a, b) -> (I0)` puts the new process id in I0. Arguments are copied into the new process; references are deep-copied, and pointers cannot be passed. The new process inherits this process's quotas and starts at its next turn.")
+   "Start a new process running a function: `spawn worker (a, b) -> (I0)` puts the new process id in I0. Arguments are copied into the new process; references are deep-copied, and pointers cannot be passed. The new process inherits this process's quotas and may start running at once, on another thread. To watch or link to it, use spawnm or spawnl: with `spawn` followed by `monitor`, a quick child can finish first.")
 OP(SEND,   0x0101, "send",   "Processes", "QV", TS_ANY, OPF_PERVAL,
    "`send pid, value`: append a copy of value to the mailbox of process pid. References are deep-copied, preserving sharing and cycles. Sending to a finished process does nothing. Traps E_QUOTA if the receiver's mailbox is full and E_TYPE for a pointer.")
 OP(RECV,   0x0102, "recv",   "Processes", "W", TS_ANY, OPF_PERVAL,
@@ -276,6 +276,10 @@ OP(QUOTA,  0x010A, "quota",  "Processes", "IQ", 0, 0,
    "`quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed. Processes it spawns inherit its limits. Exceeding a limit traps E_QUOTA.")
 OP(MLEN,   0x010B, "mlen",   "Processes", "J", 0, 0,
    "dst = the number of messages waiting in this process's mailbox.")
+OP(SPAWNL, 0x010C, "spawnl", "Processes", "FC", 0, OPF_CALL,
+   "Like spawn, and the new process is linked to this one before it starts (see link), so it cannot fail unnoticed in between.")
+OP(SPAWNM, 0x010D, "spawnm", "Processes", "FC", 0, OPF_CALL,
+   "Like spawn, and this process monitors the new one from the start (see monitor): a Down message reports how it ends, however quickly.")
 
 /* ---- closures ---------------------------------------------------------------- */
 OP(CLOSURE,0x0110, "closure","Closures", "FC", 0, OPF_CALL,
@@ -286,3 +290,7 @@ OP(TCALLI, 0x0112, "tcalli", "Closures", "OC", 0, OPF_CALL | OPF_TERM,
    "Tail call through a closure (like tcall).")
 OP(SPAWNI, 0x0113, "spawni", "Closures", "OC", 0, OPF_CALL,
    "Start a new process running a closure: `spawni R0 (args) -> (pid)`. The closure and its captures are deep-copied into the new process.")
+OP(SPAWNIL,0x0114, "spawnil","Closures", "OC", 0, OPF_CALL,
+   "spawni, linked to the new process from the start (as spawnl).")
+OP(SPAWNIM,0x0115, "spawnim","Closures", "OC", 0, OPF_CALL,
+   "spawni, monitoring the new process from the start (as spawnm).")

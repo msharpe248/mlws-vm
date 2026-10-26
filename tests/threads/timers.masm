@@ -1,0 +1,35 @@
+; threads: 4
+; 40 sleepers with different delays and 20 receivers whose recvt times out,
+; all timed by the shared timer heap while other threads sleep or work.
+.include "std/test.inc"
+.func sleeper(i64 parent, i64 ms)
+    sleep ms
+    send parent, 1
+    ret
+.endf
+.func waiter(i64 parent)
+    recvt I1, 3, 1f
+    send parent, 100                   ; a message: wrong
+    ret
+1:  send parent, 1
+    ret
+.endf
+.func main
+    mov I0, 0
+1:  rem I1, I0, 7
+    spawn sleeper (PID, I1)
+    inc I0
+    blt I0, 40, 1b
+    mov I0, 0
+2:  spawn waiter (PID)
+    inc I0
+    blt I0, 20, 2b
+    mov I1, 0
+    mov I0, 0
+3:  recv I2
+    add I1, I2
+    inc I0
+    blt I0, 60, 3b
+    ASSERT_EQ I1, 60
+    ret 0
+.endf

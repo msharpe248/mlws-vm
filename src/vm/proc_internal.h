@@ -39,5 +39,6 @@ static inline void proc_pop_frame(Process *p) {
     for (int b = 0; b < NBANKS; b++) p->rtop[b] = fr->base[b];
 }
 void proc_backtrace(Process *p);
+void sched_unpublish(Process *p); /* remove from the process table (sched.c) */
 
 #endif

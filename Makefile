@@ -5,6 +5,7 @@
 #   make check-tools  smoke-test --monitor, top, --profile and --trace
 #   make check-gc     run the tests with a garbage collection at every allocation
 #   make check-asan   build with AddressSanitizer + UBSan and run the tests (normal and GC stress)
+#   make check-tsan   build with ThreadSanitizer and run the tests on several worker threads
 #   make bench        run the benchmarks in bench/
 #   make docs         regenerate docs/ISA.md and docs/NATIVES.md from the code
 
@@ -24,7 +25,7 @@ ASAN_ENV :=
 endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: all test check-gc check-tools check-asan bench docs clean
+.PHONY: all test check-gc check-tools check-asan check-tsan bench docs clean
 
 all: $(BIN)
 
@@ -65,6 +66,12 @@ check-asan:
 	$(ASAN_ENV) ./mlwsvm-asan test tests examples
 	$(ASAN_ENV) MLWSVM_GC_STRESS=1 ./mlwsvm-asan test tests examples
 
+check-tsan:
+	$(MAKE) BUILD=build-tsan BIN=mlwsvm-tsan \
+	    CFLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" LDFLAGS="-fsanitize=thread"
+	TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=4 ./mlwsvm-tsan test tests examples
+	TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=8 ./mlwsvm-tsan test tests/processes tests/threads
+
 bench: $(BIN)
 	sh bench/run.sh ./$(BIN)
 
@@ -73,4 +80,4 @@ docs: $(BIN)
 	./$(BIN) doc natives -o docs/NATIVES.md
 
 clean:
-	rm -rf build build-asan mlwsvm mlwsvm-asan
+	rm -rf build build-asan build-tsan mlwsvm mlwsvm-asan mlwsvm-tsan

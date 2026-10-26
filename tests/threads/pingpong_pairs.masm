@@ -1,0 +1,38 @@
+; threads: 4
+; Eight independent ping-pong pairs, 2000 round trips each, running at the
+; same time. A pair tends to stay on one thread (a woken receiver runs where
+; its sender was), while different pairs spread across threads.
+.include "std/test.inc"
+.func pong
+1:  recv I0                            ; the sender's pid
+    bz I0, 2f
+    send I0, PID
+    jmp 1b
+2:  ret
+.endf
+.func ping(i64 main)
+    spawn pong -> (I1)
+    mov I2, 0
+1:  send I1, PID
+    recv I3
+    ASSERT_EQ I3, I1
+    inc I2
+    blt I2, 2000, 1b
+    send I1, 0
+    send main, I2
+    ret
+.endf
+.func main
+    mov I0, 0
+1:  spawn ping (PID)
+    inc I0
+    blt I0, 8, 1b
+    mov I1, 0
+    mov I0, 0
+2:  recv I2
+    add I1, I2
+    inc I0
+    blt I0, 8, 2b
+    ASSERT_EQ I1, 16000
+    ret 0
+.endf

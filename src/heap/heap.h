@@ -17,6 +17,9 @@ Obj *gc_alloc_unaccounted(Process *p, uint8_t kind, size_t size);
 void gc_account(Process *p, int64_t delta);           /* external buffer growth */
 void gc_collect(Process *p);
 void heap_free_all(Process *p);
+/* Messages: free a detached object list, or link one into p's heap. */
+void gc_free_list(Obj *list);
+void gc_adopt(Process *p, Obj *list, uint64_t bytes, uint64_t nobjs);
 size_t obj_footprint(const Obj *o);
 
 /* Handles let raw memory refer to GC objects: an i64 id kept as a root. */

@@ -155,7 +155,7 @@ bool check_insn(const Insn *in, CheckErr *ce) {
         return fail(ce, -1, "%s takes %d to %d operands, got %d", oi->mnem, oi->minops, oi->maxops, in->nops);
     }
     if (oi->flags & OPF_CALL) {
-        bool indirect = in->op == OP_CALLI || in->op == OP_TCALLI || in->op == OP_SPAWNI;
+        bool indirect = op_calls_closure(in->op);
         uint8_t want = in->op == OP_NCALL ? OM_NATIVE : OM_FUNC;
         if (indirect) {
             if (!check_operand(&in->ops[0], 0, T_R, false, ce)) return false;

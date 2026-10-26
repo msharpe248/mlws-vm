@@ -1266,7 +1266,7 @@ static void infer_type(Asm *A, AsmInsn *ai, bool has_type, bool has_type2) {
 
 static bool parse_call(Asm *A, Cur *c, AsmInsn *ai, AsmOpVec *ops) {
     AsmOp target, argc;
-    bool indirect = ai->op == OP_CALLI || ai->op == OP_TCALLI || ai->op == OP_SPAWNI;
+    bool indirect = op_calls_closure(ai->op);
     if (!parse_operand(A, c, ai->op == OP_NCALL ? 'N' : indirect ? 'S' : 'F', &target)) return false;
     VEC_PUSH(*ops, target);
     op_init_mode(&argc, OM_IMM, cur(c)->col);

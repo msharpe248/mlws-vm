@@ -1,9 +1,10 @@
 ; workers.masm - split a job across processes and supervise them.
 ;
-; main spawns one worker per range to count the primes in it, monitors each
-; worker, and collects either a result message or a Down notice. Worker 3 is
-; given a bad range and crashes; the supervisor notices it and reports it
-; instead of hanging.
+; main spawns one worker per range to count the primes in it, monitoring each
+; from the start (spawnm), and collects either a result message or a Down
+; notice. The workers run in parallel, one per core. Worker 3 is given a bad
+; range and crashes; the supervisor notices it and reports it instead of
+; hanging.
 ;
 ; expect-stdout: worker 1: 25 primes in [0, 100)
 ; expect-stdout: worker 2: 21 primes in [100, 200)
@@ -59,8 +60,7 @@ no:
     add I2, I1, 100                    ; hi
     bne I0, 3, 2f
     mov I2, 1000                       ; worker 3 gets a range too large for its table
-2:  spawn count_primes (PID, I0, I1, I2) -> (I3)
-    monitor I3
+2:  spawnm count_primes (PID, I0, I1, I2) -> (I3)
     mset R10, I3, I0
     inc I0
     ble I0, 4, 1b

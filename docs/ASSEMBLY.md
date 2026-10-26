@@ -257,8 +257,7 @@ bad:
 .endf
 
 .func main
-    spawn worker (PID, 7) -> (I0)   ; a new process; I0 = its pid
-    monitor I0               ; we'll get a Down message when it ends
+    spawnm worker (PID, 7) -> (I0)  ; a new process, monitored from the start; I0 = its pid
     recv I1                  ; 49
     recv R0                  ; the Down struct: R0->Down.exit, R0->Down.code
     ret 0
@@ -266,7 +265,9 @@ bad:
 ```
 
 Processes are isolated: they share no memory and talk only by messages, which
-are deep-copied. Scheduling, links, monitors, timeouts and quotas are described in
+are deep-copied. They run in parallel on several threads, so a new process may
+finish before `spawn` returns: use `spawnm` (spawn and monitor) or `spawnl`
+(spawn and link) rather than `spawn` followed by `monitor` or `link`. Scheduling, links, monitors, timeouts and quotas are described in
 [ABI.md §1](ABI.md#1-processes), and the instructions in the "Processes" section of
 [ISA.md](ISA.md). `PID` is the current process's id.
 
@@ -397,7 +398,7 @@ every instruction.
 * `calli R0 (args) -> (results)` calls through a closure. Because the callee
   isn't known until run time, the argument count and register banks are checked
   then (`E_TYPE`). `tcalli` is the tail-call form, and `spawni` starts a closure as
-  a new process.
+  a new process (`spawnim` / `spawnil` also monitor or link it).
 * A function that uses `UP[n]` must be called through a closure; called directly
   it traps with `E_TYPE`. Closures can be stored anywhere a reference can, and sent
   in messages, where they are deep-copied along with their captures.
@@ -584,12 +585,12 @@ macro-only files use the `.inc` extension and are not modules.
 ## 11. Tools
 
 ```
-mlwsvm run  [-L dir] [--stats] [--profile] [--trace FILE] [--monitor PORT] prog.masm|prog.mlwso
+mlwsvm run  [-L dir] [--stats] [--profile] [--trace FILE] [--monitor PORT] [--threads N] prog.masm|prog.mlwso
 mlwsvm debug [-L dir] prog.masm|prog.mlwso
 mlwsvm top  [HOST:PORT] [--once]
 mlwsvm asm  [-L dir] [-o out.mlwso] [-E] prog.masm
 mlwsvm dis  [-L dir] prog.masm|prog.mlwso
-mlwsvm test [-L dir] [-v] [paths...]
+mlwsvm test [-L dir] [-v] [--threads N] [paths...]
 mlwsvm doc  isa|natives [-o file]
 ```
 
@@ -602,7 +603,12 @@ Expectations are written as comments in the test file:
 ; expect-exit: 3                          (default 0)
 ; expect-error: E_DIV_ZERO                (an assembler, loader or runtime error code)
 ; skip: reason
+; threads: 4                              (run on this many worker threads, whatever --threads says)
 ; debug-script: break main               (repeatable: run under the debugger; stdout = transcript)
 ```
+
+Tests run on one worker thread per core unless `--threads N`, `MLWSVM_THREADS` or
+a `; threads:` line says otherwise, so a test should not depend on the order in
+which independent processes run (see [ABI.md](ABI.md) §1.1).
 
 See [TOOLING.md](TOOLING.md) for the debugger, profiler, tracer and monitor.

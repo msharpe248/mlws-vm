@@ -1097,6 +1097,7 @@ static Loc mbox_loc(Message *m) {
 static void mbox_take(Process *p) {
     p->mbox_head++;
     p->msgs_received++;
+    p->mcount--;
     if (p->mbox_head == p->mbox.n) {
         p->mbox_head = p->mbox.n = 0;
     } else if (p->mbox_head > 64 && p->mbox_head * 2 > p->mbox.n) {
@@ -1104,6 +1105,16 @@ static void mbox_take(Process *p) {
         p->mbox.n -= p->mbox_head;
         p->mbox_head = 0;
     }
+}
+
+/* spawnl / spawnm: link or monitor a child before it is started, so it cannot
+ * end first. Nobody else can see the child yet. */
+static void spawn_watch(Process *p, Process *child, bool link, bool monitor) {
+    if (link) {
+        VEC_PUSH(child->links, p->pid);
+        sched_add_link(p, child->pid);
+    }
+    if (monitor) VEC_PUSH(child->monitors, p->pid);
 }
 
 int interp_run(Process *p, uint32_t budget) {
@@ -1814,7 +1825,9 @@ int interp_run(Process *p, uint32_t budget) {
             bind_args(&c, NULL, mf->params, argc, args);
             break;
         }
-        case OP_SPAWNI: {
+        case OP_SPAWNI:
+        case OP_SPAWNIL:
+        case OP_SPAWNIM: {
             ObjClosure *cl = rd_closure(&c, &ops[0]);
             const MFunc *mf = cl->fn->mf;
             int argc = (int)ops[1].imm;
@@ -1827,12 +1840,12 @@ int interp_run(Process *p, uint32_t budget) {
             }
             Process *child = proc_new(vm);
             memcpy(child->quota, p->quota, sizeof child->quota);
-            vm->pending_spawn = child;
+            p->pending_spawn = child;
             Word clw = msg_copy(p, child, (Word){.r = cl}, T_R);
             for (int k = 0; k < argc; k++) args[k] = msg_copy(p, child, args[k], mf->params[k]);
-            vm->pending_spawn = NULL;
-            proc_start(child, cl->fn, args, argc);
-            child->frames[0].closure = clw.r;
+            p->pending_spawn = NULL;
+            spawn_watch(p, child, in->op == OP_SPAWNIL, in->op == OP_SPAWNIM);
+            proc_start(child, cl->fn, clw.r, args, argc);
             if (in->nops > 2 + argc) wr_int(&c, &ops[2 + argc], T_I64, (int64_t)child->pid);
             break;
         }
@@ -1848,17 +1861,20 @@ int interp_run(Process *p, uint32_t budget) {
             break;
 
         /* ---- processes ---- */
-        case OP_SPAWN: {
+        case OP_SPAWN:
+        case OP_SPAWNL:
+        case OP_SPAWNM: {
             Function *fn = ops[0].rv.ptr;
             int argc = (int)ops[1].imm;
             Word args[MAX_OPERANDS];
             for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)fn->mf->params[k]);
             Process *child = proc_new(vm);
             memcpy(child->quota, p->quota, sizeof child->quota);
-            vm->pending_spawn = child; /* freed by proc_run_slice if a copy traps */
+            p->pending_spawn = child; /* freed by proc_run_slice if a copy traps */
             for (int k = 0; k < argc; k++) args[k] = msg_copy(p, child, args[k], fn->mf->params[k]);
-            vm->pending_spawn = NULL;
-            proc_start(child, fn, args, argc);
+            p->pending_spawn = NULL;
+            spawn_watch(p, child, in->op == OP_SPAWNL, in->op == OP_SPAWNM);
+            proc_start(child, fn, NULL, args, argc);
             if (in->nops > 2 + argc) wr_int(&c, &ops[2 + argc], T_I64, (int64_t)child->pid);
             break;
         }
@@ -1867,20 +1883,13 @@ int interp_run(Process *p, uint32_t budget) {
             MlwsType t = T;
             Word v = rdn(&c, &ops[1], &t);
             if (t == T_P) vm_trap(p, "E_TYPE", "pointers cannot be sent to another process (they are process-local)");
-            Process *to = vm_process(vm, (uint64_t)pid);
             p->msgs_sent++;
-            if (!to) break; /* finished or unknown: dropped */
-            if (to->mbox.n - to->mbox_head >= to->quota[QUOTA_MAILBOX])
-                vm_trap(p, "E_QUOTA", "mailbox of process %lld is full", (long long)pid);
-            Message m;
-            m.v = msg_copy(p, to, v, (uint8_t)t);
-            m.tag = (uint8_t)t;
-            VEC_PUSH(to->mbox, m);
-            if (to->state == PROC_WAITING) sched_ready(vm, to);
+            sched_send(p, (uint64_t)pid, v, (uint8_t)t); /* to a finished or unknown process: dropped */
             break;
         }
         case OP_RECV:
         case OP_RECVT: {
+            if (p->mbox_head == p->mbox.n) sched_take_inbox(p);
             if (p->mbox_head < p->mbox.n) {
                 MlwsType t = T;
                 if (t == T_NONE && ops[0].mode == OM_REG) t = reg_natural_type(ops[0].reg);
@@ -1926,45 +1935,32 @@ int interp_run(Process *p, uint32_t budget) {
         }
         case OP_KILL: {
             int64_t pid = rd(&c, &ops[0], T_I64).i;
-            Process *target = vm_process(vm, (uint64_t)pid);
             char msg[96];
             snprintf(msg, sizeof msg, "killed by process %llu", (unsigned long long)p->pid);
-            sched_kill(vm, target, "E_KILLED", msg);
+            sched_kill(p, (uint64_t)pid, "E_KILLED", msg);
             break; /* killing ourselves (or a linked chain back to us) stops at the next instruction */
         }
         case OP_LINK: {
-            int64_t pid = rd(&c, &ops[0], T_I64).i;
-            Process *target = vm_process(vm, (uint64_t)pid);
-            if (!target) vm_trap(p, "E_NOPROC", "link to process %lld, which does not exist or has finished", (long long)pid);
-            if (target == p) break;
-            bool have = false;
-            for (size_t i = 0; i < p->links.n; i++) have = have || p->links.v[i] == target->pid;
-            if (!have) {
-                VEC_PUSH(p->links, target->pid);
-                VEC_PUSH(target->links, p->pid);
-            }
+            sched_link(p, (uint64_t)rd(&c, &ops[0], T_I64).i);
             break;
         }
         case OP_MONITOR: {
-            int64_t pid = rd(&c, &ops[0], T_I64).i;
-            Process *target = vm_process(vm, (uint64_t)pid);
-            if (target) VEC_PUSH(target->monitors, p->pid);
-            else sched_down_noproc(vm, p, (uint64_t)pid);
+            sched_monitor(p, (uint64_t)rd(&c, &ops[0], T_I64).i);
             break;
         }
         case OP_ALIVE:
-            wr_int(&c, &ops[0], T_B, vm_process(vm, (uint64_t)rd(&c, &ops[1], T_I64).i) != NULL);
+            wr_int(&c, &ops[0], T_B, sched_alive(vm, (uint64_t)rd(&c, &ops[1], T_I64).i));
             break;
         case OP_QUOTA: {
             int64_t kind = ops[0].imm, limit = rd(&c, &ops[1], T_I64).i;
             if (kind >= QUOTA__COUNT) vm_trap(p, "E_QUOTA", "unknown quota kind %lld", (long long)kind);
             if (limit < 0) vm_trap(p, "E_QUOTA", "a quota cannot be negative");
-            if ((uint64_t)limit < p->quota[kind]) p->quota[kind] = (uint64_t)limit; /* only ever lowered */
+            sched_set_quota(p, (int)kind, (uint64_t)limit); /* only ever lowered */
             if (kind == QUOTA_HEAP) p->next_gc = 0, p->gc_pending = true;   /* re-derive the GC threshold */
             break;
         }
         case OP_MLEN:
-            wr_int(&c, &ops[0], T_I64, (int64_t)(p->mbox.n - p->mbox_head));
+            wr_int(&c, &ops[0], T_I64, (int64_t)p->mcount);
             break;
 
         case OP__COUNT:

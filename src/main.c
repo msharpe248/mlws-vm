@@ -16,18 +16,20 @@ static void usage(FILE *f) {
           "        --profile [--flame FILE]        hot functions, lines and opcodes; collapsed stacks\n"
           "        --trace FILE|- [--trace-limit N] log every instruction\n"
           "        --monitor [HOST:]PORT [--hold]  serve the web dashboard and /api while running\n"
+          "        --threads N                     worker threads (default: one per core)\n"
           "        --gc-stress  --stack-words N\n"
           "  debug [-L dir] file.(masm|mlwso)      interactive debugger (type 'help')\n"
           "  top   [HOST:PORT] [--once]            live process table of a VM run with --monitor\n"
           "  asm  [-L dir] [-o out.mlwso] [-E] file.masm                   assemble (-E: preprocess only)\n"
           "  dis  [-L dir] file.(masm|mlwso)                               disassemble\n"
-          "  test [-L dir] [-v] [paths...]                               run assembly tests (default: tests/)\n"
+          "  test [-L dir] [-v] [--threads N] [paths...]                 run assembly tests (default: tests/)\n"
           "  doc  isa|natives [-o file]                                  generate reference docs\n"
           "  version\n"
           "\n"
           "Libraries are searched in: the program's directory, -L dirs, $MLWSVM_PATH, and lib/\n"
           "next to the mlwsvm executable. MLWSVM_GC_STRESS=1 collects garbage at every\n"
-          "instruction boundary after an allocation (for testing the VM).\n",
+          "instruction boundary after an allocation (for testing the VM). MLWSVM_THREADS=N\n"
+          "sets the default number of worker threads.\n",
           f);
 }
 
@@ -90,6 +92,7 @@ static int cmd_run(int argc, char **argv) {
     const char *trace = NULL, *flame = NULL, *monitor = NULL;
     uint64_t trace_limit = 0;
     uint32_t stack_words = 0;
+    int threads = 0;
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--stats")) stats = true;
         else if (!strcmp(argv[i], "--profile")) profile = true;
@@ -99,6 +102,7 @@ static int cmd_run(int argc, char **argv) {
         else if (!strcmp(argv[i], "--trace-limit") && i + 1 < argc) trace_limit = strtoull(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor = argv[++i];
         else if (!strcmp(argv[i], "--gc-stress")) gc_stress = true;
+        else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--stack-words") && i + 1 < argc) stack_words = (uint32_t)strtoul(argv[++i], NULL, 10);
         else if (!file) file = argv[i];
         else {
@@ -113,6 +117,7 @@ static int cmd_run(int argc, char **argv) {
     VM *vm = vm_new();
     if (stack_words) vm->stack_words = stack_words;
     if (gc_stress) vm->gc_stress = true;
+    if (threads > 0) vm->threads = threads;
     if (trace && !tools_trace(vm, trace, trace_limit)) {
         fprintf(stderr, "mlwsvm run: cannot write trace file %s\n", trace);
         vm_free(vm);

@@ -384,12 +384,12 @@ static void cmd_list(Debugger *d) {
 static void cmd_procs(Debugger *d) {
     static const char *const states[] = {"ready", "running", "waiting", "sleeping", "done", "failed"};
     say(d, "  PID  STATE     INSNS       MAILBOX  FUNCTION\n");
-    for (size_t i = 0; i < d->vm->procs.n; i++) {
-        Process *p = d->vm->procs.v[i];
+    for (uint64_t pid = 1, end = vm_pid_end(d->vm); pid < end; pid++) {
+        Process *p = vm_proc_at(d->vm, pid);
         if (!p || !p->nframes) continue;
         const Frame *fr = &p->frames[p->nframes - 1];
         say(d, "%s%4llu  %-8s  %-10llu  %-7zu  %s.%s\n", p->pid == d->sel ? "*" : " ", (unsigned long long)p->pid,
-            states[p->state], (unsigned long long)p->insns, p->mbox.n - p->mbox_head, fr->fn->mod->m->name,
+            states[p->state], (unsigned long long)p->insns, (size_t)p->mcount, fr->fn->mod->m->name,
             fr->fn->name);
     }
 }
@@ -417,7 +417,7 @@ static void go(Debugger *d, int step) {
             return;
         }
         d->started = true;
-        proc_start(d->main, d->main_fn, NULL, 0);
+        proc_start(d->main, d->main_fn, NULL, NULL, 0);
     }
     Process *p = selected(d); /* stepping follows the process being inspected */
     d->step = step;
