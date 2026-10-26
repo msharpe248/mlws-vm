@@ -157,14 +157,15 @@ bool lex_line(const char *text, TokVec *out, char *err, size_t errlen, int *errc
                 VEC_PUSH(*out, t);
                 continue;
             }
-            char buf[128];
+            /* digits can be arbitrarily many (BigInt literals): size the buffer by the line */
+            char *buf = xmalloc((size_t)(lim - p) + 2);
             size_t bn = 0;
             int base = 10;
             bool is_float = false;
             if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) base = 16, p += 2;
             else if (p[0] == '0' && (p[1] == 'b' || p[1] == 'B')) base = 2, p += 2;
             else if (p[0] == '0' && (p[1] == 'o' || p[1] == 'O')) base = 8, p += 2;
-            while (p < lim && bn < sizeof buf - 1) {
+            while (p < lim) {
                 char d = *p;
                 if (d == '_') {
                     p++;
@@ -189,12 +190,32 @@ bool lex_line(const char *text, TokVec *out, char *err, size_t errlen, int *errc
                 }
             }
             buf[bn] = 0;
+            /* BigInt (123n) and decimal (1.25d) literal suffixes */
+            if (p < lim && (*p == 'n' || *p == 'd') && (p + 1 >= lim || !ident_char((unsigned char)p[1]))) {
+                bool big = *p == 'n';
+                if (base != 10 || (big && is_float)) {
+                    snprintf(err, errlen, big ? "BigInt literals are decimal integers, e.g. 123n"
+                                              : "decimal literals are written in base 10, e.g. 1.25d");
+                    free(buf);
+                    return false;
+                }
+                p++;
+                t.kind = big ? TK_BIGLIT : TK_DECLIT;
+                t.sval = buf; /* the token owns it */
+                buf = NULL;
+                t.slen = bn;
+                t.len = (int)(p - t.start);
+                VEC_PUSH(*out, t);
+                continue;
+            }
             if (p < lim && ident_char((unsigned char)*p)) {
                 snprintf(err, errlen, "malformed number");
+                free(buf);
                 return false;
             }
             if (bn == 0) {
                 snprintf(err, errlen, "malformed number");
+                free(buf);
                 return false;
             }
             if (is_float) {
@@ -206,20 +227,24 @@ bool lex_line(const char *text, TokVec *out, char *err, size_t errlen, int *errc
                 unsigned long long v = strtoull(buf, NULL, base);
                 if (errno == ERANGE) {
                     snprintf(err, errlen, "integer literal out of range");
+                    free(buf);
                     return false;
                 }
                 for (size_t i = 0; i < bn; i++) {
                     if (base == 2 && buf[i] > '1') {
                         snprintf(err, errlen, "bad binary digit");
+                        free(buf);
                         return false;
                     }
                     if (base == 8 && buf[i] > '7') {
                         snprintf(err, errlen, "bad octal digit");
+                        free(buf);
                         return false;
                     }
                 }
                 t.ival = (int64_t)v;
             }
+            free(buf);
         } else if (ident_start(c)) {
             while (p < lim && ident_char((unsigned char)*p)) p++;
             t.kind = TK_IDENT;

@@ -9,6 +9,7 @@
 #include <math.h>
 
 #include "../heap/heap.h"
+#include "../heap/numeric.h"
 #include "../platform/platform.h"
 #include "proc_internal.h"
 
@@ -167,10 +168,20 @@ static Obj *obj_reg(Ctx *c, uint8_t reg) {
 }
 
 static void obj_loc(Ctx *c, const Operand *o, Loc *L) {
-    Obj *ob = obj_reg(c, o->reg);
     L->tag = NULL;
     L->fixed = T_NONE;
     L->ro = 0;
+    if (o->mode == OM_UPVAL) {
+        ObjClosure *cl = (ObjClosure *)c->fr->closure;
+        if (!cl) vm_trap(c->p, "E_TYPE", "UP[%llu] used in %s, which was not called as a closure", (unsigned long long)o->index, c->fr->fn->name);
+        if (o->index >= cl->nup)
+            vm_trap(c->p, "E_BOUNDS", "UP[%llu] out of range: the closure captured %u value(s)", (unsigned long long)o->index, cl->nup);
+        L->is_reg = LK_SLOT;
+        L->slot = &cl->up[o->index];
+        L->tag = &cl->tags[o->index];
+        return;
+    }
+    Obj *ob = obj_reg(c, o->reg);
     if (o->mode == OM_FIELD) {
         const FieldRef *fr = o->rv.ptr;
         if (ob->kind != OBJ_STRUCT || ((ObjStruct *)ob)->def != fr->def)
@@ -341,7 +352,10 @@ static void mark_raw(Segment *s, uint32_t off, uint64_t n) {
 /* ---- operand values --------------------------------------------------------- */
 
 /* Same register bank, and references never mix with non-references. */
-static bool same_class(MlwsType a, MlwsType b) { return type_bank(a) == type_bank(b) && (a == T_R) == (b == T_R); }
+static bool same_class(MlwsType a, MlwsType b) { return type_bank(a) == type_bank(b) && type_is_ref(a) == type_is_ref(b); }
+
+/* BigInt and decimal values are plain references when moved around. */
+#define AS_REF(t) ((t) == T_BIG || (t) == T_DEC ? T_R : (t))
 
 static Word slot_read(Ctx *c, const Loc *L, MlwsType *t) {
     MlwsType have = L->fixed ? (MlwsType)L->fixed : (MlwsType)*L->tag;
@@ -372,6 +386,7 @@ static void slot_write(Ctx *c, const Loc *L, MlwsType t, Word w) {
 }
 
 static Word rd_loc(Ctx *c, const Loc *L, MlwsType *t) {
+    *t = AS_REF(*t);
     switch (L->is_reg) {
     case LK_REG:
         if (*t == T_NONE) *t = reg_natural_type(L->reg);
@@ -391,6 +406,7 @@ static Word rd_loc(Ctx *c, const Loc *L, MlwsType *t) {
 }
 
 static void wr_loc(Ctx *c, const Loc *L, MlwsType t, Word w) {
+    t = AS_REF(t);
     switch (L->is_reg) {
     case LK_REG: reg_write(c, L->reg, t, w); break;
     case LK_SLOT: slot_write(c, L, t, w); break;
@@ -406,6 +422,7 @@ static void wr_loc(Ctx *c, const Loc *L, MlwsType t, Word w) {
 /* Read an operand as type t; T_NONE reads its natural type and reports it. */
 static Word rdn(Ctx *c, const Operand *o, MlwsType *t) {
     Word w;
+    *t = AS_REF(*t);
     switch (o->mode) {
     case OM_REG:
         if (*t == T_NONE) *t = reg_natural_type(o->reg);
@@ -434,6 +451,7 @@ static Word rdn(Ctx *c, const Operand *o, MlwsType *t) {
 static Word rd(Ctx *c, const Operand *o, MlwsType t) { return rdn(c, o, &t); }
 
 static void wr(Ctx *c, const Operand *o, MlwsType t, Word w) {
+    t = AS_REF(t);
     if (o->mode == OM_REG) {
         reg_write(c, o->reg, t, w);
         return;
@@ -794,6 +812,98 @@ static void describe_key(Word k, MlwsType t, char *buf, size_t n) {
     }
 }
 
+/* ---- BigInt and decimal ------------------------------------------------------- */
+
+/* A .big/.dec operand: a number object, or an integer (or, for .dec, float)
+ * literal converted on the fly. */
+static const Obj *rd_num(Ctx *c, const Operand *o, MlwsType t) {
+    if (o->mode == OM_IMM) return num_from_i64(c->p, t, o->imm, false);
+    if (o->mode == OM_FIMM) return num_from_f64(c->p, t, o->f);
+    Obj *ob = rd(c, o, T_R).r;
+    if (!ob) vm_trap(c->p, "E_NULL", "%s operand is null", type_name(t));
+    if (!num_kind_matches(ob, t))
+        vm_trap(c->p, "E_TYPE", "expected a %s, got a %s (convert with cvt)", t == T_BIG ? "bigint" : "decimal",
+                obj_kind_name(ob->kind));
+    return ob;
+}
+
+static void wr_num(Ctx *c, const Loc *d, const Obj *o) {
+    Word w;
+    w.r = (void *)o;
+    wr_loc(c, d, T_R, w);
+}
+
+static void arith_num(Ctx *c, const Insn *in, MlwsType t) {
+    const Operand *ops = in->ops;
+    Loc d;
+    loc_of(c, &ops[0], 8, &d);
+    const Obj *acc;
+    int k;
+    if (in->nops == 2) {
+        MlwsType rt = T_R;
+        Obj *cur = rd_loc(c, &d, &rt).r;
+        if (!num_kind_matches(cur, t)) vm_trap(c->p, cur ? "E_TYPE" : "E_NULL", "destination does not hold a %s", type_name(t));
+        acc = cur;
+        k = 1;
+    } else {
+        acc = rd_num(c, &ops[1], t);
+        k = 2;
+    }
+    for (; k < in->nops; k++) acc = num_arith(c->p, in->op, acc, rd_num(c, &ops[k], t));
+    wr_num(c, &d, acc);
+}
+
+/* cvt where either side is .big or .dec */
+static void convert_num(Ctx *c, const Insn *in) {
+    MlwsType to = (MlwsType)in->type, from = (MlwsType)in->type2;
+    Loc d;
+    loc_of(c, &in->ops[0], 8, &d);
+    const Operand *src = &in->ops[1];
+    if (to == T_BIG || to == T_DEC) {
+        const Obj *r;
+        if (from == T_BIG || from == T_DEC) r = num_convert(c->p, to, rd_num(c, src, from));
+        else if (type_is_float(from)) r = num_from_f64(c->p, to, rd(c, src, from).f);
+        else r = num_from_i64(c->p, to, rd(c, src, from).i, !type_is_signed(from) && from != T_B && from != T_C ? true : false);
+        wr_num(c, &d, r);
+        return;
+    }
+    const Obj *n = rd_num(c, src, from);
+    Word w;
+    if (type_is_float(to)) {
+        w.f = canon_float(to, num_to_f64(n));
+    } else if (!num_to_int(n, to, &w)) {
+        StrBuf b = {0};
+        num_format(&b, n);
+        vm_trap(c->p, "E_OVERFLOW", "%.60s does not fit in %s", b.s, type_name(to));
+    }
+    wr_loc(c, &d, to, w);
+}
+
+/* Read a closure-call argument with the parameter's type, checking the
+ * register bank at run time (the callee is not known statically). */
+static Word rd_param(Ctx *c, const Operand *o, MlwsType t) {
+    char b[8];
+    if (o->mode == OM_REG) {
+        int bank = REG_BANK(o->reg);
+        bool ok = bank == BANK_S ? (REG_IDX(o->reg) == SREG_PID ? type_is_int(t) : t == T_P) : (Bank)bank == type_bank(t);
+        if (!ok) vm_trap(c->p, "E_TYPE", "closure argument %s cannot be passed as %s", reg_name(o->reg, b), type_name(t));
+    } else if (o->mode == OM_FIMM && !type_is_float(t) && t != T_DEC) {
+        vm_trap(c->p, "E_TYPE", "a float literal cannot be passed as %s", type_name(t));
+    } else if (o->mode == OM_CONST && !type_is_ref(t)) {
+        vm_trap(c->p, "E_TYPE", "a constant cannot be passed as %s", type_name(t));
+    } else if (o->mode == OM_IMM && (t == T_R || t == T_P) && o->imm) {
+        vm_trap(c->p, "E_TYPE", "an integer cannot be passed as %s", type_name(t));
+    }
+    return rd(c, o, t);
+}
+
+static ObjClosure *rd_closure(Ctx *c, const Operand *o) {
+    Obj *ob = rd(c, o, T_R).r;
+    if (!ob) vm_trap(c->p, "E_NULL", "call through a null closure");
+    if (ob->kind != OBJ_CLOSURE) vm_trap(c->p, "E_TYPE", "calli needs a closure, got a %s", obj_kind_name(ob->kind));
+    return (ObjClosure *)ob;
+}
+
 /* ---- calls -------------------------------------------------------------------- */
 
 static void bind_args(Ctx *c, const MlwsType *types, const uint8_t *ptypes, int n, const Word *args) {
@@ -855,6 +965,8 @@ int interp_run(Process *p, uint32_t budget) {
         const Insn *in = &fr->fn->code[fr->pc++];
         const Operand *ops = in->ops;
         MlwsType T = (MlwsType)in->type;
+        MlwsType TN = T; /* the type as written: .big / .dec select number arithmetic */
+        if (T == T_BIG || T == T_DEC) T = T_R;
         p->insns++;
         switch ((Opcode)in->op) {
         case OP_NOP:
@@ -870,12 +982,18 @@ int interp_run(Process *p, uint32_t budget) {
             return SLICE_DONE;
         case OP_ASSERT:
             if (rd(&c, &ops[0], T_I64).i == 0)
-                vm_trap(p, "E_ASSERT", "%s", in->nops > 1 ? ((ObjString *)ops[1].rv.ptr)->data : "assertion failed");
+                vm_trap(p, "E_ASSERT", "%s",
+                        in->nops > 1 && ((Obj *)ops[1].rv.ptr)->kind == OBJ_STRING ? ((ObjString *)ops[1].rv.ptr)->data
+                                                                                  : "assertion failed");
             break;
 
         case OP_MOV: {
             Loc d;
             loc_of(&c, &ops[0], T ? type_size(T) : 8, &d);
+            if (TN != T) { /* mov.big / mov.dec: literals become numbers */
+                wr_num(&c, &d, rd_num(&c, &ops[1], TN));
+                break;
+            }
             MlwsType t = T;
             Word v = rdn(&c, &ops[1], &t);
             wr_loc(&c, &d, t, v);
@@ -932,6 +1050,10 @@ int interp_run(Process *p, uint32_t budget) {
         }
         case OP_CVT:
         case OP_BITCAST: {
+            if (in->op == OP_CVT && (type_is_ref(in->type) || type_is_ref(in->type2))) {
+                convert_num(&c, in);
+                break;
+            }
             Loc d;
             loc_of(&c, &ops[0], type_size(T), &d);
             MlwsType from = (MlwsType)in->type2;
@@ -942,12 +1064,24 @@ int interp_run(Process *p, uint32_t budget) {
 
         case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_REM: case OP_MIN: case OP_MAX:
         case OP_AND: case OP_OR: case OP_XOR:
-            arith(&c, in);
+            if (TN != T) arith_num(&c, in, TN);
+            else arith(&c, in);
             break;
         case OP_NEG: case OP_ABS: case OP_NOT: case OP_POPCNT: case OP_CLZ: case OP_CTZ: case OP_BSWAP:
         case OP_SQRT: case OP_FLOOR: case OP_CEIL: case OP_ROUND: case OP_TRUNC: {
             Loc d;
             loc_of(&c, &ops[0], type_size(T), &d);
+            if (TN != T) { /* neg/abs of a number */
+                const Obj *a;
+                if (in->nops == 2) a = rd_num(&c, &ops[1], TN);
+                else {
+                    MlwsType rt = T_R;
+                    a = rd_loc(&c, &d, &rt).r;
+                    if (!num_kind_matches(a, TN)) vm_trap(p, "E_TYPE", "destination does not hold a %s", type_name(TN));
+                }
+                wr_num(&c, &d, num_unary(p, in->op, a));
+                break;
+            }
             MlwsType t = T;
             Word a = in->nops == 2 ? rd(&c, &ops[1], T) : rd_loc(&c, &d, &t);
             wr_loc(&c, &d, T, unop(&c, in->op, T, a));
@@ -985,8 +1119,16 @@ int interp_run(Process *p, uint32_t budget) {
         case OP_SEQ: case OP_SNE: case OP_SLT: case OP_SLE: case OP_SGT: case OP_SGE: {
             Loc d;
             loc_of(&c, &ops[0], 1, &d);
-            Word a = rd(&c, &ops[1], T), b = rd(&c, &ops[2], T), r;
-            r.i = compare(in->op, T, a, b);
+            Word r;
+            if (TN != T) { /* compare numbers: as integers -1/0/1 */
+                Word x, y;
+                x.i = num_cmp(rd_num(&c, &ops[1], TN), rd_num(&c, &ops[2], TN));
+                y.i = 0;
+                r.i = compare(in->op, T_I64, x, y);
+            } else {
+                Word a = rd(&c, &ops[1], T), b = rd(&c, &ops[2], T);
+                r.i = compare(in->op, T, a, b);
+            }
             wr_loc(&c, &d, T_B, r);
             break;
         }
@@ -1008,8 +1150,17 @@ int interp_run(Process *p, uint32_t budget) {
             break;
         }
         case OP_BEQ: case OP_BNE: case OP_BLT: case OP_BLE: case OP_BGT: case OP_BGE: {
-            Word a = rd(&c, &ops[0], T), b = rd(&c, &ops[1], T);
-            if (compare(in->op, T, a, b)) fr->pc = ops[2].rv.target;
+            bool taken;
+            if (TN != T) {
+                Word x, y;
+                x.i = num_cmp(rd_num(&c, &ops[0], TN), rd_num(&c, &ops[1], TN));
+                y.i = 0;
+                taken = compare(in->op, T_I64, x, y);
+            } else {
+                Word a = rd(&c, &ops[0], T), b = rd(&c, &ops[1], T);
+                taken = compare(in->op, T, a, b);
+            }
+            if (taken) fr->pc = ops[2].rv.target;
             break;
         }
         case OP_JTAB: {
@@ -1225,6 +1376,13 @@ int interp_run(Process *p, uint32_t budget) {
             uint32_t n;
             const uint8_t *d = rd_text(&c, &ops[1], "parse", &n);
             Word v;
+            if (TN != T) {
+                v.r = num_parse(p, TN, (const char *)d, n);
+                if (!v.r)
+                    vm_trap(p, "E_PARSE", "cannot parse \"%.*s\" as %s", (int)(n > 60 ? 60 : n), (const char *)d, type_name(TN));
+                wr(&c, &ops[0], T_R, v);
+                break;
+            }
             if (parse_number(&c, T, d, n, &v) < 0)
                 vm_trap(p, "E_PARSE", "cannot parse \"%.*s\" as %s", (int)(n > 60 ? 60 : n), (const char *)d, type_name(T));
             wr(&c, &ops[0], T, v);
@@ -1356,6 +1514,69 @@ int interp_run(Process *p, uint32_t budget) {
         case OP_HFREE:
             handle_free(p, rd(&c, &ops[0], T_I64).i);
             break;
+
+        /* ---- closures ---- */
+        case OP_CLOSURE: {
+            Function *fn = ops[0].rv.ptr;
+            int nup = (int)ops[1].imm;
+            Word vals[MAX_OPERANDS];
+            uint8_t tags[MAX_OPERANDS];
+            for (int k = 0; k < nup; k++) {
+                MlwsType t = T_NONE;
+                vals[k] = rdn(&c, &ops[2 + k], &t);
+                tags[k] = (uint8_t)t;
+            }
+            ObjClosure *cl = closure_new(p, fn, (uint32_t)nup);
+            for (int k = 0; k < nup; k++) {
+                cl->up[k] = vals[k];
+                cl->tags[k] = tags[k];
+            }
+            wr_ref(&c, &ops[2 + nup], cl);
+            break;
+        }
+        case OP_CALLI:
+        case OP_TCALLI: {
+            ObjClosure *cl = rd_closure(&c, &ops[0]);
+            Function *fn = cl->fn;
+            const MFunc *mf = fn->mf;
+            int argc = (int)ops[1].imm;
+            if (argc != mf->nparams)
+                vm_trap(p, "E_TYPE", "closure %s takes %d argument(s), got %d", fn->name, mf->nparams, argc);
+            Word args[MAX_OPERANDS];
+            for (int k = 0; k < argc; k++) args[k] = rd_param(&c, &ops[2 + k], (MlwsType)mf->params[k]);
+            const Insn *ret_insn = in;
+            if (in->op == OP_TCALLI) {
+                ret_insn = fr->ret_insn;
+                proc_pop_frame(p);
+            }
+            proc_push_frame(p, fn, ret_insn);
+            p->frames[p->nframes - 1].closure = &cl->h;
+            ctx_load(&c);
+            bind_args(&c, NULL, mf->params, argc, args);
+            break;
+        }
+        case OP_SPAWNI: {
+            ObjClosure *cl = rd_closure(&c, &ops[0]);
+            const MFunc *mf = cl->fn->mf;
+            int argc = (int)ops[1].imm;
+            if (argc != mf->nparams)
+                vm_trap(p, "E_TYPE", "closure %s takes %d argument(s), got %d", cl->fn->name, mf->nparams, argc);
+            Word args[MAX_OPERANDS];
+            for (int k = 0; k < argc; k++) {
+                if (mf->params[k] == T_P) vm_trap(p, "E_TYPE", "pointer parameters cannot cross processes");
+                args[k] = rd_param(&c, &ops[2 + k], (MlwsType)mf->params[k]);
+            }
+            Process *child = proc_new(vm);
+            memcpy(child->quota, p->quota, sizeof child->quota);
+            vm->pending_spawn = child;
+            Word clw = msg_copy(p, child, (Word){.r = cl}, T_R);
+            for (int k = 0; k < argc; k++) args[k] = msg_copy(p, child, args[k], mf->params[k]);
+            vm->pending_spawn = NULL;
+            proc_start(child, cl->fn, args, argc);
+            child->frames[0].closure = clw.r;
+            if (in->nops > 2 + argc) wr_int(&c, &ops[2 + argc], T_I64, (int64_t)child->pid);
+            break;
+        }
 
         /* ---- exceptions ---- */
         case OP_THROW: {

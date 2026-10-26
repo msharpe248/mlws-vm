@@ -1,0 +1,18 @@
+; spawni runs a closure in a new process; its captures are deep-copied there.
+.include "std/test.inc"
+.func worker(i64 parent, i64 x)          ; UP[0] = a list captured at creation
+    len I2, UP[0]
+    add I2, x
+    send parent, I2
+    ret
+.endf
+.func main
+    lnew R0
+    lpush R0, 1, 2, 3
+    closure worker (R0) -> (R1)
+    spawni R1 (PID, 10) -> (I0)
+    lpush R0, 4                          ; the child has its own copy
+    recv I1
+    ASSERT_EQ I1, 13
+    ret 0
+.endf

@@ -1,0 +1,29 @@
+; BigInts, decimals and closures can be sent between processes (deep copies).
+.include "std/test.inc"
+.func triple(i64 x) -> i64
+    mul I1, x, UP[0]
+    ret I1
+.endf
+.func echo(i64 parent)
+1:  recv R0
+    send parent, R0
+    jmp 1b
+.endf
+.func main
+    spawn echo (PID) -> (I9)
+    mul R0, 99999999999999999999n, 99999999999999999999n
+    send I9, R0
+    recv R1
+    beq.big R1, 9999999999999999999800000000000000000001n, 1f
+    FAIL "bigint message"
+1:  send I9, 12.345d
+    recv R2
+    beq.dec R2, 12.345d, 2f
+    FAIL "decimal message"
+2:  closure triple (3) -> (R3)
+    send I9, R3
+    recv R4
+    calli R4 (14) -> (I0)
+    ASSERT_EQ I0, 42
+    ret 0
+.endf

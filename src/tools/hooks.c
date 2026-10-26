@@ -1,6 +1,7 @@
 /* hooks.c - the instruction hook, the tracer (--trace) and the profiler
  * (--profile, --flame). See docs/TOOLING.md. */
 #include "../core/disasm.h"
+#include "../heap/numeric.h"
 #include "../heap/object.h"
 #include "tools.h"
 #include "tools_internal.h"
@@ -56,6 +57,25 @@ void fmt_value(StrBuf *b, Word v, MlwsType t, int depth) {
         sb_puts(b, "bytes ");
         fmt_string(b, (const char *)((ObjBytes *)o)->data, ((ObjBytes *)o)->len);
         return;
+    case OBJ_BIG: case OBJ_DEC: {
+        StrBuf nb = {0};
+        num_format(&nb, o);
+        if (nb.n > 80) sb_printf(b, "%.40s...(%zu digits)", nb.s, nb.n);
+        else sb_puts(b, nb.s);
+        sb_puts(b, o->kind == OBJ_BIG ? "n" : "d");
+        sb_free(&nb);
+        return;
+    }
+    case OBJ_CLOSURE: {
+        const ObjClosure *cl = (const ObjClosure *)o;
+        sb_printf(b, "<closure %s.%s", cl->fn->mod->m->name, cl->fn->name);
+        for (uint32_t i = 0; i < cl->nup && depth > 0; i++) {
+            sb_printf(b, "%sUP[%u]=", i ? ", " : " ", i);
+            fmt_value(b, cl->up[i], (MlwsType)cl->tags[i], depth - 1);
+        }
+        sb_putc(b, '>');
+        return;
+    }
     default: break;
     }
     if (depth <= 0) {

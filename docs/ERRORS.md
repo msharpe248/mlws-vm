@@ -57,6 +57,7 @@ status 70.
 | `E_BAD_FREE` | `free`/`realloc` of something that is not the start of a raw block |
 | `E_BAD_ALLOC` | Invalid allocation size or object length, or too many live blocks |
 | `E_TYPE` | Type violation: reading a non-reference as a reference (or the reverse); storing a value of the wrong bank in a register, array element, struct field or list slot; a field access on the wrong struct type; an object of the wrong kind for an instruction (e.g. `strcat` of a list); writing to an immutable string |
+| `E_OVERFLOW` | A BigInt or decimal does not fit the target of `cvt`, or a float that is infinite or NaN was converted to one |
 | `E_KEY` | `mget` without a default for a key that is not in the map |
 | `E_PARSE` | `parse` input is not a valid number of the requested type |
 | `E_BAD_HANDLE` | `hget`/`hfree` of an unknown or freed handle |

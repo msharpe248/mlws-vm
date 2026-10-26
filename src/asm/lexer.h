@@ -13,6 +13,8 @@ typedef enum {
     TK_CHAR,
     TK_PUNCT,
     TK_LOCALREF, /* numeric local label reference: 1b / 1f */
+    TK_BIGLIT,   /* 123n: sval holds the decimal digits */
+    TK_DECLIT,   /* 1.25d: sval holds the literal text without the suffix */
 } TokKind;
 
 typedef struct {

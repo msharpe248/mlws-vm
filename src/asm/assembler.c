@@ -21,6 +21,7 @@ typedef struct AsmOp {
     int col;
     char *sym;           /* unresolved label / function / global name */
     bool localref;       /* numeric local label reference (1b / 1f) */
+    uint8_t ckind;       /* OM_CONST: CONST_STRING / CONST_BIG / CONST_DEC */
     int64_t lnum;
     char ldir;
     struct AsmOp *inner; /* OM_MIND* */
@@ -176,7 +177,8 @@ static int resolve_reg(Asm *A, const Token *t) {
 }
 
 static bool is_reserved_name(const char *s) {
-    return parse_reg_name(s, strlen(s)) >= 0 || !strcmp(s, "ARG") || !strcmp(s, "LOC") || !strcmp(s, "null") ||
+    return parse_reg_name(s, strlen(s)) >= 0 || !strcmp(s, "ARG") || !strcmp(s, "LOC") || !strcmp(s, "UP") ||
+           !strcmp(s, "null") ||
            !strcmp(s, "true") || !strcmp(s, "false");
 }
 
@@ -206,15 +208,16 @@ static bool ident_is_const(Asm *A, const Token *t) {
 
 /* ---- module tables ----------------------------------------------------------- */
 
-static uint32_t add_const_string(Asm *A, const char *s, size_t n) {
+static uint32_t add_const(Asm *A, uint8_t kind, const char *s, size_t n) {
     StrBuf key = {0};
+    sb_printf(&key, "%u:", kind);
     sb_put_quoted(&key, s, n);
     void *v;
     uint32_t idx;
     if (smap_get(&A->constmap, key.s, &v)) {
         idx = (uint32_t)VI(v);
     } else {
-        MConst mc = {CONST_STRING, (uint32_t)n, xmalloc(n + 1)};
+        MConst mc = {kind, (uint32_t)n, xmalloc(n + 1)};
         memcpy(mc.data, s, n);
         mc.data[n] = 0;
         idx = (uint32_t)A->consts.n;
@@ -434,6 +437,16 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
         out->o.imm = disp;
         return true;
     }
+    if (t->kind == TK_IDENT && tok_ident(t, "UP") && tok_is(peekn(c, 1), "[")) { /* closure capture */
+        c->pos += 2;
+        int64_t n;
+        int ncol = cur(c)->col;
+        if (!eval_int(A, c, &n) || !expect_punct(A, c, "]")) return false;
+        if (n < 0) return aerr(A, c->pl, ncol, "E_ASM_RANGE", "UP index must be non-negative");
+        op_init_mode(out, OM_UPVAL, col);
+        out->o.index = (uint64_t)n;
+        return true;
+    }
     if (t->kind == TK_IDENT && (tok_ident(t, "ARG") || tok_ident(t, "LOC")) && tok_is(peekn(c, 1), "[")) {
         bool arg = tok_ident(t, "ARG");
         c->pos += 2;
@@ -447,7 +460,10 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
         return true;
     }
     int r = resolve_reg(A, t);
-    if (r >= 0 && REG_BANK(r) == BANK_R && (tok_is(peekn(c, 1), "[") || tok_is(peekn(c, 1), "->"))) {
+    /* R2->Type.field is a field; `calli R2 -> (I0)` is a call result list. */
+    bool field = tok_is(peekn(c, 1), "->") && peekn(c, 2)->kind == TK_IDENT &&
+                 memchr(peekn(c, 2)->start, '.', (size_t)peekn(c, 2)->len);
+    if (r >= 0 && REG_BANK(r) == BANK_R && (tok_is(peekn(c, 1), "[") || field)) {
         c->pos++;
         if (tok_is(cur(c), "->")) { /* R2->Type.field */
             c->pos++;
@@ -500,7 +516,7 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
             out->o.imm = disp;
             return true;
         }
-        if (tok_is(cur(c), "->"))
+        if (tok_is(cur(c), "->") && peekn(c, 1)->kind == TK_IDENT && memchr(peekn(c, 1)->start, '.', (size_t)peekn(c, 1)->len))
             return aerr(A, c->pl, cur(c)->col, "E_ASM_BAD_OPERAND", "field access needs an R register: R0->Type.field");
         op_init_mode(out, OM_REG, col);
         out->o.reg = (uint8_t)r;
@@ -561,13 +577,29 @@ static bool parse_operand(Asm *A, Cur *c, char pat, AsmOp *out) {
     if (handled) return true;
     if (t->kind == TK_STRING) {
         op_init_mode(out, OM_CONST, col);
-        out->o.index = add_const_string(A, t->sval, t->slen);
+        out->o.index = add_const(A, CONST_STRING, t->sval, t->slen);
+        out->ckind = CONST_STRING;
         c->pos++;
         return true;
     }
     if (tok_ident(t, "null")) {
         op_init_mode(out, OM_IMM, col);
         c->pos++;
+        return true;
+    }
+    /* BigInt / decimal literals, optionally negated: 123n, -1.5d */
+    bool neg = tok_is(t, "-") && (peekn(c, 1)->kind == TK_BIGLIT || peekn(c, 1)->kind == TK_DECLIT);
+    Token *nt = neg ? peekn(c, 1) : t;
+    if (nt->kind == TK_BIGLIT || nt->kind == TK_DECLIT) {
+        StrBuf txt = {0};
+        if (neg) sb_putc(&txt, '-');
+        sb_puts(&txt, nt->sval);
+        uint8_t kind = nt->kind == TK_BIGLIT ? CONST_BIG : CONST_DEC;
+        op_init_mode(out, OM_CONST, col);
+        out->o.index = add_const(A, kind, txt.s, txt.n);
+        out->ckind = kind;
+        sb_free(&txt);
+        c->pos += neg ? 2 : 1;
         return true;
     }
     if (t->kind == TK_IDENT && !ident_is_const(A, t)) {
@@ -1216,6 +1248,14 @@ static void infer_type(Asm *A, AsmInsn *ai, bool has_type, bool has_type2) {
                 if (!t || !(oi->types & TM(t))) t = default_type(oi->types);
             }
         }
+        /* References with a BigInt or decimal literal: infer .big / .dec. */
+        if ((t == T_R || t == T_NONE) && (oi->types & TS_BIGDEC) && !(oi->flags & OPF_TYPE2)) {
+            for (int k = 0; k < ai->nops; k++) {
+                if (ai->ops[k].o.mode != OM_CONST) continue;
+                if (ai->ops[k].ckind == CONST_BIG) t = T_BIG;
+                if (ai->ops[k].ckind == CONST_DEC) t = T_DEC;
+            }
+        }
         ai->type = (uint8_t)t;
     }
     if ((oi->flags & OPF_TYPE2) && !has_type2 && ai->nops > 1) {
@@ -1226,7 +1266,8 @@ static void infer_type(Asm *A, AsmInsn *ai, bool has_type, bool has_type2) {
 
 static bool parse_call(Asm *A, Cur *c, AsmInsn *ai, AsmOpVec *ops) {
     AsmOp target, argc;
-    if (!parse_operand(A, c, ai->op == OP_NCALL ? 'N' : 'F', &target)) return false;
+    bool indirect = ai->op == OP_CALLI || ai->op == OP_TCALLI || ai->op == OP_SPAWNI;
+    if (!parse_operand(A, c, ai->op == OP_NCALL ? 'N' : indirect ? 'S' : 'F', &target)) return false;
     VEC_PUSH(*ops, target);
     op_init_mode(&argc, OM_IMM, cur(c)->col);
     VEC_PUSH(*ops, argc);
@@ -1245,8 +1286,8 @@ static bool parse_call(Asm *A, Cur *c, AsmInsn *ai, AsmOpVec *ops) {
     }
     ops->v[1].o.imm = nargs;
     if (tok_is(cur(c), "->")) {
-        if (ai->op == OP_TCALL)
-            return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "tcall cannot have results; they go to the current caller");
+        if (ai->op == OP_TCALL || ai->op == OP_TCALLI)
+            return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "a tail call cannot have results; they go to the current caller");
         c->pos++;
         bool paren = tok_is(cur(c), "(");
         if (paren) c->pos++;

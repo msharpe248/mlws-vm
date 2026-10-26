@@ -77,17 +77,18 @@ bool check_operand(const Operand *o, int k, MlwsType t, bool write, CheckErr *ce
             return fail(ce, k, "operand %d: the only %s literal is 0 (null)", k + 1, type_name(t));
         return true;
     case OM_FIMM:
-        if (t != T_NONE && !type_is_float(t))
+        if (t != T_NONE && !type_is_float(t) && t != T_DEC)
             return fail(ce, k, "operand %d: float literal used where %s is expected", k + 1, type_name(t));
         return true;
     case OM_CONST:
-        if (t != T_NONE && t != T_R)
+        if (t != T_NONE && t != T_R && t != T_BIG && t != T_DEC)
             return fail(ce, k, "operand %d: string literal used where %s is expected", k + 1, type_name(t));
         return true;
     case OM_LABEL: return fail(ce, k, "operand %d: a label is not a value", k + 1);
     case OM_FUNC: return fail(ce, k, "operand %d: a function is not a value (yet)", k + 1);
     case OM_NATIVE: return fail(ce, k, "operand %d: a native name is not a value", k + 1);
     case OM_STRUCT: return fail(ce, k, "operand %d: a struct type is not a value", k + 1);
+    case OM_UPVAL: return true; /* checked against the running closure at run time */
     case OM_ELEM: case OM_ELEMI: case OM_FIELD:
         if (REG_BANK(o->reg) != BANK_R)
             return fail(ce, k, "operand %d: element and field access need an R register base, not %s", k + 1,
@@ -135,10 +136,14 @@ bool check_insn(const Insn *in, CheckErr *ce) {
         if (!(oi->flags & (OPF_NATURAL | OPF_PERVAL)))
             return fail(ce, -1, "%s needs a type", oi->mnem);
     } else if (!(oi->types & TM(in->type))) {
+        if (in->type == T_R && (oi->types & TS_BIGDEC))
+            return fail(ce, -1, "%s does not support type .r (for BigInt or decimal arithmetic write %s.big or %s.dec)",
+                        oi->mnem, oi->mnem, oi->mnem);
         return fail(ce, -1, "%s does not support type .%s", oi->mnem, type_name((MlwsType)in->type));
     }
     if (oi->flags & OPF_TYPE2) {
-        if (in->type == T_NONE || !(TS_NUM & TM(in->type2)))
+        uint32_t from_ok = in->op == OP_BITCAST ? TS_NUM : TS_NUM | TS_BIGDEC;
+        if (in->type == T_NONE || !(from_ok & TM(in->type2)))
             return fail(ce, -1, "%s needs two numeric types, e.g. %s.f64.i64", oi->mnem, oi->mnem);
         if (in->op == OP_BITCAST && type_size((MlwsType)in->type) != type_size((MlwsType)in->type2))
             return fail(ce, -1, "bitcast.%s.%s: types must have the same size", type_name((MlwsType)in->type),
@@ -150,13 +155,17 @@ bool check_insn(const Insn *in, CheckErr *ce) {
         return fail(ce, -1, "%s takes %d to %d operands, got %d", oi->mnem, oi->minops, oi->maxops, in->nops);
     }
     if (oi->flags & OPF_CALL) {
+        bool indirect = in->op == OP_CALLI || in->op == OP_TCALLI || in->op == OP_SPAWNI;
         uint8_t want = in->op == OP_NCALL ? OM_NATIVE : OM_FUNC;
-        if (in->ops[0].mode != want)
+        if (indirect) {
+            if (!check_operand(&in->ops[0], 0, T_R, false, ce)) return false;
+        } else if (in->ops[0].mode != want) {
             return fail(ce, 0, "%s target must be a %s", oi->mnem, in->op == OP_NCALL ? "native name string" : "function");
+        }
         if (in->ops[1].mode != OM_IMM || in->ops[1].imm < 0 || in->ops[1].imm > in->nops - 2)
             return fail(ce, 1, "malformed call block (argument count)");
         int argc = (int)in->ops[1].imm;
-        if (in->op == OP_TCALL && in->nops != 2 + argc)
+        if ((in->op == OP_TCALL || in->op == OP_TCALLI) && in->nops != 2 + argc)
             return fail(ce, -1, "tcall cannot have result operands (results go to the current caller)");
         for (int k = 2; k < in->nops; k++)
             if (!check_operand(&in->ops[k], k, T_NONE, k >= 2 + argc, ce)) return false;

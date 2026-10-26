@@ -1,0 +1,5 @@
+; expect-error: E_OVERFLOW
+.func main
+    cvt.i64.big I0, 9223372036854775808n
+    ret 0
+.endf

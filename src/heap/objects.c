@@ -4,12 +4,14 @@
 #include <math.h>
 
 #include "heap.h"
+#include "numeric.h"
 
 #define MAX_ELEMS ((int64_t)1 << 31)
 
 const char *obj_kind_name(int kind) {
-    static const char *const names[] = {"null", "string", "bytes", "array", "struct", "list", "map"};
-    return kind >= 0 && kind <= OBJ_MAP ? names[kind] : "object";
+    static const char *const names[] = {"null", "string", "bytes", "array", "struct", "list",
+                                        "map",  "closure", "bigint", "decimal"};
+    return kind >= 0 && kind <= OBJ_DEC ? names[kind] : "object";
 }
 
 static void check_len(Process *p, int64_t n, const char *what) {
@@ -184,6 +186,7 @@ static uint32_t key_hash(Word k, uint8_t tag) {
     case KC_REF: {
         Obj *o = k.r;
         if (o && o->kind == OBJ_STRING) return ((ObjString *)o)->hash;
+        if (o && (o->kind == OBJ_BIG || o->kind == OBJ_DEC)) return num_hash(o); /* by value */
         return mix64((uint64_t)(uintptr_t)o);
     }
     default: return mix64(k.u);
@@ -198,6 +201,7 @@ static bool key_eq(Word a, uint8_t at, Word b, uint8_t bt) {
     case KC_REF: {
         Obj *x = a.r, *y = b.r;
         if (x == y) return true;
+        if (x && y && x->kind == y->kind && (x->kind == OBJ_BIG || x->kind == OBJ_DEC)) return num_equal(x, y);
         if (!x || !y || x->kind != OBJ_STRING || y->kind != OBJ_STRING) return false;
         const ObjString *sx = (const ObjString *)x, *sy = (const ObjString *)y;
         return sx->len == sy->len && sx->hash == sy->hash && memcmp(sx->data, sy->data, sx->len) == 0;
@@ -341,6 +345,18 @@ ObjString *value_to_string(Process *p, Word v, MlwsType t) {
         case OBJ_STRUCT: snprintf(buf, sizeof buf, "<%s>", ((ObjStruct *)o)->def->name); break;
         case OBJ_LIST: snprintf(buf, sizeof buf, "<list len=%u>", ((ObjList *)o)->len); break;
         case OBJ_MAP: snprintf(buf, sizeof buf, "<map len=%u>", ((ObjMap *)o)->count); break;
+        case OBJ_CLOSURE: {
+            const Function *f = ((ObjClosure *)o)->fn;
+            snprintf(buf, sizeof buf, "<closure %.40s.%.40s>", f->mod->m->name, f->name);
+            break;
+        }
+        case OBJ_BIG: case OBJ_DEC: {
+            StrBuf nb = {0};
+            num_format(&nb, o);
+            ObjString *s = str_new(p, nb.s, nb.n);
+            sb_free(&nb);
+            return s;
+        }
         default: snprintf(buf, sizeof buf, "<object>"); break;
         }
         break;
@@ -348,4 +364,15 @@ ObjString *value_to_string(Process *p, Word v, MlwsType t) {
     default: snprintf(buf, sizeof buf, "%lld", (long long)v.i); break;
     }
     return str_new(p, buf, strlen(buf));
+}
+
+/* ---- closures ------------------------------------------------------------------ */
+
+ObjClosure *closure_new(Process *p, struct Function *fn, uint32_t nup) {
+    size_t size = sizeof(ObjClosure) + nup * (sizeof(Word) + 1);
+    ObjClosure *c = (ObjClosure *)gc_alloc(p, OBJ_CLOSURE, size);
+    c->fn = fn;
+    c->nup = nup;
+    c->tags = (uint8_t *)(c->up + nup);
+    return c;
 }

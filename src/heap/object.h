@@ -17,6 +17,9 @@ enum {
     OBJ_STRUCT = 4,
     OBJ_LIST = 5,
     OBJ_MAP = 6,
+    OBJ_CLOSURE = 7,
+    OBJ_BIG = 8,
+    OBJ_DEC = 9,
 };
 
 #define OBJF_IMMORTAL 0x01
@@ -93,6 +96,17 @@ typedef struct {
     int32_t *index;      /* -1 empty, -2 deleted, else entry number */
     uint32_t index_cap;  /* power of two */
 } ObjMap;
+
+struct Function;
+
+/* A function value: code plus captured values (UP[0..nup-1]), each with a tag. */
+typedef struct {
+    Obj h;
+    struct Function *fn;
+    uint32_t nup;
+    uint8_t *tags; /* points just past up[] */
+    Word up[];
+} ObjClosure;
 
 const char *obj_kind_name(int kind);
 

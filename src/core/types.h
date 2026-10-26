@@ -42,8 +42,9 @@ typedef enum {
 #define TS_NUM (TS_INT | TS_FLT)
 #define TS_REF TM(T_R)
 #define TS_PTR TM(T_P)
-#define TS_ORD (TS_NUM | TS_PTR)
-#define TS_ANY (TS_NUM | TS_REF | TS_PTR)
+#define TS_BIGDEC (TM(T_BIG) | TM(T_DEC))
+#define TS_ORD (TS_NUM | TS_PTR | TS_BIGDEC)
+#define TS_ANY (TS_NUM | TS_REF | TS_PTR | TS_BIGDEC)
 
 typedef enum { BANK_I = 0, BANK_F = 1, BANK_R = 2, BANK_P = 3, BANK_S = 4 } Bank;
 #define NBANKS 4  /* banks that are allocated per call frame */
@@ -72,6 +73,8 @@ Bank type_bank(MlwsType t);                  /* register bank for the type */
 bool type_is_int(MlwsType t);
 bool type_is_float(MlwsType t);
 bool type_is_signed(MlwsType t);
+/* r, big and dec: GC references (BigInt and decimal values are heap objects). */
+static inline bool type_is_ref(int t) { return t == T_R || t == T_BIG || t == T_DEC; }
 int type_bits(MlwsType t);
 MlwsType bank_natural_type(Bank b);          /* I->i64, F->f64, R->r, P->p */
 const char *bank_prefix(Bank b);           /* "I", "F", "R", "P" */

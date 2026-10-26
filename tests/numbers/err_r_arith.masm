@@ -1,0 +1,6 @@
+; `add R0, R1, R2` would be ".r" arithmetic: the assembler asks for .big or .dec.
+; expect-error: E_ASM_BAD_TYPE
+.func main
+    add R0, R1, R2
+    ret 0
+.endf

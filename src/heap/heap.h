@@ -12,6 +12,8 @@
 /* ---- allocation and collection (gc.c) ------------------------------------ */
 
 Obj *gc_alloc(Process *p, uint8_t kind, size_t size); /* zeroed and linked */
+/* Linked but not yet charged: call gc_account(p, size) once temporaries are freed. */
+Obj *gc_alloc_unaccounted(Process *p, uint8_t kind, size_t size);
 void gc_account(Process *p, int64_t delta);           /* external buffer growth */
 void gc_collect(Process *p);
 void heap_free_all(Process *p);
@@ -40,6 +42,7 @@ MapEntry *map_find(ObjMap *m, Word key, uint8_t ktag);
 void map_set(Process *p, ObjMap *m, Word key, uint8_t ktag, Word val, uint8_t vtag);
 bool map_delete(ObjMap *m, Word key, uint8_t ktag);
 ObjList *map_keys(Process *p, ObjMap *m);
+ObjClosure *closure_new(Process *p, struct Function *fn, uint32_t nup);
 
 /* A printable representation of a value (`tostr`). */
 ObjString *value_to_string(Process *p, Word v, MlwsType t);

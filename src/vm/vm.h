@@ -65,7 +65,7 @@ typedef struct LModule {
     int index;
     int state;
     Function *funcs;          /* m->nfuncs */
-    ObjString **consts;       /* m->nconsts */
+    Obj **consts;             /* m->nconsts: immortal strings, BigInts and decimals */
     uint64_t *grefs;          /* resolved global pointers, m->ngrefs */
     StructDef *sdefs;         /* struct types defined here, m->nstructs (imports unused) */
     const StructDef **structs; /* resolved struct table (local or imported), m->nstructs */
@@ -172,6 +172,7 @@ typedef struct {
     uint64_t entry_sp; /* SP at the call; restored on return */
     uint64_t saved_fp;
     const Insn *ret_insn; /* caller's call instruction that receives results */
+    Obj *closure;         /* the closure being run (UP[n] reads it), or NULL */
 } Frame;
 
 enum { PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED };

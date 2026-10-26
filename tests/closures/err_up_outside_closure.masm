@@ -1,0 +1,9 @@
+; UP[n] only makes sense when the function is running as a closure.
+; expect-error: E_TYPE
+.func f -> i64
+    ret UP[0]
+.endf
+.func main
+    call f -> (I0)
+    ret 0
+.endf

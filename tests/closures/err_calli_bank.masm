@@ -1,0 +1,10 @@
+; expect-error: E_TYPE
+.func f(i64 a) -> i64
+    ret a
+.endf
+.func main
+    closure f -> (R0)
+    mov F0, 1.5
+    calli R0 (F0) -> (I0)
+    ret 0
+.endf

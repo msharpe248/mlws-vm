@@ -210,3 +210,12 @@ which preserves the type tag of a stack or global word.
 | `0x0109` | `alive` | `bool_dst, int` | - | dst = true if the process exists and has not finished. |
 | `0x010A` | `quota` | `n, int` | - | `quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed. Processes it spawns inherit its limits. Exceeding a limit traps E_QUOTA. |
 | `0x010B` | `mlen` | `?` | - | dst = the number of messages waiting in this process's mailbox. |
+
+## Closures
+
+| Opcode | Mnemonic | Operands | Types | Description |
+|---|---|---|---|---|
+| `0x0110` | `closure` | `func (args...) -> (results...)` | - | Make a function value: `closure f (v1, v2, ...) -> (R0)`. The values are copied into the closure, and f reads and writes them as UP[0], UP[1], .... Each keeps its own type, as a list element does. Captures are copies: to share a mutable variable, capture a struct or list. |
+| `0x0111` | `calli` | `func (args...) -> (results...)` | - | Call through a closure: `calli R0 (args) -> (results)`. Arguments are read with the function's parameter types; the count and register banks are checked at run time (E_TYPE). |
+| `0x0112` | `tcalli` | `func (args...) -> (results...)` | - | Tail call through a closure (like tcall). |
+| `0x0113` | `spawni` | `func (args...) -> (results...)` | - | Start a new process running a closure: `spawni R0 (args) -> (pid)`. The closure and its captures are deep-copied into the new process. |

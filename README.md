@@ -46,8 +46,9 @@ base:
 * **A loader with libraries**: `.import std.math as math`, a library search path,
   `.masm` or binary `.mlwso`, cycle detection, and a load-time verifier.
 * **Rich heap types with a garbage collector**: strings, byte buffers, typed
-  arrays, structs declared in assembly (`R0->Point.x`), dynamically typed lists, and
-  insertion-ordered maps. The collector is a precise, per-process mark-sweep.
+  arrays, structs declared in assembly (`R0->Point.x`), dynamically typed lists,
+  insertion-ordered maps, closures, BigInts (`123n`) and exact decimals (`19.99d`).
+  The collector is a precise, per-process mark-sweep.
 * **Many isolated processes**: preemptive scheduling, `spawn`/`send`/`recv` with
   deep-copied messages, timeouts, Erlang-style `link`/`monitor` supervision, and
   per-process quotas on heap, raw memory, mailbox size and CPU.
@@ -129,5 +130,5 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M5 Structured exceptions | done |
 | M6 Many concurrent isolated processes: scheduler, messages, quotas, accounting | done |
 | M7 Tooling: `mlwsvm top`, debugger, trace/profiler, web dashboard | done |
-| M8 Closures, BigInt, decimal | next |
-| M9 Performance: computed-goto dispatch, multi-threaded scheduler, generational GC | planned |
+| M8 Closures, BigInt, decimal | done |
+| M9 Performance: computed-goto dispatch, multi-threaded scheduler, generational GC | next |

@@ -40,6 +40,7 @@ typedef enum {
     OM_ELEMI = 0x18,      /* reg:u8 index:uleb                        R2[7]         */
     OM_FIELD = 0x19,      /* reg:u8 fref:uleb (module field refs)     R2->Point.x   */
     OM_STRUCT = 0x1A,     /* struct:uleb (module struct table)        Point         */
+    OM_UPVAL = 0x1B,      /* index:uleb (captured value of the current closure) UP[2] */
 } OperandMode;
 
 typedef struct Operand {

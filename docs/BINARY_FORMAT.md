@@ -21,7 +21,7 @@ source       str      source file name (for backtraces); may be empty
 imports      uleb n, then n × str            module names, in .import order
 
 constants    uleb n, then n × {
-               kind  u8    1 = string
+               kind  u8    1 = string, 2 = BigInt, 3 = decimal (numbers as decimal text, e.g. "-12.50")
                len   uleb
                bytes len
              }
@@ -82,8 +82,8 @@ refs, `NATIVE` to natives, `STRUCT` to structs and `FIELD` to field refs.
 | 0 | none | 6 | i64 | 12 | f64 |
 | 1 | b | 7 | u8 | 13 | r |
 | 2 | c | 8 | u16 | 14 | p |
-| 3 | i8 | 9 | u32 | 15 | big (reserved) |
-| 4 | i16 | 10 | u64 | 16 | dec (reserved) |
+| 3 | i8 | 9 | u32 | 15 | big |
+| 4 | i16 | 10 | u64 | 16 | dec |
 | 5 | i32 | 11 | f32 | | |
 
 ## Instruction encoding
@@ -128,6 +128,7 @@ operand := mode:u8 payload
 | `0x18` | ELEMI | reg:u8 index:uleb |
 | `0x19` | FIELD | reg:u8 field_ref:uleb |
 | `0x1A` | STRUCT | struct table index:uleb |
+| `0x1B` | UPVAL | capture index:uleb |
 
 **Register byte**: `bank << 5 | index`, where the bank is 0 = I, 1 = F, 2 = R,
 3 = P, 4 = special. For the special bank, index 0 = SP, 1 = FP and 2 = PID.

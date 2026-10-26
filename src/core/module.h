@@ -12,7 +12,7 @@
 #define MAX_PARAMS 30
 #define MAX_PARAMS_STORAGE 32
 
-enum { CONST_STRING = 1 };
+enum { CONST_STRING = 1, CONST_BIG = 2, CONST_DEC = 3 }; /* numbers are stored as decimal text */
 
 typedef struct {
     uint8_t kind;

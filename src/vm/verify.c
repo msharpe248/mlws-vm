@@ -71,7 +71,8 @@ static bool verify_function(LModule *lm, Function *f, MlwsError *err) {
                 const FieldRef *fr = in->ops[k].rv.ptr;
                 MlwsType ft = (MlwsType)fr->def->types[fr->index];
                 MlwsType ot = operand_type(in, k);
-                if (ot != T_NONE && (type_bank(ot) != type_bank(ft) || (ot == T_R) != (ft == T_R)))
+                if (ot == T_BIG || ot == T_DEC) ot = T_R; /* numbers are references */
+                if (ot != T_NONE && (type_bank(ot) != type_bank(ft) || type_is_ref(ot) != type_is_ref(ft)))
                     return verr(err, lm, f, pc, "%s: field %s.%s is %s but is accessed as %s", op_info[in->op].mnem,
                                 fr->def->name, fr->def->fields[fr->index], type_name(ft), type_name(ot));
             }
@@ -112,6 +113,16 @@ static bool verify_function(LModule *lm, Function *f, MlwsError *err) {
             if (nres > 1) return verr(err, lm, f, pc, "spawn has one result: the new process id");
             if (nres == 1 && !check_operand(&in->ops[2 + argc], 2 + argc, T_I64, true, &ce))
                 return verr(err, lm, f, pc, "spawn result: %s", ce.msg);
+        } else if (in->op == OP_CLOSURE) {
+            int argc = (int)in->ops[1].imm;
+            if (in->nops - 2 - argc != 1) return verr(err, lm, f, pc, "closure has exactly one result: the closure");
+            if (!check_operand(&in->ops[2 + argc], 2 + argc, T_R, true, &ce)) return verr(err, lm, f, pc, "closure result: %s", ce.msg);
+        } else if (in->op == OP_SPAWNI) {
+            int argc = (int)in->ops[1].imm;
+            int nres = in->nops - 2 - argc;
+            if (nres > 1) return verr(err, lm, f, pc, "spawni has one result: the new process id");
+            if (nres == 1 && !check_operand(&in->ops[2 + argc], 2 + argc, T_I64, true, &ce))
+                return verr(err, lm, f, pc, "spawni result: %s", ce.msg);
         } else if (in->op == OP_NCALL) {
             const NativeDef *nd = in->ops[0].rv.ptr;
             int argc = (int)in->ops[1].imm;

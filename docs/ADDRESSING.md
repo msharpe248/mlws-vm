@@ -21,7 +21,7 @@ integer.
 | 1 | `I3` `F0` `R2` `P1` `SP` `FP` `PID` | `0x01` REG | the register |
 | 2 | `42` `-7` `'a'` `true` `null` `N*2+1` | `0x02` IMM | integer literal (constant expressions folded) |
 | 3 | `3.5` `1e-9` `inf` | `0x03` FIMM | float literal |
-| 4 | `"text"` | `0x04` CONST | reference to an immutable string in the module constant pool |
+| 4 | `"text"`, `123n`, `1.5d` | `0x04` CONST | reference to an immutable string, BigInt or decimal in the module constant pool |
 | 5 | `[P1]` | `0x05` IND | memory at P1 |
 | 6 | `SP[42]` `FP[-3]` `P1[N+1]` | `0x06` DISP | memory at base + 8·disp |
 | 7 | `P1{13}` | `0x07` DISPB | memory at base + disp |
@@ -42,6 +42,7 @@ integer.
 | 22 | `R2[I4]` | `0x17` ELEM | element I4 of the string, byte buffer, array or list in R2 |
 | 23 | `R2[7]` `R2[N-1]` | `0x18` ELEMI | element 7 (a constant index) |
 | 24 | `R2->Point.x` `R2->geo.Point.x` | `0x19` FIELD | field `x` of the `Point` struct in R2 |
+| 25 | `UP[2]` | `0x1B` UPVAL | capture 2 of the closure currently running (read/write) |
 | — | `Point` after `new`/`isa` | `0x1A` STRUCT | a struct type (`new` and `isa` only) |
 | — | `label` | `0x14` LABEL | branch target (branch operands only) |
 | — | `func`, `mod.func` | `0x15` FUNC | call target (`call`/`tcall` only) |

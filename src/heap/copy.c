@@ -8,6 +8,7 @@
  * through leaks nothing: the half-built copy is unreachable garbage in the
  * receiver's heap. */
 #include "heap.h"
+#include "numeric.h"
 
 typedef struct {
     Obj *old, *copy;
@@ -89,7 +90,7 @@ static Obj *shallow(Process *from, Process *to, struct CopyState *cs, Obj *o) {
         ObjStruct *s = (ObjStruct *)o, *ns = struct_new(to, s->def);
         for (uint32_t i = 0; i < s->def->nfields; i++) {
             no_pointer(from, s->def->types[i]);
-            if (s->def->types[i] != T_R) ns->fields[i] = s->fields[i];
+            if (!type_is_ref(s->def->types[i])) ns->fields[i] = s->fields[i];
         }
         c = &ns->h;
         break;
@@ -105,6 +106,23 @@ static Obj *shallow(Process *from, Process *to, struct CopyState *cs, Obj *o) {
         break;
     }
     case OBJ_MAP: c = &map_new(to)->h; break; /* entries are added from the worklist */
+    case OBJ_CLOSURE: {
+        ObjClosure *cl = (ObjClosure *)o, *nc = closure_new(to, cl->fn, cl->nup);
+        for (uint32_t i = 0; i < cl->nup; i++) {
+            no_pointer(from, cl->tags[i]);
+            nc->tags[i] = cl->tags[i];
+            if (cl->tags[i] != T_R) nc->up[i] = cl->up[i];
+        }
+        c = &nc->h;
+        break;
+    }
+    case OBJ_BIG: case OBJ_DEC: { /* immutable, but heaps never share objects */
+        size_t size = num_footprint(o);
+        c = gc_alloc_unaccounted(to, o->kind, size);
+        memcpy((char *)c + sizeof(Obj), (const char *)o + sizeof(Obj), size - sizeof(Obj));
+        gc_account(to, (int64_t)size);
+        break;
+    }
     default: vm_trap(from, "E_INTERNAL", "cannot copy object kind %d", o->kind);
     }
     map_insert(cs, o, c);
@@ -115,13 +133,13 @@ static Obj *shallow(Process *from, Process *to, struct CopyState *cs, Obj *o) {
 
 static Word copy_slot(Process *from, Process *to, struct CopyState *cs, Word v, uint8_t tag) {
     no_pointer(from, tag);
-    if (tag == T_R) v.r = shallow(from, to, cs, v.r);
+    if (type_is_ref(tag)) v.r = shallow(from, to, cs, v.r);
     return v;
 }
 
 Word msg_copy(Process *from, Process *to, Word v, uint8_t tag) {
     no_pointer(from, tag);
-    if (tag != T_R || !v.r) return v;
+    if (!type_is_ref(tag) || !v.r) return v;
     VM *vm = from->vm;
     if (!vm->copy_state) vm->copy_state = xcalloc(1, sizeof(struct CopyState));
     struct CopyState *cs = vm->copy_state;
@@ -142,13 +160,19 @@ Word msg_copy(Process *from, Process *to, Word v, uint8_t tag) {
         case OBJ_STRUCT: {
             ObjStruct *s = (ObjStruct *)pr.old, *ns = (ObjStruct *)pr.copy;
             for (uint32_t i = 0; i < s->def->nfields; i++)
-                if (s->def->types[i] == T_R) ns->fields[i].r = shallow(from, to, cs, s->fields[i].r);
+                if (type_is_ref(s->def->types[i])) ns->fields[i].r = shallow(from, to, cs, s->fields[i].r);
             break;
         }
         case OBJ_LIST: {
             ObjList *l = (ObjList *)pr.old, *nl = (ObjList *)pr.copy;
             for (uint32_t i = 0; i < l->len; i++)
                 if (l->tags[i] == T_R) nl->items[i].r = shallow(from, to, cs, l->items[i].r);
+            break;
+        }
+        case OBJ_CLOSURE: {
+            ObjClosure *cl = (ObjClosure *)pr.old, *nc = (ObjClosure *)pr.copy;
+            for (uint32_t i = 0; i < cl->nup; i++)
+                if (cl->tags[i] == T_R) nc->up[i].r = shallow(from, to, cs, cl->up[i].r);
             break;
         }
         case OBJ_MAP: {

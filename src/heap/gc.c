@@ -6,6 +6,7 @@
 #include "heap.h"
 
 #include "../platform/platform.h"
+#include "numeric.h"
 
 #define GC_MIN_THRESHOLD (1u << 20)
 
@@ -20,6 +21,8 @@ size_t obj_footprint(const Obj *o) {
         const ObjMap *m = (const ObjMap *)o;
         return sizeof(ObjMap) + m->entry_cap * sizeof(MapEntry) + m->index_cap * sizeof(int32_t);
     }
+    case OBJ_CLOSURE: return sizeof(ObjClosure) + ((const ObjClosure *)o)->nup * (sizeof(Word) + 1);
+    case OBJ_BIG: case OBJ_DEC: return num_footprint(o);
     default: return sizeof(Obj);
     }
 }
@@ -44,13 +47,18 @@ void gc_account(Process *p, int64_t delta) {
         vm_trap(p, "E_QUOTA", "heap quota of %llu bytes exceeded", (unsigned long long)p->quota[QUOTA_HEAP]);
 }
 
-Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
+Obj *gc_alloc_unaccounted(Process *p, uint8_t kind, size_t size) {
     Obj *o = xcalloc(1, size);
     o->kind = kind;
     o->next = p->heap;
     p->heap = o;
     p->objects_allocated++;
     if (!p->next_gc) p->next_gc = gc_threshold(p, 0);
+    return o;
+}
+
+Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
+    Obj *o = gc_alloc_unaccounted(p, kind, size);
     gc_account(p, (int64_t)size);
     return o;
 }
@@ -89,13 +97,19 @@ static void scan(Process *p, Obj *o) {
     case OBJ_STRUCT: {
         ObjStruct *s = (ObjStruct *)o;
         for (uint32_t i = 0; i < s->def->nfields; i++)
-            if (s->def->types[i] == T_R) mark(p, s->fields[i].r);
+            if (type_is_ref(s->def->types[i])) mark(p, s->fields[i].r);
         break;
     }
     case OBJ_LIST: {
         ObjList *l = (ObjList *)o;
         for (uint32_t i = 0; i < l->len; i++)
             if (l->tags[i] == T_R) mark(p, l->items[i].r);
+        break;
+    }
+    case OBJ_CLOSURE: {
+        ObjClosure *cl = (ObjClosure *)o;
+        for (uint32_t i = 0; i < cl->nup; i++)
+            if (cl->tags[i] == T_R) mark(p, cl->up[i].r);
         break;
     }
     case OBJ_MAP: {
@@ -125,6 +139,7 @@ static void mark_segment(Process *p, const Segment *s, uint32_t from_word) {
 void gc_collect(Process *p) {
     uint64_t t0 = plat_now_ns();
     for (uint32_t i = 0; i < p->rtop[BANK_R]; i++) mark(p, p->rreg[i]);
+    for (uint32_t i = 0; i < p->nframes; i++) mark(p, p->frames[i].closure); /* closures being run */
     /* The whole stack: code may legally write references below SP. */
     mark_segment(p, &p->stack, 0);
     for (uint32_t i = 0; i < p->nglobals; i++) mark_segment(p, &p->globals[i], 0);

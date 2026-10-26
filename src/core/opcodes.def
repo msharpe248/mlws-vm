@@ -11,6 +11,8 @@
  *   E ptr dst           M memory location   K string const I integer immediate
  *   L label             F function          N native name  C call block
  *   O object src (r)    X object dst (r)    J i64 dst      T struct type
+ * BigInt (.big) and decimal (.dec) values are references held in R registers;
+ * on non-arithmetic instructions those suffixes behave like .r.
  * A trailing modifier applies to the last letter: ? optional, * zero or more,
  * + one or more. The operand count limits (0..32) are derived from the pattern.
  *
@@ -46,29 +48,29 @@ OP(DROP,   0x0015, "drop",   "Data movement", "I?", 0, 0,
    "Discard n words (default 1) from the top of the data stack: SP += n words.")
 OP(ENTER,  0x0016, "enter",  "Data movement", "I",  0, 0,
    "Reserve n zeroed words of locals: SP -= n words. Locals are then addressed as LOC[0]..LOC[n-1] (FP[-1]..FP[-n]).")
-OP(CVT,    0x0017, "cvt",    "Data movement", "DS", TS_NUM, OPF_TYPE2,
+OP(CVT,    0x0017, "cvt",    "Data movement", "DS", TS_NUM | TS_BIGDEC, OPF_TYPE2,
    "Value conversion `cvt.<to>.<from> dst, src`. int->int wraps or extends, int->float rounds, float->int truncates toward zero and saturates (NaN becomes 0), to-bool tests for non-zero.")
 OP(BITCAST,0x0018, "bitcast","Data movement", "DS", TS_NUM, OPF_TYPE2,
    "Reinterpret the bits of src as dst's type: `bitcast.<to>.<from>`. Both types must have the same size, e.g. bitcast.i64.f64 or bitcast.f32.u32.")
 
 /* ---- arithmetic --------------------------------------------------------- */
-OP(ADD,    0x0020, "add",    "Arithmetic", "DS+", TS_NUM | TS_PTR, 0,
+OP(ADD,    0x0020, "add",    "Arithmetic", "DS+", TS_NUM | TS_PTR | TS_BIGDEC, 0,
    "Sum. `add dst, s` means dst += s; `add dst, s1, s2, ...` means dst = s1 + s2 + .... For add.p the first value is a pointer and the remaining values are i64 byte offsets.")
-OP(SUB,    0x0021, "sub",    "Arithmetic", "DS+", TS_NUM | TS_PTR, 0,
+OP(SUB,    0x0021, "sub",    "Arithmetic", "DS+", TS_NUM | TS_PTR | TS_BIGDEC, 0,
    "Difference: dst = s1 - s2 - ... (two-operand form: dst -= s). sub.p subtracts i64 byte offsets from a pointer.")
-OP(MUL,    0x0022, "mul",    "Arithmetic", "DS+", TS_NUM, 0,
+OP(MUL,    0x0022, "mul",    "Arithmetic", "DS+", TS_NUM | TS_BIGDEC, 0,
    "Product: dst = s1 * s2 * ... (two-operand form: dst *= s). Integer multiply wraps.")
-OP(DIV,    0x0023, "div",    "Arithmetic", "DS+", TS_NUM, 0,
+OP(DIV,    0x0023, "div",    "Arithmetic", "DS+", TS_NUM | TS_BIGDEC, 0,
    "Quotient, left to right. Integer division truncates toward zero and traps E_DIV_ZERO on a zero divisor. Float division follows IEEE 754.")
-OP(REM,    0x0024, "rem",    "Arithmetic", "DS+", TS_NUM, 0,
+OP(REM,    0x0024, "rem",    "Arithmetic", "DS+", TS_NUM | TS_BIGDEC, 0,
    "Remainder with the sign of the dividend (C semantics; fmod for floats). Integer remainder traps E_DIV_ZERO on a zero divisor.")
-OP(MIN,    0x0025, "min",    "Arithmetic", "DS+", TS_NUM, 0,
+OP(MIN,    0x0025, "min",    "Arithmetic", "DS+", TS_NUM | TS_BIGDEC, 0,
    "Smallest of the sources (two-operand form: dst = min(dst, s)).")
-OP(MAX,    0x0026, "max",    "Arithmetic", "DS+", TS_NUM, 0,
+OP(MAX,    0x0026, "max",    "Arithmetic", "DS+", TS_NUM | TS_BIGDEC, 0,
    "Largest of the sources (two-operand form: dst = max(dst, s)).")
-OP(NEG,    0x0027, "neg",    "Arithmetic", "DS?", TS_NUM, 0,
+OP(NEG,    0x0027, "neg",    "Arithmetic", "DS?", TS_NUM | TS_BIGDEC, 0,
    "dst = -src (one-operand form negates in place).")
-OP(ABS,    0x0028, "abs",    "Arithmetic", "DS?", TS_NUM, 0,
+OP(ABS,    0x0028, "abs",    "Arithmetic", "DS?", TS_NUM | TS_BIGDEC, 0,
    "dst = |src| (one-operand form works in place). abs of the minimum signed value wraps to itself.")
 OP(INC,    0x0029, "inc",    "Arithmetic", "D",   TS_NUM, 0,
    "dst += 1.")
@@ -202,7 +204,7 @@ OP(STRFIND,0x00B3, "strfind","Strings", "JOOQ?", 0, 0,
    "`strfind dst, s, needle [, start]`: byte offset of the first occurrence of needle at or after start (default 0), or -1.")
 OP(TOSTR,  0x00B4, "tostr",  "Strings", "XV", TS_ANY, OPF_PERVAL,
    "Convert a value to a new string, using the instruction type or the value's natural type: integers in decimal, floats in shortest round-trip form, bools as true/false, chars as UTF-8. A string converts to itself, a byte buffer to a copy, and other objects to a description such as <list len=3>.")
-OP(PARSE,  0x00B5, "parse",  "Strings", "DO", TS_NUM, 0,
+OP(PARSE,  0x00B5, "parse",  "Strings", "DO", TS_NUM | TS_BIGDEC, 0,
    "Parse a number from the whole string: `parse.i64 I0, s` (decimal, or 0x/0b/0o prefixed), `parse.f64 F0, s`. Anything else traps E_PARSE.")
 OP(BUFNEW, 0x00B6, "bufnew", "Strings", "XQ", 0, 0,
    "New mutable byte buffer of n zero bytes. Its bytes are accessed as R0[I1] (u8).")
@@ -274,3 +276,13 @@ OP(QUOTA,  0x010A, "quota",  "Processes", "IQ", 0, 0,
    "`quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed. Processes it spawns inherit its limits. Exceeding a limit traps E_QUOTA.")
 OP(MLEN,   0x010B, "mlen",   "Processes", "J", 0, 0,
    "dst = the number of messages waiting in this process's mailbox.")
+
+/* ---- closures ---------------------------------------------------------------- */
+OP(CLOSURE,0x0110, "closure","Closures", "FC", 0, OPF_CALL,
+   "Make a function value: `closure f (v1, v2, ...) -> (R0)`. The values are copied into the closure, and f reads and writes them as UP[0], UP[1], .... Each keeps its own type, as a list element does. Captures are copies: to share a mutable variable, capture a struct or list.")
+OP(CALLI,  0x0111, "calli",  "Closures", "OC", 0, OPF_CALL,
+   "Call through a closure: `calli R0 (args) -> (results)`. Arguments are read with the function's parameter types; the count and register banks are checked at run time (E_TYPE).")
+OP(TCALLI, 0x0112, "tcalli", "Closures", "OC", 0, OPF_CALL | OPF_TERM,
+   "Tail call through a closure (like tcall).")
+OP(SPAWNI, 0x0113, "spawni", "Closures", "OC", 0, OPF_CALL,
+   "Start a new process running a closure: `spawni R0 (args) -> (pid)`. The closure and its captures are deep-copied into the new process.")

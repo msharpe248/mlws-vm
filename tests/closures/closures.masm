@@ -1,0 +1,77 @@
+; Closures capture values, keep per-closure state in UP[n], can be passed to and
+; returned from functions, and called directly or in tail position.
+.include "std/test.inc"
+
+.func adder(i64 x) -> i64                ; UP[0] = the amount to add
+    add I1, x, UP[0]
+    ret I1
+.endf
+
+.func counter -> i64                     ; UP[0] = this closure's own count
+    inc UP[0]
+    ret UP[0]
+.endf
+
+.func make_adder(i64 n) -> ref           ; returns a new closure
+    closure adder (n) -> (R0)
+    ret R0
+.endf
+
+.func compose(i64 x) -> i64              ; UP[0] = f, UP[1] = g: returns f(g(x))
+    calli UP[1] (x) -> (I1)
+    tcalli UP[0] (I1)                    ; tail call through a closure
+.endf
+
+.func map_list(ref list, ref f) -> ref   ; a higher-order function
+    lnew R2
+    len I0, list
+    mov I1, 0
+1:  bge I1, I0, 2f
+    calli f (list[I1]) -> (I2)
+    lpush R2, I2
+    inc I1
+    jmp 1b
+2:  ret R2
+.endf
+
+.func greet(ref who) -> ref              ; UP[0] = the greeting text
+    strcat R1, UP[0], ", ", who
+    ret R1
+.endf
+
+.func main
+    call make_adder (10) -> (R0)
+    calli R0 (5) -> (I0)
+    ASSERT_EQ I0, 15
+
+    closure counter (0) -> (R1)
+    closure counter (100) -> (R2)        ; independent state
+    calli R1 -> (I1)
+    calli R1 -> (I1)
+    calli R2 -> (I2)
+    ASSERT_EQ I1, 2
+    ASSERT_EQ I2, 101
+
+    call make_adder (1) -> (R3)
+    call make_adder (100) -> (R4)
+    closure compose (R4, R3) -> (R5)     ; compose(+100, +1)
+    calli R5 (7) -> (I3)
+    ASSERT_EQ I3, 108
+
+    lnew R6
+    lpush R6, 1, 2, 3
+    call map_list (R6, R3) -> (R7)
+    ASSERT_EQ R7[2], 4
+
+    closure greet ("Hello") -> (R8)
+    calli R8 ("closures") -> (R9)
+    strcmp I4, R9, "Hello, closures"
+    ASSERT_EQ I4, 0
+
+    typeof I5, R8
+    ASSERT_EQ I5, 7
+    tostr R10, R8
+    strcmp I6, R10, "<closure closures.greet>"
+    ASSERT_EQ I6, 0
+    ret 0
+.endf

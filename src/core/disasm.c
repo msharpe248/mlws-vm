@@ -69,9 +69,12 @@ static void put_operand(StrBuf *b, const Module *m, const Operand *o) {
         if (!strpbrk(fb, ".eni")) sb_puts(b, ".0");
         break;
     case OM_CONST:
-        if (o->index < m->nconsts) sb_put_quoted(b, m->consts[o->index].data, m->consts[o->index].len);
-        else sb_puts(b, "?const");
+        if (o->index >= m->nconsts) sb_puts(b, "?const");
+        else if (m->consts[o->index].kind == CONST_STRING)
+            sb_put_quoted(b, m->consts[o->index].data, m->consts[o->index].len);
+        else sb_printf(b, "%s%s", m->consts[o->index].data, m->consts[o->index].kind == CONST_BIG ? "n" : "d");
         break;
+    case OM_UPVAL: sb_printf(b, "UP[%llu]", (unsigned long long)o->index); break;
     case OM_IND: sb_printf(b, "[%s]", reg_name(o->reg, rb)); break;
     case OM_DISP: case OM_DISPB:
         sb_puts(b, reg_name(o->reg, rb));
@@ -126,7 +129,11 @@ void disasm_insn(StrBuf *b, const Module *m, const Insn *in) {
     sb_puts(b, oi->mnem);
     if (in->type) sb_printf(b, ".%s", type_name((MlwsType)in->type));
     if ((oi->flags & OPF_TYPE2) && in->type2) sb_printf(b, ".%s", type_name((MlwsType)in->type2));
-    if (oi->flags & OPF_CALL) {
+    /* The disassembler also reads unverified modules, so check the call block's
+     * shape before trusting its argument count; otherwise list the operands. */
+    bool well_formed_call = (oi->flags & OPF_CALL) && in->nops >= 2 && in->ops[1].mode == OM_IMM &&
+                            in->ops[1].imm >= 0 && in->ops[1].imm <= in->nops - 2;
+    if (well_formed_call) {
         sb_putc(b, ' ');
         put_operand(b, m, &in->ops[0]);
         int argc = in->nops > 1 ? (int)in->ops[1].imm : 0;

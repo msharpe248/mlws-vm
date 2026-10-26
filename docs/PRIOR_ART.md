@@ -58,6 +58,15 @@ encoding.
 | Insertion-ordered maps (entry array plus open-addressing index) | **CPython**'s compact dict (Raymond Hettinger's 2012 design) | Keys compare by value across integer widths, and strings by content. |
 | Lists with a type tag per element, arrays with a fixed element type | Dynamic arrays in every scripting VM; typed arrays in the JVM and JavaScript | Both are offered, so dynamically typed and statically typed source languages each get a natural fit. |
 
+### Closures and numbers
+
+| MLWSVM | Influences | How MLWSVM differs |
+|---|---|---|
+| Closures with captured values (`UP[n]`), indirect calls (`calli`) | **Lua** upvalues; flat closures (Cardelli; Dybvig's Scheme compilers) | Captures are *copied values*, flat and immutable in identity, so a closure is an ordinary object that can be deep-copied into another process. Lua instead shares variables through open/closed upvalue cells; mutable sharing here is done by capturing a box. |
+| Arbitrary-precision integers | GMP, Python `int`, Java `BigInteger`; division by **Knuth's Algorithm D** in the form popularised by *Hacker's Delight* (`divmnu`) | Schoolbook algorithms only (no Karatsuba yet); selected by a type suffix on ordinary arithmetic opcodes rather than separate instructions |
+| Decimals: coefficient × 10^exponent, scale preserved, half-even division | **Java `BigDecimal`**, Python `decimal`, IEEE 754-2008 decimal arithmetic | One fixed rule for division (28 fractional digits) instead of a configurable context |
+| `123n` / `1.5d` literals | JavaScript BigInt (`123n`); C# `decimal` (`1.5m`) | |
+
 ### Exceptions
 
 | MLWSVM | Influences | How MLWSVM differs |
@@ -136,6 +145,7 @@ two-process ping-pong.
 | M5 | JVM exception tables, Itanium zero-cost exceptions, Java/Erlang error values |
 | M6 | Erlang/BEAM processes, mailboxes, links and monitors; Go's main-ends-program rule and deadlock detection; `setrlimit`-style quotas |
 | M7 | gdb's command set; Brendan Gregg's collapsed stacks for flame graphs; Erlang observer/etop and Unix top for the monitor |
+| M8 | Lua upvalues and flat closures; Knuth's Algorithm D (via Hacker's Delight); Java BigDecimal / Python decimal; JavaScript's `n` literal suffix |
 
 ## References
 
@@ -149,4 +159,6 @@ two-process ping-pong.
 - Richard Jones and Rafael Lins, *Garbage Collection: Algorithms for Automatic Dynamic Memory Management*, 1996; Jones, Hosking and Moss, *The Garbage Collection Handbook*, 2011.
 - Raymond Hettinger, the compact dict proposal for CPython (2012), adopted in CPython 3.6.
 - The GNU Assembler (gas) manual: macros, `.rept`, `.irp`, local labels.
+- Donald E. Knuth, *The Art of Computer Programming, Vol. 2: Seminumerical Algorithms*, §4.3.1 (Algorithm D); Henry S. Warren, *Hacker's Delight*, 2nd ed., ch. 9 (`divmnu`).
+- The Java `BigDecimal` documentation; Mike Cowlishaw, *General Decimal Arithmetic Specification*.
 - The Vale language's "generational references" design notes.

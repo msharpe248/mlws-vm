@@ -165,7 +165,15 @@ lower addresses
   and anything else the callee pushed.
 * The caller's own pushes (stack arguments) are above `FP` and survive the call.
 
-### 2.4 Tail calls
+### 2.4 Closure calls
+
+`calli R0 (args) -> (results)` binds arguments exactly like `call`, but to the
+closure's function, which is only known at run time. The argument count and each
+argument's register bank are checked when the call runs (`E_TYPE`), not by the
+verifier. The new frame records the closure, so `UP[n]` reaches its captures. A
+closure's captures are GC roots while it runs.
+
+### 2.5 Tail calls
 
 `tcall f (args)` replaces the current frame with a call to `f`. `f`'s results go
 directly to the current function's caller, and the stack depth does not grow, so
@@ -173,13 +181,13 @@ tail recursion runs in constant space. Because the current frame is freed first,
 `tcall` supports **register arguments only**: don't pass stack arguments to a tail
 call.
 
-### 2.5 Natives
+### 2.6 Natives
 
 `ncall "name" (args) -> (results)` calls a host function. Parameter and result
 types come from the native registry ([NATIVES.md](NATIVES.md)) and are checked by
 the verifier. Natives do not create a frame.
 
-### 2.6 Program entry and exit
+### 2.7 Program entry and exit
 
 * The root module must define `main` with no parameters.
 * The process ends when `main` returns. If `main`'s first result is an integer,
@@ -187,7 +195,7 @@ the verifier. Natives do not create a frame.
 * `halt [code]` ends the process immediately, from any depth.
 * `mlwsvm run` exits with 65 if the program fails to load and 70 on a runtime trap.
 
-### 2.7 Limits
+### 2.8 Limits
 
 | Limit | Value |
 |---|---|
@@ -198,6 +206,8 @@ the verifier. Natives do not create a frame.
 | Raw block size | < 4 GiB |
 | Modules per VM | 4,094 |
 | Elements in a string, buffer, array, list or map | < 2^31 |
+| BigInt / decimal coefficient | 2^24 limbs of 32 bits (about 160 million digits) |
+| Decimal exponent | ±1,000,000 |
 
 ## 3. Instruction semantics shared by many opcodes
 

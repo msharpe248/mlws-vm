@@ -3,6 +3,7 @@
  * code and runs the verifier. See docs/ASSEMBLY.md ("Modules and libraries"). */
 #include "../asm/asm.h"
 #include "../platform/platform.h"
+#include "../heap/numeric.h"
 #include "vm.h"
 
 static char *module_rel_path(const char *name) {
@@ -134,8 +135,18 @@ static bool decode_function(LModule *lm, Function *f, MlwsError *err) {
 
 static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
     Module *m = lm->m;
-    lm->consts = xcalloc(m->nconsts + 1, sizeof(ObjString *));
-    for (uint32_t i = 0; i < m->nconsts; i++) lm->consts[i] = str_new_immortal(m->consts[i].data, m->consts[i].len);
+    lm->consts = xcalloc(m->nconsts + 1, sizeof(Obj *));
+    for (uint32_t i = 0; i < m->nconsts; i++) {
+        const MConst *c = &m->consts[i];
+        if (c->kind == CONST_STRING) {
+            lm->consts[i] = &str_new_immortal(c->data, c->len)->h;
+            continue;
+        }
+        lm->consts[i] = num_const(c->kind == CONST_BIG ? T_BIG : T_DEC, c->data, c->len);
+        if (!lm->consts[i])
+            return mlws_err(err, "E_LOAD_FORMAT", "module %s: malformed %s literal \"%s\"", m->name,
+                            c->kind == CONST_BIG ? "BigInt" : "decimal", c->data);
+    }
     lm->natives = xcalloc(m->nnatives + 1, sizeof(NativeDef *));
     for (uint32_t i = 0; i < m->nnatives; i++) {
         void *v;

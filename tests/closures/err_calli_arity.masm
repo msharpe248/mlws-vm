@@ -1,0 +1,10 @@
+; A closure call is checked against the function's parameters at run time.
+; expect-error: E_TYPE
+.func f(i64 a, i64 b) -> i64
+    ret a
+.endf
+.func main
+    closure f -> (R0)
+    calli R0 (1) -> (I0)
+    ret 0
+.endf

@@ -47,6 +47,8 @@ The language is line-oriented: one statement per line.
 | Identifier | `[A-Za-z_.$][A-Za-z0-9_.$]*`, case-sensitive. Dots are allowed, so `std.io.print` and `add.i32` are single identifiers |
 | Integer | `42`, `-7`, `0x2A`, `0b101010`, `0o52`, `1_000_000` (underscores are ignored) |
 | Float | `3.5`, `1e9`, `2.5e-3`, `inf`, `nan` |
+| BigInt | `123456789012345678901234567890n` (decimal digits, any length; `-5n`) |
+| Decimal | `19.99d`, `0.1d`, `1.5e-3d` (exact, base 10; `-2.50d`) |
 | Character | `'a'`, `'\n'`, `'\x41'`, `'\u{1F600}'`. The value is the Unicode scalar value |
 | String | `"text"` with the same escapes. `\xHH` inserts a raw byte; `\u{...}` inserts UTF-8 |
 | Booleans / null | `true` (1), `false` (0), `null` (0, valid for `r` and `p` types) |
@@ -92,7 +94,8 @@ around a call (see [ABI.md](ABI.md)).
 | `f32 f64` | | IEEE 754 floats | 4, 8 |
 | `r` | `ref` | GC reference | 8 (word slot) |
 | `p` | `ptr` | Raw pointer | 8 |
-| `big`, `dec` | | Reserved for BigInt and decimal (milestone M8) | |
+| `big` | | Arbitrary-precision integer (a reference to an immutable heap object) | 8 (reference) |
+| `dec` | | Arbitrary-precision decimal: coefficient × 10^exponent | 8 (reference) |
 
 Integer registers always hold a canonical 64-bit value: signed types are
 sign-extended, unsigned types and bools/chars are zero-extended. `add.i8 I0, 127, 1`
@@ -314,7 +317,10 @@ no longer reachable ([ABI.md §6](ABI.md#6-the-garbage-collected-heap)).
 | array (3) | `anew.f64 R0, n` | `R0[I1]`, `R0[3]` | Fixed length; every element has the instruction's type |
 | struct (4) | `new R0, Point` | `R0->Point.x` | Declared with `.struct`; fields have declared types |
 | list (5) | `lnew R0` | `R0[I1]` | Growable; every element carries its own type tag |
-| map (6) | `mnew R0` | `mset`, `mget`, `mhas`, `mdel`, `mkeys` | Insertion-ordered; strings compare by content |
+| map (6) | `mnew R0` | `mset`, `mget`, `mhas`, `mdel`, `mkeys` | Insertion-ordered; strings and numbers compare by value |
+| closure (7) | `closure f (captures) -> (R0)` | `calli R0 (args) -> (results)`; inside f, `UP[n]` | A function plus copies of captured values |
+| bigint (8) | `123n`, `cvt.big.i64`, `parse.big` | `add.big`, `blt.big`, ... | Immutable, arbitrary precision |
+| decimal (9) | `19.99d`, `cvt.dec.f64`, `parse.dec` | `add.dec`, `div.dec`, ... | Immutable; exact except inexact division |
 
 ```asm
 .struct Point                 ; a struct type, usable as `Point` in this module
@@ -360,6 +366,70 @@ no longer reachable ([ABI.md §6](ABI.md#6-the-garbage-collected-heap)).
 
 See [ISA.md](ISA.md) (sections "Objects", "Strings", "Lists and maps", "Handles") for
 every instruction.
+
+### 7.1 Closures
+
+```asm
+.func adder(i64 x) -> i64        ; runs as a closure: UP[0] is the captured amount
+    add I1, x, UP[0]
+    ret I1
+.endf
+
+.func counter -> i64             ; UP[0] is state that belongs to this closure object
+    inc UP[0]
+    ret UP[0]
+.endf
+
+.func main
+    closure adder (10) -> (R0)   ; capture 10
+    calli R0 (5) -> (I0)         ; 15
+    closure counter (0) -> (R1)
+    calli R1 -> (I1)             ; 1, then 2, 3, ... on later calls
+    ret 0
+.endf
+```
+
+* `closure f (v...) -> (R0)` copies each value into the new closure, keeping its
+  type, as a list element does. Inside `f`, `UP[n]` reads and writes capture n. A
+  write changes that closure's copy, which is how `counter` keeps state.
+* Captures are **values**. To share a mutable variable between closures (or with
+  the creator), capture a struct, list or map and mutate that.
+* `calli R0 (args) -> (results)` calls through a closure. Because the callee
+  isn't known until run time, the argument count and register banks are checked
+  then (`E_TYPE`). `tcalli` is the tail-call form, and `spawni` starts a closure as
+  a new process.
+* A function that uses `UP[n]` must be called through a closure; called directly
+  it traps with `E_TYPE`. Closures can be stored anywhere a reference can, and sent
+  in messages, where they are deep-copied along with their captures.
+
+### 7.2 BigInt and decimal
+
+```asm
+    mul R0, 123456789012345678901234567890n, 987654321098765432109876543210n
+    add R1, 1.10d, 2.205d        ; 3.305 (scale is preserved)
+    div.dec R2, 2, 3             ; 0.6666666666666666666666666667
+    blt.big R0, 10n, small       ; comparisons and branches take .big / .dec
+    cvt.i64.big I0, R0           ; traps E_OVERFLOW if it does not fit
+    tostr R3, R1                 ; "3.305"
+```
+
+* BigInt and decimal values are immutable heap objects held in `R` registers. The
+  type suffix chooses the arithmetic. The assembler infers `.big` or `.dec` when an
+  operand is a `123n` or `1.5d` literal; otherwise write the suffix, as plain `R`
+  registers would mean `.r`.
+* Supported: `add sub mul div rem min max neg abs`, `seq sne slt sle sgt sge`,
+  `beq bne blt ble bgt bge`, `mov`, `cvt` to and from every numeric type, `tostr`,
+  `parse`. Integer literals mix in freely, and so do float literals for `.dec`.
+* **BigInt division** truncates toward zero, and `rem` takes the dividend's sign,
+  as for `i64`.
+* **Decimal**: `+ - * %` are exact, with scale preserved as in Java's BigDecimal
+  (`1.10 + 2.205 = 3.305`, `0.50 * 5 = 2.50`). `div` is exact when the quotient
+  terminates within 28 fractional digits (or the operands' scale, if larger);
+  otherwise it is rounded half-to-even to that many digits. Trailing zeros of a
+  quotient are removed. Converting from a float uses its shortest form, so `0.1`
+  becomes exactly `0.1d`.
+* Values compare by value: `1.0d == 1.00d`, and maps treat them as the same key.
+  A BigInt and a decimal are never equal to each other without a `cvt`.
 
 ## 8. Modules and libraries
 

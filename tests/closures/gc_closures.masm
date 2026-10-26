@@ -1,0 +1,26 @@
+; Closures and their captured objects survive collections while reachable, and
+; are reclaimed when not.
+.include "std/test.inc"
+.func get -> ref
+    ret UP[0]
+.endf
+.func main
+    lnew R0                              ; keeps every 100th closure
+    mov I0, 0
+1:  tostr R1, I0
+    closure get (R1) -> (R2)
+    rem I1, I0, 100
+    bnz I1, 2f
+    lpush R0, R2
+2:  inc I0
+    blt I0, 20000, 1b
+    ncall "gc.collect" ()
+    nop
+    mov R3, R0[199]                      ; the closure created at 19900
+    calli R3 -> (R4)
+    strcmp I2, R4, "19900"
+    ASSERT_EQ I2, 0
+    ncall "gc.heap_bytes" () -> (I3)
+    ASSERT_LT I3, 2000000
+    ret 0
+.endf

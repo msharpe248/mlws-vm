@@ -1,0 +1,7 @@
+; .big arithmetic needs BigInts; convert decimals with cvt first.
+; expect-error: E_TYPE
+.func main
+    mov R0, 1.5d
+    add.big R1, R0, 1
+    ret 0
+.endf

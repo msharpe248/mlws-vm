@@ -1,0 +1,60 @@
+; Decimals: exact +, -, *, % with scale preserved (1.10 + 2.205 = 3.305);
+; division exact when it terminates, else 28 fractional digits, half-even.
+; expect-stdout: 3.305
+; expect-stdout: 59.97
+; expect-stdout: 0.125
+; expect-stdout: 0.6666666666666666666666666667
+; expect-stdout: 0.30
+; expect-stdout: 2.50
+.include "std/test.inc"
+.include "std/io.inc"
+.func show(ref d)
+    tostr R1, d
+    PRINTLN_S R1
+    ret
+.endf
+.func main
+    add R0, 1.10d, 2.205d
+    call show (R0)
+    mul.dec R0, 19.99d, 3
+    call show (R0)
+    div.dec R0, 1, 8
+    call show (R0)
+    div.dec R0, 2, 3
+    call show (R0)
+    add R0, 0.1d, 0.2d                   ; no binary floating point surprises
+    sub.dec R0, 0.00d
+    call show (R0)
+    mul R0, 0.50d, 5                     ; integer literals mix in
+    call show (R0)
+
+    beq.dec 1.0d, 1.00d, 1f              ; equal values, different scales
+    FAIL "1.0 == 1.00"
+1:  blt.dec -0.001d, 0, 2f
+    FAIL "negative compare"
+2:  rem.dec R1, 10.5d, 3
+    beq.dec R1, 1.5d, 3f
+    FAIL "rem"
+3:  cvt.f64.dec F0, 2.5d
+    ASSERT_EQ F0, 2.5
+    cvt.dec.f64 R2, 0.1                  ; shortest form: exactly 0.1
+    beq.dec R2, 0.1d, 4f
+    FAIL "from f64"
+4:  cvt.i64.dec I0, -7.99d               ; truncates toward zero
+    ASSERT_EQ I0, -7
+    cvt.dec.big R3, 12345678901234567890123n
+    div.dec R3, 1000
+    beq.dec R3, 12345678901234567890.123d, 5f
+    FAIL "big to dec"
+5:  parse.dec R4, "-12.50e2"
+    beq.dec R4, -1250, 6f
+    FAIL "parse"
+6:  mnew R5                              ; map keys by value: 1.0 finds 1.00
+    mset R5, 1.00d, "one"
+    mget R6, R5, 1.0d
+    strcmp I1, R6, "one"
+    ASSERT_EQ I1, 0
+    typeof I2, R4
+    ASSERT_EQ I2, 9
+    ret 0
+.endf

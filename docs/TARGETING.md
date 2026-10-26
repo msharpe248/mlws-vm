@@ -145,6 +145,11 @@ The heap object types map directly onto scripting-language values
 | A dynamic list / array | `lnew`, `lpush`, `lpop`, `lins`, `ldel`, `R0[I1]`, `len` |
 | A dictionary / object literal | `mnew`, `mset`, `mget` (with a default), `mhas`, `mdel`, `mkeys` |
 | A string builder | `bufnew`, `bufcat`, `bufpush`, then `strcat R0, buf` |
+| A lambda / nested function | `closure f (captured...) -> (R0)`; the body reads `UP[n]` |
+| Calling a function value | `calli R0 (args) -> (results)` (`tcalli` in tail position) |
+| A captured *mutable* variable | box it: capture a one-field struct (or list) and mutate its field |
+| Arbitrary-size integers (Python `int`) | `.big` arithmetic on `123n` values; promote from `i64` with `cvt.big.i64` |
+| Money and exact decimals | `.dec` arithmetic on `19.99d` values |
 
 * Lists and maps are **dynamically typed**: every element carries its type tag, so
   a dynamically typed language can store anything in them, and `tostr` / `typeof`
@@ -289,10 +294,10 @@ on them.
 
 These are stable and safe to target now: the assembly syntax, the operand forms,
 the opcode numbers, the calling convention, the heap object model (M4),
-exceptions (M5), processes (M6) and the `.mlwso` layout. These are
+exceptions (M5), processes (M6), closures and arbitrary-precision numbers (M8), and
+the `.mlwso` layout. These are
 planned, and will only be *additions*:
 
 | Milestone | Adds |
 |---|---|
-| M8 | Closures, BigInt (`.big`), decimal (`.dec`) |
 | M9 | Performance: computed-goto dispatch, multi-threaded scheduler, generational GC |

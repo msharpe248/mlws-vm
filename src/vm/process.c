@@ -197,6 +197,7 @@ void proc_push_frame(Process *p, Function *fn, const Insn *ret_insn) {
     fr->fn = fn;
     fr->pc = 0;
     fr->ret_insn = ret_insn;
+    fr->closure = NULL;
     fr->entry_sp = p->sp;
     fr->saved_fp = p->fp;
     p->fp = p->sp;

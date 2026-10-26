@@ -195,7 +195,7 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
         c->kind = br_u8(&r);
         uint64_t l = br_uleb(&r);
         CHECK_COUNT(l, 1);
-        if (c->kind != CONST_STRING) FAIL("unknown constant kind %u", c->kind);
+        if (c->kind < CONST_STRING || c->kind > CONST_DEC) FAIL("unknown constant kind %u", c->kind);
         c->len = (uint32_t)l;
         c->data = xmalloc(l + 1);
         br_bytes(&r, c->data, l);

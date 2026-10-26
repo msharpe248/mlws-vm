@@ -1,0 +1,88 @@
+; Arbitrary-precision integers: literals (123n), arithmetic with .big, mixing
+; in integer literals, comparisons, conversions, parsing, and map keys by value.
+; expect-stdout: 30414093201713378043612608166064768844377641568960512000000000000
+; expect-stdout: 280571172992510140037611932413038677189525
+; expect-stdout: 340282366920938463463374607431768211456
+.include "std/test.inc"
+.include "std/io.inc"
+
+.func factorial(i64 n) -> ref
+    mov.big R0, 1
+    mov I1, 2
+1:  bgt I1, n, 2f
+    cvt.big.i64 R1, I1
+    mul.big R0, R1
+    inc I1
+    jmp 1b
+2:  ret R0
+.endf
+
+.func fib(i64 n) -> ref                  ; fib(200)
+    mov.big R0, 0
+    mov.big R1, 1
+1:  bz n, 2f
+    add.big R2, R0, R1
+    mov R0, R1
+    mov R1, R2
+    dec n
+    jmp 1b
+2:  ret R0
+.endf
+
+.func main
+    call factorial (50) -> (R0)
+    tostr R1, R0
+    PRINTLN_S R1
+    call fib (200) -> (R2)
+    tostr R1, R2
+    PRINTLN_S R1
+    mul R3, 18446744073709551616n, 18446744073709551616n   ; 2^64 * 2^64 = 2^128
+    tostr R1, R3
+    PRINTLN_S R1
+
+    div.big R4, R0, R0                   ; exact division
+    beq.big R4, 1, 1f
+    FAIL "x / x"
+1:  rem.big R5, -17n, 5                  ; truncated: sign of the dividend
+    beq.big R5, -2n, 2f
+    FAIL "rem sign"
+2:  div.big R5, -17n, 5
+    beq.big R5, -3n, 3f
+    FAIL "div truncation"
+3:  sub.big R6, 0n, 123456789012345678901234567890n
+    neg.big R6
+    abs.big R7, -5n
+    min.big R8, 7n, -3n, 12n
+    blt.big R8, 0, 4f
+    FAIL "min"
+4:  slt.big I0, R6, R3
+    ASSERT_TRUE I0
+    cvt.i64.big I1, 1234567890123n
+    ASSERT_EQ I1, 1234567890123
+    cvt.big.i64 R9, -9223372036854775808  ; INT64_MIN
+    sub.big R9, 1
+    tostr R1, R9
+    strcmp I2, R1, "-9223372036854775809"
+    ASSERT_EQ I2, 0
+    cvt.big.u64 R10, -1                  ; u64 max
+    tostr R1, R10
+    strcmp I2, R1, "18446744073709551615"
+    ASSERT_EQ I2, 0
+    cvt.f64.big F0, R3
+    ASSERT_EQ F0, 3.402823669209385e38
+    cvt.big.f64 R11, -2.75e20            ; truncates toward zero
+    beq.big R11, -275000000000000000000n, 5f
+    FAIL "from f64"
+5:  parse.big R12, "-1_000_000_000_000_000_000_000"
+    beq.big R12, -1000000000000000000000n, 6f
+    FAIL "parse"
+6:  mnew R13                             ; numeric map keys compare by value
+    mset R13, 100000000000000000000n, "big"
+    mul.big R14, 10000000000n, 10000000000n
+    mget R15, R13, R14
+    strcmp I3, R15, "big"
+    ASSERT_EQ I3, 0
+    typeof I4, R0
+    ASSERT_EQ I4, 8
+    ret 0
+.endf
