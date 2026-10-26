@@ -140,5 +140,5 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M7 Tooling: `mlwsvm top`, debugger, trace/profiler, web dashboard | done |
 | M8 Closures, BigInt, decimal | done |
 | M9 Performance: single-thread interpreter (quickening, frames, `_setjmp`; 1.2–7.8× faster) | done |
-| M9 Performance: multi-threaded scheduler (work stealing; 7.4× on 16 CPU-bound processes) | done |
+| M9 Performance: multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes) | done |
 | M9 Performance: generational GC, more specialised memory forms | deferred: measured as low value for now ([PERFORMANCE.md](docs/PERFORMANCE.md)) |
