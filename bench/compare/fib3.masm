@@ -1,0 +1,26 @@
+; fib3.masm - bench/fib.masm written the way a fixed 3-operand instruction set
+; would need it in the worst case: each call's argument is moved into a dedicated
+; argument register first, and its result moved out afterwards. Comparing the two
+; measures what the call operands save (docs/REGISTER_VS_STACK.md).
+;
+; expect-stdout: 2178309
+.func fib(i64 n) -> i64            ; (I0: n) -> I0
+    blt n, 2, 1f                   ; fib(0) = 0, fib(1) = 1
+    sub I1, n, 1
+    mov I4, I1                     ; the extra move into the argument register
+    call fib (I4) -> (I5)
+    mov I2, I5                     ; the extra move out of the result register
+    sub I1, n, 2
+    mov I4, I1
+    call fib (I4) -> (I5)
+    mov I3, I5
+    add I0, I2, I3
+    ret I0
+1:  ret n
+.endf
+.func main
+    call fib (32) -> (I0)
+    ncall "io.print_i" (I0)
+    ncall "io.nl" ()
+    ret 0
+.endf

@@ -27,7 +27,7 @@ only `parallel` has the work to use more than one.
 | Benchmark | M8 baseline | After M9 | Speed-up | CPython 3.14 (same program) |
 |---|---|---|---|---|
 | fib | 323 | 112 | 2.9× | 126 |
-| loop | 1,845 | 237 | 7.8× | 2,390 |
+| loop | 1,845 | 237 | 7.8× | 1,167 |
 | sieve | 1,717 | 670 | 2.6× | |
 | nbody | 242 | 129 | 1.9× | |
 | binarytrees | 276 | 208 | 1.3× | |
@@ -38,6 +38,14 @@ only `parallel` has the work to use more than one.
 
 The tight register loop now runs at about 800M instructions per second, roughly
 5 cycles per instruction. That is the lower bound with the current design.
+
+The CPython programs are written as functions (`bench/compare/`), so their
+variables are fast locals. Until October 2026 this table gave 2,390 ms for
+CPython's `loop`. That figure was measured with module-level variables, which
+CPython keeps in a dictionary, and it overstated MLWSVM's lead. For the same
+programs on Lua 5.5 and the JVM, see
+[REGISTER_VS_STACK.md](REGISTER_VS_STACK.md#part-2-measured). Lua's interpreter
+runs `fib` 2.3× faster than MLWSVM and the loop 12% faster.
 
 ### On Linux
 
@@ -196,12 +204,19 @@ for each request it serves.
 * **Computed-goto dispatch.** Not attempted. After quickening, the hot loops spend
   about 5 cycles per instruction including dispatch, and the remaining time is
   spread across the generic operand paths rather than in dispatch itself.
-  Revisit if profiles show dispatch dominating.
+  Revisit if profiles show dispatch dominating. (Lua 5.5, which uses computed
+  goto, runs the loop only 12% faster than MLWSVM, so dispatch is not where
+  MLWSVM's main gap is.)
+* **Cheaper calls.** Not attempted yet. A `fib` call costs about 16 ns in MLWSVM
+  and 7 ns in Lua 5.5. MLWSVM pushes a frame, zeroes a register window for each
+  bank in use and copies the arguments in, while Lua's callee window starts at the
+  caller's argument registers. Calls are the largest measured gap to another
+  interpreter.
 * **Fewer operands per instruction.** Measured, and rejected. Storing up to three
   operands inside each instruction, as a fixed 3-operand format would, was no
   faster, and fixed-format calls would make `fib` 22% slower. See
-  [REGISTER_VS_STACK.md](REGISTER_VS_STACK.md), which also compares MLWSVM with a
-  stack machine (CPython).
+  [REGISTER_VS_STACK.md](REGISTER_VS_STACK.md), which also compares MLWSVM with Lua,
+  the JVM and CPython.
 * **A compact decoded form.** Not attempted. Each decoded operand is a 72-byte
   `Operand` with room for every addressing mode. The benchmarks fit in cache, so
   it does not show yet. A small form for the quickened shapes would be the fix if

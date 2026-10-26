@@ -132,7 +132,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/EMBEDDING.md](docs/EMBEDDING.md) | Running MLWSVM inside a C or C++ program (`libmlwsvm`) |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks, results, and what was optimised (and why) |
-| [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines against stack machines, measured against CPython, and what 0–32 operands cost compared with a fixed 3 |
+| [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M11–M21 and what remains: Windows and the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
@@ -155,7 +155,7 @@ build-tools/    build helper that compiles the dashboard into C
 extensions/     an example native extension (also a test fixture)
 lib/std/        standard library and macro files, written in MLWSVM assembly
 tests/          the test suite, in MLWSVM assembly
-bench/          benchmarks (make bench)
+bench/          benchmarks (make bench); bench/compare: fib and loop in Lua, Java, WebAssembly and Python
 examples/       runnable, self-checking example programs (examples/embed: a C host program)
 ```
 

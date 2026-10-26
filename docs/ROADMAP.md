@@ -149,6 +149,9 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   cache before the benchmarks do ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)).
 * A generational collector, if collection grows past roughly 10% of real
   workloads.
+* Cheaper calls. Lua 5.5 runs `fib` 2.3× faster than MLWSVM: its callee's
+  window starts at the caller's argument registers, while MLWSVM zeroes and
+  fills a fresh window per bank ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)).
 * Computed-goto dispatch, if profiles ever show dispatch dominating.
 * Lock-free run queues and spinning before sleeping, for many-thread,
   message-heavy programs.

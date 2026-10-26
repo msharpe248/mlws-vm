@@ -169,8 +169,8 @@ Experiments that would show whether the combination pays off:
 
 | Question | Experiment |
 |---|---|
-| Is code denser than a stack VM's? | Partly answered: against CPython, MLWSVM executes 61–67% fewer instructions, but its code is 50–90% larger in bytes ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)). Still to do: the JVM (javac) and Lua (luac) |
-| How much do rich operands cost the interpreter? | Instructions per second, and time per program, against Lua 5.4 on small benchmarks (fib, sieve, nbody, binary-trees), before and after the M9 dispatch work |
+| Is code denser than a stack VM's? | Answered for two small programs ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)): MLWSVM executes 55–68% fewer instructions than the JVM and CPython, and 18% fewer than Lua, but its code is 1.7–2.9× the size of the JVM's. Still to do: real compiler output |
+| How much do rich operands cost the interpreter? | Partly answered: Lua 5.5's interpreter runs `fib` 2.3× faster than MLWSVM and a tight loop 12% faster, mostly because MLWSVM's calls cost more ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)). Still to do: sieve, nbody and binary-trees, and a profile of where the extra time goes |
 | What do the tags cost? | Memory overhead (1/8 extra on the stack and globals), and the time spent on tag checks (a profile with tag checks disabled) |
 | Is it easier to target? | Lines of code for a code generator from a small language to MLWSVM, compared with a JVM or WebAssembly backend |
 | How do process copies scale? | Message throughput and latency against message size (deep copy cost), compared with BEAM for similar workloads |
@@ -178,8 +178,10 @@ Experiments that would show whether the combination pays off:
 
 Current data points (see [PERFORMANCE.md](PERFORMANCE.md)): about 800M
 instructions/s on a tight register loop and about 280M/s on recursive `fib`, after
-quickening, on an Apple Silicon laptop with one thread. That is 10× faster than
-CPython 3.14 on the loop and about the same speed on `fib`. A two-process
+quickening, on an Apple Silicon laptop with one thread. That is 5× faster than
+CPython 3.14 on the loop and about the same speed on `fib`. Lua 5.5 is 12% faster
+on the loop and 2.3× faster on `fib`, and the JVM's interpreter is 28% and 31%
+faster. A two-process
 ping-pong reaches about 19M messages/s, and 16 independent CPU-bound processes
 run 8.3× faster on the laptop's 18 cores than on one thread. Instructions with up
 to 32 operands cost nothing measurable against a fixed three, and save up to 44%
