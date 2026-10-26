@@ -87,6 +87,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/NATIVES.md](docs/NATIVES.md) | Host functions (generated) |
 | [docs/ERRORS.md](docs/ERRORS.md) | Error codes |
 | [docs/BINARY_FORMAT.md](docs/BINARY_FORMAT.md) | The `.mlwso` file and instruction encoding |
+| [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
 
