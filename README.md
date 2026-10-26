@@ -60,12 +60,18 @@ base:
   quota.
 * **Text and JSON**: a typed, safe `text.format` (`{:>8.2f}`), string utilities,
   UTF-8 iteration, and JSON that maps onto maps and lists with exact integers.
+* **Standard library**: dates and ISO 8601 times, CRC-32 / SHA-256 / SipHash,
+  random numbers, hex / base64 / URL / CSV, and sorting and searching with
+  comparator closures.
 * **Embeddable**: `libmlwsvm` and `include/mlwsvm/embed.h` let a C or C++ program
   load MLWSVM code from files or memory, call it, give it host functions, and
   run background services it feeds with messages.
 * **Calling C**: native extensions written against a small, versioned C API
   (`include/mlwsvm/mlwsvm.h`), and a declarative FFI (`.extern`, via libffi) that
-  calls C functions directly. Blocking and non-thread-safe code is declared as
+  calls C functions directly: variadic functions, structs by value and by
+  pointer, finalizers, and callbacks (closures as C function pointers, or calls
+  from C threads delivered as messages). `mlwsvm bindgen` writes the
+  declarations for a C header. Blocking and non-thread-safe code is declared as
   such, and native code loads only from trusted, hash-pinned directories.
 * **Structured exceptions**: `.try` regions, `throw`/`catch`, and zero cost until
   something is thrown. Every runtime fault is catchable as an `Error`.
@@ -134,8 +140,9 @@ src/asm/        lexer, constant expressions, preprocessor (macros etc.), assembl
 src/loader/     .mlwso reader/writer
 src/vm/         loader/linker, verifier, processes and memory, interpreter, run helper
 src/heap/       garbage collector and heap objects (strings, bytes, arrays, structs, lists, maps)
-src/native/     built-in native functions
-src/tools/      test runner, doc generator, debugger, profiler/tracer, monitor, top
+src/native/     built-in natives, the extension API and the FFI
+src/embed/      the embedding API (libmlwsvm)
+src/tools/      test runner, doc generator, debugger, profiler/tracer, monitor, top, bindgen
 web/            the monitor's dashboard (compiled into the binary)
 src/platform/   the only OS-specific code (POSIX and Windows)
 lib/std/        standard library and macro files, written in MLWSVM assembly
@@ -170,3 +177,8 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M14 text and JSON (`text.format`, string utilities, UTF-8, `json.*`) | done |
 | M15 `std.proc` (registry, request/reply), `std.supervisor`, and a supervised HTTP server example (~168k requests/s between two Linux machines) | done |
 | M16 Embedding API (`libmlwsvm`, `embed.h`: load, call, host natives, background services) | done ([EMBEDDING.md](docs/EMBEDDING.md)) |
+| M17 FFI shapes: variadic calls, `.cstruct` by value and by pointer, `.ffi_free` finalizers | done |
+| M18 Callbacks: a re-entrant interpreter, closures as C function pointers, async callbacks as messages, `api->post` | done |
+| M19 Standard library II: time, hashes, random, encodings, sorting and searching, set operations | done ([STDLIB.md](docs/STDLIB.md)) |
+| M20 `mlwsvm bindgen`: FFI declarations from a C header (clang's JSON syntax tree) | done ([TOOLING.md](docs/TOOLING.md)) |
+| M21 Performance: a per-process small-object allocator (allocation-heavy code 9–25% faster) | done ([PERFORMANCE.md](docs/PERFORMANCE.md)) |
