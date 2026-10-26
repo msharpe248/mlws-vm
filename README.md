@@ -69,6 +69,7 @@ make                         # builds ./mlwsvm (needs only a C11 compiler)
 make test                    # runs tests/ and examples/
 make check-gc                # the same, collecting garbage at every allocation
 make check-tools             # smoke-test the monitor, top, profiler and tracer
+make bench                   # benchmarks, with output checks (docs/PERFORMANCE.md)
 make check-asan              # both of the above, under AddressSanitizer + UBSan
 
 ./mlwsvm run examples/hello.masm
@@ -96,6 +97,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/ERRORS.md](docs/ERRORS.md) | Error codes |
 | [docs/BINARY_FORMAT.md](docs/BINARY_FORMAT.md) | The `.mlwso` file and instruction encoding |
 | [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard and `top` |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks, results, and what was optimised (and why) |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
@@ -112,6 +114,7 @@ web/            the monitor's dashboard (compiled into the binary)
 src/platform/   the only OS-specific code (POSIX and Windows)
 lib/std/        standard library and macro files, written in MLWSVM assembly
 tests/          the test suite, in MLWSVM assembly
+bench/          benchmarks (make bench)
 examples/       runnable, self-checking example programs
 ```
 
@@ -131,4 +134,6 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M6 Many concurrent isolated processes: scheduler, messages, quotas, accounting | done |
 | M7 Tooling: `mlwsvm top`, debugger, trace/profiler, web dashboard | done |
 | M8 Closures, BigInt, decimal | done |
-| M9 Performance: computed-goto dispatch, multi-threaded scheduler, generational GC | next |
+| M9 Performance: single-thread interpreter (quickening, frames, `_setjmp`; 1.2–7.8× faster) | done |
+| M9 Performance: multi-threaded scheduler | next |
+| M9 Performance: generational GC, more specialised memory forms | deferred: measured as low value for now ([PERFORMANCE.md](docs/PERFORMANCE.md)) |

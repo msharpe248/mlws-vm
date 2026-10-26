@@ -1,0 +1,21 @@
+; bench: message passing between two processes (300k round trips)
+; expect-stdout: 300000
+.func echo
+1:  recv I0
+    bz I0, 2f
+    send I0, I0
+    jmp 1b
+2:  ret
+.endf
+.func main
+    spawn echo -> (I9)
+    mov I0, 0
+1:  send I9, PID
+    recv I1
+    inc I0
+    blt I0, 300000, 1b
+    send I9, 0
+    ncall "io.print_i" (I0)
+    ncall "io.nl" ()
+    ret 0
+.endf

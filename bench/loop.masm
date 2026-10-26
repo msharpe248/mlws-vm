@@ -1,0 +1,16 @@
+; bench: a tight integer loop in registers (30M iterations)
+; expect-stdout: 60000255
+.func main
+    mov I0, 0                  ; i
+    mov I1, 0                  ; acc
+1:  mul I2, I0, I0
+    rem I2, 7
+    add I1, I2
+    xor I1, 0x55
+    inc I0
+    blt I0, 30000000, 1b
+    rem I1, 100000000
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ret 0
+.endf

@@ -83,6 +83,12 @@ encoding.
 | The program ends when `main` ends; deadlock detection | **Go** (main returning ends the program; "all goroutines are asleep") | The deadlock is a *catchable* exception in `main`. |
 | Quotas that can only be lowered, inherited by children | Unix `setrlimit` (soft and hard limits); BEAM's `max_heap_size` | Covers heap, raw memory, mailbox size and instruction count. A sandbox is just a wrapper that lowers its own limits before calling untrusted code. |
 
+### Performance
+
+| MLWSVM | Influences | How MLWSVM differs |
+|---|---|---|
+| Quickening into specialised execution opcodes after verification | JVM "quick" bytecodes; Stefan Brunthaler, *Inline Caching Meets Quickening* (ECOOP 2010); CPython's specialising adaptive interpreter (PEP 659) | Specialisation happens once, at load time, from static operand shapes (register banks and type suffixes), not adaptively at run time. The rich operand model makes the shapes knowable statically. |
+
 ### Toolchain
 
 | MLWSVM | Influences | How MLWSVM differs |
@@ -132,9 +138,11 @@ Experiments that would show whether the combination pays off:
 | How do process copies scale? | Message throughput and latency against message size (deep copy cost), compared with BEAM for similar workloads |
 | Is the GC simpler but competitive? | Pause times and throughput on allocation-heavy benchmarks; the cost of whole-stack tag scanning as stacks grow |
 
-Current data points: about 100M instructions/s on recursive `fib` (unoptimised
-`switch` dispatch on an Apple Silicon laptop), and about 4M messages/s in a
-two-process ping-pong.
+Current data points (see [PERFORMANCE.md](PERFORMANCE.md)): about 800M
+instructions/s on a tight register loop and about 290M/s on recursive `fib`, after
+quickening, on an Apple Silicon laptop with one thread. That is 10× faster than
+CPython 3.14 on the loop and about the same speed on `fib`. A two-process
+ping-pong reaches about 16M messages/s.
 
 ## Milestone log
 
@@ -146,6 +154,7 @@ two-process ping-pong.
 | M6 | Erlang/BEAM processes, mailboxes, links and monitors; Go's main-ends-program rule and deadlock detection; `setrlimit`-style quotas |
 | M7 | gdb's command set; Brendan Gregg's collapsed stacks for flame graphs; Erlang observer/etop and Unix top for the monitor |
 | M8 | Lua upvalues and flat closures; Knuth's Algorithm D (via Hacker's Delight); Java BigDecimal / Python decimal; JavaScript's `n` literal suffix |
+| M9 | Quickening: "quick" bytecodes in Smalltalk and early JVMs, Brunthaler's work on quickening, and CPython 3.11's specialising adaptive interpreter (PEP 659) |
 
 ## References
 
@@ -159,6 +168,7 @@ two-process ping-pong.
 - Richard Jones and Rafael Lins, *Garbage Collection: Algorithms for Automatic Dynamic Memory Management*, 1996; Jones, Hosking and Moss, *The Garbage Collection Handbook*, 2011.
 - Raymond Hettinger, the compact dict proposal for CPython (2012), adopted in CPython 3.6.
 - The GNU Assembler (gas) manual: macros, `.rept`, `.irp`, local labels.
+- Stefan Brunthaler, *Inline Caching Meets Quickening*, ECOOP 2010; Mark Shannon, PEP 659 *Specializing Adaptive Interpreter* (CPython 3.11).
 - Donald E. Knuth, *The Art of Computer Programming, Vol. 2: Seminumerical Algorithms*, §4.3.1 (Algorithm D); Henry S. Warren, *Hacker's Delight*, 2nd ed., ch. 9 (`divmnu`).
 - The Java `BigDecimal` documentation; Mike Cowlishaw, *General Decimal Arithmetic Specification*.
 - The Vale language's "generational references" design notes.

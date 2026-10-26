@@ -1,0 +1,35 @@
+; bench: floating point in typed arrays: three harmonic oscillators, 1M steps
+; (symplectic Euler: v -= k*x; x += v)
+; expect-stdout: 0.48377
+.func main
+    anew.f64 R0, 3                     ; positions
+    anew.f64 R1, 3                     ; velocities
+    anew.f64 R2, 3                     ; spring constants
+    mov R0[0], 1.0
+    mov R0[1], -0.5
+    mov R0[2], 0.25
+    mov R2[0], 0.001
+    mov R2[1], 0.002
+    mov R2[2], 0.003
+    mov I0, 0
+1:  mov I1, 0
+2:  mul F0, R0[I1], R2[I1]
+    sub R1[I1], F0                     ; two-operand form: v -= k*x
+    add.f64 R0[I1], R1[I1]             ; x += v (elements only: say the type)
+    inc I1
+    blt I1, 3, 2b
+    inc I0
+    blt I0, 1000000, 1b
+    mul F2, R0[0], R0[0]
+    mul F3, R0[1], R0[1]
+    mul F4, R0[2], R0[2]
+    add F2, F2, F3, F4
+    add F2, F3
+    sub F2, F3                         ; (exercise the 2-operand forms)
+    mul F2, 1000000.0
+    round F2
+    div F2, 1000000.0
+    ncall "io.print_f" (F2)
+    ncall "io.nl" ()
+    ret 0
+.endf

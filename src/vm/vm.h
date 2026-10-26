@@ -5,6 +5,16 @@
 
 #include <setjmp.h>
 
+/* POSIX setjmp may save the signal mask with a system call; the VM never
+ * changes signal masks, so use the cheap variant (one setjmp per time slice). */
+#ifdef _WIN32
+#define VM_SETJMP(b) setjmp(b)
+#define VM_LONGJMP(b, v) longjmp(b, v)
+#else
+#define VM_SETJMP(b) _setjmp(b)
+#define VM_LONGJMP(b, v) _longjmp(b, v)
+#endif
+
 #include "../core/insn.h"
 #include "../core/module.h"
 
@@ -267,12 +277,26 @@ int proc_run_slice(Process *p, uint32_t budget);
 void proc_start(Process *p, Function *fn, const Word *args, int nargs);
 Process *vm_process(VM *vm, uint64_t pid); /* live process or NULL */
 Segment *proc_segment(Process *p, uint64_t ptr);
+/* Inline fast path of proc_segment for valid pointers; errors go the slow way. */
+static inline Segment *proc_segment_fast(Process *p, uint64_t ptr) {
+    uint32_t seg = PTR_SEG(ptr);
+    Segment *s;
+    if (seg == SEG_STACK) s = &p->stack;
+    else if (seg >= SEG_RAW0 && seg - SEG_RAW0 < p->raw.n) s = &p->raw.v[seg - SEG_RAW0];
+    else if (seg >= SEG_GLOBAL0 && seg < SEG_RAW0 && seg - SEG_GLOBAL0 < p->nglobals) s = &p->globals[seg - SEG_GLOBAL0];
+    else return proc_segment(p, ptr);
+    if (!s->live || s->gen != PTR_GEN(ptr)) return proc_segment(p, ptr);
+    return s;
+}
 uint64_t proc_alloc(Process *p, int64_t size);
 void proc_free_block(Process *p, uint64_t ptr);
 uint64_t proc_realloc(Process *p, uint64_t ptr, int64_t size);
 
 /* interp.c */
 int interp_run(Process *p, uint32_t budget); /* SLICE_* */
+/* Pick a specialised handler for common instruction shapes (after verification). */
+void interp_quicken(Insn *in);
+void interp_quicken_function(Function *f);
 
 /* sched.c */
 void sched_ready(VM *vm, Process *p);

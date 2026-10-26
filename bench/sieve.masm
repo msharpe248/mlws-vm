@@ -1,0 +1,27 @@
+; bench: sieve of Eratosthenes over 20M bytes of raw memory
+; expect-stdout: 1270607
+.const N = 20000000
+.func main
+    alloc P0, N
+    mov I1, 2
+1:  mul I2, I1, I1
+    bge I2, N, 4f
+    bnz.u8 P0{I1}, 3f
+2:  bge I2, N, 3f
+    mov.u8 P0{I2}, 1
+    add I2, I1
+    jmp 2b
+3:  inc I1
+    jmp 1b
+4:  mov I0, 0
+    mov I1, 2
+5:  bge I1, N, 7f
+    bnz.u8 P0{I1}, 6f
+    inc I0
+6:  inc I1
+    jmp 5b
+7:  ncall "io.print_i" (I0)
+    ncall "io.nl" ()
+    free P0
+    ret 0
+.endf

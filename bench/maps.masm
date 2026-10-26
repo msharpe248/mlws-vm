@@ -1,0 +1,22 @@
+; bench: strings and maps: 300k string keys built, inserted and looked up
+; expect-stdout: 44999850000
+.func main
+    mnew R0
+    mov I0, 0
+1:  tostr R1, I0
+    strcat R2, "key-", R1
+    mset R0, R2, I0
+    inc I0
+    blt I0, 300000, 1b
+    mov I0, 0
+    mov I1, 0
+2:  tostr R1, I0
+    strcat R2, "key-", R1
+    mget I2, R0, R2
+    add I1, I2
+    inc I0
+    blt I0, 300000, 2b
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ret 0
+.endf

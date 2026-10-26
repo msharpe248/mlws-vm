@@ -110,7 +110,7 @@ void proc_throw(Process *p, Obj *ex) {
     build_backtrace(p);
     p->exception = ex;
     p->exceptions_thrown++;
-    longjmp(*p->jb, 1);
+    VM_LONGJMP(*p->jb, 1);
 }
 
 void vm_trap(Process *p, const char *code, const char *fmt, ...) {
@@ -186,39 +186,15 @@ static void grow_bank(Process *p, int b, uint32_t need) {
     p->rcap[b] = nc;
 }
 
-void proc_push_frame(Process *p, Function *fn, const Insn *ret_insn) {
+/* Out-of-line slow path of proc_push_frame: limits and growth. */
+void proc_frame_slow(Process *p, const uint16_t *nr) {
     if (p->nframes >= p->vm->max_frames)
         vm_trap(p, "E_CALL_DEPTH", "call depth limit of %u frames exceeded (unbounded recursion?)", p->vm->max_frames);
     if (p->nframes == p->fcap) {
         p->fcap = p->fcap ? p->fcap * 2 : 64;
         p->frames = xrealloc(p->frames, p->fcap * sizeof *p->frames);
     }
-    Frame *fr = &p->frames[p->nframes++];
-    fr->fn = fn;
-    fr->pc = 0;
-    fr->ret_insn = ret_insn;
-    fr->closure = NULL;
-    fr->entry_sp = p->sp;
-    fr->saved_fp = p->fp;
-    p->fp = p->sp;
-    const uint16_t *nr = fn->mf->nregs;
-    for (int b = 0; b < NBANKS; b++) {
-        grow_bank(p, b, p->rtop[b] + nr[b]);
-        fr->base[b] = p->rtop[b];
-        p->rtop[b] += nr[b];
-    }
-    memset(p->ireg + fr->base[BANK_I], 0, nr[BANK_I] * sizeof *p->ireg);
-    memset(p->freg + fr->base[BANK_F], 0, nr[BANK_F] * sizeof *p->freg);
-    memset(p->rreg + fr->base[BANK_R], 0, nr[BANK_R] * sizeof *p->rreg);
-    memset(p->preg + fr->base[BANK_P], 0, nr[BANK_P] * sizeof *p->preg);
-    if (p->nframes > p->max_depth) p->max_depth = p->nframes;
-}
-
-void proc_pop_frame(Process *p) {
-    Frame *fr = &p->frames[--p->nframes];
-    p->sp = fr->entry_sp;
-    p->fp = fr->saved_fp;
-    for (int b = 0; b < NBANKS; b++) p->rtop[b] = fr->base[b];
+    for (int b = 0; b < NBANKS; b++) grow_bank(p, b, p->rtop[b] + nr[b]);
 }
 
 void proc_backtrace(Process *p) { build_backtrace(p); }
@@ -235,7 +211,7 @@ int proc_run_slice(Process *p, uint32_t budget) {
     uint64_t left = p->quota[QUOTA_INSNS] - p->insns;
     if (left < budget) budget = (uint32_t)left;
     p->jb = &jb;
-    if (setjmp(jb)) { /* every throw and trap lands here */
+    if (VM_SETJMP(jb)) { /* every throw and trap lands here */
         p->jb = NULL;
         if (p->vm->pending_spawn) { /* spawn trapped while copying arguments */
             proc_free(p->vm->pending_spawn);

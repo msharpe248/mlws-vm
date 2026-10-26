@@ -68,19 +68,45 @@ typedef union {
 
 const char *type_name(MlwsType t);           /* "i64", "f32", "r", ... */
 bool type_from_name(const char *s, size_t n, MlwsType *out); /* accepts aliases */
-int type_size(MlwsType t);                   /* bytes in memory */
-Bank type_bank(MlwsType t);                  /* register bank for the type */
-bool type_is_int(MlwsType t);
-bool type_is_float(MlwsType t);
-bool type_is_signed(MlwsType t);
-/* r, big and dec: GC references (BigInt and decimal values are heap objects). */
-static inline bool type_is_ref(int t) { return t == T_R || t == T_BIG || t == T_DEC; }
-int type_bits(MlwsType t);
 MlwsType bank_natural_type(Bank b);          /* I->i64, F->f64, R->r, P->p */
 const char *bank_prefix(Bank b);           /* "I", "F", "R", "P" */
-int64_t canon_int(MlwsType t, int64_t v);   /* wrap/extend to t */
-double canon_float(MlwsType t, double v);
-/* Register name for a register operand byte, e.g. "I3" or "SP". */
+
+/* The small helpers below run on every operand, so they are inline. */
+
+static inline bool type_is_int(MlwsType t) { return t >= T_B && t <= T_U64; }
+static inline bool type_is_float(MlwsType t) { return t == T_F32 || t == T_F64; }
+static inline bool type_is_signed(MlwsType t) { return t >= T_I8 && t <= T_I64; }
+/* r, big and dec: GC references (BigInt and decimal values are heap objects). */
+static inline bool type_is_ref(int t) { return t == T_R || t == T_BIG || t == T_DEC; }
+
+static inline int type_size(MlwsType t) { /* bytes in memory */
+    static const unsigned char SIZE[T__COUNT] = {8, 1, 4, 1, 2, 4, 8, 1, 2, 4, 8, 4, 8, 8, 8, 8, 8};
+    return (unsigned)t < T__COUNT ? SIZE[t] : 8;
+}
+static inline int type_bits(MlwsType t) { return type_size(t) * 8; }
+
+static inline Bank type_bank(MlwsType t) { /* register bank for the type */
+    if (type_is_int(t)) return BANK_I;
+    if (type_is_float(t)) return BANK_F;
+    return t == T_P ? BANK_P : BANK_R;
+}
+
+/* Wrap/extend v to type t. 64-bit types (the common case) need nothing. */
+static inline int64_t canon_int(MlwsType t, int64_t v) {
+    switch (t) {
+    case T_I64: case T_U64: case T_NONE: return v;
+    case T_B: return v != 0;
+    case T_C: case T_U32: return (int64_t)(uint32_t)v;
+    case T_I8: return (int8_t)v;
+    case T_I16: return (int16_t)v;
+    case T_I32: return (int32_t)v;
+    case T_U8: return (uint8_t)v;
+    case T_U16: return (uint16_t)v;
+    default: return v;
+    }
+}
+static inline double canon_float(MlwsType t, double v) { return t == T_F32 ? (double)(float)v : v; }
+
 const char *reg_name(uint8_t reg, char buf[8]);
 /* Natural type of a register operand (I->i64, SP/FP->p, PID->i64). */
 MlwsType reg_natural_type(uint8_t reg);

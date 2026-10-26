@@ -64,15 +64,19 @@ typedef struct Operand {
 } Operand;
 
 typedef struct {
-    uint16_t op; /* dense Opcode */
+    uint16_t op;  /* dense Opcode */
+    uint16_t xop; /* what the interpreter executes: op, or a quickened form (interp.c) */
     uint8_t type, type2;
     uint8_t nops;
     Operand *ops;
 } Insn;
 
-bool mode_is_memory(uint8_t mode);
-bool mode_is_object(uint8_t mode);   /* element or field of a heap object */
-bool mode_is_writable(uint8_t mode); /* register, memory or object slot */
+static inline bool mode_is_memory(uint8_t mode) { return mode >= OM_IND && mode <= OM_MINDB; }
+/* element or field of a heap object, or a closure capture */
+static inline bool mode_is_object(uint8_t mode) { return (mode >= OM_ELEM && mode <= OM_FIELD) || mode == OM_UPVAL; }
+static inline bool mode_is_writable(uint8_t mode) { /* register, memory or object slot */
+    return mode == OM_REG || mode_is_memory(mode) || mode_is_object(mode);
+}
 
 void encode_operand(ByteBuf *b, const Operand *o);
 void encode_insn(ByteBuf *b, const Insn *in);

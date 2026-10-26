@@ -5,6 +5,7 @@
 #   make check-tools  smoke-test --monitor, top, --profile and --trace
 #   make check-gc     run the tests with a garbage collection at every allocation
 #   make check-asan   build with AddressSanitizer + UBSan and run the tests (normal and GC stress)
+#   make bench        run the benchmarks in bench/
 #   make docs         regenerate docs/ISA.md and docs/NATIVES.md from the code
 
 CC      ?= cc
@@ -23,7 +24,7 @@ ASAN_ENV :=
 endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: all test check-gc check-tools check-asan docs clean
+.PHONY: all test check-gc check-tools check-asan bench docs clean
 
 all: $(BIN)
 
@@ -63,6 +64,9 @@ check-asan:
 	    LDFLAGS="-fsanitize=address,undefined"
 	$(ASAN_ENV) ./mlwsvm-asan test tests examples
 	$(ASAN_ENV) MLWSVM_GC_STRESS=1 ./mlwsvm-asan test tests examples
+
+bench: $(BIN)
+	sh bench/run.sh ./$(BIN)
 
 docs: $(BIN)
 	./$(BIN) doc isa -o docs/ISA.md

@@ -53,7 +53,7 @@ static Loc mem_loc(Process *p, uint64_t ptr) {
     Loc L;
     memset(&L, 0, sizeof L);
     L.is_reg = LK_MEM;
-    L.seg = proc_segment(p, ptr);
+    L.seg = proc_segment_fast(p, ptr);
     L.off = PTR_OFF(ptr);
     return L;
 }
@@ -237,7 +237,7 @@ static void loc_of(Ctx *c, const Operand *o, int width, Loc *L) {
     }
     uint64_t a = op_addr(c, o, width);
     L->is_reg = 0;
-    L->seg = proc_segment(c->p, a);
+    L->seg = proc_segment_fast(c->p, a);
     L->off = PTR_OFF(a);
 }
 
@@ -921,6 +921,167 @@ static void bind_args(Ctx *c, const MlwsType *types, const uint8_t *ptypes, int 
     }
 }
 
+/* ---- quickening ------------------------------------------------------------------
+ * After verification, common instruction shapes get a specialised execution
+ * opcode (Insn.xop) that skips the generic operand machinery. The original
+ * opcode stays in Insn.op for the disassembler, tracer, profiler and debugger.
+ * Only shapes whose generic semantics are trivially the same qualify: 64-bit
+ * integers in I registers (no width canonicalisation needed), f64 in F registers. */
+
+#define QARITH_OPS(X) X(ADD, +) X(SUB, -) X(MUL, *) X(AND, &) X(OR, |) X(XOR, ^)
+#define QFARITH_OPS(X) X(ADD, +) X(SUB, -) X(MUL, *) X(DIV, /)
+#define QBRANCH_OPS(X) X(BEQ, ==) X(BNE, !=) X(BLT, <) X(BLE, <=) X(BGT, >) X(BGE, >=)
+
+enum {
+    Q__FIRST = OP__COUNT,
+    Q_MOV_II, Q_MOV_IK, Q_MOV_FF, Q_MOV_FK, Q_MOV_RR, Q_MOV_PP,
+#define X(N, o) Q_##N##_III, Q_##N##_IIK, Q_##N##_II, Q_##N##_IK,
+    QARITH_OPS(X)
+#undef X
+#define X(N, o) Q_F##N##_FFF, Q_F##N##_FFK, Q_F##N##_FF, Q_F##N##_FK,
+    QFARITH_OPS(X)
+#undef X
+#define X(N, o) Q_##N##_II, Q_##N##_IK,
+    QBRANCH_OPS(X)
+#undef X
+    Q_REM_IIK, Q_REM_IK, Q_DIV_IIK, Q_DIV_IK,
+    Q_INC_I, Q_DEC_I, Q_BZ_I, Q_BNZ_I, Q_JMP,
+    Q_CALL_R, /* call whose arguments and results are registers of the right banks */
+    Q_RET_R,  /* ret of registers matching the declared 64-bit result types */
+};
+
+/* 64-bit register types: values move between registers without canonicalisation. */
+static bool wide_type(int t) { return t == T_I64 || t == T_U64 || t == T_F64 || t == T_R || t == T_P; }
+
+static bool reg_of_type(const Operand *o, int t) {
+    return o->mode == OM_REG && REG_BANK(o->reg) < NBANKS && REG_BANK(o->reg) == (int)type_bank((MlwsType)t) &&
+           wide_type(t);
+}
+
+static bool quicken_call(const Insn *in) {
+    const Function *fn = in->ops[0].rv.ptr;
+    const MFunc *mf = fn->mf;
+    int argc = (int)in->ops[1].imm, nres = in->nops - 2 - argc;
+    if (nres && !(mf->flags & MF_RETS_DECLARED)) return false;
+    for (int k = 0; k < argc; k++)
+        if (!reg_of_type(&in->ops[2 + k], mf->params[k])) return false;
+    for (int k = 0; k < nres; k++)
+        if (!reg_of_type(&in->ops[2 + argc + k], mf->rets[k])) return false;
+    return true;
+}
+
+static const MFunc *quicken_fn; /* function being quickened (for ret) */
+
+void interp_quicken_function(Function *f) {
+    quicken_fn = f->mf;
+    for (uint32_t k = 0; k < f->ncode; k++) interp_quicken(&f->code[k]);
+    quicken_fn = NULL;
+}
+
+void interp_quicken(Insn *in) {
+    Operand *o = in->ops;
+    int n = in->nops;
+    MlwsType t = (MlwsType)in->type;
+#define IREG(k) (o[k].mode == OM_REG && REG_BANK(o[k].reg) == BANK_I)
+#define FREG(k) (o[k].mode == OM_REG && REG_BANK(o[k].reg) == BANK_F)
+#define RREG(k) (o[k].mode == OM_REG && REG_BANK(o[k].reg) == BANK_R)
+#define PREG(k) (o[k].mode == OM_REG && REG_BANK(o[k].reg) == BANK_P)
+#define KINT(k) (o[k].mode == OM_IMM)
+#define KFLT(k) (o[k].mode == OM_FIMM || o[k].mode == OM_IMM)
+    bool i64 = t == T_I64 || t == T_U64;
+    /* float constants are converted once, here */
+    for (int k = 0; k < n; k++)
+        if (t == T_F64 && o[k].mode == OM_IMM) o[k].f = (double)o[k].imm;
+    in->xop = in->op;
+    switch (in->op) {
+    case OP_MOV:
+        if (n != 2) break;
+        if (i64 && IREG(0) && IREG(1)) in->xop = Q_MOV_II;
+        else if (i64 && IREG(0) && KINT(1)) in->xop = Q_MOV_IK;
+        else if (t == T_F64 && FREG(0) && FREG(1)) in->xop = Q_MOV_FF;
+        else if (t == T_F64 && FREG(0) && KFLT(1)) in->xop = Q_MOV_FK;
+        else if (t == T_R && RREG(0) && RREG(1)) in->xop = Q_MOV_RR;
+        else if (t == T_P && PREG(0) && PREG(1)) in->xop = Q_MOV_PP;
+        break;
+#define X(N, op_)                                                              \
+    case OP_##N:                                                               \
+        if (i64 && n == 3 && IREG(0) && IREG(1) && IREG(2)) in->xop = Q_##N##_III; \
+        else if (i64 && n == 3 && IREG(0) && IREG(1) && KINT(2)) in->xop = Q_##N##_IIK; \
+        else if (i64 && n == 2 && IREG(0) && IREG(1)) in->xop = Q_##N##_II;   \
+        else if (i64 && n == 2 && IREG(0) && KINT(1)) in->xop = Q_##N##_IK;   \
+        else goto float_arith;                                                 \
+        break;
+        QARITH_OPS(X)
+#undef X
+    case OP_DIV:
+        if (t == T_I64 && n == 3 && IREG(0) && IREG(1) && KINT(2) && o[2].imm != 0 && o[2].imm != -1) in->xop = Q_DIV_IIK;
+        else if (t == T_I64 && n == 2 && IREG(0) && KINT(1) && o[1].imm != 0 && o[1].imm != -1) in->xop = Q_DIV_IK;
+        else goto float_arith;
+        break;
+    case OP_REM:
+        if (t == T_I64 && n == 3 && IREG(0) && IREG(1) && KINT(2) && o[2].imm != 0 && o[2].imm != -1) in->xop = Q_REM_IIK;
+        else if (t == T_I64 && n == 2 && IREG(0) && KINT(1) && o[1].imm != 0 && o[1].imm != -1) in->xop = Q_REM_IK;
+        break;
+    float_arith:
+        if (t != T_F64) break;
+        switch (in->op) {
+#define X(N, op_)                                                              \
+    case OP_##N:                                                               \
+        if (n == 3 && FREG(0) && FREG(1) && FREG(2)) in->xop = Q_F##N##_FFF;   \
+        else if (n == 3 && FREG(0) && FREG(1) && KFLT(2)) in->xop = Q_F##N##_FFK; \
+        else if (n == 2 && FREG(0) && FREG(1)) in->xop = Q_F##N##_FF;         \
+        else if (n == 2 && FREG(0) && KFLT(1)) in->xop = Q_F##N##_FK;         \
+        break;
+            QFARITH_OPS(X)
+#undef X
+        default: break;
+        }
+        break;
+    case OP_INC:
+        if (i64 && IREG(0)) in->xop = Q_INC_I;
+        break;
+    case OP_DEC:
+        if (i64 && IREG(0)) in->xop = Q_DEC_I;
+        break;
+    case OP_BZ:
+        if (i64 && IREG(0)) in->xop = Q_BZ_I;
+        break;
+    case OP_BNZ:
+        if (i64 && IREG(0)) in->xop = Q_BNZ_I;
+        break;
+    case OP_JMP: in->xop = Q_JMP; break;
+    case OP_CALL:
+        if (quicken_call(in)) in->xop = Q_CALL_R;
+        break;
+    case OP_RET:
+        if (quicken_fn && (quicken_fn->flags & MF_RETS_DECLARED) && n == quicken_fn->nrets) {
+            bool ok = true;
+            for (int k = 0; k < n; k++) ok = ok && reg_of_type(&o[k], quicken_fn->rets[k]);
+            if (ok) in->xop = Q_RET_R;
+        } else if (quicken_fn && n == 0) {
+            in->xop = Q_RET_R;
+        }
+        break;
+#define X(N, op_)                                                              \
+    case OP_##N:                                                               \
+        /* signed order needs i64; equality also works for u64 */             \
+        if (t == T_I64 || ((in->op == OP_BEQ || in->op == OP_BNE) && t == T_U64)) { \
+            if (IREG(0) && IREG(1)) in->xop = Q_##N##_II;                       \
+            else if (IREG(0) && KINT(1)) in->xop = Q_##N##_IK;                  \
+        }                                                                      \
+        break;
+        QBRANCH_OPS(X)
+#undef X
+    default: break;
+    }
+#undef IREG
+#undef FREG
+#undef RREG
+#undef PREG
+#undef KINT
+#undef KFLT
+}
+
 /* ---- main loop ---------------------------------------------------------------- */
 
 /* Message at the head of the mailbox, as a tagged slot location. */
@@ -968,7 +1129,105 @@ int interp_run(Process *p, uint32_t budget) {
         MlwsType TN = T; /* the type as written: .big / .dec select number arithmetic */
         if (T == T_BIG || T == T_DEC) T = T_R;
         p->insns++;
-        switch ((Opcode)in->op) {
+#define IR(k) c.I[REG_IDX(ops[k].reg)]
+#define FR(k) c.F[REG_IDX(ops[k].reg)]
+#define U(x) ((uint64_t)(x))
+        switch (in->xop) {
+        /* ---- quickened forms (see interp_quicken) ---- */
+        case Q_MOV_II: IR(0) = IR(1); break;
+        case Q_MOV_IK: IR(0) = ops[1].imm; break;
+        case Q_MOV_FF: FR(0) = FR(1); break;
+        case Q_MOV_FK: FR(0) = ops[1].f; break;
+        case Q_MOV_RR: c.R[REG_IDX(ops[0].reg)] = c.R[REG_IDX(ops[1].reg)]; break;
+        case Q_MOV_PP: c.P[REG_IDX(ops[0].reg)] = c.P[REG_IDX(ops[1].reg)]; break;
+#define X(N, op_)                                                              \
+        case Q_##N##_III: IR(0) = (int64_t)(U(IR(1)) op_ U(IR(2))); break;     \
+        case Q_##N##_IIK: IR(0) = (int64_t)(U(IR(1)) op_ U(ops[2].imm)); break; \
+        case Q_##N##_II: IR(0) = (int64_t)(U(IR(0)) op_ U(IR(1))); break;      \
+        case Q_##N##_IK: IR(0) = (int64_t)(U(IR(0)) op_ U(ops[1].imm)); break;
+        QARITH_OPS(X)
+#undef X
+#define X(N, op_)                                                              \
+        case Q_F##N##_FFF: FR(0) = FR(1) op_ FR(2); break;                     \
+        case Q_F##N##_FFK: FR(0) = FR(1) op_ ops[2].f; break;                  \
+        case Q_F##N##_FF: FR(0) = FR(0) op_ FR(1); break;                      \
+        case Q_F##N##_FK: FR(0) = FR(0) op_ ops[1].f; break;
+        QFARITH_OPS(X)
+#undef X
+        case Q_DIV_IIK: IR(0) = IR(1) / ops[2].imm; break; /* divisor is a non-zero, non -1 constant */
+        case Q_DIV_IK: IR(0) = IR(0) / ops[1].imm; break;
+        case Q_REM_IIK: IR(0) = IR(1) % ops[2].imm; break;
+        case Q_REM_IK: IR(0) = IR(0) % ops[1].imm; break;
+        case Q_INC_I: IR(0) = (int64_t)(U(IR(0)) + 1); break;
+        case Q_DEC_I: IR(0) = (int64_t)(U(IR(0)) - 1); break;
+        case Q_BZ_I: if (IR(0) == 0) fr->pc = ops[1].rv.target; break;
+        case Q_BNZ_I: if (IR(0) != 0) fr->pc = ops[1].rv.target; break;
+        case Q_JMP: fr->pc = ops[0].rv.target; break;
+        case Q_CALL_R: {
+            Function *fn = ops[0].rv.ptr;
+            int argc = (int)ops[1].imm;
+            Word args[MAX_OPERANDS];
+            for (int k = 0; k < argc; k++) {
+                uint8_t r = ops[2 + k].reg;
+                switch (REG_BANK(r)) {
+                case BANK_I: args[k].i = c.I[REG_IDX(r)]; break;
+                case BANK_F: args[k].f = c.F[REG_IDX(r)]; break;
+                case BANK_R: args[k].r = c.R[REG_IDX(r)]; break;
+                default: args[k].p = c.P[REG_IDX(r)]; break;
+                }
+            }
+            proc_push_frame(p, fn, in);
+            ctx_load(&c);
+            bind_args(&c, NULL, fn->mf->params, argc, args);
+            break;
+        }
+        case Q_RET_R: {
+            Word vals[MAX_OPERANDS];
+            int n = in->nops;
+            for (int k = 0; k < n; k++) {
+                uint8_t r = ops[k].reg;
+                switch (REG_BANK(r)) {
+                case BANK_I: vals[k].i = c.I[REG_IDX(r)]; break;
+                case BANK_F: vals[k].f = c.F[REG_IDX(r)]; break;
+                case BANK_R: vals[k].r = c.R[REG_IDX(r)]; break;
+                default: vals[k].p = c.P[REG_IDX(r)]; break;
+                }
+            }
+            const MFunc *mf = fr->fn->mf;
+            const Insn *ri = fr->ret_insn;
+            proc_pop_frame(p);
+            if (p->nframes == 0) {
+                p->exit_code = n > 0 && type_is_int((MlwsType)mf->rets[0]) ? vals[0].i : 0;
+                return SLICE_DONE;
+            }
+            ctx_load(&c);
+            if (!ri) break;
+            int argc = (int)ri->ops[1].imm, nres = ri->nops - 2 - argc;
+            if (nres > n)
+                vm_trap(p, "E_RET_COUNT", "%s returned %d value(s) but the caller expects %d", fr->fn->name, n, nres);
+            if (ri->xop == Q_CALL_R) { /* both sides are registers of the right banks */
+                for (int k = 0; k < nres; k++) {
+                    uint8_t r = ri->ops[2 + argc + k].reg;
+                    switch (REG_BANK(r)) {
+                    case BANK_I: c.I[REG_IDX(r)] = vals[k].i; break;
+                    case BANK_F: c.F[REG_IDX(r)] = vals[k].f; break;
+                    case BANK_R: c.R[REG_IDX(r)] = vals[k].r; break;
+                    default: c.P[REG_IDX(r)] = vals[k].p; break;
+                    }
+                }
+            } else {
+                for (int k = 0; k < nres; k++)
+                    wr(&c, &ri->ops[2 + argc + k], n ? (MlwsType)mf->rets[k] : T_NONE, vals[k]);
+            }
+            break;
+        }
+#define X(N, op_)                                                              \
+        case Q_##N##_II: if (IR(0) op_ IR(1)) fr->pc = ops[2].rv.target; break; \
+        case Q_##N##_IK: if (IR(0) op_ ops[1].imm) fr->pc = ops[2].rv.target; break;
+        QBRANCH_OPS(X)
+#undef X
+#undef U
+        /* ---- everything else ---- */
         case OP_NOP:
             break;
         case OP_BREAK: /* a debugger stops here; without one it is a no-op */

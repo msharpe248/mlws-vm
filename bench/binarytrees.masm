@@ -1,0 +1,43 @@
+; bench: allocation and GC: build and check binary trees (depth 18, plus many short-lived ones)
+; expect-stdout: 524287
+; expect-stdout: 1966020
+.struct Node
+    left: ref
+    right: ref
+.ends
+.func make(i64 d) -> ref
+    new R0, Node
+    bz d, 1f
+    sub I1, d, 1
+    call make (I1) -> (R1)
+    call make (I1) -> (R2)
+    mov R0->Node.left, R1
+    mov R0->Node.right, R2
+1:  ret R0
+.endf
+.func check(ref n) -> i64
+    mov R1, n->Node.left
+    bz R1, 1f
+    call check (R1) -> (I0)
+    mov R2, n->Node.right
+    call check (R2) -> (I1)
+    add I0, I0, I1, 1                  ; left + right + this node
+    ret I0
+1:  ret 1
+.endf
+.func main
+    call make (18) -> (R0)             ; long-lived
+    call check (R0) -> (I0)
+    ncall "io.print_i" (I0)
+    ncall "io.nl" ()
+    mov I1, 0
+    mov I2, 0
+1:  call make (14) -> (R1)             ; short-lived garbage
+    call check (R1) -> (I3)
+    add I2, I3
+    inc I1
+    blt I1, 60, 1b
+    ncall "io.print_i" (I2)
+    ncall "io.nl" ()
+    ret 0
+.endf

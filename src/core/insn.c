@@ -1,14 +1,6 @@
 /* insn.c - instruction encode/decode. */
 #include "insn.h"
 
-bool mode_is_memory(uint8_t mode) {
-    return (mode >= OM_IND && mode <= OM_MINDB);
-}
-
-bool mode_is_object(uint8_t mode) { return (mode >= OM_ELEM && mode <= OM_FIELD) || mode == OM_UPVAL; }
-
-bool mode_is_writable(uint8_t mode) { return mode == OM_REG || mode_is_memory(mode) || mode_is_object(mode); }
-
 void encode_operand(ByteBuf *b, const Operand *o) {
     bb_u8(b, o->mode);
     switch (o->mode) {
@@ -128,7 +120,7 @@ bool decode_insn(ByteReader *r, Insn *out, MlwsError *err) {
     int op = op_from_code(code);
     if (r->err) return mlws_err(err, "E_LOAD_FORMAT", "truncated instruction");
     if (op < 0) return mlws_err(err, "E_LOAD_FORMAT", "unknown opcode 0x%04x", code);
-    out->op = (uint16_t)op;
+    out->op = out->xop = (uint16_t)op;
     out->type = br_u8(r);
     if (op_info[op].flags & OPF_TYPE2) out->type2 = br_u8(r);
     out->nops = br_u8(r);

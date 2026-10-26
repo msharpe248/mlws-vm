@@ -1,0 +1,83 @@
+; Shapes the loader quickens (specialised fast handlers) must behave exactly
+; like the generic instructions, including at the edges.
+.include "std/test.inc"
+
+.func mix(i64 a, f64 x, ref s, ptr q, i64 b) -> (i64, f64, ref, ptr)
+    add I2, a, b
+    mul F1, x, 2
+    ret I2, F1, s, q
+.endf
+
+.func generic_dest -> (i64, i64)
+    ret 7, 8
+.endf
+
+.func main
+    ; integer arithmetic wraps
+    mov I0, 0x7fffffffffffffff
+    add I1, I0, 1                      ; III/IIK forms
+    ASSERT_EQ I1, 0x8000000000000000
+    mov I2, I0
+    add I2, 1                          ; IK form
+    ASSERT_EQ I2, I1
+    sub I3, I1, I0                     ; III
+    ASSERT_EQ I3, 1
+    mul I4, I0, 3                      ; IIK
+    ASSERT_EQ I4, 0x7ffffffffffffffd
+    xor I5, I4, -1
+    ASSERT_EQ I5, -0x7ffffffffffffffe
+    ; constant division and remainder (negative divisors, C truncation)
+    div I6, -17, 1                     ; generic (immediate source)
+    mov I6, -17
+    div I7, I6, 5                      ; DIV_IIK
+    ASSERT_EQ I7, -3
+    rem I8, I6, -5                     ; REM_IIK
+    ASSERT_EQ I8, -2
+    rem I6, 5                          ; REM_IK
+    ASSERT_EQ I6, -2
+    mov I9, 0x8000000000000000
+    div I10, I9, -1                    ; -1 is not quickened: generic wraps
+    ASSERT_EQ I10, I9
+    ; signed vs unsigned comparisons
+    mov I11, -1
+    blt I11, 1, 1f                     ; BLT_IK (signed)
+    FAIL "signed blt"
+1:  bgt.u64 I11, 1, 2f                 ; unsigned order is not quickened
+    FAIL "unsigned bgt"
+2:  mov.u64 I12, -1
+    beq.u64 I12, I11, 3f               ; BEQ_II on u64
+    FAIL "u64 beq"
+3:  bnz I11, 4f                        ; BNZ_I
+    FAIL "bnz"
+4:  ; floats with integer constants (converted once at load)
+    mov F0, 3                          ; MOV_FK from an integer literal
+    add F1, F0, 1                      ; FADD_FFK
+    ASSERT_EQ F1, 4.0
+    div F1, 8                          ; FDIV_FK
+    ASSERT_EQ F1, 0.5
+    sub F2, F1, F0                     ; FSUB_FFF
+    ASSERT_EQ F2, -2.5
+    ; quickened calls: mixed banks, several results
+    alloc P0, 8
+    call mix (40, 1.25, "s", P0, 2) -> (I13, F3, R0, P1)
+    ASSERT_EQ I13, 42
+    ASSERT_EQ F3, 2.5
+    ASSERT_EQ P1, P0, p
+    ncall "str.len" (R0) -> (I14)
+    ASSERT_EQ I14, 1
+    ; a quickened ret into a call whose results go to memory (generic path)
+    push 0, 0
+    call generic_dest -> (SP[0], SP[1])
+    pop I15, I16
+    ASSERT_EQ I15, 7
+    ASSERT_EQ I16, 8
+    ; loops through quickened compare-and-branch
+    mov I17, 0
+    mov I18, 0
+5:  add I18, I17
+    inc I17
+    blt I17, 1000, 5b
+    ASSERT_EQ I18, 499500
+    free P0
+    ret 0
+.endf

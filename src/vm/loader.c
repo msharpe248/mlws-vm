@@ -234,7 +234,12 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
         Function *f = &lm->funcs[i];
         if (f->target == f && !decode_function(lm, f, err)) return false;
     }
-    return vm_verify_module(vm, lm, err);
+    if (!vm_verify_module(vm, lm, err)) return false;
+    for (uint32_t i = 0; i < m->nfuncs; i++) {
+        Function *f = &lm->funcs[i];
+        if (f->target == f) interp_quicken_function(f);
+    }
+    return true;
 }
 
 static LModule *register_module(VM *vm, Module *m, const char *path, MlwsError *err) {

@@ -1,0 +1,18 @@
+; bench: calls through closures (5M)
+; expect-stdout: 12500002500000
+.func addcap(i64 x) -> i64
+    add I1, x, UP[0]
+    ret I1
+.endf
+.func main
+    closure addcap (1) -> (R0)
+    mov I0, 0
+    mov I1, 0
+1:  calli R0 (I0) -> (I2)
+    add I1, I2
+    inc I0
+    blt I0, 5000000, 1b
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ret 0
+.endf

@@ -1371,7 +1371,7 @@ static bool instruction(Asm *A, Cur *c) {
     infer_type(A, &ai, has_type, has_type2);
 
     Operand tmp[MAX_OPERANDS];
-    Insn in = {ai.op, ai.type, ai.type2, (uint8_t)ai.nops, tmp};
+    Insn in = {ai.op, ai.op, ai.type, ai.type2, (uint8_t)ai.nops, tmp};
     for (int k = 0; k < ai.nops; k++) tmp[k] = ai.ops[k].o;
     CheckErr ce;
     if (!check_insn(&in, &ce)) {
@@ -1629,7 +1629,7 @@ static Module *finish(Asm *A) {
             AsmInsn *ai = &af->insns.v[i];
             Operand tmp[MAX_OPERANDS];
             for (int k = 0; k < ai->nops; k++) fill_operand(&tmp[k], &ai->ops[k]);
-            Insn in = {ai->op, ai->type, ai->type2, (uint8_t)ai->nops, tmp};
+            Insn in = {ai->op, ai->op, ai->type, ai->type2, (uint8_t)ai->nops, tmp};
             encode_insn(&code, &in);
             mf->lines[i] = (uint32_t)ai->pl->origin.line;
         }

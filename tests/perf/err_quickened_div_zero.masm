@@ -1,0 +1,8 @@
+; Division by a zero *register* is never quickened and still traps.
+; expect-error: E_DIV_ZERO
+.func main
+    mov I0, 10
+    mov I1, 0
+    div I2, I0, I1
+    ret 0
+.endf
