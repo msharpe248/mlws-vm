@@ -1,0 +1,13 @@
+; A receive that can never complete raises a catchable E_DEADLOCK.
+.include "std/test.inc"
+.func main
+.try h
+    recv I0                            ; nobody else exists
+.endtry
+    ret 1
+h:
+    catch R0
+    strcmp I1, R0->Error.code, "E_DEADLOCK"
+    ASSERT_EQ I1, 0
+    ret 0
+.endf

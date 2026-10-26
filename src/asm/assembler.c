@@ -9,6 +9,7 @@
 #include <ctype.h>
 #include <math.h>
 
+#include "../core/builtins.h"
 #include "../core/check.h"
 #include "../core/insn.h"
 #include "preproc.h"
@@ -1183,8 +1184,10 @@ static MlwsType local_field_type(Asm *A, const char *sym) {
         const MStruct *st = &A->structs.v[VI(v)];
         for (uint32_t i = 0; i < st->nfields; i++)
             if (!strcmp(st->fields[i], dot + 1)) t = (MlwsType)st->types[i];
-    } else if (!strcmp(sname, "Error")) {
-        t = T_R; /* all built-in Error fields are references */
+    } else if (builtin_struct_find(sname) >= 0) {
+        const BuiltinStruct *bs = &BUILTIN_STRUCTS[builtin_struct_find(sname)];
+        for (uint32_t i = 0; i < bs->nfields; i++)
+            if (!strcmp(bs->fields[i], dot + 1)) t = (MlwsType)bs->types[i];
     }
     free(sname);
     return t;
@@ -1441,17 +1444,19 @@ static bool resolve_struct_name(Asm *A, const PLine *pl, int col, const char *na
         *out = (uint32_t)VI(v);
         return true;
     }
-    if (!strcmp(name, "Error")) { /* the built-in exception struct */
-        if (smap_get(&A->structmap, "B:Error", &v)) {
+    if (builtin_struct_find(name) >= 0) { /* Error, Down: provided by the VM */
+        char bkey[128];
+        snprintf(bkey, sizeof bkey, "B:%s", name);
+        if (smap_get(&A->structmap, bkey, &v)) {
             *out = (uint32_t)VI(v);
             return true;
         }
         MStruct st;
         memset(&st, 0, sizeof st);
-        st.name = xstrdup("Error");
+        st.name = xstrdup(name);
         st.flags = MSF_BUILTIN;
         *out = (uint32_t)A->structs.n;
-        smap_put(&A->structmap, "B:Error", IV(A->structs.n));
+        smap_put(&A->structmap, bkey, IV(A->structs.n));
         VEC_PUSH(A->structs, st);
         return true;
     }
@@ -1486,9 +1491,10 @@ static bool resolve_field_ref(Asm *A, const PLine *pl, AsmOp *o) {
     const char *field = dot + 1;
     const MStruct *st = &A->structs.v[si];
     if (st->flags & MSF_BUILTIN) {
-        if (strcmp(field, "code") && strcmp(field, "message") && strcmp(field, "trace"))
-            return aerr(A, pl, o->col, "E_ASM_UNDEF_SYM", "struct Error has no field '%s' (it has code, message, trace)",
-                        field);
+        const BuiltinStruct *bs = &BUILTIN_STRUCTS[builtin_struct_find(st->name)];
+        bool found = false;
+        for (uint32_t i = 0; i < bs->nfields; i++) found = found || !strcmp(bs->fields[i], field);
+        if (!found) return aerr(A, pl, o->col, "E_ASM_UNDEF_SYM", "struct %s has no field '%s'", st->name, field);
     } else if (!(st->flags & MSF_IMPORT)) {
         bool found = false;
         for (uint32_t i = 0; i < st->nfields; i++) found = found || !strcmp(st->fields[i], field);

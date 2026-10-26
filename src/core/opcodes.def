@@ -248,3 +248,29 @@ OP(THROW,  0x00E0, "throw",  "Exceptions", "O", 0, OPF_TERM,
    "Raise an exception: any non-null reference, often an Error struct (`new R0, Error`). Control passes to the handler of the innermost enclosing .try region in this function or a caller, and frames without a handler are unwound. An uncaught exception ends the process. To rethrow, throw the caught value again.")
 OP(CATCH,  0x00E1, "catch",  "Exceptions", "X", 0, 0,
    "At the start of a handler: dst = the exception being handled. Runtime faults arrive as Error structs whose code field holds the error code (e.g. \"E_DIV_ZERO\").")
+
+/* ---- processes ------------------------------------------------------------- */
+OP(SPAWN,  0x0100, "spawn",  "Processes", "FC", 0, OPF_CALL,
+   "Start a new process running a function: `spawn worker (a, b) -> (I0)` puts the new process id in I0. Arguments are copied into the new process; references are deep-copied, and pointers cannot be passed. The new process inherits this process's quotas and starts at its next turn.")
+OP(SEND,   0x0101, "send",   "Processes", "QV", TS_ANY, OPF_PERVAL,
+   "`send pid, value`: append a copy of value to the mailbox of process pid. References are deep-copied, preserving sharing and cycles. Sending to a finished process does nothing. Traps E_QUOTA if the receiver's mailbox is full and E_TYPE for a pointer.")
+OP(RECV,   0x0102, "recv",   "Processes", "W", TS_ANY, OPF_PERVAL,
+   "Take the oldest message from this process's mailbox, waiting until one arrives. The message keeps its type (as list elements do). Traps E_DEADLOCK if every process is waiting and none can ever send.")
+OP(RECVT,  0x0103, "recvt",  "Processes", "WQL", TS_ANY, OPF_PERVAL,
+   "`recvt dst, ms, Ltimeout`: like recv, but if no message arrives within ms milliseconds, jump to Ltimeout instead. ms = 0 polls.")
+OP(YIELD,  0x0104, "yield",  "Processes", "", 0, 0,
+   "Give the rest of this time slice to other processes.")
+OP(SLEEP,  0x0105, "sleep",  "Processes", "Q", 0, 0,
+   "Suspend this process for at least the given number of milliseconds.")
+OP(KILL,   0x0106, "kill",   "Processes", "Q", 0, 0,
+   "Terminate a process with error E_KILLED (as a failure, so links and monitors are notified). Killing a finished or unknown process does nothing; killing yourself ends this process.")
+OP(LINK,   0x0107, "link",   "Processes", "Q", 0, 0,
+   "Link this process and another. If either fails (an uncaught exception, kill or quota), the other is killed with E_LINKED. Normal exits do not propagate.")
+OP(MONITOR,0x0108, "monitor","Processes", "Q", 0, 0,
+   "Watch a process. When it ends, this process receives a Down struct message with fields pid, exit (exit code), and code/message (null for a normal exit). Monitoring a finished or unknown process delivers a Down message immediately, with code E_NOPROC.")
+OP(ALIVE,  0x0109, "alive",  "Processes", "BQ", 0, 0,
+   "dst = true if the process exists and has not finished.")
+OP(QUOTA,  0x010A, "quota",  "Processes", "IQ", 0, 0,
+   "`quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed. Processes it spawns inherit its limits. Exceeding a limit traps E_QUOTA.")
+OP(MLEN,   0x010B, "mlen",   "Processes", "J", 0, 0,
+   "dst = the number of messages waiting in this process's mailbox.")

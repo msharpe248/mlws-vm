@@ -1,0 +1,52 @@
+; Processes exchange messages; references are deep-copied, so the receiver
+; gets its own copy (sharing and cycles preserved) and later changes by the
+; sender are invisible to it.
+.include "std/test.inc"
+
+.struct Pair
+    a: ref
+    b: ref
+.ends
+
+; Receives a message, checks its shape, and replies with a summary.
+.func checker(i64 parent)
+    recv R0                            ; a Pair whose a and b are the same list
+    mov R1, R0->Pair.a
+    mov R2, R0->Pair.b
+    seq.r I0, R1, R2                   ; sharing preserved
+    mov R3, R1[2]                      ; the list contains itself (a cycle)
+    seq.r I1, R3, R1
+    len I2, R1
+    recv R4                            ; a map, sent after the sender mutated its own copy
+    mget I3, R4, "k"
+    add I4, I0, I1, I2, I3             ; 1 + 1 + 3 + 10
+    send parent, I4
+    ret
+.endf
+
+.func main
+    spawn checker (PID) -> (I9)
+    lnew R0
+    lpush R0, 1, "two"
+    lpush R0, R0                       ; cycle: R0[2] is R0
+    new R1, Pair
+    mov R1->Pair.a, R0
+    mov R1->Pair.b, R0
+    send I9, R1
+    mnew R2
+    mset R2, "k", 10
+    send I9, R2
+    mset R2, "k", 999                  ; does not affect the copy already sent
+    lpush R0, 4                        ; nor this
+    recv I0
+    ASSERT_EQ I0, 15
+    send PID, 7                        ; a process can send to itself
+    mlen I1
+    ASSERT_EQ I1, 1
+    recv I2
+    ASSERT_EQ I2, 7
+    send.f64 PID, 2.5                  ; messages keep their types
+    recv F0
+    ASSERT_EQ F0, 2.5
+    ret 0
+.endf

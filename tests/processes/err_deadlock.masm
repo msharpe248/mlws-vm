@@ -1,0 +1,10 @@
+; expect-error: E_DEADLOCK
+.func waiter
+    recv I0
+    ret
+.endf
+.func main
+    spawn waiter
+    recv I0                            ; both wait forever
+    ret 0
+.endf

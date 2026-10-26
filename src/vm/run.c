@@ -26,10 +26,16 @@ bool vm_run_file(VM *vm, const char *path, RunResult *res) {
         return false;
     }
     Process *p = proc_new(vm);
+    vm->main_pid = p->pid;
+    proc_start(p, main_fn, NULL, 0);
     uint64_t t0 = plat_now_ns();
-    bool ok = proc_run_main(p, main_fn);
+    sched_run(vm, p);
+    bool ok = p->state == PROC_DONE;
     res->wall_ns = plat_now_ns() - t0;
     res->insns = p->insns;
+    res->spawned = vm->spawned;
+    res->max_live = vm->max_live;
+    res->slices = vm->slices;
     res->raw_peak = p->raw_peak;
     res->raw_allocs = p->raw_allocs;
     res->raw_frees = p->raw_frees;
@@ -50,6 +56,8 @@ bool vm_run_file(VM *vm, const char *path, RunResult *res) {
         res->err = p->err;
         res->backtrace = xstrdup(p->backtrace.s ? p->backtrace.s : "");
     }
+    sched_shutdown(vm, p); /* the program ends with main; stop everything else */
+    res->total_insns = vm->insns_retired + p->insns;
     proc_free(p);
     return ok;
 }

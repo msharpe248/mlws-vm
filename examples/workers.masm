@@ -1,0 +1,103 @@
+; workers.masm - split a job across processes and supervise them.
+;
+; main spawns one worker per range to count the primes in it, monitors each
+; worker, and collects either a result message or a Down notice. Worker 3 is
+; given a bad range and crashes; the supervisor notices it and reports it
+; instead of hanging.
+;
+; expect-stdout: worker 1: 25 primes in [0, 100)
+; expect-stdout: worker 2: 21 primes in [100, 200)
+; expect-stdout: worker 3: crashed with E_BOUNDS
+; expect-stdout: worker 4: 16 primes in [300, 400)
+; expect-stdout: total: 62
+.include "std/io.inc"
+
+.struct Result
+    worker: i64
+    count: i64
+.ends
+
+; is_prime(n) by trial division
+.func is_prime(i64 n) -> i64
+    blt n, 2, no
+    mov I1, 2
+1:  mul I2, I1, I1
+    bgt I2, n, yes
+    rem I3, n, I1
+    bz I3, no
+    inc I1
+    jmp 1b
+yes:
+    ret 1
+no:
+    ret 0
+.endf
+
+.func count_primes(i64 parent, i64 id, i64 lo, i64 hi)
+    anew.i64 R0, 400                   ; a scratch table; a bad range overruns it
+    mov I5, 0
+    mov I4, lo
+1:  bge I4, hi, 2f
+    call is_prime (I4) -> (I6)
+    mov R0[I4], I6                     ; E_BOUNDS for hi > 400
+    add I5, I6
+    inc I4
+    jmp 1b
+2:  new R1, Result
+    mov R1->Result.worker, id
+    mov R1->Result.count, I5
+    send parent, R1
+    ret
+.endf
+
+.func main
+    .alias total, I20
+    mnew R10                           ; pid -> worker id
+    mov I0, 1
+1:  sub I1, I0, 1
+    mul I1, 100                        ; lo
+    add I2, I1, 100                    ; hi
+    bne I0, 3, 2f
+    mov I2, 1000                       ; worker 3 gets a range too large for its table
+2:  spawn count_primes (PID, I0, I1, I2) -> (I3)
+    monitor I3
+    mset R10, I3, I0
+    inc I0
+    ble I0, 4, 1b
+
+    anew.r R11, 5                      ; report lines, by worker id
+    mov total, 0
+    mov I0, 0                          ; workers finished
+3:  recv R0
+    isa I1, R0, Result
+    bz I1, 4f
+    mov I2, R0->Result.worker          ; a result
+    add total, R0->Result.count
+    tostr R1, I2
+    tostr R2, R0->Result.count
+    sub I3, I2, 1
+    mul I3, 100
+    tostr R3, I3
+    add I3, 100
+    tostr R4, I3
+    strcat R5, "worker ", R1, ": ", R2, " primes in [", R3, ", ", R4, ")"
+    mov R11[I2], R5
+    jmp 3b                             ; its Down (a normal exit) follows
+4:  mov R6, R0->Down.code              ; a Down notice
+    bz.r R6, 5f                        ; normal exit: the result already arrived
+    mget I2, R10, R0->Down.pid
+    tostr R1, I2
+    strcat R5, "worker ", R1, ": crashed with ", R6
+    mov R11[I2], R5
+5:  inc I0
+    blt I0, 4, 3b
+
+    mov I0, 1
+6:  PRINTLN_S R11[I0]
+    inc I0
+    ble I0, 4, 6b
+    tostr R1, total
+    strcat R2, "total: ", R1
+    PRINTLN_S R2
+    ret 0
+.endf

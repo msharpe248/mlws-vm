@@ -1,0 +1,11 @@
+; A failure in a process linked to main ends the program.
+; expect-error: E_LINKED
+.func doomed(i64 parent)
+    link parent
+    throw "doomed"
+.endf
+.func main
+    spawn doomed (PID)
+    recv I0
+    ret 0
+.endf

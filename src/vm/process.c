@@ -33,11 +33,41 @@ Process *proc_new(VM *vm) {
         s->live = 1;
     }
     for (int b = 0; b < NBANKS; b++) p->rcap[b] = 0;
+    memcpy(p->quota, vm->default_quota, sizeof p->quota);
+    VEC_PUSH(vm->procs, p); /* pids are dense: pid - 1 indexes vm->procs */
+    vm->live++;
+    vm->spawned++;
+    if (vm->live > vm->max_live) vm->max_live = vm->live;
     return p;
+}
+
+void proc_start(Process *p, Function *fn, const Word *args, int nargs) {
+    p->entry = fn;
+    proc_push_frame(p, fn, NULL);
+    const Frame *fr = &p->frames[p->nframes - 1];
+    int cnt[NBANKS] = {0};
+    for (int k = 0; k < nargs; k++) {
+        Bank b = type_bank((MlwsType)fn->mf->params[k]);
+        uint32_t at = fr->base[b] + (uint32_t)cnt[b]++;
+        switch (b) {
+        case BANK_I: p->ireg[at] = args[k].i; break;
+        case BANK_F: p->freg[at] = args[k].f; break;
+        case BANK_R: p->rreg[at] = args[k].r; break;
+        default: p->preg[at] = args[k].p; break;
+        }
+    }
+    sched_ready(p->vm, p);
 }
 
 void proc_free(Process *p) {
     if (!p) return;
+    VM *vm = p->vm;
+    if (p->pid && p->pid <= vm->procs.n && vm->procs.v[p->pid - 1] == p) vm->procs.v[p->pid - 1] = NULL;
+    if (p->state != PROC_DONE && p->state != PROC_FAILED) vm->live--;
+    vm->insns_retired += p->insns;
+    VEC_FREE(p->mbox);
+    VEC_FREE(p->links);
+    VEC_FREE(p->monitors);
     heap_free_all(p);
     free(p->stack.data);
     free(p->stack.tags);
@@ -70,9 +100,7 @@ static void build_backtrace(Process *p) {
     }
 }
 
-static char *const ERROR_FIELDS[] = {"code", "message", "trace"};
-static uint8_t ERROR_TYPES[] = {T_R, T_R, T_R};
-const StructDef VM_ERROR_DEF = {"Error", "(builtin)", 3, (char **)ERROR_FIELDS, ERROR_TYPES};
+StructDef VM_BUILTIN_DEFS[BUILTIN__COUNT];
 
 void proc_throw(Process *p, Obj *ex) {
     if (!p->jb) {
@@ -92,10 +120,12 @@ void vm_trap(Process *p, const char *code, const char *fmt, ...) {
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
     build_backtrace(p);
+    p->raising = true; /* the Error itself must not trip a heap quota (that would recurse) */
     ObjStruct *e = struct_new(p, &VM_ERROR_DEF);
     e->fields[ERRF_CODE].r = str_new(p, code, strlen(code));
     e->fields[ERRF_MESSAGE].r = str_new(p, msg, strlen(msg));
     e->fields[ERRF_TRACE].r = str_new(p, p->backtrace.s ? p->backtrace.s : "", p->backtrace.n);
+    p->raising = false;
     proc_throw(p, &e->h);
 }
 
@@ -190,23 +220,33 @@ void proc_pop_frame(Process *p) {
     for (int b = 0; b < NBANKS; b++) p->rtop[b] = fr->base[b];
 }
 
-bool proc_run_main(Process *p, Function *fn) {
+void proc_backtrace(Process *p) { build_backtrace(p); }
+
+int proc_run_slice(Process *p, uint32_t budget) {
     jmp_buf jb;
+    if (p->insns >= p->quota[QUOTA_INSNS]) { /* a hard CPU limit: not catchable */
+        snprintf(p->err.code, sizeof p->err.code, "E_QUOTA");
+        snprintf(p->err.msg, sizeof p->err.msg, "instruction quota of %llu exceeded",
+                 (unsigned long long)p->quota[QUOTA_INSNS]);
+        build_backtrace(p);
+        return SLICE_FAILED;
+    }
+    uint64_t left = p->quota[QUOTA_INSNS] - p->insns;
+    if (left < budget) budget = (uint32_t)left;
     p->jb = &jb;
-    p->state = PROC_RUNNING;
-    if (setjmp(jb)) goto raised; /* every throw and trap lands here */
-    proc_push_frame(p, fn, NULL);
-resume:
-    interp_run(p);
-    p->state = PROC_DONE;
+    if (setjmp(jb)) { /* every throw and trap lands here */
+        p->jb = NULL;
+        if (p->vm->pending_spawn) { /* spawn trapped while copying arguments */
+            proc_free(p->vm->pending_spawn);
+            p->vm->pending_spawn = NULL;
+        }
+        if (unwind(p)) return SLICE_YIELD; /* continue at the handler next turn */
+        describe_uncaught(p);
+        return SLICE_FAILED;
+    }
+    int r = interp_run(p, budget);
     p->jb = NULL;
-    return true;
-raised:
-    if (unwind(p)) goto resume;
-    describe_uncaught(p);
-    p->state = PROC_FAILED;
-    p->jb = NULL;
-    return false;
+    return r;
 }
 
 /* ---- memory ------------------------------------------------------------------ */
@@ -231,9 +271,15 @@ Segment *proc_segment(Process *p, uint64_t ptr) {
     return s;
 }
 
+static void raw_quota(Process *p, uint64_t more) {
+    if (p->raw_bytes + more > p->quota[QUOTA_RAW])
+        vm_trap(p, "E_QUOTA", "raw memory quota of %llu bytes exceeded", (unsigned long long)p->quota[QUOTA_RAW]);
+}
+
 uint64_t proc_alloc(Process *p, int64_t size) {
     if (size < 0 || size > (int64_t)UINT32_MAX)
         vm_trap(p, "E_BAD_ALLOC", "cannot allocate %lld bytes", (long long)size);
+    raw_quota(p, (uint64_t)size);
     uint32_t idx;
     if (p->rawfree.n) {
         idx = p->rawfree.v[--p->rawfree.n];
@@ -285,6 +331,7 @@ uint64_t proc_realloc(Process *p, uint64_t ptr, int64_t size) {
     if (size < 0 || size > (int64_t)UINT32_MAX)
         vm_trap(p, "E_BAD_ALLOC", "cannot allocate %lld bytes", (long long)size);
     Segment *s = raw_block(p, ptr, "realloc");
+    if ((uint32_t)size > s->size) raw_quota(p, (uint64_t)size - s->size);
     s->data = xrealloc(s->data, (size_t)size + 1);
     if ((uint32_t)size > s->size) memset(s->data + s->size, 0, (size_t)size - s->size);
     p->raw_bytes = p->raw_bytes - s->size + (uint64_t)size;

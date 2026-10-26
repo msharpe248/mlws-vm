@@ -193,3 +193,20 @@ which preserves the type tag of a stack or global word.
 |---|---|---|---|---|
 | `0x00E0` | `throw` | `?` | - | Raise an exception: any non-null reference, often an Error struct (`new R0, Error`). Control passes to the handler of the innermost enclosing .try region in this function or a caller, and frames without a handler are unwound. An uncaught exception ends the process. To rethrow, throw the caught value again. |
 | `0x00E1` | `catch` | `?` | - | At the start of a handler: dst = the exception being handled. Runtime faults arrive as Error structs whose code field holds the error code (e.g. "E_DIV_ZERO"). |
+
+## Processes
+
+| Opcode | Mnemonic | Operands | Types | Description |
+|---|---|---|---|---|
+| `0x0100` | `spawn` | `func (args...) -> (results...)` | - | Start a new process running a function: `spawn worker (a, b) -> (I0)` puts the new process id in I0. Arguments are copied into the new process; references are deep-copied, and pointers cannot be passed. The new process inherits this process's quotas and starts at its next turn. |
+| `0x0101` | `send` | `int, val` | int float r p | `send pid, value`: append a copy of value to the mailbox of process pid. References are deep-copied, preserving sharing and cycles. Sending to a finished process does nothing. Traps E_QUOTA if the receiver's mailbox is full and E_TYPE for a pointer. |
+| `0x0102` | `recv` | `dst` | int float r p | Take the oldest message from this process's mailbox, waiting until one arrives. The message keeps its type (as list elements do). Traps E_DEADLOCK if every process is waiting and none can ever send. |
+| `0x0103` | `recvt` | `dst, int, label` | int float r p | `recvt dst, ms, Ltimeout`: like recv, but if no message arrives within ms milliseconds, jump to Ltimeout instead. ms = 0 polls. |
+| `0x0104` | `yield` | `-` | - | Give the rest of this time slice to other processes. |
+| `0x0105` | `sleep` | `int` | - | Suspend this process for at least the given number of milliseconds. |
+| `0x0106` | `kill` | `int` | - | Terminate a process with error E_KILLED (as a failure, so links and monitors are notified). Killing a finished or unknown process does nothing; killing yourself ends this process. |
+| `0x0107` | `link` | `int` | - | Link this process and another. If either fails (an uncaught exception, kill or quota), the other is killed with E_LINKED. Normal exits do not propagate. |
+| `0x0108` | `monitor` | `int` | - | Watch a process. When it ends, this process receives a Down struct message with fields pid, exit (exit code), and code/message (null for a normal exit). Monitoring a finished or unknown process delivers a Down message immediately, with code E_NOPROC. |
+| `0x0109` | `alive` | `bool_dst, int` | - | dst = true if the process exists and has not finished. |
+| `0x010A` | `quota` | `n, int` | - | `quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed. Processes it spawns inherit its limits. Exceeding a limit traps E_QUOTA. |
+| `0x010B` | `mlen` | `?` | - | dst = the number of messages waiting in this process's mailbox. |

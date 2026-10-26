@@ -1,0 +1,19 @@
+; Each process has its own copy of every module's globals, its own stack and
+; its own heap.
+.include "std/test.inc"
+counter: .i64 100
+.func bump(i64 parent)
+    add @counter, 1
+    send parent, @counter
+    ret
+.endf
+.func main
+    spawn bump (PID)
+    recv I0
+    ASSERT_EQ I0, 101                  ; the child saw its own fresh copy
+    ASSERT_EQ @counter, 100            ; ours is untouched
+    spawn bump (PID)
+    recv I0
+    ASSERT_EQ I0, 101                  ; and so did the next child
+    ret 0
+.endf

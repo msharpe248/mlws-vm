@@ -95,6 +95,23 @@ static bool verify_function(LModule *lm, Function *f, MlwsError *err) {
                     if (!check_operand(&in->ops[2 + argc + k], 2 + argc + k, (MlwsType)cm->rets[k], true, &ce))
                         return verr(err, lm, f, pc, "result %d of call to %s: %s", k + 1, callee->name, ce.msg);
             }
+        } else if (in->op == OP_SPAWN) {
+            const Function *callee = in->ops[0].rv.ptr;
+            const MFunc *cm = callee->mf;
+            int argc = (int)in->ops[1].imm;
+            if (argc != cm->nparams)
+                return verr(err, lm, f, pc, "spawn of %s passes %d argument(s); it takes %d", callee->name, argc,
+                            cm->nparams);
+            for (int k = 0; k < argc; k++) {
+                if (cm->params[k] == T_P)
+                    return verr(err, lm, f, pc, "spawn of %s: pointer parameters cannot cross processes", callee->name);
+                if (!check_operand(&in->ops[2 + k], 2 + k, (MlwsType)cm->params[k], false, &ce))
+                    return verr(err, lm, f, pc, "argument %d of spawn %s: %s", k + 1, callee->name, ce.msg);
+            }
+            int nres = in->nops - 2 - argc;
+            if (nres > 1) return verr(err, lm, f, pc, "spawn has one result: the new process id");
+            if (nres == 1 && !check_operand(&in->ops[2 + argc], 2 + argc, T_I64, true, &ce))
+                return verr(err, lm, f, pc, "spawn result: %s", ce.msg);
         } else if (in->op == OP_NCALL) {
             const NativeDef *nd = in->ops[0].rv.ptr;
             int argc = (int)in->ops[1].imm;

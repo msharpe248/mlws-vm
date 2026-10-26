@@ -244,6 +244,29 @@ bad:
 * Handlers are tables beside the code, so a `.try` costs nothing until something
   is thrown. Unwinding rules are in [ABI.md §7](ABI.md#7-exceptions-and-traps).
 
+### 5.4 Processes
+
+```asm
+.func worker(i64 parent, i64 n)
+    mul I2, n, n
+    send parent, I2          ; reply to whoever spawned us
+    ret
+.endf
+
+.func main
+    spawn worker (PID, 7) -> (I0)   ; a new process; I0 = its pid
+    monitor I0               ; we'll get a Down message when it ends
+    recv I1                  ; 49
+    recv R0                  ; the Down struct: R0->Down.exit, R0->Down.code
+    ret 0
+.endf
+```
+
+Processes are isolated: they share no memory and talk only by messages, which
+are deep-copied. Scheduling, links, monitors, timeouts and quotas are described in
+[ABI.md §1](ABI.md#1-processes), and the instructions in the "Processes" section of
+[ISA.md](ISA.md). `PID` is the current process's id.
+
 ## 6. Data (module globals)
 
 Data directives outside functions append to the module's **global segment**. Each

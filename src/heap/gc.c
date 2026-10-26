@@ -24,10 +24,24 @@ size_t obj_footprint(const Obj *o) {
     }
 }
 
+/* Next collection threshold: twice the live heap, at least the minimum, and
+ * early enough to reclaim garbage before a heap quota is hit. */
+static uint64_t gc_threshold(Process *p, uint64_t live) {
+    uint64_t min = p->vm->gc_min_threshold ? p->vm->gc_min_threshold : GC_MIN_THRESHOLD;
+    uint64_t t = live * 2 > min ? live * 2 : min;
+    uint64_t q = p->quota[QUOTA_HEAP];
+    if (q != UINT64_MAX && t > q / 4 * 3) t = q / 4 * 3;
+    return t;
+}
+
 void gc_account(Process *p, int64_t delta) {
     p->heap_bytes = (uint64_t)((int64_t)p->heap_bytes + delta);
     if (p->heap_bytes > p->heap_peak) p->heap_peak = p->heap_bytes;
     if (p->heap_bytes >= p->next_gc || p->vm->gc_stress) p->gc_pending = true;
+    /* Only the running process can trap; copies into other processes' heaps
+     * (messages) are counted and caught at the receiver's next allocation. */
+    if (delta > 0 && p->heap_bytes > p->quota[QUOTA_HEAP] && p == p->vm->current && !p->raising)
+        vm_trap(p, "E_QUOTA", "heap quota of %llu bytes exceeded", (unsigned long long)p->quota[QUOTA_HEAP]);
 }
 
 Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
@@ -36,7 +50,7 @@ Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
     o->next = p->heap;
     p->heap = o;
     p->objects_allocated++;
-    if (!p->next_gc) p->next_gc = p->vm->gc_min_threshold ? p->vm->gc_min_threshold : GC_MIN_THRESHOLD;
+    if (!p->next_gc) p->next_gc = gc_threshold(p, 0);
     gc_account(p, (int64_t)size);
     return o;
 }
@@ -116,6 +130,8 @@ void gc_collect(Process *p) {
     for (uint32_t i = 0; i < p->nglobals; i++) mark_segment(p, &p->globals[i], 0);
     for (size_t i = 0; i < p->handles.n; i++) mark(p, p->handles.v[i]);
     mark(p, p->exception);
+    for (size_t i = p->mbox_head; i < p->mbox.n; i++)
+        if (p->mbox.v[i].tag == T_R) mark(p, p->mbox.v[i].v.r);
     while (p->markstack.n) scan(p, p->markstack.v[--p->markstack.n]);
     Obj **pp = &p->heap;
     while (*pp) {
@@ -129,8 +145,7 @@ void gc_collect(Process *p) {
             p->gc_freed_objects++;
         }
     }
-    uint64_t min = p->vm->gc_min_threshold ? p->vm->gc_min_threshold : GC_MIN_THRESHOLD;
-    p->next_gc = p->heap_bytes * 2 > min ? p->heap_bytes * 2 : min;
+    p->next_gc = gc_threshold(p, p->heap_bytes);
     p->gc_pending = false;
     p->gc_count++;
     p->gc_ns += plat_now_ns() - t0;

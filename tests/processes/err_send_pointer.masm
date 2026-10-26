@@ -1,0 +1,7 @@
+; Raw pointers are process-local and cannot be sent.
+; expect-error: E_TYPE
+.func main
+    alloc P0, 8
+    send PID, P0
+    ret 0
+.endf

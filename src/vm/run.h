@@ -17,6 +17,7 @@ typedef struct {
     uint64_t stack_peak_bytes;
     uint32_t max_depth;
     uint64_t heap_peak, heap_live, gc_count, gc_ns, objects_allocated, objects_freed;
+    uint64_t spawned, max_live, slices, total_insns; /* all processes */
 } RunResult;
 
 bool vm_run_file(VM *vm, const char *path, RunResult *res);

@@ -66,4 +66,9 @@ status 70.
 | `E_RET_COUNT` | A caller expects more results than the callee returned |
 | `E_ASSERT` | `assert` failed, or `test.fail` was called (as the `std/test.inc` macros do) |
 | `E_UNCAUGHT` | An exception that is not an `Error` struct (e.g. `throw "text"`) was not caught |
+| `E_DEADLOCK` | `recv` in `main` while every process is waiting, so no message can ever arrive |
+| `E_QUOTA` | A heap, raw-memory or mailbox quota was exceeded (catchable), or the instruction quota (the process is stopped) |
+| `E_KILLED` | The process was killed with `kill` |
+| `E_LINKED` | A process linked to this one failed |
+| `E_NOPROC` | `link` to a process that does not exist or has finished |
 | `E_INTERNAL` | A VM bug. Please report it |

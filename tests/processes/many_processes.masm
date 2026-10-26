@@ -1,0 +1,25 @@
+; Spawn 2000 processes; each computes a value and reports it. Finished
+; processes are reclaimed immediately.
+.include "std/test.inc"
+.func worker(i64 parent, i64 n)
+    mul I2, n, n
+    send parent, I2
+    ret
+.endf
+.func main
+    mov I0, 0
+1:  spawn worker (PID, I0)
+    inc I0
+    blt I0, 2000, 1b
+    mov I1, 0                          ; sum of squares 0..1999
+    mov I0, 0
+2:  recv I2
+    add I1, I2
+    inc I0
+    blt I0, 2000, 2b
+    ASSERT_EQ I1, 2664667000
+    yield                              ; let the last workers finish
+    ncall "proc.count" () -> (I3)
+    ASSERT_EQ I3, 1
+    ret 0
+.endf

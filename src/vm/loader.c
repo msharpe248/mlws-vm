@@ -164,9 +164,10 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
     for (uint32_t i = 0; i < m->nstructs; i++) {
         const MStruct *st = &m->structs[i];
         if (st->flags & MSF_BUILTIN) {
-            if (strcmp(st->name, "Error") != 0)
+            int bi = builtin_struct_find(st->name);
+            if (bi < 0)
                 return mlws_err(err, "E_LINK_UNDEF", "module %s uses unknown built-in struct '%s'", m->name, st->name);
-            lm->structs[i] = &VM_ERROR_DEF;
+            lm->structs[i] = &VM_BUILTIN_DEFS[bi];
             continue;
         }
         if (!(st->flags & MSF_IMPORT)) {

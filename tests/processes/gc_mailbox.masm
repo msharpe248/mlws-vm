@@ -1,0 +1,28 @@
+; Messages waiting in a mailbox are GC roots of the receiving process.
+.include "std/test.inc"
+.func collector(i64 parent, i64 n)
+    sleep 5                            ; let messages pile up first
+    ncall "gc.collect" ()
+    nop
+    mov I2, 0
+    mov I3, 0
+1:  recv R0
+    len I4, R0
+    add I3, I4
+    inc I2
+    blt I2, n, 1b
+    send parent, I3
+    ret
+.endf
+.func main
+    spawn collector (PID, 300) -> (I0)
+    mov I1, 0
+1:  tostr R0, I1
+    strcat R1, "message-", R0
+    send I0, R1
+    inc I1
+    blt I1, 300, 1b
+    recv I2
+    ASSERT_EQ I2, 3190                 ; total length of "message-0" .. "message-299"
+    ret 0
+.endf

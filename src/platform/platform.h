@@ -14,6 +14,7 @@ bool plat_is_dir(const char *path);
 bool plat_list_dir(const char *path, char ***names, size_t *n);
 /* Monotonic clock in nanoseconds. */
 uint64_t plat_now_ns(void);
+void plat_sleep_ns(uint64_t ns);
 /* Absolute path of the running executable (malloc'd), or NULL. */
 char *plat_exe_path(const char *argv0);
 /* Path list separator for MLWSVM_PATH (':' on POSIX, ';' on Windows). */

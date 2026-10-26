@@ -1,0 +1,46 @@
+; monitor delivers a Down message when the watched process ends: normal exits
+; carry the exit code, failures the error code and message.
+.include "std/test.inc"
+.func ok -> i64
+    ret 7
+.endf
+.func boom
+    anew.i64 R0, 1
+    mov R0[3], 1
+    ret
+.endf
+.func wait_forever
+    recv I0
+    ret
+.endf
+.func main
+    spawn ok -> (I0)
+    monitor I0
+    recv R0
+    ASSERT_EQ R0->Down.pid, I0
+    ASSERT_EQ R0->Down.exit, 7
+    ASSERT_FALSE R0->Down.code, r       ; null: a normal exit
+
+    spawn boom -> (I1)
+    monitor I1
+    recv R1
+    strcmp I2, R1->Down.code, "E_BOUNDS"
+    ASSERT_EQ I2, 0
+
+    spawn wait_forever -> (I3)
+    monitor I3
+    alive I4, I3
+    ASSERT_TRUE I4
+    kill I3
+    alive I4, I3
+    ASSERT_FALSE I4
+    recv R2
+    strcmp I2, R2->Down.code, "E_KILLED"
+    ASSERT_EQ I2, 0
+
+    monitor 9999                       ; no such process: Down arrives at once
+    recv R3
+    strcmp I2, R3->Down.code, "E_NOPROC"
+    ASSERT_EQ I2, 0
+    ret 0
+.endf

@@ -47,8 +47,9 @@ static void bytes_reserve(Process *p, ObjBytes *b, uint64_t need) {
     if (nc >= (uint64_t)MAX_ELEMS) nc = (uint64_t)MAX_ELEMS - 1;
     b->data = xrealloc(b->data, (size_t)nc);
     memset(b->data + b->cap, 0, (size_t)(nc - b->cap));
-    gc_account(p, (int64_t)(nc - b->cap));
-    b->cap = (uint32_t)nc;
+    uint64_t grown = nc - b->cap;
+    b->cap = (uint32_t)nc; /* consistent before accounting, which may trap E_QUOTA */
+    gc_account(p, (int64_t)grown);
 }
 
 void bytes_append(Process *p, ObjBytes *b, const void *data, size_t n) {
@@ -109,8 +110,9 @@ static void list_reserve(Process *p, ObjList *l, uint64_t need) {
     l->tags = xrealloc(l->tags, (size_t)nc);
     memset(l->items + l->cap, 0, (size_t)(nc - l->cap) * sizeof(Word));
     memset(l->tags + l->cap, 0, (size_t)(nc - l->cap));
-    gc_account(p, (int64_t)(nc - l->cap) * (int64_t)(sizeof(Word) + 1));
-    l->cap = (uint32_t)nc;
+    uint64_t grown = nc - l->cap;
+    l->cap = (uint32_t)nc; /* consistent before accounting, which may trap E_QUOTA */
+    gc_account(p, (int64_t)grown * (int64_t)(sizeof(Word) + 1));
 }
 
 void list_push(Process *p, ObjList *l, Word v, uint8_t tag) {

@@ -122,6 +122,9 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         StrBuf out = {0};
         vm->out = capture;
         vm->out_ctx = &out;
+        StrBuf errs = {0}; /* crash reports of unobserved child processes */
+        vm->err_out = capture;
+        vm->err_ctx = &errs;
         char *dir = path_dirname(path);
         vm_add_libpath(vm, dir);
         free(dir);
@@ -153,6 +156,7 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         }
         sb_free(&why);
         sb_free(&out);
+        sb_free(&errs);
         sb_free(&e.stdout_want);
         run_result_free(&r);
         vm_free(vm);

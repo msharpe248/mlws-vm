@@ -1,0 +1,30 @@
+; recvt waits up to a timeout; sleep suspends a process; the scheduler idles
+; while only timers are pending.
+; expect-stdout: timed out
+; expect-stdout: polled
+; expect-stdout: fast
+; expect-stdout: slow
+.include "std/test.inc"
+.include "std/io.inc"
+.func later(i64 parent, i64 ms, ref tag)
+    sleep ms
+    send parent, tag
+    ret
+.endf
+.func main
+    recvt I0, 10, 1f
+    FAIL "no message was sent"
+1:  PRINTLN_S "timed out"
+    recvt I0, 0, 2f                    ; 0 ms: poll
+    FAIL "poll"
+2:  PRINTLN_S "polled"
+    spawn later (PID, 80, "slow")
+    spawn later (PID, 5, "fast")
+    recv R0
+    PRINTLN_S R0
+    recvt R1, 5000, 3f                 ; arrives well before the timeout
+    PRINTLN_S R1
+    ret 0
+3:  FAIL "timed out waiting for slow"
+    ret 1
+.endf

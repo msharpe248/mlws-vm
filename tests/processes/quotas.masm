@@ -1,0 +1,58 @@
+; quota lowers a process's own limits; children inherit them. Heap and
+; mailbox limits raise catchable E_QUOTA; the instruction limit kills.
+.include "std/test.inc"
+
+.const HEAP = 0
+.const MAILBOX = 2
+.const INSNS = 3
+
+.func hog
+    quota HEAP, 100000
+    lnew R0
+.try h
+1:  lpush R0, "xxxxxxxxxxxxxxxx"       ; grows until the quota stops it
+    jmp 1b
+.endtry
+h:  catch R1
+    strcmp I0, R1->Error.code, "E_QUOTA"
+    ret I0
+.endf
+
+.func spin
+    quota INSNS, 50000
+1:  jmp 1b
+.endf
+
+.func sleeper
+    recv I0
+    ret
+.endf
+
+.func main
+    spawn hog -> (I0)
+    monitor I0
+    recv R0
+    ASSERT_EQ R0->Down.exit, 0         ; hog caught its E_QUOTA and exited normally
+
+    spawn spin -> (I1)
+    monitor I1
+    recv R1
+    strcmp I2, R1->Down.code, "E_QUOTA"
+    ASSERT_EQ I2, 0
+
+    spawn sleeper -> (I3)              ; give it a 3-message mailbox
+    quota MAILBOX, 3                   ; (ours; inherited by later children)
+    spawn sleeper -> (I4)
+    send I4, 1
+    send I4, 2
+    send I4, 3
+.try full
+    send I4, 4
+.endtry
+    FAIL "mailbox should be full"
+full:
+    catch R2
+    strcmp I5, R2->Error.code, "E_QUOTA"
+    ASSERT_EQ I5, 0
+    ret 0
+.endf

@@ -195,7 +195,27 @@ throw MyError(...)                   new R0, MyError     ; any struct or value
   User exceptions can be anything, and uncaught non-`Error` values report
   `E_UNCAUGHT`.
 
-## 9. A complete translation
+## 9. Concurrency
+
+Processes give a source language actors, tasks or goroutine-style concurrency
+directly:
+
+| Source construct | MLWSVM |
+|---|---|
+| `spawn f(x)` / `go f(x)` / a new actor | `spawn f (x) -> (pid)` |
+| actor `send` / channel write to a known receiver | `send pid, value` (deep copy) |
+| actor `receive` / channel read | `recv dst`, or `recvt dst, ms, Ltimeout` |
+| `await task` | `monitor pid` then `recv` the result message, then the `Down` |
+| a supervisor | `monitor` (to observe) or `link` (to fail together) |
+| a sandbox | spawn a wrapper that executes `quota` and then calls the real code |
+
+* Messages are values, not shared objects. For a request/reply protocol, send a
+  small struct or list that includes the reply-to pid (`PID`).
+* For selective receive (Erlang `receive` with patterns), loop on `recv`, inspecting
+  each message with `isa` / `typeof`, and keep the ones you don't want yet in a list.
+* `examples/workers.masm` shows a supervised worker pool.
+
+## 10. A complete translation
 
 `examples/translation.masm` (run by `make test`) translates this program:
 
@@ -250,7 +270,7 @@ end:
 .endf
 ```
 
-## 10. Debugging generated code
+## 11. Debugging generated code
 
 | Tool | Use |
 |---|---|
@@ -262,16 +282,15 @@ end:
 Every error has a stable code ([ERRORS.md](ERRORS.md)), so compiler tests can assert
 on them.
 
-## 11. Stability and what is coming
+## 12. Stability and what is coming
 
 These are stable and safe to target now: the assembly syntax, the operand forms,
 the opcode numbers, the calling convention, the heap object model (M4),
-exceptions (M5) and the `.mlwso` layout. These are
+exceptions (M5), processes (M6) and the `.mlwso` layout. These are
 planned, and will only be *additions*:
 
 | Milestone | Adds |
 |---|---|
-| M6 | Processes: `spawn`, `send`, `recv`, `link`, `monitor`, quotas |
 | M7 | Tooling: `mlwsvm top`, `mlwsvm debug`, `--trace`, `--profile`, web dashboard |
 | M8 | Closures, BigInt (`.big`), decimal (`.dec`) |
 | M9 | Performance: computed-goto dispatch, multi-threaded scheduler, generational GC |

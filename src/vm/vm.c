@@ -18,12 +18,26 @@ ObjString *str_new_immortal(const char *s, size_t len) {
     return o;
 }
 
+static void builtins_init(void) {
+    for (int i = 0; i < BUILTIN__COUNT; i++) {
+        const BuiltinStruct *b = &BUILTIN_STRUCTS[i];
+        VM_BUILTIN_DEFS[i].name = b->name;
+        VM_BUILTIN_DEFS[i].module = "(builtin)";
+        VM_BUILTIN_DEFS[i].nfields = b->nfields;
+        VM_BUILTIN_DEFS[i].fields = (char **)b->fields;
+        VM_BUILTIN_DEFS[i].types = (uint8_t *)b->types;
+    }
+}
+
 VM *vm_new(void) {
+    builtins_init();
     VM *vm = xcalloc(1, sizeof *vm);
     vm->out = default_out;
     vm->stack_words = 128 * 1024; /* 1 MiB data stack per process */
     vm->max_frames = 100000;
     vm->next_pid = 1;
+    vm->slice_insns = 2000;
+    for (int i = 0; i < QUOTA__COUNT; i++) vm->default_quota[i] = UINT64_MAX;
     const char *stress = getenv("MLWSVM_GC_STRESS");
     vm->gc_stress = stress && *stress && strcmp(stress, "0") != 0;
     op_init();
@@ -64,6 +78,11 @@ void vm_free(VM *vm) {
     VEC_FREE(vm->libpaths);
     for (size_t i = 0; i < vm->loading.n; i++) free(vm->loading.v[i]);
     VEC_FREE(vm->loading);
+    for (size_t i = 0; i < vm->procs.n; i++) proc_free(vm->procs.v[i]);
+    VEC_FREE(vm->procs);
+    VEC_FREE(vm->runq);
+    VEC_FREE(vm->timers);
+    copy_state_free(vm);
     smap_free(&vm->natives);
     free(vm);
 }

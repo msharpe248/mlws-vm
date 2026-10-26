@@ -48,6 +48,9 @@ base:
 * **Rich heap types with a garbage collector**: strings, byte buffers, typed
   arrays, structs declared in assembly (`R0->Point.x`), dynamically typed lists, and
   insertion-ordered maps. The collector is a precise, per-process mark-sweep.
+* **Many isolated processes**: preemptive scheduling, `spawn`/`send`/`recv` with
+  deep-copied messages, timeouts, Erlang-style `link`/`monitor` supervision, and
+  per-process quotas on heap, raw memory, mailbox size and CPU.
 * **Structured exceptions**: `.try` regions, `throw`/`catch`, and zero cost until
   something is thrown. Every runtime fault is catchable as an `Error`.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
@@ -114,7 +117,7 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M3 Libraries: imports/exports, library path, `lib/std` | done |
 | M4 GC heap: strings, byte buffers, arrays, structs, lists, maps, handles | done |
 | M5 Structured exceptions | done |
-| M6 Many concurrent isolated processes: scheduler, messages, quotas, accounting | next |
-| M7 Tooling: `mlwsvm top`, debugger, trace/profiler, web dashboard | planned |
+| M6 Many concurrent isolated processes: scheduler, messages, quotas, accounting | done |
+| M7 Tooling: `mlwsvm top`, debugger, trace/profiler, web dashboard | next |
 | M8 Closures, BigInt, decimal | planned |
 | M9 Performance: computed-goto dispatch, multi-threaded scheduler, generational GC | planned |

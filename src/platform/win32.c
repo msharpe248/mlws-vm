@@ -49,6 +49,8 @@ uint64_t plat_now_ns(void) {
     return (uint64_t)(c.QuadPart * 1000000000.0 / (double)freq.QuadPart);
 }
 
+void plat_sleep_ns(uint64_t ns) { Sleep((DWORD)((ns + 999999) / 1000000)); }
+
 char *plat_exe_path(const char *argv0) {
     char buf[MAX_PATH];
     DWORD n = GetModuleFileNameA(NULL, buf, sizeof buf);

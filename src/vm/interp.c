@@ -9,6 +9,7 @@
 #include <math.h>
 
 #include "../heap/heap.h"
+#include "../platform/platform.h"
 #include "proc_internal.h"
 
 typedef struct {
@@ -812,25 +813,55 @@ static void bind_args(Ctx *c, const MlwsType *types, const uint8_t *ptypes, int 
 
 /* ---- main loop ---------------------------------------------------------------- */
 
-void interp_run(Process *p) {
+/* Message at the head of the mailbox, as a tagged slot location. */
+static Loc mbox_loc(Message *m) {
+    Loc L;
+    memset(&L, 0, sizeof L);
+    L.is_reg = LK_SLOT;
+    L.slot = &m->v;
+    L.tag = &m->tag;
+    return L;
+}
+
+static void mbox_take(Process *p) {
+    p->mbox_head++;
+    p->msgs_received++;
+    if (p->mbox_head == p->mbox.n) {
+        p->mbox_head = p->mbox.n = 0;
+    } else if (p->mbox_head > 64 && p->mbox_head * 2 > p->mbox.n) {
+        memmove(p->mbox.v, p->mbox.v + p->mbox_head, (p->mbox.n - p->mbox_head) * sizeof(Message));
+        p->mbox.n -= p->mbox_head;
+        p->mbox_head = 0;
+    }
+}
+
+int interp_run(Process *p, uint32_t budget) {
     Ctx c;
+    VM *vm = p->vm;
     c.p = p;
     ctx_load(&c);
     for (;;) {
+        if (budget-- == 0) return SLICE_YIELD; /* time slice used up */
+        /* Safepoint: between instructions every live reference is in a root. */
+        if (p->gc_pending | p->kill_pending) {
+            if (p->kill_pending) {
+                proc_backtrace(p);
+                return SLICE_FAILED;
+            }
+            gc_collect(p);
+        }
         Frame *fr = c.fr;
         const Insn *in = &fr->fn->code[fr->pc++];
         const Operand *ops = in->ops;
         MlwsType T = (MlwsType)in->type;
         p->insns++;
-        /* GC safepoint: between instructions every live reference is in a root. */
-        if (p->gc_pending) gc_collect(p);
         switch ((Opcode)in->op) {
         case OP_NOP:
         case OP_BREAK:
             break;
         case OP_HALT:
             p->exit_code = in->nops ? rd(&c, &ops[0], T_I64).i : 0;
-            return;
+            return SLICE_DONE;
         case OP_ASSERT:
             if (rd(&c, &ops[0], T_I64).i == 0)
                 vm_trap(p, "E_ASSERT", "%s", in->nops > 1 ? ((ObjString *)ops[1].rv.ptr)->data : "assertion failed");
@@ -1012,7 +1043,7 @@ void interp_run(Process *p) {
             proc_pop_frame(p);
             if (p->nframes == 0) {
                 p->exit_code = in->nops > 0 && type_is_int(vt[0]) ? vals[0].i : 0;
-                return;
+                return SLICE_DONE;
             }
             ctx_load(&c);
             if (ri) {
@@ -1328,6 +1359,126 @@ void interp_run(Process *p) {
         }
         case OP_CATCH:
             wr_ref(&c, &ops[0], p->exception);
+            break;
+
+        /* ---- processes ---- */
+        case OP_SPAWN: {
+            Function *fn = ops[0].rv.ptr;
+            int argc = (int)ops[1].imm;
+            Word args[MAX_OPERANDS];
+            for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)fn->mf->params[k]);
+            Process *child = proc_new(vm);
+            memcpy(child->quota, p->quota, sizeof child->quota);
+            vm->pending_spawn = child; /* freed by proc_run_slice if a copy traps */
+            for (int k = 0; k < argc; k++) args[k] = msg_copy(p, child, args[k], fn->mf->params[k]);
+            vm->pending_spawn = NULL;
+            proc_start(child, fn, args, argc);
+            if (in->nops > 2 + argc) wr_int(&c, &ops[2 + argc], T_I64, (int64_t)child->pid);
+            break;
+        }
+        case OP_SEND: {
+            int64_t pid = rd(&c, &ops[0], T_I64).i;
+            MlwsType t = T;
+            Word v = rdn(&c, &ops[1], &t);
+            if (t == T_P) vm_trap(p, "E_TYPE", "pointers cannot be sent to another process (they are process-local)");
+            Process *to = vm_process(vm, (uint64_t)pid);
+            p->msgs_sent++;
+            if (!to) break; /* finished or unknown: dropped */
+            if (to->mbox.n - to->mbox_head >= to->quota[QUOTA_MAILBOX])
+                vm_trap(p, "E_QUOTA", "mailbox of process %lld is full", (long long)pid);
+            Message m;
+            m.v = msg_copy(p, to, v, (uint8_t)t);
+            m.tag = (uint8_t)t;
+            VEC_PUSH(to->mbox, m);
+            if (to->state == PROC_WAITING) sched_ready(vm, to);
+            break;
+        }
+        case OP_RECV:
+        case OP_RECVT: {
+            if (p->mbox_head < p->mbox.n) {
+                MlwsType t = T;
+                if (t == T_NONE && ops[0].mode == OM_REG) t = reg_natural_type(ops[0].reg);
+                Loc L = mbox_loc(&p->mbox.v[p->mbox_head]);
+                Word v = slot_read(&c, &L, &t); /* a type mismatch traps and leaves the message */
+                mbox_take(p);
+                p->deadline_set = false;
+                wr(&c, &ops[0], t, v);
+                break;
+            }
+            if (in->op == OP_RECVT) {
+                uint64_t now = plat_now_ns();
+                if (p->deadline_set) {
+                    if (now >= p->wake_at) { /* timed out */
+                        p->deadline_set = false;
+                        fr->pc = ops[2].rv.target;
+                        break;
+                    }
+                } else {
+                    int64_t ms = rd(&c, &ops[1], T_I64).i;
+                    if (ms <= 0) { /* poll */
+                        fr->pc = ops[2].rv.target;
+                        break;
+                    }
+                    p->deadline_set = true;
+                    p->wake_at = now + (uint64_t)ms * 1000000u;
+                }
+            } else if (p->deadlock) {
+                p->deadlock = false;
+                vm_trap(p, "E_DEADLOCK", "every process is waiting: no message can ever arrive");
+            }
+            fr->pc--; /* re-execute this receive when woken */
+            p->insns--;
+            return SLICE_BLOCK;
+        }
+        case OP_YIELD:
+            return SLICE_YIELD;
+        case OP_SLEEP: {
+            int64_t ms = rd(&c, &ops[0], T_I64).i;
+            if (ms <= 0) return SLICE_YIELD;
+            p->wake_at = plat_now_ns() + (uint64_t)ms * 1000000u;
+            return SLICE_SLEEP;
+        }
+        case OP_KILL: {
+            int64_t pid = rd(&c, &ops[0], T_I64).i;
+            Process *target = vm_process(vm, (uint64_t)pid);
+            char msg[96];
+            snprintf(msg, sizeof msg, "killed by process %llu", (unsigned long long)p->pid);
+            sched_kill(vm, target, "E_KILLED", msg);
+            break; /* killing ourselves (or a linked chain back to us) stops at the next instruction */
+        }
+        case OP_LINK: {
+            int64_t pid = rd(&c, &ops[0], T_I64).i;
+            Process *target = vm_process(vm, (uint64_t)pid);
+            if (!target) vm_trap(p, "E_NOPROC", "link to process %lld, which does not exist or has finished", (long long)pid);
+            if (target == p) break;
+            bool have = false;
+            for (size_t i = 0; i < p->links.n; i++) have = have || p->links.v[i] == target->pid;
+            if (!have) {
+                VEC_PUSH(p->links, target->pid);
+                VEC_PUSH(target->links, p->pid);
+            }
+            break;
+        }
+        case OP_MONITOR: {
+            int64_t pid = rd(&c, &ops[0], T_I64).i;
+            Process *target = vm_process(vm, (uint64_t)pid);
+            if (target) VEC_PUSH(target->monitors, p->pid);
+            else sched_down_noproc(vm, p, (uint64_t)pid);
+            break;
+        }
+        case OP_ALIVE:
+            wr_int(&c, &ops[0], T_B, vm_process(vm, (uint64_t)rd(&c, &ops[1], T_I64).i) != NULL);
+            break;
+        case OP_QUOTA: {
+            int64_t kind = ops[0].imm, limit = rd(&c, &ops[1], T_I64).i;
+            if (kind >= QUOTA__COUNT) vm_trap(p, "E_QUOTA", "unknown quota kind %lld", (long long)kind);
+            if (limit < 0) vm_trap(p, "E_QUOTA", "a quota cannot be negative");
+            if ((uint64_t)limit < p->quota[kind]) p->quota[kind] = (uint64_t)limit; /* only ever lowered */
+            if (kind == QUOTA_HEAP) p->next_gc = 0, p->gc_pending = true;   /* re-derive the GC threshold */
+            break;
+        }
+        case OP_MLEN:
+            wr_int(&c, &ops[0], T_I64, (int64_t)(p->mbox.n - p->mbox_head));
             break;
 
         case OP__COUNT:

@@ -51,6 +51,11 @@ uint64_t plat_now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+void plat_sleep_ns(uint64_t ns) {
+    struct timespec ts = {(time_t)(ns / 1000000000ull), (long)(ns % 1000000000ull)};
+    while (nanosleep(&ts, &ts) != 0) {}
+}
+
 char *plat_exe_path(const char *argv0) {
 #ifdef __APPLE__
     char buf[PATH_MAX];

@@ -25,6 +25,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `gc.collect` | - | - | Request a garbage collection; it runs before the next instruction. |
 | `gc.heap_bytes` | - | i64 | Bytes currently allocated on this process's heap (live and not yet collected). |
 | `gc.collections` | - | i64 | Number of garbage collections so far in this process. |
+| `proc.count` | - | i64 | Number of processes currently alive in the VM (including this one). |
 | `math.sin` | f64 | f64 | Sine (radians). |
 | `math.cos` | f64 | f64 | Cosine (radians). |
 | `math.tan` | f64 | f64 | Tangent (radians). |

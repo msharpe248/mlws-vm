@@ -1,0 +1,31 @@
+; Scheduling is preemptive: a process stuck in an infinite loop does not stop
+; others from running. The program ends when main returns, even though the
+; spinner never would.
+; expect-stdout: pong 1
+; expect-stdout: pong 2
+; expect-stdout: pong 3
+.include "std/io.inc"
+.func spinner
+1:  jmp 1b
+.endf
+.func echo
+1:  recv R0
+    mov I0, R0[0]
+    mov I1, R0[1]
+    send I0, I1
+    jmp 1b
+.endf
+.func main
+    spawn spinner
+    spawn echo -> (I9)
+    mov I0, 1
+1:  lnew R0
+    lpush R0, PID, I0
+    send I9, R0
+    recv I1
+    PRINT_S "pong "
+    PRINTLN_I I1
+    inc I0
+    ble I0, 3, 1b
+    ret 0
+.endf

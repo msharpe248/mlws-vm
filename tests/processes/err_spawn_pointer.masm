@@ -1,0 +1,9 @@
+; expect-error: E_VERIFY
+.func f(ptr p)
+    ret
+.endf
+.func main
+    alloc P0, 8
+    spawn f (P0)
+    ret 0
+.endf

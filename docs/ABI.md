@@ -13,12 +13,75 @@ A program runs as a **process**. Each process owns:
 * its own copy of every loaded module's **global segment**
 * its own **raw heap** (blocks created with `alloc`)
 * its own **garbage-collected heap** (§6) and handle table
-* in a later milestone, its own mailbox
+* a **mailbox** of messages, and its **quotas** and statistics
 
 Processes share nothing mutable. Loaded code and constant-pool strings are
-immutable and shared. Milestone M6 adds the scheduler, so many processes run at
-once with `spawn`/`send`/`recv` and per-process resource accounting. Today
-`mlwsvm run` runs one process that executes `main`.
+immutable and shared. Everything else belongs to exactly one process.
+
+### 1.1 Scheduling
+
+* `mlwsvm run` starts `main` as process 1. More are started with
+  `spawn f (args) -> (pid)`. Process ids are positive and never reused.
+* Scheduling is **preemptive**. Each process runs for a time slice of 2,000
+  instructions, then the next ready process runs, round robin. A process in an
+  endless loop never starves the others.
+* A process that executes `recv` with an empty mailbox, or `sleep`, stops using
+  the CPU until a message or its timer arrives. When only timers are pending the
+  scheduler sleeps the OS thread.
+* The scheduler runs on one OS thread today. Milestone M9 spreads processes
+  across threads; because processes share nothing, programs won't need to change.
+* **The program ends when `main` ends.** Any processes still running are stopped,
+  and the exit code is `main`'s. If `main` waits in `recv` while every other process
+  is also waiting, so no message can ever arrive, `main` gets a catchable
+  `E_DEADLOCK`.
+
+### 1.2 Messages
+
+* `send pid, value` appends a copy of `value` to the receiver's mailbox, and
+  `recv dst` takes the oldest message (FIFO). `recvt dst, ms, Ltimeout` gives up
+  after a timeout, and `mlen` counts the waiting messages.
+* A message keeps its type, as a list element does: `send.f64` / `recv F0`, a string
+  received into an `R` register, and so on. Receiving into the wrong register bank
+  traps with `E_TYPE` and leaves the message in the mailbox.
+* References are **deep-copied** into the receiver's heap, preserving sharing and
+  cycles, so the sender and receiver never share a mutable object. Constant
+  strings are shared, since they are immutable. Raw pointers are process-local and
+  cannot be sent (`E_TYPE`). `spawn` arguments are copied the same way.
+* Sending to a finished or unknown process silently does nothing.
+
+### 1.3 Failure: links and monitors
+
+A process **fails** when an exception escapes it, when it is killed (`kill pid`,
+`E_KILLED`), or when it exceeds its instruction quota. Otherwise it exits normally
+when its entry function returns or it executes `halt`.
+
+* `monitor pid`: when that process ends, this one receives a `Down` struct with
+  fields `pid`, `exit` (the exit code), and `code` / `message`, which are null for a
+  normal exit and the error otherwise. Monitoring a process that no longer exists
+  delivers a `Down` immediately, with code `E_NOPROC`.
+* `link pid`: the two processes fail together. When one fails, the other is
+  killed with `E_LINKED`, and so on along chains of links. A normal exit just
+  removes the link. If a failure reaches `main`, the program ends with that error.
+* A child process that fails with nobody monitoring or linked prints a crash
+  report on stderr, so failures are never silent.
+
+### 1.4 Quotas
+
+`quota kind, limit` lowers one of the current process's limits; a process can't
+raise its own limits. Processes inherit the limits of the process that spawned
+them, so to sandbox untrusted code, spawn a wrapper that sets quotas and then calls
+it.
+
+| Kind | Limit | When exceeded |
+|---|---|---|
+| 0 | heap bytes (the collector runs early as the limit approaches) | catchable `E_QUOTA` at the allocation |
+| 1 | raw-memory bytes | catchable `E_QUOTA` at `alloc`/`realloc` |
+| 2 | waiting messages in the mailbox | catchable `E_QUOTA` in the **sender** |
+| 3 | instructions executed in total | the process is stopped with `E_QUOTA` (a hard CPU limit) |
+
+`mlwsvm run --stats` reports processes spawned, the most alive at once, time
+slices, and instructions across all processes. `proc.count` returns the number
+of live processes.
 
 ## 2. Registers and frames
 

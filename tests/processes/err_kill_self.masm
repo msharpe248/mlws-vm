@@ -1,0 +1,5 @@
+; expect-error: E_KILLED
+.func main
+    kill PID
+    ret 0
+.endf

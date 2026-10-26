@@ -45,9 +45,12 @@ typedef struct Function {
 
 enum { LM_LOADING = 1, LM_READY = 2 };
 
-/* The built-in Error struct: every runtime fault is raised as one. */
-enum { ERRF_CODE = 0, ERRF_MESSAGE = 1, ERRF_TRACE = 2 };
-extern const StructDef VM_ERROR_DEF;
+#include "../core/builtins.h"
+
+/* Built-in struct types (Error, Down), indexed by BUILTIN_*. */
+extern StructDef VM_BUILTIN_DEFS[BUILTIN__COUNT]; /* filled by vm_new */
+#define VM_ERROR_DEF (VM_BUILTIN_DEFS[BUILTIN_ERROR])
+#define VM_DOWN_DEF (VM_BUILTIN_DEFS[BUILTIN_DOWN])
 
 typedef struct FieldRef {
     const StructDef *def;
@@ -70,6 +73,14 @@ typedef struct LModule {
 
 typedef void (*OutputFn)(void *ctx, const char *s, size_t n);
 
+/* Per-process resource limits (the `quota` instruction kinds). */
+enum { QUOTA_HEAP = 0, QUOTA_RAW = 1, QUOTA_MAILBOX = 2, QUOTA_INSNS = 3, QUOTA__COUNT };
+
+/* A timer heap entry: wake process `pid` at `at` (ns), if still applicable. */
+typedef struct {
+    uint64_t at, pid;
+} Timer;
+
 typedef struct VM {
     VEC(LModule *) mods;
     StrMap modmap;
@@ -83,6 +94,21 @@ typedef struct VM {
     uint64_t next_pid;
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
     uint64_t gc_min_threshold;
+    /* processes and scheduling (sched.c) */
+    VEC(struct Process *) procs; /* indexed by pid - 1; NULL once freed */
+    VEC(uint64_t) runq;          /* ring buffer of ready pids */
+    size_t runq_head, runq_len;
+    VEC(Timer) timers;           /* min-heap by wake time */
+    struct Process *current;     /* process executing an instruction, or NULL */
+    uint64_t main_pid;           /* finishing it ends the program; freed by its runner */
+    void *copy_state;            /* scratch for msg_copy (heap/copy.c) */
+    struct Process *pending_spawn; /* child being set up by spawn (freed if that traps) */
+    uint64_t insns_retired;      /* instructions of processes already freed */
+    uint64_t live, spawned, max_live, slices;
+    uint32_t slice_insns;        /* time slice length in instructions */
+    uint64_t default_quota[QUOTA__COUNT];
+    OutputFn err_out;            /* crash reports of unobserved processes */
+    void *err_ctx;
 } VM;
 
 /* ---- processes ------------------------------------------------------------- */
@@ -117,7 +143,17 @@ typedef struct {
     const Insn *ret_insn; /* caller's call instruction that receives results */
 } Frame;
 
-enum { PROC_READY = 0, PROC_RUNNING, PROC_DONE, PROC_FAILED };
+enum { PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED };
+
+/* How a time slice ended. */
+enum { SLICE_YIELD = 0, SLICE_BLOCK, SLICE_SLEEP, SLICE_DONE, SLICE_FAILED };
+
+typedef struct {
+    Word v;
+    uint8_t tag;
+} Message;
+
+typedef VEC(uint64_t) PidVec;
 
 struct Process {
     VM *vm;
@@ -156,6 +192,20 @@ struct Process {
     VEC(Obj *) markstack;
     Obj *exception; /* being thrown or just caught (a GC root) */
     uint64_t exceptions_thrown;
+    /* processes (sched.c) */
+    Function *entry;
+    VEC(Message) mbox;           /* GC roots */
+    size_t mbox_head;
+    uint64_t wake_at;            /* SLEEPING, or WAITING with a recvt deadline */
+    bool deadline_set;           /* recvt is waiting with a timeout */
+    bool deadlock;               /* recv must raise E_DEADLOCK */
+    bool kill_pending;           /* killed while running: stop at the next instruction */
+    bool in_runq;
+    bool raising;                /* building an Error: exempt from the heap quota */
+    PidVec links;
+    PidVec monitors;             /* pids watching this process */
+    uint64_t quota[QUOTA__COUNT];
+    uint64_t cpu_ns, msgs_sent, msgs_received;
 };
 
 /* vm.c */
@@ -178,15 +228,32 @@ void proc_free(Process *p);
 MLWS_NORETURN void vm_trap(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);
 /* Raise any non-null object as an exception. */
 MLWS_NORETURN void proc_throw(Process *p, Obj *ex);
-/* Run `fn` (no arguments) to completion. Returns false on a trap (see p->err). */
-bool proc_run_main(Process *p, Function *fn);
+/* Run up to `budget` instructions; returns a SLICE_* code. On SLICE_FAILED,
+ * p->err describes the failure. */
+int proc_run_slice(Process *p, uint32_t budget);
+/* Push the entry frame of a new process and bind its arguments. */
+void proc_start(Process *p, Function *fn, const Word *args, int nargs);
+Process *vm_process(VM *vm, uint64_t pid); /* live process or NULL */
 Segment *proc_segment(Process *p, uint64_t ptr);
 uint64_t proc_alloc(Process *p, int64_t size);
 void proc_free_block(Process *p, uint64_t ptr);
 uint64_t proc_realloc(Process *p, uint64_t ptr, int64_t size);
 
 /* interp.c */
-void interp_run(Process *p);
+int interp_run(Process *p, uint32_t budget); /* SLICE_* */
+
+/* sched.c */
+void sched_ready(VM *vm, Process *p);
+void sched_add_timer(VM *vm, Process *p);
+/* Run the scheduler until `main` finishes; other processes are then killed. */
+void sched_run(VM *vm, Process *main);
+void sched_finish(VM *vm, Process *p, bool failed); /* notify links/monitors; frees non-main */
+void sched_kill(VM *vm, Process *target, const char *code, const char *msg);
+void sched_shutdown(VM *vm, Process *keep);
+void sched_down_noproc(VM *vm, Process *watcher, uint64_t pid);
+/* Copy a value from one process into another's heap (heap/copy.c). */
+Word msg_copy(Process *from, Process *to, Word v, uint8_t tag);
+void copy_state_free(VM *vm);
 
 /* natives.c */
 void natives_register_builtin(VM *vm);

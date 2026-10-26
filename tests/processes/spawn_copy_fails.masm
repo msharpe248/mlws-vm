@@ -1,0 +1,21 @@
+; If an argument cannot be copied (a list holding a raw pointer), spawn traps
+; and the half-made process is discarded.
+.include "std/test.inc"
+.func child(ref data)
+    ret
+.endf
+.func main
+    alloc P0, 8
+    lnew R0
+    lpush R0, 1, P0
+.try h
+    spawn child (R0)
+.endtry
+    ret 1
+h:  catch R1
+    strcmp I0, R1->Error.code, "E_TYPE"
+    ASSERT_EQ I0, 0
+    ncall "proc.count" () -> (I1)
+    ASSERT_EQ I1, 1                    ; no orphaned process left behind
+    ret 0
+.endf

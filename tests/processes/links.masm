@@ -1,0 +1,27 @@
+; Linked processes fail together; a normal exit does not propagate.
+.include "std/test.inc"
+.func quiet
+    ret
+.endf
+.func partner(i64 n)
+    recv I0                            ; waits; killed when its link fails
+    ret
+.endf
+.func crashy(i64 who)
+    link who
+    mov R0, null
+    len I0, R0                         ; E_NULL: the link takes `who` down too
+    ret
+.endf
+.func main
+    spawn quiet -> (I0)
+    link I0                            ; quiet exits normally: we are unaffected
+    yield
+    spawn partner (1) -> (I1)
+    monitor I1
+    spawn crashy (I1)
+    recv R0                            ; partner's Down
+    strcmp I2, R0->Down.code, "E_LINKED"
+    ASSERT_EQ I2, 0
+    ret 0
+.endf
