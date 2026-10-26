@@ -79,6 +79,7 @@ void proc_free(Process *p) {
     plat_lock_free(p->lock);
     VEC_FREE(p->links);
     VEC_FREE(p->monitors);
+    VEC_FREE(p->pins);
     heap_free_all(p);
     free(p->stack.data);
     free(p->stack.tags);
@@ -175,7 +176,7 @@ void vm_trap(Process *p, const char *code, const char *fmt, ...) {
 /* Find the innermost handler covering the faulting instruction, popping frames
  * that have none. Returns false if the exception is uncaught. */
 static bool unwind(Process *p) {
-    while (p->nframes) {
+    while (p->nframes > p->cb_base) { /* a callback's exceptions never unwind the code that called C */
         Frame *fr = &p->frames[p->nframes - 1];
         const MFunc *mf = fr->fn->mf;
         uint32_t pc = fr->pc ? fr->pc - 1 : 0;
@@ -271,6 +272,79 @@ int proc_run_slice(Process *p, uint32_t budget) {
     int r = interp_run(p, slice);
     p->jb = NULL;
     return r;
+}
+
+bool proc_callback(Process *p, ObjClosure *cl, const Word *args) {
+    /* The foreign call in progress: restored afterwards. */
+    jmp_buf *outer_jb = p->jb;
+    uint32_t outer_base = p->cb_base;
+    const NativeDef *nd = p->cur_native;
+    bool in_foreign = p->in_foreign, resumed = p->resumed, ferr = p->foreign_err;
+    int req = p->native_req;
+    char fcode[sizeof p->foreign_code], fmsg[sizeof p->foreign_msg];
+    memcpy(fcode, p->foreign_code, sizeof fcode);
+    memcpy(fmsg, p->foreign_msg, sizeof fmsg);
+    uint64_t deadline = p->fdwait.deadline;
+
+    volatile uint32_t base = p->nframes;
+    volatile bool entered = false, ok = false;
+    jmp_buf jb;
+    p->cb_base = base;
+    p->in_foreign = false; /* the callback is MLWSVM code: it traps and is counted as usual */
+    p->cur_native = NULL;
+    p->resumed = false;
+    p->foreign_err = false;
+    p->jb = &jb;
+    for (;;) {
+        if (VM_SETJMP(jb)) { /* a throw or trap inside the callback */
+            p->in_foreign = false;
+            p->cur_native = NULL;
+            p->resumed = false;
+            p->fdwait.deadline = 0;
+            if (p->pending_spawn) {
+                proc_free(p->pending_spawn);
+                p->pending_spawn = NULL;
+            }
+            if (unwind(p)) continue; /* caught inside the callback: run on */
+            describe_uncaught(p);
+            break;
+        }
+        if (!entered) {
+            entered = true;
+            interp_enter(p, cl, args); /* may trap (call depth) */
+        }
+        if (p->insns >= p->quota[QUOTA_INSNS]) {
+            snprintf(p->err.code, sizeof p->err.code, "E_QUOTA");
+            snprintf(p->err.msg, sizeof p->err.msg, "instruction quota of %llu exceeded",
+                     (unsigned long long)p->quota[QUOTA_INSNS]);
+            break;
+        }
+        uint64_t left = p->quota[QUOTA_INSNS] - p->insns;
+        int r = interp_run(p, left < 100000 ? (uint32_t)left : 100000);
+        if (r == SLICE_YIELD) continue; /* no scheduling inside a callback: just more instructions */
+        if (r == SLICE_DONE && p->nframes == base) {
+            ok = true;
+            break;
+        }
+        /* killed, or the program is ending (os.exit) */
+        snprintf(p->err.code, sizeof p->err.code, "E_CALLBACK");
+        snprintf(p->err.msg, sizeof p->err.msg, "the callback %s did not return", cl->fn->name);
+        break;
+    }
+    while (p->nframes > base) proc_pop_frame(p);
+    /* Set last: natives inside the callback consume the flag for themselves. */
+    p->reentered = true;
+    p->jb = outer_jb;
+    p->cb_base = outer_base;
+    p->cur_native = nd;
+    p->in_foreign = in_foreign;
+    p->resumed = resumed;
+    p->native_req = req;
+    p->foreign_err = ferr;
+    memcpy(p->foreign_code, fcode, sizeof fcode);
+    memcpy(p->foreign_msg, fmsg, sizeof fmsg);
+    p->fdwait.deadline = deadline;
+    return ok;
 }
 
 /* ---- memory ------------------------------------------------------------------ */

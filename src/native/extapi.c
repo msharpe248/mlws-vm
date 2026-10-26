@@ -70,9 +70,16 @@ void native_invoke(Process *p, const NativeDef *nd, Word *args, Word *rets) {
     p->in_foreign = true;
     p->foreign_err = false;
     p->native_req = NREQ_NONE;
-    if (serial) plat_lock(serial);
+    if (serial && serial == p->serial_held) { /* a callback calling back into its own serial library */
+        fail(p, "E_CALLBACK", "%s: its library is serial, and is already in a call that made this callback", nd->name);
+        p->in_foreign = false;
+        p->cur_native = NULL;
+        return;
+    }
+    PlatLock *held = p->serial_held;
+    if (serial) plat_lock(serial), p->serial_held = serial;
     nd->fn(p, args, rets);
-    if (serial) plat_unlock(serial);
+    if (serial) plat_unlock(serial), p->serial_held = held;
     p->in_foreign = false;
     p->cur_native = NULL;
 }
@@ -100,7 +107,10 @@ void native_call(Process *p, const NativeDef *nd, Word *args, Word *rets) {
 void foreign_finalize(Obj *o) {
     ObjForeign *f = (ObjForeign *)o;
     const MlwsForeignType *t = f->type;
-    if (!f->ptr || !t->finalize) return;
+    if (!f->ptr || !t->finalize || o->flags & OBJF_BORROWED) {
+        f->ptr = NULL; /* released either way */
+        return;
+    }
     void *ptr = f->ptr;
     f->ptr = NULL;
     PlatLock *serial = f->lib ? f->lib->serial : NULL;
@@ -273,6 +283,20 @@ static void api_foreign_release(MlwsCtx *cx, MlwsValue v) {
     if (o) foreign_finalize(o);
 }
 
+/* ---- the API: messages from any thread ----------------------------------------------- */
+
+static MlwsHost *api_host(MlwsCtx *cx) { return (MlwsHost *)P(cx)->vm; }
+
+static bool api_post_int(MlwsHost *h, uint64_t pid, int64_t v) {
+    return sched_post((VM *)h, pid, (Word){.i = v}, T_I64, NULL, 0);
+}
+
+static bool api_post_str(MlwsHost *h, uint64_t pid, const char *s, size_t n) {
+    return sched_post((VM *)h, pid, (Word){.r = NULL}, T_R, s ? s : "", s ? n : 0);
+}
+
+static void api_hold(MlwsHost *h, int delta) { atomic_fetch_add(&((VM *)h)->async_sources, delta); }
+
 /* ---- the API: init ---------------------------------------------------------------- */
 
 /* MlwsCtx is the Process and MlwsValue has Word's layout; only the function
@@ -383,6 +407,10 @@ static const MlwsApi API = {
     .foreign_new = api_foreign_new,
     .foreign_get = api_foreign_get,
     .foreign_release = api_foreign_release,
+    .host = api_host,
+    .post_int = api_post_int,
+    .post_str = api_post_str,
+    .hold = api_hold,
 };
 
 const MlwsApi *native_api(void) { return &API; }

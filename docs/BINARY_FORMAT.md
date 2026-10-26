@@ -13,7 +13,7 @@ file produces `E_LOAD_FORMAT` (or `E_VERIFY`) rather than a crash.
 
 ```
 magic        4 bytes  "MLWS"
-version      u16      5
+version      u16      6
 flags        u16      0
 name         str      dotted module name, e.g. "std.io"
 source       str      source file name (for backtraces); may be empty
@@ -80,7 +80,8 @@ externs      uleb n, then n × {             .extern declarations (the FFI)
                result kind u8, result tag str
              }
              kinds: 0 void, 1..4 i8..i64, 5..8 u8..u64, 9 f32, 10 f64,
-             11 cstr, 12 buf, 13 ptr, 14 struct (by value), 15 struct*;
+             11 cstr, 12 buf, 13 ptr, 14 struct (by value), 15 struct*,
+             16 callback (tag: the .callback type);
              +0x80 = an out parameter (numbers, ptr, or 14: an out struct);
              tag: the ptr<tag> name or the .cstruct name, or "" for none
 
@@ -94,6 +95,13 @@ cstructs     uleb n, then n × {             .cstruct layouts; each has a struct
              }
 
 ffi frees    uleb n, then n × { tag str, library str, symbol str }   .ffi_free
+
+callbacks    uleb n, then n × {             .callback function-pointer types
+               name str
+               flags uleb                   1 = async
+               nparams u8, then nparams × { kind u8, tag str }   numbers, 11 cstr, 13 ptr (not async)
+               result kind u8, result tag str                    0, a number or 13 ptr; async: 0
+             }
 
 (nothing may follow)
 ```
@@ -175,5 +183,6 @@ interpreter relies on.
   slots.
 * The version number changes if the layout above changes. Version 2 added the
   struct and field-ref tables, version 3 the exception handler tables, and
-  version 4 the extension and extern tables, and version 5 variadic externs,
-  the cstruct table and `.ffi_free`. Older files must be re-assembled.
+  version 4 the extension and extern tables, version 5 variadic externs, the
+  cstruct table and `.ffi_free`, and version 6 the callback table. Older files
+  must be re-assembled.

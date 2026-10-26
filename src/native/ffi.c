@@ -13,6 +13,8 @@
  *          only match the same tag.
  *   struct S    a .cstruct by value, from and to the MLWSVM struct S
  *   struct* S   a pointer to a copy of the struct, copied back after the call
+ *   callback T  a closure (an async callback type: a handle made by
+ *          ffi.async_callback), as a C function pointer of .callback type T
  *   null   NULL, for cstr, buf, ptr and struct*
  *   out T  no argument: a pointer to a temporary, whose value is a result
  *   ...    a variadic function: the types after it are passed as declared
@@ -24,6 +26,7 @@
 
 #ifdef MLWS_HAVE_FFI
 #include <ffi.h>
+#include "../core/builtins.h"
 
 /* A tag's handle type. Its finalizer is the tag's .ffi_free function, which
  * takes the one pointer, so it is called directly. */
@@ -45,6 +48,17 @@ typedef struct FfiStruct {
     char *decl;
 } FfiStruct;
 
+/* A .callback type: how C calls the function pointers made from it. */
+typedef struct {
+    char *name, *decl;
+    bool async;
+    uint8_t nargs, args[FFI_MAX_ARGS], ret;
+    const FfiTag *tags[FFI_MAX_ARGS], *ret_tag;
+    ffi_cif cif;
+    ffi_type *atypes[FFI_MAX_ARGS];
+    MlwsForeignType handle; /* async: the type of ffi.async_callback's handles */
+} FfiCallback;
+
 typedef struct {
     void *fn;
     ffi_cif cif;
@@ -52,6 +66,8 @@ typedef struct {
     uint8_t nargs, args[FFI_MAX_ARGS], ret;
     const FfiTag *tags[FFI_MAX_ARGS], *ret_tag;
     const FfiStruct *structs[FFI_MAX_ARGS], *ret_struct;
+    const FfiCallback *callbacks[FFI_MAX_ARGS];
+    bool sync_callbacks; /* C may call back into the process during the call */
     char *decl; /* "lib:symbol(...)" for comparing duplicate declarations */
 } FfiCall;
 
@@ -266,6 +282,14 @@ static bool pack(Process *p, const FfiStruct *fs, Obj *o, uint8_t *mem, Temps *t
     return true;
 }
 
+/* A handle to a pointer that C still owns (a struct field, a callback's
+ * argument): the tag's .ffi_free function is never called on it. */
+static Obj *borrowed(Process *p, const FfiTag *tag, void *ptr, ExtLib *lib) {
+    ObjForeign *f = foreign_new_obj(p, tag, ptr, lib);
+    f->h.flags |= OBJF_BORROWED;
+    return &f->h;
+}
+
 /* Read C memory into an MLWSVM struct: `into` (copying back a struct*), or a
  * new one. A pointer field that is unchanged keeps its handle. */
 static Obj *unpack(Process *p, const FfiStruct *fs, const uint8_t *mem, ObjStruct *into, ExtLib *lib) {
@@ -300,7 +324,7 @@ static Obj *unpack(Process *p, const FfiStruct *fs, const uint8_t *mem, ObjStruc
             memcpy(&ptr, at, sizeof ptr);
             ObjForeign *old = s->fields[k].r;
             if (old && old->h.kind == OBJ_FOREIGN && old->ptr == ptr) break; /* the same handle */
-            s->fields[k].r = ptr ? foreign_new_obj(p, fs->tags[k], ptr, lib) : NULL;
+            s->fields[k].r = ptr ? borrowed(p, fs->tags[k], ptr, lib) : NULL;
             break;
         }
         case FFI_STRUCT: {
@@ -429,6 +453,260 @@ static void narrow_ret(uint8_t k, CVal *v) {
     }
 }
 
+/* ---- callbacks --------------------------------------------------------------------------- */
+
+static const FfiCallback *find_callback(VM *vm, const char *name) {
+    void *v;
+    return smap_get(&vm->ffi_callbacks, name, &v) ? v : NULL;
+}
+
+/* Identifies the current thread: the address of a thread-local variable. */
+static MLWS_THREAD_LOCAL char thread_tag;
+
+/* A closure passed as a callback, for the duration of one foreign call. */
+typedef struct {
+    Process *p;
+    ObjClosure *cl;
+    const FfiCallback *cb;
+    ExtLib *lib;
+    const char *thread;   /* the one making the foreign call */
+    bool failed;          /* a call raised an error: later calls do nothing */
+    _Atomic bool stray;   /* C called it from another thread */
+    ffi_closure *closure;
+    void *code;           /* the C function pointer */
+} SyncCb;
+
+/* A zero result, as wide as libffi's closure ABI wants it. */
+static void zero_result(uint8_t ret, void *res) {
+    size_t n = ctype(ret)->size > sizeof(ffi_arg) ? ctype(ret)->size : sizeof(ffi_arg);
+    if (ret != FFI_VOID) memset(res, 0, n);
+}
+
+static bool same_bank(MlwsType a, MlwsType b) { return type_bank(a) == type_bank(b) && type_is_ref(a) == type_is_ref(b); }
+
+/* Store the callback's result for C: small integers widened to ffi_arg. */
+static bool put_result(SyncCb *s, void *res) {
+    Process *p = s->p;
+    const FfiCallback *cb = s->cb;
+    if (cb->ret == FFI_VOID) return true;
+    if (!p->nresults || !same_bank((MlwsType)p->result_types[0], vmtype(cb->ret))) {
+        native_fail(p, "E_TYPE", "callback %s must return %s", s->cl->fn->name,
+                    cb->ret == FFI_PTR ? "a foreign handle" : cb->ret >= FFI_F32 ? "a float" : "an integer");
+        return false;
+    }
+    Word w = p->results[0];
+    switch (cb->ret) {
+    case FFI_I8: case FFI_I16: case FFI_I32: {
+        CVal v;
+        put_num((uint8_t *)&v, cb->ret, w);
+        *(ffi_sarg *)res = cb->ret == FFI_I8 ? v.i8 : cb->ret == FFI_I16 ? v.i16 : v.i32;
+        break;
+    }
+    case FFI_U8: case FFI_U16: case FFI_U32: {
+        CVal v;
+        put_num((uint8_t *)&v, cb->ret, w);
+        *(ffi_arg *)res = cb->ret == FFI_U8 ? v.u8 : cb->ret == FFI_U16 ? v.u16 : v.u32;
+        break;
+    }
+    case FFI_PTR: {
+        void *ptr;
+        char what[48];
+        snprintf(what, sizeof what, "the result of callback %s", s->cl->fn->name);
+        if (!to_ptr(p, w.r, cb->ret_tag, &ptr, what)) return false;
+        memcpy(res, &ptr, sizeof ptr);
+        break;
+    }
+    default: put_num(res, cb->ret, w); break;
+    }
+    return true;
+}
+
+/* C calls a sync callback: run the closure in the process, on this thread. */
+static void sync_trampoline(ffi_cif *cif, void *res, void **cargs, void *ud) {
+    (void)cif;
+    SyncCb *s = ud;
+    const FfiCallback *cb = s->cb;
+    zero_result(cb->ret, res);
+    if (&thread_tag != s->thread) { /* the process is not running here: it cannot be entered */
+        atomic_store(&s->stray, true);
+        return;
+    }
+    if (s->failed) return; /* let C finish; the error is raised when the call returns */
+    Process *p = s->p;
+    Word w[FFI_MAX_ARGS];
+    for (int k = 0; k < cb->nargs; k++) {
+        switch (cb->args[k]) {
+        case FFI_CSTR: {
+            const char *c = *(const char **)cargs[k];
+            w[k].r = c ? str_new(p, c, strlen(c)) : NULL;
+            break;
+        }
+        case FFI_PTR: {
+            void *ptr = *(void **)cargs[k];
+            w[k].r = ptr ? borrowed(p, cb->tags[k], ptr, s->lib) : NULL;
+            break;
+        }
+        default: w[k] = get_num(cargs[k], cb->args[k]); break;
+        }
+    }
+    if (!proc_callback(p, s->cl, w)) {
+        s->failed = true;
+        native_fail(p, p->err.code, "in callback %s: %s", s->cl->fn->name, p->err.msg);
+        return;
+    }
+    if (!put_result(s, res)) {
+        s->failed = true;
+        zero_result(cb->ret, res);
+    }
+}
+
+/* An async callback: a C function pointer that turns each call into a
+ * Callback{name, args} message to one process. */
+typedef struct {
+    VM *vm;
+    const FfiCallback *cb;
+    uint64_t pid;
+    ffi_closure *closure;
+    void *code;
+} AsyncCb;
+
+typedef struct {
+    const AsyncCb *a;
+    void **cargs;
+} AsyncCall;
+
+static Word build_message(Process *heap, void *ctx) {
+    const AsyncCall *ac = ctx;
+    const FfiCallback *cb = ac->a->cb;
+    ObjStruct *s = struct_new(heap, &VM_BUILTIN_DEFS[BUILTIN_CALLBACK]);
+    s->fields[CBF_NAME].r = str_new(heap, cb->name, strlen(cb->name));
+    ObjList *l = list_new(heap, cb->nargs);
+    s->fields[CBF_ARGS].r = l;
+    for (int k = 0; k < cb->nargs; k++) {
+        if (cb->args[k] == FFI_CSTR) {
+            const char *c = *(const char **)ac->cargs[k];
+            Word w = {.r = c ? str_new(heap, c, strlen(c)) : NULL};
+            list_push(heap, l, w, T_R);
+        } else {
+            list_push(heap, l, get_num(ac->cargs[k], cb->args[k]), (uint8_t)vmtype(cb->args[k]));
+        }
+    }
+    return (Word){.r = s};
+}
+
+static void async_trampoline(ffi_cif *cif, void *res, void **cargs, void *ud) {
+    (void)cif, (void)res;
+    const AsyncCb *a = ud;
+    AsyncCall ac = {a, cargs};
+    sched_post_build(a->vm, a->pid, build_message, &ac); /* a process that has ended: dropped */
+}
+
+static void async_free(void *ptr) {
+    AsyncCb *a = ptr;
+    atomic_fetch_sub(&a->vm->async_sources, 1);
+    ffi_closure_free(a->closure);
+    free(a);
+}
+
+/* ffi.async_callback(type name, pid) -> handle */
+void n_ffi_async_callback(Process *p, Word *args, Word *rets) {
+    ObjString *name = args[0].r;
+    if (!name || name->h.kind != OBJ_STRING) vm_trap(p, "E_TYPE", "ffi.async_callback needs a callback type name");
+    const FfiCallback *cb = find_callback(p->vm, name->data);
+    if (!cb || !cb->async) vm_trap(p, "E_TYPE", "ffi.async_callback: no async .callback %s", name->data);
+    AsyncCb *a = xcalloc(1, sizeof *a);
+    a->vm = p->vm;
+    a->cb = cb;
+    a->pid = (uint64_t)args[1].i;
+    a->closure = ffi_closure_alloc(sizeof(ffi_closure), &a->code);
+    if (!a->closure ||
+        ffi_prep_closure_loc(a->closure, (ffi_cif *)&cb->cif, async_trampoline, a, a->code) != FFI_OK) {
+        if (a->closure) ffi_closure_free(a->closure);
+        free(a);
+        vm_trap(p, "E_LINK_FFI", "ffi.async_callback: libffi cannot make a closure");
+    }
+    atomic_fetch_add(&p->vm->async_sources, 1); /* until it is freed, messages may arrive from C */
+    rets[0].r = foreign_new_obj(p, &cb->handle, a, NULL);
+}
+
+/* A closure for a sync callback parameter, valid until the call returns. */
+static bool make_sync(Process *p, const FfiCallback *cb, Obj *o, SyncCb **out, const char *what) {
+    const NativeDef *nd = p->cur_native;
+    if (!o || o->kind != OBJ_CLOSURE) {
+        native_fail(p, "E_TYPE", "%s: %s must be a closure (callback %s)", nd->name, what, cb->name);
+        return false;
+    }
+    ObjClosure *cl = (ObjClosure *)o;
+    const MFunc *mf = cl->fn->mf;
+    bool ok = mf->nparams == cb->nargs;
+    for (int k = 0; ok && k < cb->nargs; k++) ok = same_bank((MlwsType)mf->params[k], vmtype(cb->args[k]));
+    if (!ok) {
+        native_fail(p, "E_TYPE", "%s: %s: closure %s does not take callback %s's parameters", nd->name, what,
+                    cl->fn->name, cb->name);
+        return false;
+    }
+    SyncCb *s = xcalloc(1, sizeof *s);
+    s->p = p;
+    s->cl = cl;
+    s->cb = cb;
+    s->lib = nd->lib;
+    s->thread = &thread_tag;
+    s->closure = ffi_closure_alloc(sizeof(ffi_closure), &s->code);
+    if (!s->closure || ffi_prep_closure_loc(s->closure, (ffi_cif *)&cb->cif, sync_trampoline, s, s->code) != FFI_OK) {
+        if (s->closure) ffi_closure_free(s->closure);
+        free(s);
+        native_fail(p, "E_LINK_FFI", "%s: libffi cannot make a closure", nd->name);
+        return false;
+    }
+    *out = s;
+    return true;
+}
+
+static char *describe_callback(const MCallback *m) {
+    StrBuf b = {0};
+    sb_printf(&b, "%s(", m->name);
+    for (int k = 0; k < m->nargs; k++) sb_printf(&b, "%s%d/%s", k ? "," : "", m->args[k], m->tags[k] ? m->tags[k] : "");
+    sb_printf(&b, ")->%d/%s flags %u", m->ret, m->ret_tag ? m->ret_tag : "", m->flags);
+    return b.s;
+}
+
+bool ffi_define_callback(VM *vm, const MCallback *m, MlwsError *err) {
+    char *decl = describe_callback(m);
+    const FfiCallback *old = find_callback(vm, m->name);
+    if (old) { /* declared by another module too: must agree */
+        bool same = !strcmp(old->decl, decl);
+        free(decl);
+        return same ? true : mlws_err(err, "E_LINK_FFI", "callback %s conflicts with another of that name", m->name);
+    }
+    FfiCallback *cb = xcalloc(1, sizeof *cb);
+    cb->name = xstrdup(m->name);
+    cb->decl = decl;
+    cb->async = (m->flags & MCB_ASYNC) != 0;
+    cb->nargs = m->nargs;
+    cb->ret = m->ret;
+    for (int k = 0; k < m->nargs; k++) {
+        cb->args[k] = m->args[k];
+        cb->atypes[k] = ctype(m->args[k]);
+        if (m->args[k] == FFI_PTR) cb->tags[k] = tag_type(vm, m->tags[k]);
+    }
+    if (m->ret == FFI_PTR) cb->ret_tag = tag_type(vm, m->ret_tag);
+    StrBuf hn = {0};
+    sb_printf(&hn, "callback %s", m->name);
+    cb->handle.name = hn.s;
+    cb->handle.finalize = async_free;
+    if (ffi_prep_cif(&cb->cif, FFI_DEFAULT_ABI, cb->nargs, ctype(cb->ret), cb->atypes) != FFI_OK) {
+        ffi_free_callback(cb);
+        return mlws_err(err, "E_LINK_FFI", "callback %s: libffi cannot make this call", m->name);
+    }
+    smap_put(&vm->ffi_callbacks, cb->name, cb);
+    return true;
+}
+
+void ffi_free_callback(void *v) {
+    FfiCallback *cb = v;
+    free(cb->name), free(cb->decl), free((char *)cb->handle.name), free(cb);
+}
+
 static void ffi_native(Process *p, Word *args, Word *rets) {
     const NativeDef *nd = p->cur_native;
     const FfiCall *fc = nd->data;
@@ -437,6 +715,8 @@ static void ffi_native(Process *p, Word *args, Word *rets) {
     uint8_t *sbuf[FFI_MAX_ARGS] = {0}; /* struct temporaries */
     Obj *sorig[FFI_MAX_ARGS] = {0};    /* the MLWSVM structs passed by pointer */
     uint8_t *rbuf = NULL;
+    SyncCb *cbs[FFI_MAX_ARGS] = {0}; /* closures made for this call */
+    size_t npins = p->pins.n;
     Temps t = {{0}, 0};
     memset(in, 0, sizeof in);
     memset(out, 0, sizeof out);
@@ -486,13 +766,36 @@ static void ffi_native(Process *p, Word *args, Word *rets) {
             }
             in[k].ptr = sbuf[k];
             break;
+        case FFI_CALLBACK: {
+            const FfiCallback *cb = fc->callbacks[k];
+            if (!cb->async) {
+                if (!make_sync(p, cb, o, &cbs[k], what)) goto done;
+                in[k].ptr = cbs[k]->code;
+            } else if (!o) {
+                in[k].ptr = NULL;
+            } else if (o->kind != OBJ_FOREIGN || ((ObjForeign *)o)->type != &cb->handle || !((ObjForeign *)o)->ptr) {
+                native_fail(p, "E_TYPE", "%s: %s must be an async callback %s (ffi.async_callback)", nd->name, what,
+                            cb->name);
+                goto done;
+            } else {
+                in[k].ptr = ((AsyncCb *)((ObjForeign *)o)->ptr)->code;
+            }
+            break;
+        }
         default: put_num((uint8_t *)&in[k], kind, a); break;
         }
         avalues[k] = &in[k];
     }
+    if (fc->sync_callbacks) /* the callbacks may collect garbage: what C is using must survive */
+        for (int k = 0; k < nd->np; k++)
+            if (type_is_ref((MlwsType)nd->pt[k]) && args[k].r) VEC_PUSH(p->pins, (Obj *)args[k].r);
     void *rp = &ret;
     if (fc->ret == FFI_STRUCT) rp = rbuf = xcalloc(1, fc->ret_struct->type.size < sizeof(ffi_arg) ? sizeof(ffi_arg) : fc->ret_struct->type.size);
     ffi_call((ffi_cif *)&fc->cif, FFI_FN(fc->fn), rp, avalues);
+    for (int k = 0; k < fc->nargs; k++)
+        if (cbs[k] && atomic_load(&cbs[k]->stray))
+            native_fail(p, "E_CALLBACK", "%s: C called callback %s from another thread (use an async callback)",
+                        nd->name, cbs[k]->cb->name);
     int ri = 0;
     if (fc->ret == FFI_STRUCT) {
         rets[ri++].r = unpack(p, fc->ret_struct, rbuf, NULL, nd->lib);
@@ -508,7 +811,14 @@ static void ffi_native(Process *p, Word *args, Word *rets) {
     }
 done:
     temps_free(&t);
-    for (int k = 0; k < fc->nargs; k++) free(sbuf[k]);
+    for (int k = 0; k < fc->nargs; k++) {
+        free(sbuf[k]);
+        if (cbs[k]) {
+            ffi_closure_free(cbs[k]->closure);
+            free(cbs[k]);
+        }
+    }
+    p->pins.n = npins;
     free(rbuf);
 }
 
@@ -555,6 +865,14 @@ bool ffi_define(VM *vm, const MExtern *x, MlwsError *err) {
                 free(fc->decl), free(fc), free(nd);
                 return mlws_err(err, "E_LINK_FFI", "extern %s: no cstruct %s", x->name, x->tags[k]);
             }
+        }
+        if (kind == FFI_CALLBACK) {
+            fc->callbacks[k] = find_callback(vm, x->tags[k]);
+            if (!fc->callbacks[k]) {
+                free(fc->decl), free(fc), free(nd);
+                return mlws_err(err, "E_LINK_FFI", "extern %s: no callback %s", x->name, x->tags[k]);
+            }
+            fc->sync_callbacks = fc->sync_callbacks || !fc->callbacks[k]->async;
         }
         if (kind == FFI_STRUCT) fc->atypes[k] = (ffi_type *)&fc->structs[k]->type;
         else fc->atypes[k] = kind & FFI_OUT || base == FFI_STRUCTP ? &ffi_type_pointer : ctype(kind);
@@ -633,7 +951,18 @@ bool ffi_define_free(VM *vm, const MFfiFree *f, MlwsError *err) {
     return mlws_err(err, "E_LINK_FFI", ".ffi_free %s: this mlwsvm was built without libffi", f->tag);
 }
 
+bool ffi_define_callback(VM *vm, const MCallback *cb, MlwsError *err) {
+    (void)vm;
+    return mlws_err(err, "E_LINK_FFI", "callback %s: this mlwsvm was built without libffi", cb->name);
+}
+
+void n_ffi_async_callback(Process *p, Word *args, Word *rets) {
+    (void)args, (void)rets;
+    vm_trap(p, "E_LINK_FFI", "ffi.async_callback: this mlwsvm was built without libffi");
+}
+
 void ffi_free_data(void *data) { (void)data; }
 void ffi_free_struct(void *v) { (void)v; }
+void ffi_free_callback(void *v) { (void)v; }
 
 #endif

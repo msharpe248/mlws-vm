@@ -1,0 +1,8 @@
+; An async callback cannot return a value: C's call returns at once, and the
+; process sees it later as a message.
+; expect-error: E_ASM_SYNTAX
+.callback key_t (i32), async
+.callback hash_t (cstr) -> (u64), async
+.func main
+    ret 0
+.endf

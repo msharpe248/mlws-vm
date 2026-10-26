@@ -8,10 +8,16 @@
  *   ; debug-script: <debugger command>                (repeatable: run under
  *                                                       `mlwsvm debug`; stdout is the transcript)
  *
- * Directories whose name starts with '_' hold helper modules and are skipped. */
+ * Directories whose name starts with '_' hold helper modules and are skipped.
+ *
+ * A test still running after MLWSVM_TEST_TIMEOUT seconds (default 300) is
+ * reported by name, and the run ends: a VM that hangs cannot be stopped from
+ * outside, and a silent hang is the worst way for a CI job to fail. */
 #include "tools.h"
 
 #include <ctype.h>
+#include <stdatomic.h>
+#include <stdlib.h>
 
 #include "../platform/platform.h"
 #include "../vm/run.h"
@@ -136,6 +142,28 @@ static void parse_expect(const char *text, Expect *e) {
     }
 }
 
+/* The watchdog: which test is running, and since when. */
+static const char *_Atomic wd_path;
+static _Atomic uint64_t wd_start;
+static _Atomic bool wd_stop;
+static uint64_t wd_limit_ns;
+
+static void watchdog(void *arg) {
+    (void)arg;
+    while (!atomic_load(&wd_stop)) {
+        plat_sleep_ns(100 * 1000000ull);
+        const char *path = atomic_load(&wd_path);
+        uint64_t t0 = atomic_load(&wd_start);
+        if (path && t0 && plat_now_ns() - t0 > wd_limit_ns) {
+            fflush(stdout);
+            fprintf(stderr, "TIMEOUT %s: still running after %llu s (MLWSVM_TEST_TIMEOUT)\n", path,
+                    (unsigned long long)(wd_limit_ns / 1000000000ull));
+            fflush(stderr);
+            _Exit(3);
+        }
+    }
+}
+
 int tool_test(int argc, char **argv, const ToolEnv *env) {
     bool verbose = false;
     StrVec opts = {0}; /* VM options from the command line: name, value pairs */
@@ -157,6 +185,10 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         return 2;
     }
     int passed = 0, failed = 0, skipped = 0;
+    const char *limit = getenv("MLWSVM_TEST_TIMEOUT");
+    wd_limit_ns = (limit && atoi(limit) > 0 ? (uint64_t)atoi(limit) : 300) * 1000000000ull;
+    atomic_store(&wd_stop, false);
+    PlatThread *wd = plat_thread_start(watchdog, NULL);
     for (size_t i = 0; i < files.n; i++) {
         const char *path = files.v[i];
         char *text = read_file(path, NULL);
@@ -194,9 +226,12 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         tool_env_libpaths(env, vm);
         RunResult r;
         memset(&r, 0, sizeof r);
+        atomic_store(&wd_start, plat_now_ns());
+        atomic_store(&wd_path, path);
         if (why.n) { /* a bad option: not run */
         } else if (e.script.n) run_debug_script(vm, path, &e, &out, &r);
         else vm_run_file(vm, path, &r);
+        atomic_store(&wd_path, NULL);
         const char *got_code = r.status == RUN_OK ? "" : r.err.code;
         if (why.n) {
         } else if (e.error_want[0]) {
@@ -232,6 +267,8 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         run_result_free(&r);
         vm_free(vm);
     }
+    atomic_store(&wd_stop, true);
+    if (wd) plat_thread_join(wd);
     printf("%d passed, %d failed, %d skipped (%zu files)\n", passed, failed, skipped, files.n);
     for (size_t i = 0; i < files.n; i++) free(files.v[i]);
     VEC_FREE(files);

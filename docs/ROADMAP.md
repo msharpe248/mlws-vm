@@ -22,7 +22,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | Milestone | Contents |
 |---|---|
 | **M17 FFI shapes** (done) | variadic C functions (1.1); structs by value and by pointer, `.cstruct` (1.2); finalizers for `.extern` handles (1.5) |
-| **M18 Callbacks** | C calling back into MLWSVM during a call, through a re-entrant interpreter (1.3); asynchronous callbacks delivered as messages, and `api->post` for extensions (1.4) |
+| **M18 Callbacks** (done) | C calling back into MLWSVM during a call, through a re-entrant interpreter (1.3); asynchronous callbacks delivered as messages, and `api->post` for extensions (1.4) |
 | **M19 Standard library II** | `std.time`, `std.hash`, `std.random`, `std.encoding` (hex, base64, URL, CSV), `std.collections` (sorting with a comparator closure, using M18's re-entrant calls), more `std.math` (section 2) |
 | **M20 Bindgen** | `mlwsvm bindgen header.h`: `.extern`, `.cstruct` and `.callback` declarations from clang's JSON AST (1.5) |
 | **M21 Performance** | a size-class allocator first, then what measurements call for (section 4) |
@@ -61,55 +61,26 @@ Not supported: bitfields, `#pragma pack` and unions (declare a union as a
 `u8[N]` of its size). Layouts that differ by platform (`struct stat`) are best
 generated from the system headers (see 1.5).
 
-### 1.3 Callbacks during a call (medium to large)
+### 1.3 Callbacks during a call (M18: done)
 
-For example, a `qsort` comparator, `bsearch`, tree walkers, or `sqlite3_exec`
-row callbacks: C calls back on the same thread, before the foreign call
-returns. libffi closures (`ffi_closure_alloc`, `ffi_prep_closure_loc`) make a
-real C function pointer from an MLWSVM closure; modern libffi uses static
-trampolines, so this works where writable+executable memory is forbidden
-(macOS hardened runtime).
+`.callback NAME (params) -> (result)` declares a C function-pointer type, and
+an `.extern` parameter `callback NAME` takes a closure, which becomes a libffi
+closure for the duration of the call. The interpreter is re-entrant: the
+callback runs in the calling process, on top of the frames of the foreign call,
+until it returns. An uncaught exception stops at the callback and is raised when
+the foreign call returns, so it never unwinds C. A callback cannot wait
+(`E_CALLBACK`). The call's arguments are pinned against the collector while it
+runs. Callbacks may nest, and work in blocking calls (on the I/O thread).
 
-```asm
-.callback cmp_t (ptr, ptr) -> (i32)       ; a C function-pointer type
-.extern c.qsort, "", "qsort" (buf, u64, u64, callback cmp_t)
-    closure compare () -> (R1)
-    ncall "c.qsort" (R0, I0, 8, R1)
-```
+### 1.4 Asynchronous callbacks and posting messages (M18: done)
 
-What the VM needs:
-
-* **A re-entrant interpreter entry**: run the closure on the same process, on
-  top of the frames of the instruction making the foreign call, until it
-  returns. The collector may run inside the callback; that is safe because the
-  outer call's values are still in registers (roots), and objects never move.
-* **Exceptions stop at the boundary.** A throw inside the callback must not
-  unwind through C (`qsort`'s frames). It is caught there: the callback returns
-  a zero value to C, and the error is raised once the foreign call returns.
-  This is the same deferred-error rule natives follow.
-* **No scheduling inside.** The C stack is in use, so a callback runs to
-  completion. It is not preempted, and `recv`, `sleep` and other blocking
-  instructions trap (`E_CALLBACK`) rather than wait.
-* **Lifetime**: a callback is a foreign handle that owns its libffi closure.
-  C must not keep the function pointer after the handle is released.
-* Works for blocking calls too: the I/O thread runs the callback, since it owns
-  the process for the duration of the call.
-
-### 1.4 Asynchronous callbacks and posting messages (medium)
-
-Event loops, timers, audio or GUI toolkits, and libraries with their own
-threads call back *later*, often on another thread, when the process may be
-running elsewhere. Running MLWSVM code there would break process isolation.
-So these callbacks become **messages**:
-
-* `.callback ... , async PID`-style declarations make a C function pointer that
-  packs its arguments into a message to a chosen process and returns at once
-  (only `void` callbacks).
-* The extension API gains `api->post(vm, pid, value)`, callable from any
-  thread, to send a message from native code. This is Erlang's `enif_send`.
-* A callback that must return a value to C can block its own (foreign) thread
-  until the process replies, but never on a worker thread: that is detected and
-  refused, because it would deadlock.
+`.callback NAME (params), async` makes callbacks that C may call later, from any
+thread: `ffi.async_callback(type, pid)` makes a function pointer whose every
+call becomes a `Callback{name, args}` message. Extensions post messages from
+their own threads with `api->post_int` and `api->post_str` (Erlang's
+`enif_send`), and `api->hold` tells deadlock detection that messages may still
+come. A callback that must return a value to C from another thread is not
+supported. It would have to block that thread until the process replied.
 
 ### 1.5 Other
 

@@ -204,6 +204,10 @@ static void put_ffi_type(StrBuf *b, uint8_t kind, const char *tag) {
                                     "u32",  "u64", "f32", "f64", "cstr", "buf", "ptr"};
     uint8_t k = kind & (uint8_t)~FFI_OUT;
     if (kind & FFI_OUT) sb_puts(b, "out ");
+    if (k == FFI_CALLBACK) {
+        sb_printf(b, "callback %s", tag ? tag : "?");
+        return;
+    }
     if (k == FFI_STRUCT || k == FFI_STRUCTP) {
         sb_printf(b, "struct%s %s", k == FFI_STRUCTP ? "*" : "", tag ? tag : "?");
         return;
@@ -245,6 +249,22 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
             sb_putc(b, '\n');
         }
         sb_puts(b, ".ends\n");
+    }
+    for (uint32_t i = 0; i < m->ncallbacks; i++) {
+        const MCallback *cb = &m->callbacks[i];
+        sb_printf(b, ".callback %s (", cb->name);
+        for (int k = 0; k < cb->nargs; k++) {
+            if (k) sb_puts(b, ", ");
+            put_ffi_type(b, cb->args[k], cb->tags[k]);
+        }
+        sb_puts(b, ")");
+        if (cb->ret != FFI_VOID) {
+            sb_puts(b, " -> (");
+            put_ffi_type(b, cb->ret, cb->ret_tag);
+            sb_puts(b, ")");
+        }
+        if (cb->flags & MCB_ASYNC) sb_puts(b, ", async");
+        sb_putc(b, '\n');
     }
     for (uint32_t i = 0; i < m->nexterns; i++) {
         const MExtern *x = &m->externs[i];

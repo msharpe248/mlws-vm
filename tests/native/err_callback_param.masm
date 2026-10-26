@@ -1,0 +1,7 @@
+; Callback parameters are numbers, cstr or ptr: C passes them by value. A buf
+; has no MLWSVM buffer behind it, and structs are not supported.
+; expect-error: E_ASM_SYNTAX
+.callback each_t (buf, u64) -> (i32)
+.func main
+    ret 0
+.endf

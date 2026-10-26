@@ -181,6 +181,7 @@ void gc_collect(Process *p) {
     for (uint32_t i = 0; i < p->nglobals; i++) mark_segment(p, &p->globals[i], 0);
     for (size_t i = 0; i < p->handles.n; i++) mark(p, p->handles.v[i]);
     mark(p, p->exception);
+    for (size_t i = 0; i < p->pins.n; i++) mark(p, p->pins.v[i]);
     if (p->bcall.state != BCALL_NONE) { /* a blocking native call's arguments and results */
         const NativeDef *nd = p->bcall.nd;
         for (int k = 0; k < nd->np; k++)

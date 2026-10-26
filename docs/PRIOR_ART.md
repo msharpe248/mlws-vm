@@ -98,6 +98,8 @@ encoding.
 | Foreign handles with typed finalizers | Lua full userdata with `__gc`; CPython capsules; JNI global references | Typed by the address of their descriptor, so one library's pointer can't be passed as another's. Handles can't leave their process. |
 | `.extern` declarations called through libffi; `out` parameters; `ptr<tag>` | Python **ctypes** and **cffi**; **LuaJIT** FFI; Java's FFM API (Panama); libffi itself | Declared in the assembly the compiler emits, checked by the verifier like any native; tagged pointers stop pointer mix-ups at the boundary. |
 | `.cstruct` layouts, structs by value / by pointer (copied back) / `out struct`; variadic `...` (M17) | ctypes `Structure` and `_fields_`; cffi's `cdef`; LuaJIT `ffi.cdef`; Panama's `MemoryLayout`; libffi `FFI_TYPE_STRUCT` and `ffi_prep_cif_var` | The struct is an ordinary MLWSVM struct, so no C memory is ever exposed: it is copied in and out around the call. C's promotions are enforced after `...` at assembly time instead of left to luck. |
+| `.callback`: closures as C function pointers during a call, on a re-entrant interpreter (M18) | ctypes `CFUNCTYPE`, cffi `@ffi.callback`, LuaJIT callbacks, Java FFM upcall stubs, JNI calls back into Java; libffi closures | An uncaught exception stops at the callback and is raised when the C function returns, so C frames are never unwound (ctypes prints and drops it; LuaJIT forbids errors there). Waiting inside a callback is an error instead of a deadlock. |
+| Async callbacks as messages; `api->post_*` and `api->hold` | Erlang's `enif_send` and port drivers; libuv's `uv_async_send`; GUI toolkits' "post to the main loop" | A C thread never runs MLWSVM code: its calls arrive in a process's mailbox, so process isolation holds even for multi-threaded libraries. |
 | `.ffi_free` finalizers and `foreign.release` | ctypes/cffi `ffi.gc(ptr, destructor)`; Java's `Cleaner`; Rust's `Drop` | Declared once per pointer tag, so every handle of that kind is covered; a released handle refuses further calls instead of passing a dangling pointer. |
 | Trusted extension directories, SHA-256 pinning, permission checks | SSH's `StrictModes` checks of `~/.ssh`; lockfile and trust-on-first-use pinning; Deno's explicit permissions | Native code is opt-in per directory and per library, and a sandboxed process can be denied native code completely with a quota (kind 4). |
 
@@ -185,6 +187,7 @@ run 8.2× faster on the laptop's 18 cores than on one thread.
 | M13–M15 | BSD sockets with the poller; Erlang/OTP for calls, names and supervisors; Python's `str.format` and Rust's `format!` for `text.format`; RFC 8259 for JSON |
 | M16 | Lua's and CPython's embedding APIs; Erlang's `enif_send` for messages from host threads |
 | M17 | ctypes `Structure`, cffi `cdef` and `ffi.gc`, LuaJIT `ffi.cdef`, Java Panama `MemoryLayout` and `Cleaner`; libffi struct types and `ffi_prep_cif_var` |
+| M18 | ctypes `CFUNCTYPE`, cffi callbacks, Java FFM upcalls, libffi closures; Erlang `enif_send`, libuv `uv_async_send` |
 
 ## References
 

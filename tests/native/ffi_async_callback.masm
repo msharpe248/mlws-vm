@@ -1,0 +1,48 @@
+; Async callbacks: C calling back later, from any thread.
+;
+; `.callback NAME (params), async` declares a function-pointer type whose
+; calls become messages instead of running MLWSVM code where C happens to be.
+; `ncall "ffi.async_callback" ("NAME", pid) -> (R0)` makes one: a handle to a
+; C function pointer that, each time C calls it, sends the process `pid` a
+; Callback{name, args} message (args: a list of the arguments) and returns at
+; once. So an async callback returns nothing, and takes numbers and cstr.
+;
+; The handle owns the pointer: keep it while C may call it, and stop C from
+; calling before releasing it (foreign.release) or letting it be collected.
+; While one exists, a process waiting in recv is not a deadlock: C may yet
+; call.
+;
+; Here the C library is pthreads: a new thread runs the callback.
+; requires: ffi
+; option: --ext-path build/test-ext
+.include "std/test.inc"
+; void *(*start_routine)(void *): the argument is passed as a u64 (a pointer
+; and a u64 travel the same way), and the result is ignored by pthread_join.
+.callback start_t (u64), async
+.extern c.pthread_create, "", "pthread_create" (out u64, ptr, callback start_t, u64) -> (i32)
+.extern c.pthread_join, "", "pthread_join" (u64, ptr) -> (i32), blocking
+
+.func main
+    mov I0, PID
+    ncall "ffi.async_callback" ("start_t", I0) -> (R0)
+    ncall "c.pthread_create" (null, R0, 4242) -> (I1, I2)  ; result, then the out thread id
+    ASSERT_EQ I1, 0
+    recv R1                            ; waits for the other thread's call
+    strcmp I3, R1->Callback.name, "start_t"
+    ASSERT_EQ I3, 0
+    mov R2, R1->Callback.args
+    ASSERT_EQ R2[0], 4242
+    ncall "c.pthread_join" (I2, null) -> (I4)
+    ASSERT_EQ I4, 0
+
+    ; a released callback handle can no longer be passed to C
+    ncall "foreign.release" (R0)
+.try h
+    ncall "c.pthread_create" (null, R0, 1) -> (I1, I2)
+.endtry
+    FAIL "a released callback was passed to C"
+h:  catch R3
+    strcmp I5, R3->Error.code, "E_TYPE"
+    ASSERT_EQ I5, 0
+    ret 0
+.endf

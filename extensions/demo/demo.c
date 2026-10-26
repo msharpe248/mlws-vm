@@ -6,11 +6,13 @@
  * Use:      .extension "demo"   then   ncall "demo.add" (I0, I1) -> (I2)
  *
  * It shows each part of the API: numbers, strings, lists and maps, errors,
- * foreign handles with a finalizer, a blocking call, and a serial
- * (not thread-safe) one. */
+ * foreign handles with a finalizer, a blocking call, a serial (not
+ * thread-safe) one, and messages posted from a thread of its own. */
 #define _POSIX_C_SOURCE 200809L /* nanosleep */
 #include <mlwsvm/mlwsvm.h>
 
+#include <pthread.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -165,6 +167,62 @@ static void data(MlwsCtx *cx, const MlwsValue *a, MlwsValue *r) {
     r[0].i = *(int64_t *)api->native_data(cx);
 }
 
+/* ---- messages from another thread ---- */
+
+/* demo.ticker(pid, n) -> handle: a thread of the extension's own posts the
+ * numbers 1..n and then "done" to pid. demo.ticker_join(handle) waits for it:
+ * an extension must not let such a thread outlive the VM. */
+typedef struct {
+    pthread_t thread;
+    MlwsHost *host;
+    uint64_t pid;
+    int64_t n;
+    int joined;
+} Ticker;
+
+static void *ticker_main(void *arg) {
+    Ticker *t = arg;
+    for (int64_t i = 1; i <= t->n; i++) api->post_int(t->host, t->pid, i);
+    api->post_str(t->host, t->pid, "done", 4);
+    api->hold(t->host, -1);
+    return NULL;
+}
+
+static void ticker_finalize(void *p) {
+    Ticker *t = p;
+    if (!t->joined) pthread_join(t->thread, NULL);
+    free(t);
+}
+static const MlwsForeignType TICKER = {"demo.ticker", ticker_finalize};
+
+static void ticker(MlwsCtx *cx, const MlwsValue *a, MlwsValue *r) {
+    if (api->size < offsetof(MlwsApi, hold) + sizeof api->hold) {
+        api->error(cx, "E_DEMO", "this VM cannot post messages from other threads");
+        return;
+    }
+    Ticker *t = calloc(1, sizeof *t);
+    t->host = api->host(cx);
+    t->pid = a[0].u;
+    t->n = a[1].i;
+    api->hold(t->host, +1); /* the process may wait in recv for these */
+    if (pthread_create(&t->thread, NULL, ticker_main, t)) {
+        api->hold(t->host, -1);
+        free(t);
+        api->error(cx, "E_DEMO", "cannot start a thread");
+        return;
+    }
+    r[0] = api->foreign_new(cx, &TICKER, t);
+}
+
+static void ticker_join(MlwsCtx *cx, const MlwsValue *a, MlwsValue *r) {
+    (void)r;
+    Ticker *t = api->foreign_get(cx, a[0], &TICKER);
+    if (t && !t->joined) {
+        pthread_join(t->thread, NULL);
+        t->joined = 1;
+    }
+}
+
 MLWSVM_EXPORT int MLWSVM_EXTENSION_INIT(const MlwsApi *a, MlwsExtension *ext) {
     if (a->version < 1) return 1;
     api = a;
@@ -183,6 +241,8 @@ MLWSVM_EXPORT int MLWSVM_EXTENSION_INIT(const MlwsApi *a, MlwsExtension *ext) {
         {"demo.bump", 0, {0}, 1, {MLWS_T_I64}, MLWS_NATIVE_SERIAL, bump, NULL, "add 1 to a global"},
         {"demo.total", 0, {0}, 1, {MLWS_T_I64}, MLWS_NATIVE_SERIAL, get_total, NULL, "the global"},
         {"demo.data", 0, {0}, 1, {MLWS_T_I64}, 0, data, &the_data, "per-native data"},
+        {"demo.ticker", 2, {MLWS_T_I64, MLWS_T_I64}, 1, {MLWS_T_R}, 0, ticker, NULL, "post 1..n, then \"done\""},
+        {"demo.ticker_join", 1, {MLWS_T_R}, 0, {0}, MLWS_NATIVE_BLOCKING, ticker_join, NULL, "wait for a ticker"},
     };
     for (size_t i = 0; i < sizeof natives / sizeof natives[0]; i++)
         if (!a->define(ext, &natives[i])) return 1;

@@ -889,7 +889,8 @@ static void idle(Worker *w) {
         if (work_available(s)) break;
         uint64_t nt = s->next_timer, now = plat_now_ns();
         if (nt && nt <= now) break;
-        if (!nt && s->nidle == s->nrun && !s->io_inflight && !s->io_waiting && !vm->external_input) {
+        if (!nt && s->nidle == s->nrun && !s->io_inflight && !s->io_waiting && !vm->external_input &&
+            !atomic_load(&vm->async_sources)) {
             /* nothing can ever run again */
             deadlock = true;
             break;
@@ -1243,6 +1244,21 @@ void sched_shutdown(VM *vm, Process *keep) {
     s->timers.n = 0;
     timers_changed(s);
     smap_free(&vm->registry); /* every named process is gone */
+}
+
+bool sched_post_build(VM *vm, uint64_t pid, Word (*build)(Process *heap, void *ctx), void *ctx) {
+    Sched *s = vm->sched;
+    if (!s) return false; /* no program is running */
+    plat_lock(s->host_lock);
+    frag_reset(s->host_frag);
+    InMsg m = frag_take(s->host_frag, build(s->host_frag, ctx), T_R);
+    Process *to = pin(s, pid);
+    bool ok = to && accepts(to);
+    if (ok) push_locked(s, to, &m);
+    else gc_free_list(m.objs);
+    if (to) plat_unlock(to->lock);
+    plat_unlock(s->host_lock);
+    return ok;
 }
 
 bool sched_post(VM *vm, uint64_t pid, Word v, uint8_t tag, const char *str, size_t len) {

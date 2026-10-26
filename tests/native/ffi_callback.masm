@@ -1,0 +1,256 @@
+; Callbacks: C calling MLWSVM code during a foreign call.
+;
+; `.callback NAME (params) -> (result)` declares a C function-pointer type, and
+; an .extern parameter `callback NAME` takes a closure for it. While the C
+; function runs, each call through the pointer runs the closure in the calling
+; process, on the same thread, to completion. Then the pointer is gone: C must
+; not keep it after the call.
+;
+;   * Parameters are numbers, cstr (copied into a new string) and ptr (a
+;     borrowed handle: C still owns the pointer); the result is a number or ptr.
+;   * The closure's parameter types must match (integers, floats, references).
+;   * An exception the closure does not catch stops at the callback: C gets 0
+;     back (and later calls do nothing), and the exception is raised as the
+;     foreign call returns, so it never unwinds C's frames.
+;   * A callback cannot wait: recv, sleep and natives that would wait trap
+;     E_CALLBACK inside it. Anything else works, including garbage collection
+;     and other foreign calls.
+; requires: ffi
+; option: --ext-path build/test-ext
+.include "std/test.inc"
+
+.cstruct I32
+    v: i32
+.ends
+.callback cmp_t (ptr, ptr) -> (i32)
+.extern c.qsort, "", "qsort" (buf, u64, u64, callback cmp_t)
+; The same, on the I/O thread pool: the callbacks run there too.
+.extern c.qsort_blocking, "", "qsort" (buf, u64, u64, callback cmp_t), blocking
+.extern c.bsearch, "", "bsearch" (buf, buf, u64, u64, callback cmp_t) -> (ptr)
+; Read the int a pointer points to: memcpy(&out, ptr, 4).
+.extern c.load_i32, "", "memcpy" (out struct I32, ptr, u64) -> (ptr)
+
+calls:  .i64 0                         ; comparisons made (a global: per process)
+
+; Store v as the i-th little-endian int of buffer b.
+.func put_i32(ref b, i64 i, i64 v)
+    mul I3, i, 4
+    mov I4, v
+    mov I5, 0
+1:  and I6, I4, 0xFF
+    add I7, I3, I5
+    mov R0[I7], I6
+    shr I4, I4, 8
+    inc I5
+    blt I5, 4, 1b
+    ret
+.endf
+
+; The value at a borrowed int pointer.
+.func deref(ref p) -> i64
+    ncall "c.load_i32" (p, 4) -> (R1, R2) ; a foreign call inside the callback
+    ret R2->I32.v
+.endf
+
+; qsort's comparator: negative, zero or positive.
+.func compare(ref a, ref b) -> i32
+    add @calls, 1
+    call deref (a) -> (I0)
+    call deref (b) -> (I1)
+    sub I2, I0, I1
+    ret I2
+.endf
+
+; The same order, but the closure carries a Box whose buffer it drops and
+; then collects garbage: C is still sorting that buffer, so the call must
+; keep it alive (it is pinned for the call).
+.struct Box
+    buf: ref
+.ends
+.func compare_and_collect(ref a, ref b) -> i32
+    mov R2, UP[0]
+    mov R2->Box.buf, null
+    ncall "gc.collect"
+    tostr R3, 12345                    ; allocate a little
+    call deref (a) -> (I0)
+    call deref (b) -> (I1)
+    sub I2, I0, I1
+    ret I2
+.endf
+
+; A comparator that fails when it meets the value 13.
+.func compare_unlucky(ref a, ref b) -> i32
+    call deref (a) -> (I0)
+    call deref (b) -> (I1)
+    beq I0, 13, 1f
+    beq I1, 13, 1f
+    sub I2, I0, I1
+    ret I2
+1:  mov I3, 0
+    div I2, I0, I3                     ; E_DIV_ZERO, inside the callback
+    ret I2
+.endf
+
+; A comparator that catches its own exception, and goes on.
+.func compare_careful(ref a, ref b) -> i32
+.try h
+    call deref (a) -> (I0)
+    call deref (b) -> (I1)
+    mov I3, 0
+    beq I0, 13, 1f
+    mov I3, 1
+1:  div I4, I0, I3                     ; divides by zero when a is 13: caught below
+.endtry
+    sub I2, I0, I1
+    ret I2
+h:  catch R5
+    call deref (b) -> (I1)
+    sub I2, 13, I1
+    ret I2
+.endf
+
+; A comparator that sorts a small buffer of its own, with another callback,
+; each time it is called: callbacks nest.
+.func compare_nested(ref a, ref b) -> i32
+    lnew R2
+    lpush R2, 3, 1, 2
+    call fill (R2) -> (R3)
+    closure compare () -> (R4)
+    ncall "c.qsort" (R3, 3, 4, R4)
+    call check_sorted (R3, 3)
+    call deref (a) -> (I0)
+    call deref (b) -> (I1)
+    sub I2, I0, I1
+    ret I2
+.endf
+
+; Recursion with wide frames, to grow the process's register banks (which
+; may move them) during a callback.
+.func deep(i64 n) -> i64
+    bz n, 1f
+    sub I1, n, 1
+    mov R31, null                      ; 32 integer and 32 reference registers per frame
+    call deep (I1) -> (I31)
+    ret I31
+1:  ret 0
+.endf
+.func compare_deep(ref a, ref b) -> i32
+    call deep (200) -> (I5)
+    call deref (a) -> (I0)             ; a native call inside the callback, too
+    call deref (b) -> (I1)
+    sub I2, I0, I1
+    ret I2
+.endf
+
+; A comparator that waits for a message.
+.func compare_waiting(ref a, ref b) -> i32
+    recv I0
+    ret 0
+.endf
+
+; Fill a buffer with n ints from the list.
+.func fill(ref values) -> ref
+    len I0, values
+    mul I1, I0, 4
+    bufnew R1, I1
+    mov I2, 0
+1:  mov I3, values[I2]
+    call put_i32 (R1, I2, I3)
+    inc I2
+    blt I2, I0, 1b
+    ret R1
+.endf
+
+; Check that buffer b holds 1, 2, ..., n.
+.func check_sorted(ref b, i64 n)
+    mov I1, 0
+1:  mul I2, I1, 4
+    mov I3, R0[I2]                     ; the low byte is enough for small values
+    add I4, I1, 1
+    ASSERT_EQ I3, I4
+    inc I1
+    blt I1, n, 1b
+    ret
+.endf
+
+.func main
+    lnew R0
+    lpush R0, 5, 3, 8, 1, 9, 2, 7, 4, 6, 10, 13, 12, 11
+    call fill (R0) -> (R1)
+    closure compare () -> (R2)
+    ncall "c.qsort" (R1, 13, 4, R2)
+    call check_sorted (R1, 13)
+    mov I0, @calls
+    ASSERT_TRUE I0                     ; the comparator really ran
+    ; bsearch with the same comparator: a pointer into the buffer, or null
+    bufnew R3, 4
+    call put_i32 (R3, 0, 9)
+    ncall "c.bsearch" (R3, R1, 13, 4, R2) -> (R4)
+    call deref (R4) -> (I1)
+    ASSERT_EQ I1, 9
+    call put_i32 (R3, 0, 99)
+    ncall "c.bsearch" (R3, R1, 13, 4, R2) -> (R4)
+    ASSERT_FALSE R4, r
+
+    ; the garbage collector runs during the sort; the buffer survives
+    call fill (R0) -> (R1)
+    new R5, Box
+    mov R5->Box.buf, R1
+    closure compare_and_collect (R5) -> (R6)
+    mov R1, null                       ; now only the Box (and the call) hold it
+    ncall "c.qsort" (R5->Box.buf, 13, 4, R6)
+
+    ; on the I/O thread, and nested
+    call fill (R0) -> (R1)
+    ncall "c.qsort_blocking" (R1, 13, 4, R2)
+    call check_sorted (R1, 13)
+    call fill (R0) -> (R1)
+    closure compare_nested () -> (R14)
+    ncall "c.qsort" (R1, 13, 4, R14)
+    call check_sorted (R1, 13)
+
+    ; the banks move during the callbacks: bsearch's result still lands in R4
+    closure compare_deep () -> (R15)
+    call put_i32 (R3, 0, 7)
+    ncall "c.bsearch" (R3, R1, 13, 4, R15) -> (R4)
+    call deref (R4) -> (I1)
+    ASSERT_EQ I1, 7
+
+    ; an exception the comparator catches itself
+    call fill (R0) -> (R1)
+    closure compare_careful () -> (R7)
+    ncall "c.qsort" (R1, 13, 4, R7)
+    call check_sorted (R1, 13)
+
+    ; an exception it does not catch: raised when qsort returns
+    call fill (R0) -> (R1)
+    closure compare_unlucky () -> (R8)
+.try h1
+    ncall "c.qsort" (R1, 13, 4, R8)
+.endtry
+    FAIL "the callback's exception was lost"
+h1: catch R9
+    strcmp I2, R9->Error.code, "E_DIV_ZERO"
+    ASSERT_EQ I2, 0
+
+    ; waiting inside a callback
+    closure compare_waiting () -> (R10)
+.try h2
+    ncall "c.qsort" (R1, 13, 4, R10)
+.endtry
+    FAIL "a callback waited"
+h2: catch R11
+    strcmp I3, R11->Error.code, "E_CALLBACK"
+    ASSERT_EQ I3, 0
+
+    ; a closure of the wrong shape
+    closure check_sorted () -> (R12)
+.try h3
+    ncall "c.qsort" (R1, 13, 4, R12)
+.endtry
+    FAIL "a closure of the wrong type was accepted"
+h3: catch R13
+    strcmp I4, R13->Error.code, "E_TYPE"
+    ASSERT_EQ I4, 0
+    ret 0
+.endf

@@ -102,7 +102,7 @@ check-embed: $(BUILD)/embed-host
 -include $(OBJ:.o=.d)
 
 # Native extensions: the demo (extensions/demo) is the example and the test fixture.
-EXT_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O2 -g -fPIC -shared -Iinclude
+EXT_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O2 -g -fPIC -shared -pthread -Iinclude
 build/ext/demo.mlwsx: extensions/demo/demo.c include/mlwsvm/mlwsvm.h
 	@mkdir -p $(dir $@)
 	$(CC) $(EXT_CFLAGS) -o $@ $<

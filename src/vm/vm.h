@@ -190,6 +190,8 @@ typedef struct VM {
     VEC(NativeDef *) foreign_natives; /* owned NativeDefs of extensions and the FFI */
     StrMap ffi_types;            /* FFI handle tag -> its MlwsForeignType */
     StrMap ffi_structs;          /* .cstruct name -> its C layout (ffi.c) */
+    StrMap ffi_callbacks;        /* .callback name -> its C function type (ffi.c) */
+    _Atomic int64_t async_sources; /* live async callbacks and extension holds: messages may come from C */
     /* the program's view of the OS (std.os) */
     StrVec prog_args;            /* os.args: the arguments after the program file */
     _Atomic bool exit_requested; /* os.exit was called: the program ends with exit_code */
@@ -355,7 +357,12 @@ struct Process {
     bool reply_ready;            /* [L] */
     InMsg reply;                 /* [L] detached until taken */
     uint64_t cpu_ns, msgs_sent, msgs_received;
-    /* what the entry function returned (for embedding: mlws_call) */
+    /* callbacks from C into this process during a foreign call (proc_callback) */
+    uint32_t cb_base;            /* frames below this belong to the code that made the call; 0: none */
+    bool reentered;              /* a callback ran during the last native call: cached frame pointers are stale */
+    struct PlatLock *serial_held; /* the serial library lock held by the call in progress */
+    VEC(Obj *) pins;             /* objects C may be using during the call: GC roots */
+    /* what the entry function returned (for embedding: mlws_call), or a callback */
     Word results[NATIVE_MAX_RETS];
     uint8_t result_types[NATIVE_MAX_RETS];
     uint8_t nresults;
@@ -392,6 +399,12 @@ MLWS_NORETURN void proc_throw(Process *p, Obj *ex);
 /* Run up to `budget` instructions; returns a SLICE_* code. On SLICE_FAILED,
  * p->err describes the failure. */
 int proc_run_slice(Process *p, uint32_t budget);
+/* Run a closure to completion on top of the current frames: a callback from C
+ * during a foreign call. It cannot wait (recv, sleep and waiting natives trap
+ * E_CALLBACK inside it), and an exception it does not catch stops at its
+ * frame. Returns false and fills p->err if it failed; otherwise its results
+ * are in p->results. */
+bool proc_callback(Process *p, ObjClosure *cl, const Word *args);
 /* Push the entry frame of a new process (running `closure`, or NULL), bind
  * its arguments, and hand it to the scheduler. */
 void proc_start(Process *p, Function *fn, Obj *closure, const Word *args, int nargs);
@@ -417,6 +430,8 @@ int interp_run(Process *p, uint32_t budget); /* SLICE_* */
 /* Pick a specialised handler for common instruction shapes (after verification). */
 void interp_quicken(Insn *in);
 void interp_quicken_function(Function *f);
+/* Push a frame running closure cl with its arguments bound (proc_callback). */
+void interp_enter(Process *p, ObjClosure *cl, const Word *args);
 
 /* sched.c - see docs/ABI.md ("Scheduling"). The `p` arguments are the
  * calling (running) process; errors trap in it. */
@@ -476,6 +491,8 @@ void sched_request_exit(VM *vm, int64_t code);
 /* Send a message from outside the VM (any thread): a number, or a string if
  * str is not NULL. False if the process does not exist or has finished. */
 bool sched_post(VM *vm, uint64_t pid, Word v, uint8_t tag, const char *str, size_t len);
+/* Post a message built by `build` on a scratch heap, from any thread. */
+bool sched_post_build(VM *vm, uint64_t pid, Word (*build)(Process *heap, void *ctx), void *ctx);
 /* Inside a foreign call: fail it (raised when the call returns). */
 void native_fail(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);
 void foreign_finalize(Obj *o);       /* run a foreign handle's finalizer (GC) */
@@ -495,6 +512,10 @@ struct LModule;
 bool ffi_define(VM *vm, const struct MExtern *x, MlwsError *err);
 bool ffi_define_struct(VM *vm, struct LModule *lm, const struct MCStruct *c, MlwsError *err); /* `.cstruct` */
 bool ffi_define_free(VM *vm, const struct MFfiFree *f, MlwsError *err);                        /* `.ffi_free` */
+struct MCallback;
+bool ffi_define_callback(VM *vm, const struct MCallback *cb, MlwsError *err);                  /* `.callback` */
+void ffi_free_callback(void *v);
+void n_ffi_async_callback(Process *p, Word *args, Word *rets); /* the ffi.async_callback native */
 void ffi_free_data(void *data);   /* an `.extern` native's call data */
 void ffi_free_struct(void *v);    /* a `.cstruct` layout */
 bool ffi_available(void);

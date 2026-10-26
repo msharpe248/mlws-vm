@@ -45,6 +45,13 @@ void module_free(Module *m) {
     free(m->cstructs);
     for (uint32_t i = 0; i < m->nffrees; i++) free(m->ffrees[i].tag), free(m->ffrees[i].lib), free(m->ffrees[i].sym);
     free(m->ffrees);
+    for (uint32_t i = 0; i < m->ncallbacks; i++) {
+        MCallback *cb = &m->callbacks[i];
+        free(cb->name);
+        for (int k = 0; k < cb->nargs; k++) free(cb->tags[k]);
+        free(cb->ret_tag);
+    }
+    free(m->callbacks);
     for (uint32_t i = 0; i < m->nstructs; i++) {
         MStruct *st = &m->structs[i];
         free(st->name);
@@ -205,6 +212,19 @@ void module_write(const Module *m, ByteBuf *b) {
         bb_str(b, m->ffrees[i].tag);
         bb_str(b, m->ffrees[i].lib);
         bb_str(b, m->ffrees[i].sym);
+    }
+    bb_uleb(b, m->ncallbacks);
+    for (uint32_t i = 0; i < m->ncallbacks; i++) {
+        const MCallback *cb = &m->callbacks[i];
+        bb_str(b, cb->name);
+        bb_uleb(b, cb->flags);
+        bb_u8(b, cb->nargs);
+        for (int k = 0; k < cb->nargs; k++) {
+            bb_u8(b, cb->args[k]);
+            bb_str(b, cb->tags[k] ? cb->tags[k] : "");
+        }
+        bb_u8(b, cb->ret);
+        bb_str(b, cb->ret_tag ? cb->ret_tag : "");
     }
 }
 
@@ -441,15 +461,16 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
             bool out = x->args[k] & FFI_OUT;
             /* the assembler's rules: out parameters are numbers, ptr or a struct */
             if (kind == FFI_VOID || kind >= FFI__COUNT ||
-                (out && (kind == FFI_CSTR || kind == FFI_BUF || kind == FFI_STRUCTP)) ||
-                ((kind == FFI_STRUCT || kind == FFI_STRUCTP) && !x->tags[k]))
+                (out && (kind == FFI_CSTR || kind == FFI_BUF || kind == FFI_STRUCTP || kind == FFI_CALLBACK)) ||
+                ((kind == FFI_STRUCT || kind == FFI_STRUCTP || kind == FFI_CALLBACK) && !x->tags[k]))
                 FAIL("extern %s: bad parameter kind", x->name);
         }
         x->ret = br_u8(&r);
         x->ret_tag = br_str(&r);
         CHECK();
         if (!*x->ret_tag) free(x->ret_tag), x->ret_tag = NULL;
-        if (x->ret >= FFI__COUNT || x->ret == FFI_BUF || x->ret == FFI_STRUCTP || (x->ret == FFI_STRUCT && !x->ret_tag))
+        if (x->ret >= FFI__COUNT || x->ret == FFI_BUF || x->ret == FFI_STRUCTP || x->ret == FFI_CALLBACK ||
+            (x->ret == FFI_STRUCT && !x->ret_tag))
             FAIL("extern %s: bad result kind", x->name);
     }
     n = br_uleb(&r);
@@ -473,7 +494,7 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
             c->counts[k] = (uint32_t)br_uleb(&r);
             CHECK();
             if (!*c->tags[k]) free(c->tags[k]), c->tags[k] = NULL;
-            if (c->kinds[k] == FFI_VOID || c->kinds[k] >= FFI__COUNT || c->kinds[k] == FFI_STRUCTP || c->kinds[k] == FFI_BUF ||
+            if (c->kinds[k] == FFI_VOID || c->kinds[k] >= FFI_STRUCTP || c->kinds[k] == FFI_BUF ||
                 (c->kinds[k] == FFI_STRUCT && !c->tags[k]) ||
                 (c->counts[k] && (c->kinds[k] > FFI_F64 || c->counts[k] > 65536))) /* arrays: of numbers */
                 FAIL("cstruct %s: bad field kind", c->name);
@@ -488,6 +509,34 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
         m->ffrees[i].lib = br_str(&r);
         m->ffrees[i].sym = br_str(&r);
         CHECK();
+    }
+    n = br_uleb(&r);
+    CHECK_COUNT(n, 4);
+    m->ncallbacks = (uint32_t)n;
+    m->callbacks = xcalloc(n + 1, sizeof(MCallback));
+    for (uint32_t i = 0; i < m->ncallbacks; i++) {
+        MCallback *cb = &m->callbacks[i];
+        cb->name = br_str(&r);
+        cb->flags = (uint32_t)br_uleb(&r);
+        cb->nargs = br_u8(&r);
+        CHECK();
+        if (cb->nargs > FFI_MAX_ARGS) FAIL("callback %s: too many parameters", cb->name);
+        for (int k = 0; k < cb->nargs; k++) {
+            cb->args[k] = br_u8(&r);
+            cb->tags[k] = br_str(&r);
+            CHECK();
+            if (!*cb->tags[k]) free(cb->tags[k]), cb->tags[k] = NULL;
+            uint8_t kind = cb->args[k];
+            /* numbers, cstr and ptr; an async callback's arguments travel in a message: no ptr */
+            if (kind == FFI_VOID || (kind > FFI_CSTR && kind != FFI_PTR) || (kind == FFI_PTR && cb->flags & MCB_ASYNC))
+                FAIL("callback %s: bad parameter kind", cb->name);
+        }
+        cb->ret = br_u8(&r);
+        cb->ret_tag = br_str(&r);
+        CHECK();
+        if (!*cb->ret_tag) free(cb->ret_tag), cb->ret_tag = NULL;
+        if ((cb->ret > FFI_F64 && cb->ret != FFI_PTR) || (cb->ret != FFI_VOID && cb->flags & MCB_ASYNC))
+            FAIL("callback %s: bad result kind", cb->name);
     }
     if (r.pos != r.n) FAIL("trailing bytes after the module");
 

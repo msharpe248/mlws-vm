@@ -263,4 +263,7 @@ void ext_free_all(VM *vm) {
     for (size_t i = 0; i < vm->ffi_structs.cap; i++)
         if (vm->ffi_structs.keys && vm->ffi_structs.keys[i]) ffi_free_struct(vm->ffi_structs.vals[i]);
     smap_free(&vm->ffi_structs);
+    for (size_t i = 0; i < vm->ffi_callbacks.cap; i++)
+        if (vm->ffi_callbacks.keys && vm->ffi_callbacks.keys[i]) ffi_free_callback(vm->ffi_callbacks.vals[i]);
+    smap_free(&vm->ffi_callbacks);
 }

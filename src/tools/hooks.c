@@ -177,7 +177,7 @@ static void profile_insn(Tools *t, Process *p, Function *f, uint32_t pc) {
 static bool tools_hook(Process *p, uint32_t pc) {
     Tools *t = p->vm->tools;
     Function *f = p->frames[p->nframes - 1].fn;
-    if (t->dbg && debugger_hook(t->dbg, p, pc)) return true;
+    if (t->dbg && !p->cb_base && debugger_hook(t->dbg, p, pc)) return true; /* a callback cannot stop */
     if (t->trace) trace_insn(t, p, f, pc);
     if (t->profile) profile_insn(t, p, f, pc);
     return false;

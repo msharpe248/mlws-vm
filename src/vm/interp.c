@@ -1129,6 +1129,15 @@ static void keep_results(Process *p, const Word *vals, const MlwsType *types, in
     }
 }
 
+void interp_enter(Process *p, ObjClosure *cl, const Word *args) {
+    Ctx c;
+    c.p = p;
+    proc_push_frame(p, cl->fn, NULL); /* no caller instruction: its ret ends the callback */
+    p->frames[p->nframes - 1].closure = &cl->h;
+    ctx_load(&c);
+    bind_args(&c, NULL, cl->fn->mf->params, cl->fn->mf->nparams, args);
+}
+
 int interp_run(Process *p, uint32_t budget) {
     Ctx c;
     VM *vm = p->vm;
@@ -1219,8 +1228,8 @@ int interp_run(Process *p, uint32_t budget) {
             const MFunc *mf = fr->fn->mf;
             const Insn *ri = fr->ret_insn;
             proc_pop_frame(p);
-            if (p->nframes == 0) {
-                p->exit_code = n > 0 && type_is_int((MlwsType)mf->rets[0]) ? vals[0].i : 0;
+            if (p->nframes == p->cb_base) { /* the entry function (or a callback) returned */
+                if (!p->cb_base) p->exit_code = n > 0 && type_is_int((MlwsType)mf->rets[0]) ? vals[0].i : 0;
                 MlwsType rt[NATIVE_MAX_RETS];
                 for (int k = 0; k < n && k < NATIVE_MAX_RETS; k++) rt[k] = (MlwsType)mf->rets[k];
                 keep_results(p, vals, rt, n);
@@ -1256,13 +1265,14 @@ int interp_run(Process *p, uint32_t budget) {
         /* ---- everything else ---- */
         case OP_NOP:
             break;
-        case OP_BREAK: /* a debugger stops here; without one it is a no-op */
-            if (vm->hook) {
+        case OP_BREAK: /* a debugger stops here; without one (or in a callback) it is a no-op */
+            if (vm->hook && !p->cb_base) {
                 vm->stopped = p;
                 return SLICE_BREAK;
             }
             break;
         case OP_HALT:
+            if (p->cb_base) vm_trap(p, "E_CALLBACK", "halt inside a callback from C");
             p->exit_code = in->nops ? rd(&c, &ops[0], T_I64).i : 0;
             return SLICE_DONE;
         case OP_ASSERT:
@@ -1483,8 +1493,8 @@ int interp_run(Process *p, uint32_t budget) {
             const Insn *ri = fr->ret_insn;
             const char *callee = fr->fn->name;
             proc_pop_frame(p);
-            if (p->nframes == 0) {
-                p->exit_code = in->nops > 0 && type_is_int(vt[0]) ? vals[0].i : 0;
+            if (p->nframes == p->cb_base) { /* the entry function (or a callback) returned */
+                if (!p->cb_base) p->exit_code = in->nops > 0 && type_is_int(vt[0]) ? vals[0].i : 0;
                 keep_results(p, vals, vt, in->nops);
                 return SLICE_DONE;
             }
@@ -1506,6 +1516,11 @@ int interp_run(Process *p, uint32_t budget) {
             if (!nd->flags) { /* built in: the fast path */
                 for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)nd->pt[k]);
                 nd->fn(p, args, rets);
+                if (p->reentered) { /* it ran MLWSVM code (a comparator, say): the banks may have moved */
+                    p->reentered = false;
+                    ctx_load(&c);
+                    fr = c.fr;
+                }
             } else if (p->bcall.state == BCALL_DONE && p->bcall.insn == in) { /* back from the I/O pool */
                 memcpy(rets, p->bcall.rets, sizeof rets);
                 p->bcall.state = BCALL_NONE;
@@ -1515,7 +1530,22 @@ int interp_run(Process *p, uint32_t budget) {
             } else {
                 for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)nd->pt[k]);
                 bool to_pool = (nd->flags & NF_BLOCKING) != 0;
-                if (to_pool) {
+                if (p->cb_base) { /* inside a callback: C is waiting on this thread, so run it here */
+                    native_call(p, nd, args, rets);
+                    if (p->native_req == NREQ_BLOCKING) { /* the blocking part: here as well */
+                        p->native_req = NREQ_NONE;
+                        p->resumed = true;
+                        native_call(p, nd, args, rets);
+                    }
+                    int req = p->native_req;
+                    p->native_req = NREQ_NONE;
+                    p->resumed = false;
+                    if (req != NREQ_NONE) {
+                        p->fdwait.deadline = 0;
+                        vm_trap(p, "E_CALLBACK", "%s would wait inside a callback from C", nd->name);
+                    }
+                    to_pool = false;
+                } else if (to_pool) {
                     native_count_call(p, nd);
                 } else {
                     native_call(p, nd, args, rets);
@@ -1551,6 +1581,11 @@ int interp_run(Process *p, uint32_t budget) {
                     p->insns--;
                     return SLICE_NATIVE;
                 }
+            }
+            if (p->reentered) { /* a callback ran: the register banks and frames may have moved */
+                p->reentered = false;
+                ctx_load(&c);
+                fr = c.fr;
             }
             for (int k = 0; k < in->nops - 2 - argc; k++) wr(&c, &ops[2 + argc + k], (MlwsType)nd->rt[k], rets[k]);
             break;
@@ -1986,15 +2021,24 @@ int interp_run(Process *p, uint32_t budget) {
                 p->deadlock = false;
                 vm_trap(p, "E_DEADLOCK", "every process is waiting: no message can ever arrive");
             }
+            if (p->cb_base) { /* C is waiting for the callback: it cannot wait in turn */
+                p->deadline_set = false;
+                vm_trap(p, "E_CALLBACK", "recv would wait inside a callback from C");
+            }
             fr->pc--; /* re-execute this receive when woken */
             p->insns--;
             return SLICE_BLOCK;
         }
         case OP_YIELD:
+            if (p->cb_base) break; /* a callback runs to completion */
             return SLICE_YIELD;
         case OP_SLEEP: {
             int64_t ms = rd(&c, &ops[0], T_I64).i;
-            if (ms <= 0) return SLICE_YIELD;
+            if (p->cb_base && ms > 0) vm_trap(p, "E_CALLBACK", "sleep inside a callback from C");
+            if (ms <= 0) {
+                if (p->cb_base) break;
+                return SLICE_YIELD;
+            }
             p->wake_at = plat_now_ns() + (uint64_t)ms * 1000000u;
             return SLICE_SLEEP;
         }

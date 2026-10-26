@@ -572,6 +572,7 @@ macro-only files use the `.inc` extension and are not modules.
 | `.extension "name"` | top level | Load an installed native extension ([EXTENDING.md](EXTENDING.md)) |
 | `.extern name, "lib", "sym" (types) -> (type) [, blocking] [, serial]` | top level | Make a C function a native (the FFI; [EXTENDING.md](EXTENDING.md)) |
 | `.cstruct Name` … `.ends` | top level | A C struct's layout (`field: type` lines), and a struct of the same name, for `.extern` `struct Name` / `struct* Name` / `out struct Name` ([EXTENDING.md](EXTENDING.md#c-structs)) |
+| `.callback Name (types) -> (type) [, async]` | top level | A C function-pointer type, for `.extern` parameters `callback Name`: a closure that C calls during the call, or (async) a handle whose calls become messages ([EXTENDING.md](EXTENDING.md#callbacks)) |
 | `.ffi_free tag, "lib", "sym"` | top level | Give `ptr<tag>` handles a finalizer: `sym(ptr)` when collected or released ([EXTENDING.md](EXTENDING.md#handles-that-free-themselves)) |
 | `.export a, b, ...` | anywhere | Export functions, data symbols or struct types |
 | `.func ... / .endf` | top level | Define a function |
@@ -616,5 +617,9 @@ Expectations are written as comments in the test file:
 Tests run on one worker thread per core unless `--threads N`, `MLWSVM_THREADS` or
 a `; threads:` line says otherwise, so a test should not depend on the order in
 which independent processes run (see [ABI.md](ABI.md) §1.1).
+
+A test still running after `MLWSVM_TEST_TIMEOUT` seconds (default 300) is
+reported as `TIMEOUT path`, and the run ends with exit code 3. A hung VM cannot
+be stopped from outside, so the run cannot go on.
 
 See [TOOLING.md](TOOLING.md) for the debugger, profiler, tracer and monitor.

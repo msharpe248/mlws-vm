@@ -1,0 +1,24 @@
+; Extensions can post messages from threads of their own (api->post_int,
+; api->post_str), for libraries with event loops or worker threads. While the
+; extension holds the VM (api->hold), waiting for those messages in recv is not
+; a deadlock. demo.ticker posts 1..n and then "done" from a new thread;
+; demo.ticker_join waits for that thread to end.
+; option: --ext-path build/test-ext
+.include "std/test.inc"
+.extension "demo"
+.func main
+    mov I0, PID
+    ncall "demo.ticker" (I0, 100) -> (R0)
+    mov I1, 0                          ; the sum of the numbers
+    mov I2, 0                          ; how many came
+1:  recv I3                            ; one thread posts them, so they arrive in order
+    add I1, I3
+    inc I2
+    blt I2, 100, 1b
+    ASSERT_EQ I1, 5050
+    recv R1                            ; and then the string
+    strcmp I4, R1, "done"
+    ASSERT_EQ I4, 0
+    ncall "demo.ticker_join" (R0)
+    ret 0
+.endf

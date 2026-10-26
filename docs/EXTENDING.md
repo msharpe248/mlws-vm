@@ -138,6 +138,29 @@ another process (`E_TYPE`), because the resource belongs to its process.
 | `list_new`, `list_len`, `list_get`, `list_push` | Lists; each element keeps its type |
 | `map_new`, `map_get`, `map_set` | Maps, with typed keys and values |
 | `foreign_new`, `foreign_get`, `foreign_release` | Foreign handles |
+| `host`, `post_int`, `post_str`, `hold` | Messages from any thread (below) |
+
+### Messages from other threads
+
+A library with threads or an event loop of its own can deliver events as
+messages. `api->host(cx)`, called during a call, returns the VM. From then on,
+any thread can `post_int(host, pid, n)` or `post_str(host, pid, s, len)` to
+send a process a message. This is Erlang's `enif_send`. A post to a process
+that has ended returns false.
+
+```c
+t->host = api->host(cx);
+api->hold(t->host, +1);                        /* before the thread starts posting */
+pthread_create(&t->thread, NULL, worker, t);   /* worker: api->post_int(t->host, pid, n), ... */
+                                               /* and api->hold(t->host, -1) when it is done */
+```
+
+While a hold is taken, a process waiting in `recv` is not reported as
+deadlocked, since messages may still arrive. The host stays valid until the VM
+is freed, so join posting threads before the program can end (`demo.ticker`
+and `demo.ticker_join` in `extensions/demo/demo.c` show how). These functions
+were added after version 1 was first released: check
+`api->size >= offsetof(MlwsApi, hold) + sizeof api->hold` before using them.
 
 The table is versioned: `MLWSVM_API_VERSION` and `api->size`. A later version
 only appends functions. An extension built for a different API version exports a
@@ -179,6 +202,7 @@ reported at load time and never crashes.
 | `cstr` | a string (its bytes, NUL-terminated) or a byte buffer (copied and NUL-terminated); as a result, the C string is copied into a new string; NULL is null | `const char *` |
 | `buf` | a byte buffer, passed as its own bytes, which C may change | `void *` |
 | `ptr`, `ptr<tag>` | an opaque foreign handle; as a result, a new handle (freed by the tag's `.ffi_free` function, if it has one); NULL is null | `void *` |
+| `callback NAME` | a closure, or an async callback handle (below) | a function pointer |
 | `struct NAME`, `struct* NAME` | a `.cstruct` (below): by value, or a pointer to a copy | `struct NAME`, `struct NAME *` |
 | `out T` | no argument: C gets a pointer to a temporary, whose value becomes an extra result (numbers and `ptr`) | `T *` |
 
@@ -264,9 +288,79 @@ function again under another name. C promotes small integers to `int` and
 are refused after `...` (write `i32` or `f64`), as are `out` parameters and
 structs by value.
 
-Callbacks from C into MLWSVM are not supported yet; until then, wrap such an
-API in an extension. They are planned, and the design is in
-[ROADMAP.md](ROADMAP.md) §1.
+### Callbacks
+
+```asm
+.callback cmp_t (ptr, ptr) -> (i32)            ; a C function-pointer type
+.extern c.qsort, "", "qsort" (buf, u64, u64, callback cmp_t)
+
+.func compare(ref a, ref b) -> i32             ; parameters match the callback's
+    ...
+.endf
+    closure compare () -> (R1)
+    ncall "c.qsort" (R0, I0, 4, R1)            ; C calls compare while qsort runs
+```
+
+`.callback NAME (PARAMS) -> (RESULT)` declares a function-pointer type, and an
+`.extern` parameter `callback NAME` takes a closure for it. For the duration of
+the call, the closure becomes a real C function pointer (a libffi closure). Each
+time C calls it, the closure runs in the calling process, on the same thread, on
+top of the frames that made the foreign call, and its result goes back to C.
+When the call returns, the pointer is freed: C must not keep it.
+
+* **Types.** Parameters are numbers, `cstr` (copied into a new string) and
+  `ptr<tag>` (a borrowed handle, see below). The result is a number, a `ptr`, or
+  nothing. The closure's parameter types must be of the same kind (integer,
+  float, reference), or the call fails with `E_TYPE`.
+* **Exceptions stop at the boundary.** An exception the closure catches is
+  ordinary. One it does not catch never unwinds C's frames. Instead, that call
+  returns 0 to C, later calls of the same pointer return 0 without running, and
+  the exception is raised when the foreign call returns, with its original code.
+* **No waiting.** C is waiting for the callback, so the callback cannot wait in
+  turn: `recv` with no message, `sleep`, and natives that would wait (network
+  and pipe I/O, `proc.call`) trap `E_CALLBACK` inside it. Everything else
+  works: allocation and garbage collection, other foreign calls (including ones
+  that call back again), blocking natives (they run right there), and spawning
+  and sending. The debugger does not stop inside callbacks.
+* **Threads.** A callback runs only on the thread making the foreign call. If C
+  calls it from another thread, the callback does not run, C gets 0, and the
+  foreign call fails with `E_CALLBACK`. Use an async callback for that. A
+  `blocking` extern's callbacks run on its I/O thread, which is correct.
+* **Safety.** The objects passed to the call are kept alive until it returns,
+  even if the callback drops every other reference to them. A `serial`
+  library's callback cannot call back into that same library (`E_CALLBACK`,
+  where it would otherwise deadlock).
+
+**Borrowed pointers.** A pointer that C passes to a callback, or that is read
+from a struct field, still belongs to C. Its handle is *borrowed*: the tag's
+`.ffi_free` function is never called on it. Only function results and `out`
+parameters make handles that own their pointer.
+
+### Async callbacks
+
+```asm
+.callback start_t (u64), async
+.extern c.pthread_create, "", "pthread_create" (out u64, ptr, callback start_t, u64) -> (i32)
+
+    ncall "ffi.async_callback" ("start_t", I0) -> (R0)   ; calls become messages to process I0
+    ncall "c.pthread_create" (null, R0, 42) -> (I1, I2)
+    recv R1                       ; Callback{name: "start_t", args: [42]}
+```
+
+Event loops, timers and libraries with threads of their own call back later,
+from any thread, when the process may be busy or running elsewhere. Running
+MLWSVM code there would break process isolation, so an `async` callback type
+turns each call into a **message** instead: a built-in struct
+`Callback{name, args}`, with the arguments as a list. The C call returns at
+once. So an async callback returns nothing, and its parameters are numbers and
+`cstr`.
+
+`ffi.async_callback(type, pid)` makes the function pointer as a foreign handle,
+and the `callback` parameter takes that handle. The handle owns the pointer:
+keep it for as long as C may call it, and make sure C has stopped before
+releasing it (`foreign.release`) or letting it be collected. While one exists,
+waiting in `recv` is not reported as a deadlock.
+
 
 ---
 

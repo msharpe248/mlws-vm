@@ -25,6 +25,7 @@ enum {
 
 #define OBJF_IMMORTAL 0x01
 #define OBJF_MARK 0x02
+#define OBJF_BORROWED 0x04 /* a foreign handle to a pointer C still owns: never finalized */
 
 typedef struct Obj {
     uint8_t kind;

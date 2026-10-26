@@ -1,0 +1,6 @@
+; A callback parameter names a .callback type, declared before the .extern.
+; expect-error: E_ASM_UNDEF_SYM
+.extern c.qsort, "", "qsort" (buf, u64, u64, callback cmp_t)
+.func main
+    ret 0
+.endf

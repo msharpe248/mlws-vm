@@ -203,6 +203,8 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
         if (!ffi_define_struct(vm, lm, &m->cstructs[i], err)) return false;
     for (uint32_t i = 0; i < m->nffrees; i++)
         if (!ffi_define_free(vm, &m->ffrees[i], err)) return false;
+    for (uint32_t i = 0; i < m->ncallbacks; i++)
+        if (!ffi_define_callback(vm, &m->callbacks[i], err)) return false;
     for (uint32_t i = 0; i < m->nexterns; i++)
         if (!ffi_define(vm, &m->externs[i], err)) return false;
     lm->natives = xcalloc(m->nnatives + 1, sizeof(NativeDef *));

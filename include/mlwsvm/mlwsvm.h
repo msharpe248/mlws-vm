@@ -95,6 +95,7 @@ enum {
 
 typedef struct MlwsCtx MlwsCtx;             /* the calling process, during a call */
 typedef struct MlwsExtension MlwsExtension; /* the extension, during init */
+typedef struct MlwsHost MlwsHost;           /* the VM, for messages from any thread */
 
 typedef void (*MlwsNativeFn)(MlwsCtx *cx, const MlwsValue *args, MlwsValue *results);
 
@@ -158,6 +159,19 @@ typedef struct MlwsApi {
     MlwsValue (*foreign_new)(MlwsCtx *cx, const MlwsForeignType *type, void *ptr);
     void *(*foreign_get)(MlwsCtx *cx, MlwsValue ref, const MlwsForeignType *type);
     void (*foreign_release)(MlwsCtx *cx, MlwsValue ref); /* finalize now; idempotent */
+
+    /* ---- messages from any thread, at any time ----
+     * Added after the first release of version 1: check that
+     * api->size >= offsetof(MlwsApi, hold) + sizeof api->hold before use.
+     * host() is called during a call; the MlwsHost stays valid until the VM is
+     * freed, so join any thread that posts before the program can end. A post
+     * to a process that has ended returns false. While a hold is taken, a
+     * process waiting in recv is not reported as deadlocked: messages may
+     * still come. */
+    MlwsHost *(*host)(MlwsCtx *cx);
+    bool (*post_int)(MlwsHost *host, uint64_t pid, int64_t value);
+    bool (*post_str)(MlwsHost *host, uint64_t pid, const char *s, size_t n); /* a copy */
+    void (*hold)(MlwsHost *host, int delta); /* +1 before posting starts, -1 when done */
 } MlwsApi;
 
 /* Return 0 on success. On failure, call api->init_error first to say why. */

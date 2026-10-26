@@ -6,7 +6,7 @@
 #include "types.h"
 
 #define MLWSO_MAGIC "MLWS"
-#define MLWSO_VERSION 5
+#define MLWSO_VERSION 6
 
 /* A call has a target and an argc operand, leaving 30 for arguments/results. */
 #define MAX_PARAMS 30
@@ -98,6 +98,7 @@ enum {
     FFI_PTR,  /* void *: an opaque foreign handle, optionally tagged ptr<tag> */
     FFI_STRUCT,  /* a .cstruct by value (tag: its name); with FFI_OUT, returned through a pointer */
     FFI_STRUCTP, /* a pointer to a .cstruct: copied in, and copied back after the call */
+    FFI_CALLBACK, /* a C function pointer for a .callback type (tag): a closure, or an async callback handle */
     FFI__COUNT
 };
 #define FFI_OUT 0x80
@@ -130,6 +131,19 @@ typedef struct MCStruct {
     char **tags;      /* ptr<tag> / nested struct name, or NULL */
     uint32_t *counts; /* > 0: a fixed array of that many */
 } MCStruct;
+
+/* `.callback NAME (params) -> (result) [, async]`: a C function-pointer type,
+ * which .extern parameters declared `callback NAME` take. */
+#define MCB_ASYNC 0x1 /* called later, from any thread: the call becomes a message */
+typedef struct MCallback {
+    char *name;
+    uint32_t flags;             /* MCB_* */
+    uint8_t nargs;
+    uint8_t args[FFI_MAX_ARGS]; /* numbers, cstr, ptr */
+    char *tags[FFI_MAX_ARGS];   /* ptr<tag>, or NULL */
+    uint8_t ret;                /* FFI_VOID, a number or ptr */
+    char *ret_tag;
+} MCallback;
 
 /* `.ffi_free tag, "library", "symbol"`: handles tagged ptr<tag> are freed by
  * calling symbol(ptr) when they are collected. */
@@ -169,6 +183,8 @@ typedef struct Module {
     uint32_t ncstructs;
     MFfiFree *ffrees;
     uint32_t nffrees;
+    MCallback *callbacks;
+    uint32_t ncallbacks;
 } Module;
 
 void module_free(Module *m);

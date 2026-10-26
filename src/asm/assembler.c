@@ -108,6 +108,7 @@ typedef struct {
     MCStruct cur_cstruct;   /* the open .cstruct (when cur_struct is its struct) */
     bool in_cstruct;
     VEC(MFfiFree) ffrees;   /* .ffi_free */
+    VEC(MCallback) callbacks; /* .callback */
 } Asm;
 
 typedef struct {
@@ -1031,6 +1032,26 @@ static bool ffi_type(Asm *A, Cur *c, bool param, uint8_t *kind, char **tag) {
         c->pos++;
     }
     Token *t = cur(c);
+    if (tok_ident(t, "callback")) { /* callback NAME: a C function pointer of a .callback type */
+        c->pos++;
+        if (cur(c)->kind != TK_IDENT) return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected a .callback name");
+        char *name = tokdup(cur(c));
+        bool known = false;
+        for (size_t i = 0; i < A->callbacks.n; i++) known = known || !strcmp(A->callbacks.v[i].name, name);
+        if (!known) {
+            aerr(A, c->pl, cur(c)->col, "E_ASM_UNDEF_SYM", "no .callback %s (declare it before the .extern)", name);
+            free(name);
+            return false;
+        }
+        c->pos++;
+        if (out || !param) {
+            free(name);
+            return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "a callback is a parameter (not out, not a result)");
+        }
+        *kind = FFI_CALLBACK;
+        *tag = name;
+        return true;
+    }
     if (tok_ident(t, "struct")) { /* struct NAME, struct* NAME (in/out), out struct NAME */
         c->pos++;
         bool ptr = false;
@@ -1195,6 +1216,79 @@ out:
     return ok;
 }
 
+/* `.callback NAME (params) -> (result) [, async]`: a C function-pointer type. */
+static bool dir_callback(Asm *A, Cur *c) {
+    if (A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".callback must be outside a .func");
+    Token *nt = cur(c);
+    if (nt->kind != TK_IDENT || nt->start[0] == '.')
+        return aerr(A, c->pl, nt->col, "E_ASM_SYNTAX", "expected a callback type name");
+    MCallback cb;
+    memset(&cb, 0, sizeof cb);
+    cb.name = tokdup(nt);
+    c->pos++;
+    for (size_t i = 0; i < A->callbacks.n; i++)
+        if (!strcmp(A->callbacks.v[i].name, cb.name)) {
+            aerr(A, c->pl, nt->col, "E_ASM_DUP_SYM", "callback %s is already declared", cb.name);
+            goto fail;
+        }
+    if (!expect_punct(A, c, "(")) goto fail;
+    while (!tok_is(cur(c), ")")) {
+        if (cb.nargs == FFI_MAX_ARGS) {
+            aerr(A, c->pl, cur(c)->col, "E_ASM_RANGE", "at most %d parameters", FFI_MAX_ARGS);
+            goto fail;
+        }
+        int col = cur(c)->col;
+        uint8_t k;
+        if (!ffi_type(A, c, true, &k, &cb.tags[cb.nargs])) goto fail;
+        cb.args[cb.nargs++] = k;
+        if (k & FFI_OUT || (k > FFI_CSTR && k != FFI_PTR)) {
+            aerr(A, c->pl, col, "E_ASM_SYNTAX", "callback parameters are numbers, cstr or ptr");
+            goto fail;
+        }
+        if (tok_is(cur(c), ",")) c->pos++;
+        else if (!tok_is(cur(c), ")")) {
+            aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected ',' or ')'");
+            goto fail;
+        }
+    }
+    c->pos++;
+    if (tok_is(cur(c), "->")) {
+        c->pos++;
+        if (!expect_punct(A, c, "(")) goto fail;
+        int col = cur(c)->col;
+        if (!tok_is(cur(c), ")") && !ffi_type(A, c, false, &cb.ret, &cb.ret_tag)) goto fail;
+        if (cb.ret > FFI_F64 && cb.ret != FFI_PTR) {
+            aerr(A, c->pl, col, "E_ASM_SYNTAX", "a callback returns a number or ptr");
+            goto fail;
+        }
+        if (!expect_punct(A, c, ")")) goto fail;
+    }
+    if (tok_is(cur(c), ",")) {
+        c->pos++;
+        if (!tok_ident(cur(c), "async")) {
+            aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected 'async'");
+            goto fail;
+        }
+        c->pos++;
+        cb.flags |= MCB_ASYNC;
+        bool has_ptr = false;
+        for (int k = 0; k < cb.nargs; k++) has_ptr = has_ptr || cb.args[k] == FFI_PTR;
+        if (cb.ret != FFI_VOID || has_ptr) {
+            aerr(A, c->pl, nt->col, "E_ASM_SYNTAX",
+                 "an async callback returns nothing, and takes numbers and cstr (its arguments become a message)");
+            goto fail;
+        }
+    }
+    if (!expect_eol(A, c)) goto fail;
+    VEC_PUSH(A->callbacks, cb);
+    return true;
+fail:
+    free(cb.name);
+    for (int k = 0; k < FFI_MAX_ARGS; k++) free(cb.tags[k]);
+    free(cb.ret_tag);
+    return false;
+}
+
 /* `.ffi_free tag, "library", "symbol"`: how ptr<tag> handles are freed. */
 static bool dir_ffi_free(Asm *A, Cur *c) {
     if (A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".ffi_free must be outside a .func");
@@ -1266,7 +1360,8 @@ static bool cstruct_line(Asm *A, Cur *c) {
         kind = FFI_STRUCT;
     } else {
         if (!ffi_type(A, c, true, &kind, &tag)) goto fail;
-        if (kind & FFI_OUT || kind == FFI_STRUCT || kind == FFI_BUF) goto bad; /* a buf field has no buffer to point at */
+        /* a buf field has no buffer to point at; a callback lives only for a call */
+        if (kind & FFI_OUT || kind == FFI_BUF || kind > FFI_PTR) goto bad;
         if (kind <= FFI_F64) {
             static const MlwsType T[] = {T_NONE, T_I8, T_I16, T_I32, T_I64, T_U8, T_U16, T_U32, T_U64, T_F32, T_F64};
             vt = T[kind];
@@ -1451,6 +1546,7 @@ static bool directive(Asm *A, Cur *c) {
     if (IS(".extern")) return dir_extern(A, c);
     if (IS(".cstruct")) return dir_cstruct(A, c);
     if (IS(".ffi_free")) return dir_ffi_free(A, c);
+    if (IS(".callback")) return dir_callback(A, c);
     if (IS(".module")) {
         Token *nt = cur(c);
         if (nt->kind != TK_IDENT) return aerr(A, c->pl, nt->col, "E_ASM_SYNTAX", "expected a module name");
@@ -2007,6 +2103,10 @@ static Module *finish(Asm *A) {
     m->ffrees = A->ffrees.v ? A->ffrees.v : xcalloc(1, sizeof(MFfiFree));
     A->ffrees.v = NULL;
     A->ffrees.n = 0;
+    m->ncallbacks = (uint32_t)A->callbacks.n;
+    m->callbacks = A->callbacks.v ? A->callbacks.v : xcalloc(1, sizeof(MCallback));
+    A->callbacks.v = NULL;
+    A->callbacks.n = 0;
     m->gsize = (uint32_t)A->gdata.n;
     m->gdata = xcalloc(m->gsize + 1, 1);
     if (m->gsize) memcpy(m->gdata, A->gdata.b, m->gsize); /* (no globals: the source pointer is NULL) */
@@ -2072,6 +2172,13 @@ static void asm_free(Asm *A) {
     }
     for (size_t i = 0; i < A->ffrees.n; i++) free(A->ffrees.v[i].tag), free(A->ffrees.v[i].lib), free(A->ffrees.v[i].sym);
     VEC_FREE(A->ffrees);
+    for (size_t i = 0; i < A->callbacks.n; i++) {
+        MCallback *cb = &A->callbacks.v[i];
+        free(cb->name);
+        for (int k = 0; k < cb->nargs; k++) free(cb->tags[k]);
+        free(cb->ret_tag);
+    }
+    VEC_FREE(A->callbacks);
     for (size_t i = 0; i < A->grefs.n; i++) free(A->grefs.v[i].sym);
     VEC_FREE(A->grefs);
     for (size_t i = 0; i < A->ifuncs.n; i++) free(A->ifuncs.v[i].name);
