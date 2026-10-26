@@ -125,6 +125,7 @@ civil-date conversions.
 | MLWSVM | Influences | How MLWSVM differs |
 |---|---|---|
 | Per-process size-class allocator for small objects (M21) | BEAM's per-scheduler allocators (`erts_alloc`), tcmalloc and jemalloc size classes and thread caches, Go's per-P `mcache` | The cache is per process rather than per thread: a process's objects never leave its heap, so it needs no locks, no cross-thread frees, and its chunks are freed with it. |
+| Threaded dispatch for quickened forms, a `switch` for the rest (M22) | Bell's threaded code (1973); Ertl and Gregg on the structure of efficient interpreters; computed goto in Lua, CPython and Ruby's YARV | Only the quickened forms are threaded; generic instructions share one `switch`, and a fast handler that meets an unexpected object jumps to it. The program counter and the slice count stay in locals and are written back only where something can observe them. |
 | Quickening into specialised execution opcodes after verification | JVM "quick" bytecodes; Stefan Brunthaler, *Inline Caching Meets Quickening* (ECOOP 2010); CPython's specialising adaptive interpreter (PEP 659) | Specialisation happens once, at load time, from static operand shapes (register banks and type suffixes), not adaptively at run time. The rich operand model makes the shapes knowable statically. |
 
 ### Toolchain
@@ -170,20 +171,20 @@ Experiments that would show whether the combination pays off:
 | Question | Experiment |
 |---|---|
 | Is code denser than a stack VM's? | Answered for two small programs ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)): MLWSVM executes 55–68% fewer instructions than the JVM and CPython, and 18% fewer than Lua, but its code is 1.7–2.9× the size of the JVM's. Still to do: real compiler output |
-| How much do rich operands cost the interpreter? | Partly answered: Lua 5.5's interpreter runs `fib` 2.3× faster than MLWSVM and a tight loop 12% faster, mostly because MLWSVM's calls cost more ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)). Still to do: sieve, nbody and binary-trees, and a profile of where the extra time goes |
+| How much do rich operands cost the interpreter? | Partly answered: once decoded and quickened, very little. Since M22, MLWSVM runs a tight loop 2.4× faster than Lua 5.5, while Lua runs `fib` 1.4× faster because MLWSVM's calls set up a window per register bank ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md), [PERFORMANCE.md](PERFORMANCE.md#a-faster-interpreter-loop-m22)). Still to do: sieve, nbody and binary-trees against Lua |
 | What do the tags cost? | Memory overhead (1/8 extra on the stack and globals), and the time spent on tag checks (a profile with tag checks disabled) |
 | Is it easier to target? | Lines of code for a code generator from a small language to MLWSVM, compared with a JVM or WebAssembly backend |
 | How do process copies scale? | Message throughput and latency against message size (deep copy cost), compared with BEAM for similar workloads |
 | Is the GC simpler but competitive? | Pause times and throughput on allocation-heavy benchmarks; the cost of whole-stack tag scanning as stacks grow |
 
-Current data points (see [PERFORMANCE.md](PERFORMANCE.md)): about 800M
-instructions/s on a tight register loop and about 280M/s on recursive `fib`, after
-quickening, on an Apple Silicon laptop with one thread. That is 5× faster than
-CPython 3.14 on the loop and about the same speed on `fib`. Lua 5.5 is 12% faster
-on the loop and 2.3× faster on `fib`, and the JVM's interpreter is 28% and 31%
-faster. A two-process
-ping-pong reaches about 19M messages/s, and 16 independent CPU-bound processes
-run 8.3× faster on the laptop's 18 cores than on one thread. Instructions with up
+Current data points since M22 (see [PERFORMANCE.md](PERFORMANCE.md)): about 2.1G
+instructions/s on a tight register loop and about 460M/s on recursive `fib`, on an
+Apple Silicon laptop with one thread. On the loop that is 13× faster than CPython
+3.14, 2.4× faster than Lua 5.5 and 2.1× faster than the JVM's interpreter. On
+`fib` it is 1.8× faster than CPython and 1.3× faster than the JVM's interpreter,
+while Lua is 1.4× faster than MLWSVM. A two-process ping-pong reaches about 19M
+messages/s, and 16 independent CPU-bound processes run 7.5× faster on the
+laptop's 18 cores than on one thread. Instructions with up
 to 32 operands cost nothing measurable against a fixed three, and save up to 44%
 of the instructions in call-heavy code.
 
@@ -207,11 +208,14 @@ of the instructions in call-heavy code.
 | M19 | Go's `time` and RFC 3339; Hinnant's civil-date algorithms; xoshiro256\*\* and SipHash; RFC 4648 (base64), RFC 3986 (URLs), RFC 4180 (CSV); Python's `bisect` |
 | M20 | Rust's bindgen, ctypesgen, Zig's `@cImport`; clang's `-ast-dump=json` |
 | M21 | BEAM's `erts_alloc`, tcmalloc/jemalloc size classes, Go's `mcache` |
+| M22 | Threaded code (Bell; Ertl and Gregg), Lua's and CPython's computed-goto dispatch, Lua's register window for calls (as the measure to beat) |
 
 ## References
 
 - Roberto Ierusalimschy, Luiz Henrique de Figueiredo and Waldemar Celes, *The Implementation of Lua 5.0*, Journal of Universal Computer Science, 2005.
 - Yunhe Shi, Kevin Casey, M. Anton Ertl and David Gregg, *Virtual Machine Showdown: Stack Versus Registers*, ACM TACO, 2008 (earlier version at VEE 2005).
+- James R. Bell, *Threaded Code*, Communications of the ACM 16(6), 1973.
+- M. Anton Ertl and David Gregg, *The Structure and Performance of Efficient Interpreters*, Journal of Instruction-Level Parallelism 5, 2003.
 - The Parrot virtual machine documentation (register sets I, N, S, P).
 - Erik Stenman, *The BEAM Book*, and the Erlang/OTP documentation on processes, links and monitors.
 - Tim Lindholm et al., *The Java Virtual Machine Specification* (class file format, verification, exception tables).

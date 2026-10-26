@@ -228,6 +228,11 @@ typedef struct {
 typedef struct {
     Function *fn;
     uint32_t pc;
+    /* Pushed by a quickened call (interp.c) whose result registers were checked
+     * against this function's declared result types: its quickened ret copies
+     * the results straight across. A tail call replaces the frame with one
+     * that is not marked. */
+    uint8_t qret;
     uint32_t base[NBANKS];
     uint64_t entry_sp; /* SP at the call; restored on return */
     uint64_t saved_fp;

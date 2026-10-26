@@ -1,6 +1,6 @@
 # MLWSVM Roadmap
 
-Milestones M0–M21 are complete (see [README.md](../README.md#status-and-roadmap)).
+Milestones M0–M22 are complete (see [README.md](../README.md#status-and-roadmap)).
 What remains is Windows (section 3) and the deferred performance work (section 4).
 The aim of milestones M11–M21 was to make MLWSVM worth targeting: programs on it
 should be able to do real work (files, the OS, the network, text and data), and
@@ -142,17 +142,19 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 
 * ~~A size-class allocator for the GC heap~~ (M21: done; `binarytrees` and
   `maps` take 17–25% less time on Linux, `binarytrees` 9% less on macOS).
-* Specialised memory and array operand forms, chosen from what the
-  scripting-language compiler actually emits.
-* A compact decoded form for the quickened instruction shapes. Each decoded
-  operand takes 72 bytes, so programs with a lot of hot code may run out of
-  cache before the benchmarks do ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)).
+* ~~Threaded dispatch, cheaper calls, compact operands for the quickened
+  forms, field and element shapes~~ (M22: done; `fib` 26–41% less time, the
+  tight loop 55–63%; see [PERFORMANCE.md](PERFORMANCE.md#a-faster-interpreter-loop-m22)).
+* More specialised shapes (arithmetic directly on elements, raw memory),
+  chosen from what the scripting-language compiler actually emits.
+* A compact decoded form for every instruction. Quickened instructions carry a
+  compact copy since M22, but each decoded operand still takes 72 bytes, so
+  programs with a lot of hot code may run out of cache before the benchmarks do.
+* Calls, further. Lua 5.5 still runs `fib` 1.4× faster: its callee's window
+  starts at the caller's argument registers, while MLWSVM sets up a window per
+  register bank ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)).
 * A generational collector, if collection grows past roughly 10% of real
-  workloads.
-* Cheaper calls. Lua 5.5 runs `fib` 2.3× faster than MLWSVM: its callee's
-  window starts at the caller's argument registers, while MLWSVM zeroes and
-  fills a fresh window per bank ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)).
-* Computed-goto dispatch, if profiles ever show dispatch dominating.
+  workloads (it is 12% of `binarytrees` since M22).
 * Lock-free run queues and spinning before sleeping, for many-thread,
   message-heavy programs.
 

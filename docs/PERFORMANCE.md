@@ -157,6 +157,110 @@ filled with a garbage pattern, so a use after a free fails loudly there too.
 macOS gains less because its allocator's small-object zone is already very
 fast.
 
+## A faster interpreter loop (M22)
+
+[REGISTER_VS_STACK.md](REGISTER_VS_STACK.md) compared MLWSVM with Lua 5.5 and
+the JVM's interpreter. MLWSVM executed the fewest instructions but was slower
+than both: each instruction cost too much, and calls most of all. M22 worked
+through the costs one at a time, measuring each step on the Mac and keeping
+only what paid (milliseconds, best of five):
+
+| Step | fib | loop | Other |
+|---|---|---|---|
+| M21 | 115 | 236 | |
+| 1. Fast path keeps `pc` and the slice count in locals | 95 | 124 | `parallel` 69 → 29 |
+| 2. Calls copy arguments and results directly | 79 | 126 | `binarytrees` 188 → 181 |
+| 3. Compact operands inside each instruction | 80 | 124 | |
+| 4. Threaded dispatch | 67 | 93 | `closures` 146 → 137 |
+| 5. More quickened shapes; shortcuts in the generic operand path | 70 | 87 | `binarytrees` 180 → 119, `closures` 137 → 105, `nbody` 128 → 94 |
+
+1. **The loop head.** Before every instruction, the interpreter counted the
+   time slice down, checked for a pending collection or kill, checked for a
+   debugger hook, loaded the program counter from the frame, stored it back,
+   and counted the instruction in the process. Now the program counter and the
+   slice count live in local variables (CPU registers), and the frame's
+   `pc` and the process's instruction count are written back only where
+   something can look at them: before a generic instruction (which may trap,
+   call a native or switch frames), at calls and returns, before the tools'
+   hook, and at the end of the slice. Quickened instructions never allocate or
+   trap, so the safepoint check for a collection or a kill moved to after each
+   generic instruction (and the start of the slice). Whether a debugger hook
+   is installed is read once per slice. Nothing observable changed: a process
+   that kills itself still stops at the next instruction, and `--stats` counts
+   the same instructions.
+2. **Calls.** A quickened `call` copied its arguments into an array, pushed the
+   frame (a function the compiler chose not to inline), then looked up each
+   parameter's type to place it. The loader now records each argument's
+   destination register, the frame push is always inlined, and the arguments go
+   straight from the caller's registers to the callee's. A frame pushed this way
+   is marked, and its quickened `ret` copies the results straight back. Closure
+   calls (`calli`) got the same treatment, with the bank checks made per call.
+3. **Compact operands.** Quickened handlers read register numbers and
+   immediates from the 72-byte decoded `Operand`s, through a pointer. Each
+   instruction now also carries a compact copy (three register numbers, a branch
+   target and an immediate), which grows `Insn` from 16 to 32 bytes. On its own
+   this was within noise. After step 4 it was worth 18% on the loop (113 ms
+   without it, 93 with it): once dispatch was cheap, the pointer chase showed.
+4. **Threaded dispatch.** Each quickened handler ends by fetching the next
+   instruction and jumping straight to its handler through a table (GCC's and
+   Clang's "labels as values"), instead of returning to one shared `switch`.
+   Each handler's jump is predicted separately. Instructions that are not
+   quickened go to the generic `switch` as before. Compilers without the
+   extension use a `switch` for the quickened forms too; `make check-switch`
+   tests that build, and CI runs it.
+5. **More shapes.** `mov` between a register and a struct field, or an array or
+   list element indexed by a register, for 64-bit types; `bz`/`bnz` on
+   references; and closure calls. Each checks the object at run time and hands
+   anything unexpected (null, another struct type, a list element of another
+   type, an index out of range) to the generic `mov`, which raises the usual
+   error. The generic operand reader and writer also gained shortcuts for array
+   elements and struct fields of exactly the instruction's type, which helps
+   arithmetic directly on elements (`nbody`). `tests/perf/quickened_slots.masm`
+   checks every fallback.
+
+One experiment was rejected: caching `min(frame capacity, call-depth limit)`
+in the process saved 1.5% on `fib` but would go stale if an embedder changed
+the limit while processes exist.
+
+Results, before and after (milliseconds, best of five; both versions built and
+run on each machine in turn):
+
+| Benchmark | Mac (clang) M21 | M22 | Intel i7 (gcc) M21 | M22 | AMD Ryzen (clang) M21 | M22 |
+|---|---|---|---|---|---|---|
+| fib | 116 | 70 | 206 | 153 | 236 | 139 |
+| loop | 237 | 87 | 475 | 186 | 633 | 285 |
+| binarytrees | 192 | 119 | 352 | 236 | 348 | 226 |
+| closures | 148 | 105 | 261 | 204 | 261 | 188 |
+| nbody | 131 | 94 | 219 | 163 | 237 | 170 |
+| sieve | 699 | 612 | 1,269 | 1,067 | 1,342 | 1,165 |
+| parallel | 69 | 23 | 133 | 47 | 128 | 60 |
+| maps | 61 | 60 | 104 | 103 | 108 | 108 |
+| pingpong | 34 | 33 | 94 | 94 | 77 | 76 |
+
+`maps` and `pingpong` are spent in natives (strings, hashing, messages) and in
+the scheduler, which M22 did not touch. The tight loop now runs at about 2.1G
+instructions per second on the Mac, about 2 cycles per instruction.
+
+Against the other VMs of [REGISTER_VS_STACK.md](REGISTER_VS_STACK.md) (Mac,
+milliseconds):
+
+| | fib | loop |
+|---|---|---|
+| MLWSVM M21 | 115 | 234 |
+| MLWSVM M22 | 69 | 87 |
+| Lua 5.5 | 49 | 211 |
+| JVM, interpreter only | 87 | 183 |
+| CPython 3.14 | 128 | 1,150 |
+
+MLWSVM now runs the loop 2.4× faster than Lua and 2.1× faster than the JVM's
+interpreter, and `fib` faster than the JVM's interpreter. On the Intel machine
+with GCC the picture is similar for the loop (MLWSVM 183 ms, Lua 289, the JVM's
+interpreter 396), but GCC gains less on calls: `fib` takes 152 ms there, against
+100 for Lua and 104 for the JVM's interpreter. Lua is still 1.4× faster on `fib`
+on the Mac: a call still sets up a separate window in each register bank
+the callee uses, zeroes it and restores four bank tops on return, where Lua
+slides one window.
+
 ## The multi-threaded scheduler
 
 Processes run on N worker threads (`--threads N`; default one per core). The
@@ -201,35 +305,31 @@ for each request it serves.
 
 ## What was not done, and why
 
-* **Computed-goto dispatch.** Not attempted. After quickening, the hot loops spend
-  about 5 cycles per instruction including dispatch, and the remaining time is
-  spread across the generic operand paths rather than in dispatch itself.
-  Revisit if profiles show dispatch dominating. (Lua 5.5, which uses computed
-  goto, runs the loop only 12% faster than MLWSVM, so dispatch is not where
-  MLWSVM's main gap is.)
-* **Cheaper calls.** Not attempted yet. A `fib` call costs about 16 ns in MLWSVM
-  and 7 ns in Lua 5.5. MLWSVM pushes a frame, zeroes a register window for each
-  bank in use and copies the arguments in, while Lua's callee window starts at the
-  caller's argument registers. Calls are the largest measured gap to another
-  interpreter.
+* **Cheaper calls, further.** M22 took a `fib` call from about 16 ns to 10 ns;
+  Lua 5.5 takes 7. The rest is the frame itself: a window per register bank,
+  zeroed, and four bank tops to restore. A single shared window would need a
+  different register model, so this waits until real programs show calls
+  dominating.
 * **Fewer operands per instruction.** Measured, and rejected. Storing up to three
   operands inside each instruction, as a fixed 3-operand format would, was no
   faster, and fixed-format calls would make `fib` 22% slower. See
   [REGISTER_VS_STACK.md](REGISTER_VS_STACK.md), which also compares MLWSVM with Lua,
   the JVM and CPython.
-* **A compact decoded form.** Not attempted. Each decoded operand is a 72-byte
-  `Operand` with room for every addressing mode. The benchmarks fit in cache, so
-  it does not show yet. A small form for the quickened shapes would be the fix if
-  large programs show cache misses.
-* **A generational GC.** Deferred. Collection is about 9% of `binarytrees` and 5%
-  of `maps`, the most allocation-heavy benchmarks. Halving it would save under
-  5% overall, while a generational collector needs a write barrier on every
+* **A compact decoded form for everything.** Quickened instructions carry a
+  compact copy of their operands since M22, but every instruction still keeps
+  its 72-byte `Operand`s for the generic path, the debugger and the tools. The
+  benchmarks fit in cache, so this does not show yet. Shrinking `Operand` is the
+  fix if large programs show cache misses.
+* **A generational GC.** Deferred. Collection is about 12% of `binarytrees` and
+  4% of `maps`, the most allocation-heavy benchmarks (it was 9% of `binarytrees`
+  before M22 made the rest faster). Halving it would save about 6% at most, while a generational collector needs a write barrier on every
   reference store. (The other cost of allocation, `malloc` itself, is gone since
   M21's size-class allocator.)
-* **More specialised memory and array operand forms.** `sieve` and `nbody` now
-  spend most of their time in the generic memory and element paths. There are
-  many possible shapes, so the right ones to specialise are the ones the
-  scripting-language compiler actually emits. Measure its output first.
+* **More specialised shapes.** M22 quickened the field and element moves any
+  compiler emits. Arithmetic directly on elements and fields (`nbody`) and raw
+  memory (`sieve`) still take the generic path. There are many possible shapes,
+  so the right ones to add are the ones the scripting-language compiler actually
+  emits. Measure its output first.
 * **Lock-free run queues** (Chase–Lev deques). Each queue's lock is almost
   always uncontended, because a thread mostly uses its own queue. Revisit if
   profiles of many-thread, message-heavy programs show queue locks.

@@ -69,6 +69,17 @@ typedef struct {
     uint8_t type, type2;
     uint8_t nops;
     Operand *ops;
+    /* A compact copy of a quickened form's operands, filled by interp_quicken so
+     * that the fast paths need not touch `ops`: register indices, the branch
+     * target (or a field index), and the immediate (or a struct type). Unused
+     * otherwise. */
+    uint8_t r[3];
+    uint32_t target;
+    union {
+        int64_t i;
+        double f;
+        const void *p;
+    } k;
 } Insn;
 
 static inline bool mode_is_memory(uint8_t mode) { return mode >= OM_IND && mode <= OM_MINDB; }

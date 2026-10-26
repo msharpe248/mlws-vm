@@ -26,8 +26,15 @@ void proc_frame_slow(Process *p, const uint16_t *nr);
         }                                                                      \
     } while (0)
 
-/* Push a call frame with a fresh, zeroed register window (inline: every call). */
-static inline void proc_push_frame(Process *p, Function *fn, const Insn *ret_insn) {
+#if defined(__GNUC__) || defined(__clang__)
+#define PROC_INLINE static inline __attribute__((always_inline))
+#else
+#define PROC_INLINE static inline
+#endif
+
+/* Push a call frame with a fresh, zeroed register window (inline: every call;
+ * compilers otherwise keep it out of line in the interpreter's large loop). */
+PROC_INLINE void proc_push_frame(Process *p, Function *fn, const Insn *ret_insn) {
     const uint16_t *nr = fn->mf->nregs;
     if (p->nframes >= p->fcap || p->nframes >= p->vm->max_frames || p->rtop[0] + nr[0] > p->rcap[0] ||
         p->rtop[1] + nr[1] > p->rcap[1] || p->rtop[2] + nr[2] > p->rcap[2] || p->rtop[3] + nr[3] > p->rcap[3])
@@ -37,6 +44,7 @@ static inline void proc_push_frame(Process *p, Function *fn, const Insn *ret_ins
     fr->pc = 0;
     fr->ret_insn = ret_insn;
     fr->closure = NULL;
+    fr->qret = 0;
     fr->entry_sp = p->sp;
     fr->saved_fp = p->fp;
     p->fp = p->sp;
@@ -52,7 +60,7 @@ static inline void proc_push_frame(Process *p, Function *fn, const Insn *ret_ins
     if (p->nframes > p->max_depth) p->max_depth = p->nframes;
 }
 
-static inline void proc_pop_frame(Process *p) {
+PROC_INLINE void proc_pop_frame(Process *p) {
     Frame *fr = &p->frames[--p->nframes];
     p->sp = fr->entry_sp;
     p->fp = fr->saved_fp;

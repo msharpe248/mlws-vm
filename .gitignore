@@ -9,4 +9,6 @@ build-tsan/
 /mlwsvm-tsan
 build-noffi/
 /mlwsvm-noffi
+/mlwsvm-switch
+/build-switch/
 lib/ext/

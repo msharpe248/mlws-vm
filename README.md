@@ -95,6 +95,7 @@ make check-tools             # smoke-test the monitor, top, profiler and tracer
 make bench                   # benchmarks, with output checks (docs/PERFORMANCE.md)
 make check-asan              # test and check-gc, under AddressSanitizer + UBSan
 make check-tsan              # the tests on several threads, under ThreadSanitizer
+make check-switch            # the tests with switch dispatch (for compilers without computed goto)
 make lib check-embed         # the embedding library, and its example host program
 make check-bindgen           # generate, compare and call bindings for a test header (needs clang)
 
@@ -133,7 +134,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks, results, and what was optimised (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M11–M21 and what remains: Windows and the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M11–M22 and what remains: Windows and the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
@@ -190,3 +191,4 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M19 Standard library II: time, hashes, random, encodings, sorting and searching, set operations | done ([STDLIB.md](docs/STDLIB.md)) |
 | M20 `mlwsvm bindgen`: FFI declarations from a C header (clang's JSON syntax tree) | done ([TOOLING.md](docs/TOOLING.md)) |
 | M21 Performance: a per-process small-object allocator (`binarytrees` and `maps` take 17–25% less time on Linux, `binarytrees` 9% less on macOS) | done ([PERFORMANCE.md](docs/PERFORMANCE.md)) |
+| M22 Performance: a faster interpreter loop (threaded dispatch, direct calls, compact operands, field and element fast paths; `fib` 26–41% and the tight loop 55–63% less time) | done ([PERFORMANCE.md](docs/PERFORMANCE.md#a-faster-interpreter-loop-m22)) |

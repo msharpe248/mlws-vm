@@ -6,6 +6,7 @@
 #   make check-tools  smoke-test --monitor, top, --profile and --trace
 #   make check-gc     run the tests with a garbage collection at every allocation
 #   make check-asan   build with AddressSanitizer + UBSan and run the tests (normal and GC stress)
+#   make check-switch build with switch dispatch instead of threaded code (as MSVC would) and run the tests
 #   make check-tsan   build with ThreadSanitizer and run the tests on several worker threads
 #   make lib          the embedding library: build/libmlwsvm.a and a shared libmlwsvm
 #   make check-embed  build and run the embedding example (examples/embed/host.c)
@@ -49,7 +50,7 @@ DL_LIBS := -ldl -lpthread
 endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: all test test-ext check-gc check-tools check-asan check-tsan check-bindgen bench docs clean lib embed-example check-embed
+.PHONY: all test test-ext check-gc check-tools check-asan check-tsan check-switch check-bindgen bench docs clean lib embed-example check-embed
 
 all: $(BIN)
 
@@ -155,6 +156,11 @@ check-asan: test-ext
 	    LDFLAGS="-fsanitize=address,undefined" build-asan/embed-host
 	$(ASAN_ENV) ./build-asan/embed-host lib
 
+# The interpreter's switch dispatch, which compilers without computed goto use.
+check-switch: test-ext
+	$(MAKE) BUILD=build-switch BIN=mlwsvm-switch CFLAGS="$(CFLAGS) -DMLWS_NO_THREADED"
+	./mlwsvm-switch test tests examples
+
 check-tsan: test-ext
 	$(MAKE) BUILD=build-tsan BIN=mlwsvm-tsan \
 	    CFLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" LDFLAGS="-fsanitize=thread"
@@ -172,4 +178,4 @@ docs: $(BIN)
 	./$(BIN) doc natives -o docs/NATIVES.md
 
 clean:
-	rm -rf build build-asan build-tsan build-noffi mlwsvm mlwsvm-asan mlwsvm-tsan mlwsvm-noffi
+	rm -rf build build-asan build-tsan build-noffi build-switch mlwsvm mlwsvm-asan mlwsvm-tsan mlwsvm-noffi mlwsvm-switch

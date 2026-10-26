@@ -317,7 +317,36 @@ end:
 Every error has a stable code ([ERRORS.md](ERRORS.md)), so compiler tests can assert
 on them.
 
-## 12. Stability and what is coming
+## 12. What runs fastest
+
+Every instruction works with every operand form, but the interpreter has fast
+paths for the common shapes. They are chosen at load time, so a compiler gets
+them by emitting these shapes; nothing else changes.
+
+* **64-bit registers.** Arithmetic, moves and compare-and-branch on `i64`/`u64`
+  in `I` registers and `f64` in `F` registers, with register or constant operands
+  (`add I0, I1, I2`, `add I0, 1`, `blt I0, I1, L`, `mul F0, F1, 2.0`). Narrow types
+  (`i32`, `u8`, ...) and unsigned comparisons take the general path, because they
+  must wrap or compare differently.
+* **Calls with register arguments and results** of the declared 64-bit types:
+  `call f (I1, F0, R2) -> (I3)`. Constants and memory operands as arguments work,
+  but take the general path; move them into registers first in hot code.
+  Closure calls (`calli R0 (I1) -> (I2)`) are fast when the closure's parameter
+  and result types match the registers' banks.
+* **Fields and elements moved to or from a register:** `mov I0, R1->Point.x`,
+  `mov R1->Point.x, I0`, `mov F0, R1[I2]`, `mov R1[I2], F0`, for 64-bit fields,
+  `i64`/`f64`/`r` arrays and list elements, indexed by a register. Arithmetic
+  directly on a field or element works, but takes the general path. Loading
+  into registers, computing there and storing back is much faster in a loop:
+  `bench/nbody.masm` runs in 92 ms with element operands and in 24 ms rewritten
+  that way, although it executes more instructions.
+* **Null tests:** `bz R0, L` and `bnz R0, L`.
+
+Where it matters, prefer one instruction to several (`blt a, b, L` over `slt` +
+`bnz`), and keep hot values in registers rather than in `SP[...]` or globals. See
+[PERFORMANCE.md](PERFORMANCE.md) for measurements.
+
+## 13. Stability and what is coming
 
 These are stable and safe to target now: the assembly syntax, the operand forms,
 the opcode numbers, the calling convention, the heap object model (M4),

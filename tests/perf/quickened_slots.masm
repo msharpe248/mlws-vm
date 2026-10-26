@@ -1,0 +1,158 @@
+; The quickened field, element, null-test and closure-call forms (Q_LDF_I and
+; the rest in src/vm/interp.c) must behave exactly like the generic mov, bz and
+; calli: the fast handlers only take the common case and hand everything else
+; (a null, another struct type, a list element of another type, a bad index, a
+; closure whose parameter banks do not match) to the generic instruction, which
+; raises the usual error.
+.include "std/test.inc"
+
+.struct P
+    n: i64
+    x: f64
+    s: ref
+.ends
+
+.struct Q
+    n: i64
+.ends
+
+; Run one instruction and check that it raises an Error with this code.
+.macro EXPECT_ERROR code, insn...
+.try .Lh\@
+    \insn
+.endtry
+    FAIL "an error was expected"
+.Lh\@:
+    catch R31
+    strcmp I31, R31->Error.code, \code
+    ASSERT_EQ I31, 0
+.endm
+
+.func add1(i64 a) -> i64
+    add I1, a, 1
+    ret I1
+.endf
+
+.func half(f64 x) -> f64
+    mul F1, x, 0.5
+    ret F1
+.endf
+
+.func two(i64 a, f64 x) -> (f64, i64)       ; results in two banks
+    ret x, a
+.endf
+
+.func give_f -> f64
+    ret 2.5
+.endf
+
+.func tail_other -> i64                     ; returns f64 through a tail call
+    tcall give_f ()
+.endf
+
+.func main
+    ; ---- struct fields: load and store in each bank ----
+    new R0, P
+    mov R0->P.n, I0                          ; STF_I (I0 is 0)
+    mov I1, 42
+    mov R0->P.n, I1
+    mov I2, R0->P.n                          ; LDF_I
+    ASSERT_EQ I2, 42
+    mov F0, 1.5
+    mov R0->P.x, F0                          ; STF_F
+    mov F1, R0->P.x                          ; LDF_F
+    ASSERT_EQ F1, 1.5
+    mov R1, "hello"
+    mov R0->P.s, R1                          ; STF_R
+    mov R2, R0->P.s                          ; LDF_R
+    strcmp I3, R2, "hello"
+    ASSERT_EQ I3, 0
+    ; another struct type, or null, goes to the generic mov
+    new R3, Q
+    EXPECT_ERROR "E_TYPE", mov I4, R3->P.n
+    EXPECT_ERROR "E_TYPE", mov R3->P.n, I1
+    mov R4, null
+    EXPECT_ERROR "E_NULL", mov I4, R4->P.n
+    EXPECT_ERROR "E_NULL", mov R4->P.x, F0
+
+    ; ---- array elements ----
+    anew.i64 R5, 3
+    mov I5, 2
+    mov R5[I5], I1                           ; STE_I
+    mov I6, R5[I5]                           ; LDE_I
+    ASSERT_EQ I6, 42
+    mov I6, R5[I0]                           ; never written: 0
+    ASSERT_EQ I6, 0
+    anew.f64 R6, 2
+    mov R6[I0], F0                           ; STE_F
+    mov F2, R6[I0]                           ; LDE_F
+    ASSERT_EQ F2, 1.5
+    anew.r R7, 2
+    mov R7[I0], R1                           ; STE_R
+    mov R8, R7[I0]                           ; LDE_R
+    strcmp I3, R8, "hello"
+    ASSERT_EQ I3, 0
+    ; bounds, negative indices, the wrong element type, a narrow array, null
+    mov I7, 3
+    EXPECT_ERROR "E_BOUNDS", mov I6, R5[I7]
+    EXPECT_ERROR "E_BOUNDS", mov R5[I7], I1
+    mov I7, -1
+    EXPECT_ERROR "E_BOUNDS", mov I6, R5[I7]
+    EXPECT_ERROR "E_TYPE", mov F3, R5[I0]    ; an i64 array read as f64
+    EXPECT_ERROR "E_TYPE", mov R5[I0], F0
+    anew.i32 R9, 2                           ; not 64-bit: the generic mov wraps
+    mov I8, 0x100000001
+    mov.i64 R9[I0], I8
+    mov.i64 I9, R9[I0]
+    ASSERT_EQ I9, 1
+    EXPECT_ERROR "E_NULL", mov I6, R4[I0]
+
+    ; ---- list elements: each element has its own type ----
+    lnew R10
+    lpush R10, I1                            ; [42]
+    lpush R10, F0                            ; [42, 1.5]
+    mov I6, R10[I0]                          ; LDE_I on a list
+    ASSERT_EQ I6, 42
+    mov I11, 1
+    mov F4, R10[I11]                         ; LDE_F on a list
+    ASSERT_EQ F4, 1.5
+    EXPECT_ERROR "E_TYPE", mov I6, R10[I11]  ; element 1 holds an f64
+    mov R10[I11], I1                         ; STE_I retypes the element
+    mov I6, R10[I11]
+    ASSERT_EQ I6, 42
+    mov I11, 2
+    EXPECT_ERROR "E_BOUNDS", mov R10[I11], I1
+
+    ; ---- null tests on references ----
+    bz R4, 1f                                ; BZ_R: null
+    FAIL "bz on null"
+1:  bnz R0, 2f                               ; BNZ_R: not null
+    FAIL "bnz on an object"
+2:  bz R0, 3f
+    bnz R4, 3f
+    jmp 4f
+3:  FAIL "null tests"
+4:
+
+    ; ---- closure calls ----
+    closure add1 -> (R11)
+    calli R11 (I1) -> (I12)                  ; CALLI_R
+    ASSERT_EQ I12, 43
+    closure half -> (R12)
+    mov F5, 3.0
+    calli R12 (F5) -> (F6)
+    ASSERT_EQ F6, 1.5
+    closure two -> (R13)
+    calli R13 (I1, F5) -> (F7, I13)          ; results in two banks
+    ASSERT_EQ F7, 3.0
+    ASSERT_EQ I13, 42
+    EXPECT_ERROR "E_TYPE", calli R11 (F5) -> (I12)   ; argument in the wrong bank
+    EXPECT_ERROR "E_TYPE", calli R11 (I1) -> (F8)    ; result in the wrong bank
+    EXPECT_ERROR "E_TYPE", calli R11 (I1, I1) -> (I12) ; wrong argument count
+    EXPECT_ERROR "E_NULL", calli R4 (I1) -> (I12)
+    EXPECT_ERROR "E_TYPE", calli R0 (I1) -> (I12)    ; not a closure
+
+    ; ---- a quickened call whose callee returns another type by a tail call ----
+    EXPECT_ERROR "E_TYPE", call tail_other () -> (I14)
+    ret 0
+.endf
