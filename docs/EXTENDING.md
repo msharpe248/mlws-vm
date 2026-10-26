@@ -185,8 +185,9 @@ Tagged pointers keep different kinds of pointer apart: a `ptr<mem>` result can
 only be passed back as a `ptr<mem>`, so a `sqlite3 *` can never reach `free`.
 Pointers passed to C are valid only during the call: C must not keep them.
 
-Not supported, by design or not yet: variadic functions (`printf`), structs passed
-by value, and callbacks from C into MLWSVM. Wrap those in an extension.
+Not supported yet: variadic functions (`printf`), structs passed by value, and
+callbacks from C into MLWSVM. Until then, wrap those in an extension. All three
+are planned; the designs are in [ROADMAP.md](ROADMAP.md) §1.
 
 ---
 
