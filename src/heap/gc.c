@@ -23,6 +23,7 @@ size_t obj_footprint(const Obj *o) {
     }
     case OBJ_CLOSURE: return sizeof(ObjClosure) + ((const ObjClosure *)o)->nup * (sizeof(Word) + 1);
     case OBJ_BIG: case OBJ_DEC: return num_footprint(o);
+    case OBJ_FOREIGN: return sizeof(ObjForeign);
     default: return sizeof(Obj);
     }
 }
@@ -43,7 +44,8 @@ void gc_account(Process *p, int64_t delta) {
     if (p->heap_bytes >= p->next_gc || p->vm->gc_stress) p->gc_pending = true;
     /* Only the running process can trap; copies into other heaps (spawn
      * arguments, messages) are counted and caught at their next allocation. */
-    if (delta > 0 && p->heap_bytes > p->quota[QUOTA_HEAP] && p->state == PROC_RUNNING && !p->raising)
+    if (delta > 0 && p->heap_bytes > p->quota[QUOTA_HEAP] && p->state == PROC_RUNNING && !p->raising &&
+        !p->in_foreign) /* checked when foreign code returns: it must not be unwound */
         vm_trap(p, "E_QUOTA", "heap quota of %llu bytes exceeded", (unsigned long long)p->quota[QUOTA_HEAP]);
 }
 
@@ -65,6 +67,7 @@ Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
 
 static void obj_release(Obj *o) {
     switch (o->kind) {
+    case OBJ_FOREIGN: foreign_finalize(o); break;
     case OBJ_BYTES: free(((ObjBytes *)o)->data); break;
     case OBJ_LIST:
         free(((ObjList *)o)->items);
@@ -171,6 +174,14 @@ void gc_collect(Process *p) {
     for (uint32_t i = 0; i < p->nglobals; i++) mark_segment(p, &p->globals[i], 0);
     for (size_t i = 0; i < p->handles.n; i++) mark(p, p->handles.v[i]);
     mark(p, p->exception);
+    if (p->bcall.state != BCALL_NONE) { /* a blocking native call's arguments and results */
+        const NativeDef *nd = p->bcall.nd;
+        for (int k = 0; k < nd->np; k++)
+            if (type_is_ref(nd->pt[k])) mark(p, p->bcall.args[k].r);
+        if (p->bcall.state == BCALL_DONE)
+            for (int k = 0; k < nd->nr; k++)
+                if (type_is_ref(nd->rt[k])) mark(p, p->bcall.rets[k].r);
+    }
     for (size_t i = p->mbox_head; i < p->mbox.n; i++)
         if (p->mbox.v[i].tag == T_R) mark(p, p->mbox.v[i].v.r);
     while (p->markstack.n) scan(p, p->markstack.v[--p->markstack.n]);

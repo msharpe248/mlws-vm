@@ -173,6 +173,10 @@ MATH2(hypot, hypot)
 #define F1 1, {T_F64}, 1, {T_F64}
 #define F2 2, {T_F64, T_F64}, 1, {T_F64}
 
+/* Built-in natives leave the foreign-native fields (flags, data, lib) zero. */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
 static const NativeDef BUILTINS[] = {
     {"io.print_i", 1, {T_I64}, 0, {0}, n_print_i, "Print a signed integer."},
     {"io.print_u", 1, {T_U64}, 0, {0}, n_print_u, "Print an unsigned integer."},

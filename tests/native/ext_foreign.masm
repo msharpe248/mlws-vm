@@ -1,0 +1,59 @@
+; Foreign handles wrap a C resource. MLWSVM code holds one as a reference: it
+; prints as <foreign TYPE>, cannot be sent to another process, and is freed by
+; its finalizer when released or collected.
+; option: --ext-path build/test-ext
+; expect-stdout: <foreign demo.counter>
+; expect-stdout: <foreign demo.counter (released)>
+.include "std/test.inc"
+.include "std/io.inc"
+.extension "demo"
+.func sink
+    recv R0
+    ret
+.endf
+.func main
+    ncall "demo.finalized" () -> (I9)  ; counters freed so far (the extension is shared by tests)
+    ncall "demo.counter_new" (10) -> (R0)
+    ncall "demo.counter_add" (R0, 5) -> (I0)
+    ASSERT_EQ I0, 15
+    tostr R1, R0
+    PRINTLN_S R1
+    typeof I1, R0
+    ASSERT_EQ I1, 10                   ; foreign
+
+    spawn sink -> (I2)
+.try h1
+    send I2, R0                        ; handles are process-local
+.endtry
+    FAIL "a foreign handle was sent"
+h1: catch R2
+    strcmp I3, R2->Error.code, "E_TYPE"
+    ASSERT_EQ I3, 0
+    kill I2
+
+    ncall "demo.counter_close" (R0)    ; freed now
+    tostr R1, R0
+    PRINTLN_S R1
+    ncall "demo.finalized" () -> (I4)
+    sub I4, I9
+    ASSERT_EQ I4, 1
+.try h2
+    ncall "demo.counter_add" (R0, 1)   ; using it afterwards is an error, not a crash
+.endtry
+    FAIL "a released handle was used"
+h2: catch R2
+    strcmp I3, R2->Error.code, "E_TYPE"
+    ASSERT_EQ I3, 0
+
+    mov I5, 0                          ; 100 handles dropped: the collector finalizes them
+1:  ncall "demo.counter_new" (I5) -> (R3)
+    inc I5
+    blt I5, 100, 1b
+    mov R3, null
+    ncall "gc.collect" ()
+    nop
+    ncall "demo.finalized" () -> (I6)
+    sub I6, I9
+    ASSERT_EQ I6, 101
+    ret 0
+.endf

@@ -569,6 +569,8 @@ macro-only files use the `.inc` extension and are not modules.
 |---|---|---|
 | `.module name` | top level | Module name |
 | `.import name [as alias]` | top level | Load and link another module |
+| `.extension "name"` | top level | Load an installed native extension ([EXTENDING.md](EXTENDING.md)) |
+| `.extern name, "lib", "sym" (types) -> (type) [, blocking] [, serial]` | top level | Make a C function a native (the FFI; [EXTENDING.md](EXTENDING.md)) |
 | `.export a, b, ...` | anywhere | Export functions, data symbols or struct types |
 | `.func ... / .endf` | top level | Define a function |
 | `.struct Name` ... `field: type` ... `.ends` | top level | Define a struct type |
@@ -605,6 +607,7 @@ Expectations are written as comments in the test file:
 ; skip: reason
 ; threads: 4                              (run on this many worker threads, whatever --threads says)
 ; option: --max-frames 500               (repeatable: a VM option, as on the command line)
+; requires: ffi                           (skip unless built with libffi)
 ; debug-script: break main               (repeatable: run under the debugger; stdout = transcript)
 ```
 

@@ -165,7 +165,7 @@ OP(TCALL,  0x0081, "tcall",  "Calls", "FC", 0, OPF_CALL | OPF_TERM,
 OP(RET,    0x0082, "ret",    "Calls", "V*", 0, OPF_TERM | OPF_PERVAL,
    "Return from the current function with zero or more values. Operands are read with the function's declared return types (or their natural types if none are declared). SP is restored to its value at the call.")
 OP(NCALL,  0x0083, "ncall",  "Calls", "NC", 0, OPF_CALL,
-   "Call a native (host) function by name: `ncall \"io.print_i\" (I0)`. See docs/NATIVES.md for the available natives and their signatures.")
+   "Call a native (host) function by name: `ncall \"io.print_i\" (I0)`. See docs/NATIVES.md for the built-in natives, and docs/EXTENDING.md for natives from extensions (`.extension`) and C functions (`.extern`). Errors in foreign code are raised once it returns; a blocking one runs on the I/O thread pool while this process waits.")
 
 /* ---- raw memory ---------------------------------------------------------- */
 OP(ALLOC,  0x0090, "alloc",  "Raw memory", "EQ", 0, 0,
@@ -187,7 +187,7 @@ OP(ANEW,   0x00A1, "anew",   "Objects", "XQ", TS_ANY, 0,
 OP(LEN,    0x00A2, "len",    "Objects", "JO", 0, 0,
    "Length: bytes of a string or byte buffer, elements of an array or list, entries of a map. Traps E_TYPE for a struct and E_NULL for null.")
 OP(TYPEOF, 0x00A3, "typeof", "Objects", "JO", 0, 0,
-   "Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map.")
+   "Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map, 7 closure, 8 BigInt, 9 decimal, 10 foreign handle.")
 OP(ISA,    0x00A4, "isa",    "Objects", "BOT", 0, 0,
    "dst = true if the reference is a struct of the given type: `isa I0, R1, Point`.")
 OP(RESIZE, 0x00A5, "resize", "Objects", "OQ", 0, 0,
@@ -273,7 +273,7 @@ OP(MONITOR,0x0108, "monitor","Processes", "Q", 0, 0,
 OP(ALIVE,  0x0109, "alive",  "Processes", "BQ", 0, 0,
    "dst = true if the process exists and has not finished.")
 OP(QUOTA,  0x010A, "quota",  "Processes", "IQ", 0, 0,
-   "`quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed. Processes it spawns inherit its limits. Exceeding a limit traps E_QUOTA.")
+   "`quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed, 4 foreign calls (natives from extensions and .extern; 0 forbids native code). Processes it spawns inherit its limits (and count their own use). Exceeding a limit traps E_QUOTA.")
 OP(MLEN,   0x010B, "mlen",   "Processes", "J", 0, 0,
    "dst = the number of messages waiting in this process's mailbox.")
 OP(SPAWNL, 0x010C, "spawnl", "Processes", "FC", 0, OPF_CALL,

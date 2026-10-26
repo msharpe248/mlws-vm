@@ -382,7 +382,7 @@ static void cmd_list(Debugger *d) {
 }
 
 static void cmd_procs(Debugger *d) {
-    static const char *const states[] = {"ready", "running", "waiting", "sleeping", "done", "failed"};
+    static const char *const states[] = {"ready", "running", "waiting", "sleeping", "done", "failed", "native"};
     say(d, "  PID  STATE     INSNS       MAILBOX  FUNCTION\n");
     for (uint64_t pid = 1, end = vm_pid_end(d->vm); pid < end; pid++) {
         Process *p = vm_proc_at(d->vm, pid);

@@ -1,0 +1,30 @@
+; A SERIAL native is not thread-safe (demo.bump updates a plain global); the VM
+; holds the extension's lock around each call, so 8 processes on 4 threads,
+; each bumping 5000 times, lose no updates.
+; option: --ext-path build/test-ext
+; threads: 4
+.include "std/test.inc"
+.extension "demo"
+.func bumper(i64 parent)
+    mov I1, 0
+1:  ncall "demo.bump" () -> (I2)
+    inc I1
+    blt I1, 5000, 1b
+    send parent, I1
+    ret
+.endf
+.func main
+    ncall "demo.total" () -> (I0)
+    mov I1, 0
+1:  spawn bumper (PID)
+    inc I1
+    blt I1, 8, 1b
+    mov I1, 0
+2:  recv I2
+    inc I1
+    blt I1, 8, 2b
+    ncall "demo.total" () -> (I3)
+    sub I3, I0
+    ASSERT_EQ I3, 40000
+    ret 0
+.endf

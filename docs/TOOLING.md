@@ -13,6 +13,7 @@ dashboard and a `top`-style terminal view.
 | Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] prog.masm` | none |
 | Terminal view | `mlwsvm top [HOST:PORT] [--once] [--interval MS]` | — |
 | VM options | `mlwsvm run --max-frames N --quota heap=64M ... prog.masm` | — |
+| Native code | `mlwsvm ext list\|install\|remove\|allow-ffi\|deny-ffi` ([EXTENDING.md](EXTENDING.md)) | — |
 
 The profiler, tracer and debugger use one per-instruction hook, which is
 installed only while one of them is active. A program run under them uses a
@@ -40,7 +41,8 @@ a test file's own lines override both.
 | `--max-frames N` | 100000 | call depth limit (`E_CALL_DEPTH`) |
 | `--slice N` | 2000 | time slice, in instructions, before another process gets a turn |
 | `--gc-min BYTES` | 1M | the heap size below which no collection runs |
-| `--quota LIST` | unlimited | starting limits for every process, e.g. `heap=64M,raw=1G,mailbox=1000,insns=5000000`; any subset, `unlimited` resets one |
+| `--quota LIST` | unlimited | starting limits for every process, e.g. `heap=64M,raw=1G,mailbox=1000,insns=5000000,foreign=0`; any subset, `unlimited` resets one |
+| `--ext-path DIR[:DIR]` | (none) | trusted native-extension directories, searched before `lib/ext` ([EXTENDING.md](EXTENDING.md)) |
 
 Sizes take an optional `K`, `M` or `G` suffix (powers of 1024). A bad value is
 an error (exit code 2) on the command line, a failing test in a test file, and a

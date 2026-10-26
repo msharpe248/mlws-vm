@@ -126,7 +126,7 @@ which preserves the type tag of a stack or global word.
 | `0x0080` | `call` | `func (args...) -> (results...)` | - | Call a function: `call f (a1, a2, ...) -> (d1, d2, ...)`. Each argument is read with the callee's declared parameter type and bound to the callee's next free register of that bank (int-class args to I0, I1, ...; floats to F0, ...; refs to R0, ...; pointers to P0, ...). Return values are written to d1, d2, .... The callee gets fresh registers, and FP = SP at the call. |
 | `0x0081` | `tcall` | `func (args...)` | - | Tail call: like call, but replaces the current frame. The callee's return values go to the current function's caller. A tail call cannot have result operands. |
 | `0x0082` | `ret` | `[val, ...]` | - | Return from the current function with zero or more values. Operands are read with the function's declared return types (or their natural types if none are declared). SP is restored to its value at the call. |
-| `0x0083` | `ncall` | `"native" (args...) -> (results...)` | - | Call a native (host) function by name: `ncall "io.print_i" (I0)`. See docs/NATIVES.md for the available natives and their signatures. |
+| `0x0083` | `ncall` | `"native" (args...) -> (results...)` | - | Call a native (host) function by name: `ncall "io.print_i" (I0)`. See docs/NATIVES.md for the built-in natives, and docs/EXTENDING.md for natives from extensions (`.extension`) and C functions (`.extern`). Errors in foreign code are raised once it returns; a blocking one runs on the I/O thread pool while this process waits. |
 
 ## Raw memory
 
@@ -145,7 +145,7 @@ which preserves the type tag of a stack or global word.
 | `0x00A0` | `new` | `?, ?` | - | Allocate a struct with every field zero (0, 0.0 or null): `new R0, Point`. Fields are then accessed as R0->Point.x. |
 | `0x00A1` | `anew` | `?, int` | int float r p | Allocate an array of n zeroed elements of the instruction type: `anew.f64 R0, 100`. Elements are accessed as R0[I1] or R0[5] and are bounds checked. |
 | `0x00A2` | `len` | `?, ?` | - | Length: bytes of a string or byte buffer, elements of an array or list, entries of a map. Traps E_TYPE for a struct and E_NULL for null. |
-| `0x00A3` | `typeof` | `?, ?` | - | Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map. |
+| `0x00A3` | `typeof` | `?, ?` | - | Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map, 7 closure, 8 BigInt, 9 decimal, 10 foreign handle. |
 | `0x00A4` | `isa` | `bool_dst, ?, ?` | - | dst = true if the reference is a struct of the given type: `isa I0, R1, Point`. |
 | `0x00A5` | `resize` | `?, int` | - | Set the length of a byte buffer or list. New bytes are 0. New list elements are untyped zeros, which read as 0, 0.0 or null. |
 
@@ -208,7 +208,7 @@ which preserves the type tag of a stack or global word.
 | `0x0107` | `link` | `int` | - | Link this process and another. If either fails (an uncaught exception, kill or quota), the other is killed with E_LINKED. Normal exits do not propagate. |
 | `0x0108` | `monitor` | `int` | - | Watch a process. When it ends, this process receives a Down struct message with fields pid, exit (exit code), and code/message (null for a normal exit). Monitoring a finished or unknown process delivers a Down message immediately, with code E_NOPROC. |
 | `0x0109` | `alive` | `bool_dst, int` | - | dst = true if the process exists and has not finished. |
-| `0x010A` | `quota` | `n, int` | - | `quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed. Processes it spawns inherit its limits. Exceeding a limit traps E_QUOTA. |
+| `0x010A` | `quota` | `n, int` | - | `quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed, 4 foreign calls (natives from extensions and .extern; 0 forbids native code). Processes it spawns inherit its limits (and count their own use). Exceeding a limit traps E_QUOTA. |
 | `0x010B` | `mlen` | `?` | - | dst = the number of messages waiting in this process's mailbox. |
 | `0x010C` | `spawnl` | `func (args...) -> (results...)` | - | Like spawn, and the new process is linked to this one before it starts (see link), so it cannot fail unnoticed in between. |
 | `0x010D` | `spawnm` | `func (args...) -> (results...)` | - | Like spawn, and this process monitors the new one from the start (see monitor): a Down message reports how it ends, however quickly. |

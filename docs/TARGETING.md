@@ -224,6 +224,20 @@ directly:
   each message with `isa` / `typeof`, and keep the ones you don't want yet in a list.
 * `examples/workers.masm` shows a supervised worker pool.
 
+### Calling C
+
+A language's "foreign function" or "native" declarations map to `.extern`:
+
+```asm
+.extern m.pow, "libm.so.6|libm", "pow" (f64, f64) -> (f64)
+    ncall "m.pow" (F0, F1) -> (F2)
+```
+
+For anything richer (owning resources, structured results), wrap the library in
+a native extension and emit `.extension "name"` plus `ncall`s. Mark calls that
+can block as `blocking`, so they run off the worker threads. See
+[EXTENDING.md](EXTENDING.md).
+
 ## 10. A complete translation
 
 `examples/translation.masm` (run by `make test`) translates this program:

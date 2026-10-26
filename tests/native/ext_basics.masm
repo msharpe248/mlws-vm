@@ -1,0 +1,64 @@
+; A native extension (extensions/demo/demo.c), loaded from a trusted directory
+; with `.extension`: numbers, strings, lists, maps, byte buffers, per-native
+; data, and errors raised by foreign code as catchable Errors.
+; option: --ext-path build/test-ext
+; expect-stdout: hello, world
+; expect-stdout: 3 parts: a b c
+.include "std/test.inc"
+.include "std/io.inc"
+.extension "demo"
+.func main
+    ncall "demo.add" (40, 2) -> (I0)
+    ASSERT_EQ I0, 42
+    ncall "demo.greet" ("world") -> (R0)
+    PRINTLN_S R0
+
+    ncall "demo.split" ("a,b,c", ",") -> (R1)
+    len I1, R1
+    PRINT_I I1
+    PRINT_S " parts: "
+    mov R2, R1[0]
+    PRINT_S R2
+    PRINT_S " "
+    mov R2, R1[1]
+    PRINT_S R2
+    PRINT_S " "
+    mov R2, R1[2]
+    PRINTLN_S R2
+
+    lnew R3
+    lpush R3, "x", "y", "x", "x"
+    ncall "demo.counts" (R3) -> (R4)
+    mget I2, R4, "x"
+    ASSERT_EQ I2, 3
+    mget I2, R4, "y"
+    ASSERT_EQ I2, 1
+
+    bufnew R5, 4                       ; a byte buffer changed in place
+    ncall "demo.fill" (R5, 7)
+    mov I3, R5[3]
+    ASSERT_EQ I3, 7
+
+    ncall "demo.data" () -> (I4)       ; data registered with the native
+    ASSERT_EQ I4, 4242
+
+.try h1
+    ncall "demo.fail" ("it went wrong")
+.endtry
+    FAIL "demo.fail returned"
+h1: catch R6
+    strcmp I5, R6->Error.code, "E_DEMO"
+    ASSERT_EQ I5, 0
+    strcmp I5, R6->Error.message, "it went wrong"
+    ASSERT_EQ I5, 0
+
+.try h2
+    lnew R7
+    ncall "demo.greet" (R7)            ; not a string: the API reports E_TYPE
+.endtry
+    FAIL "demo.greet accepted a list"
+h2: catch R8
+    strcmp I5, R8->Error.code, "E_TYPE"
+    ASSERT_EQ I5, 0
+    ret 0
+.endf

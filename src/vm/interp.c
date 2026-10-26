@@ -1487,8 +1487,28 @@ int interp_run(Process *p, uint32_t budget) {
             int argc = (int)ops[1].imm;
             Word args[NATIVE_MAX_ARGS], rets[NATIVE_MAX_RETS];
             memset(rets, 0, sizeof rets);
-            for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)nd->pt[k]);
-            nd->fn(p, args, rets);
+            if (!nd->flags) { /* built in: the fast path */
+                for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)nd->pt[k]);
+                nd->fn(p, args, rets);
+            } else if (!(nd->flags & NF_BLOCKING)) {
+                for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)nd->pt[k]);
+                native_call(p, nd, args, rets);
+            } else if (p->bcall.state == BCALL_DONE && p->bcall.insn == in) { /* back from the I/O pool */
+                memcpy(rets, p->bcall.rets, sizeof rets);
+                p->bcall.state = BCALL_NONE;
+                native_complete(p);
+            } else { /* hand the call to the I/O thread pool; this instruction runs again after it */
+                for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)nd->pt[k]);
+                native_count_call(p);
+                p->bcall.state = BCALL_PENDING;
+                p->bcall.nd = nd;
+                p->bcall.insn = in;
+                memcpy(p->bcall.args, args, sizeof args);
+                memset(p->bcall.rets, 0, sizeof p->bcall.rets);
+                fr->pc--;
+                p->insns--;
+                return SLICE_NATIVE;
+            }
             for (int k = 0; k < in->nops - 2 - argc; k++) wr(&c, &ops[2 + argc + k], (MlwsType)nd->rt[k], rets[k]);
             break;
         }

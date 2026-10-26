@@ -147,6 +147,11 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
             return mlws_err(err, "E_LOAD_FORMAT", "module %s: malformed %s literal \"%s\"", m->name,
                             c->kind == CONST_BIG ? "BigInt" : "decimal", c->data);
     }
+    /* Native code this module brings in: extensions, then C functions (.extern). */
+    for (uint32_t i = 0; i < m->nextensions; i++)
+        if (!ext_load(vm, m->extensions[i], err)) return false;
+    for (uint32_t i = 0; i < m->nexterns; i++)
+        if (!ffi_define(vm, &m->externs[i], err)) return false;
     lm->natives = xcalloc(m->nnatives + 1, sizeof(NativeDef *));
     for (uint32_t i = 0; i < m->nnatives; i++) {
         void *v;

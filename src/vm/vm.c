@@ -45,6 +45,8 @@ VM *vm_new(void) {
     vm->gc_stress = stress && *stress && strcmp(stress, "0") != 0;
     vm_options_from_env(vm); /* MLWSVM_THREADS, MLWSVM_MAX_FRAMES, ... */
     vm->lock = plat_lock_new();
+    const char *unsafe = getenv("MLWSVM_UNSAFE_NATIVE");
+    vm->unsafe_native = unsafe && *unsafe && strcmp(unsafe, "0") != 0;
     vm->out_lock = plat_lock_new();
     op_init();
     natives_register_builtin(vm);
@@ -81,6 +83,11 @@ void vm_free(VM *vm) {
     if (!vm) return;
     if (vm->tools_free) vm->tools_free(vm);
     sched_free(vm); /* every remaining process */
+    if (sched_abandoned(vm)) { /* a native call is still running on this VM's memory */
+        fprintf(stderr, "mlwsvm: a blocking native call did not return; leaving it running\n");
+        return;
+    }
+    ext_free_all(vm);
     for (size_t i = 0; i < vm->mods.n; i++) lmodule_free(vm->mods.v[i]);
     VEC_FREE(vm->mods);
     smap_free(&vm->modmap);

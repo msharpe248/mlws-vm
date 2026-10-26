@@ -5,45 +5,25 @@ are complete. Their status, and the measurements behind each deferral, are in
 [README.md](../README.md#status-and-roadmap) and
 [PERFORMANCE.md](PERFORMANCE.md).
 
-## 1. Calling existing libraries (proposed: M10)
+## 1. Calling existing libraries (M10: done)
 
-Today natives are compiled into the VM: a table of `NativeDef` entries in
-`src/native/natives.c`, called with `ncall "name" (args) -> (results)` and
-resolved at load time. The plan has three layers, each usable without the next.
+Done: the native-extension API (`include/mlwsvm/mlwsvm.h`), the declarative FFI
+(`.extern`, via libffi), blocking and serial natives, foreign handles,
+trusted installation (`mlwsvm ext`, SHA-256 pinning, permission checks), and
+the foreign-call quota. See [EXTENDING.md](EXTENDING.md).
 
-1. **A stable native-extension API.** Publish `include/mlwsvm/mlwsvm.h`, a small
-   versioned C API for writing natives outside the VM: argument and result
-   access, creating strings, bytes, lists and maps, raising errors, and handles to
-   foreign resources with a finalizer the GC runs. Extensions are shared
-   libraries, loaded on request (`.import native "sqlite3"` or `--native lib`),
-   that register their natives by name. This is the model of Lua's C API,
-   CPython extension modules, JNI and Erlang NIFs.
-2. **Declarative FFI**: call a C function directly from a declaration in
-   assembly, with no C glue. For example:
-   `.extern "libm" cos(f64) -> f64` or `.extern "libsqlite3" sqlite3_open(cstr, out ptr) -> i32`.
-   The VM opens the library, finds the symbol, converts arguments (string to
-   NUL-terminated `char *`, bytes to a pointer and length, foreign pointers as
-   opaque handles), and makes the call through libffi. libffi is an optional
-   build dependency, and the extension API (layer 1) works without it. This is
-   the model of Python's ctypes and cffi, LuaJIT's FFI and Java's FFM API.
-3. **A binding generator**: `mlwsvm bindgen header.h`, which writes the
-   `.extern` declarations for a C header, in the spirit of Rust's bindgen and
-   ctypesgen.
+Still to do:
 
-Cross-cutting requirements:
-
-* **Blocking calls must not block a worker thread.** A native marked `blocking`
-  runs on a separate pool of I/O threads, and the calling process waits as it
-  does in `recv` (Erlang's dirty schedulers).
-* **Foreign code is trusted code.** Loading native code needs explicit
-  permission (`--allow-native`), and a sandboxed process cannot load any.
-* **Memory safety at the boundary.** Raw C pointers never enter `P` registers
-  (those are checked pointers). They are opaque `foreign` handles. Buffers passed
-  to C are valid only for the call, which the non-moving GC makes cheap to
-  guarantee.
-* **Callbacks from C into the VM** (comparators, event handlers) need a
-  re-entrant interpreter entry point. This is deferred until a library actually
-  needs it.
+* **A binding generator**: `mlwsvm bindgen header.h`, which writes `.extern`
+  declarations for a C header, in the spirit of Rust's bindgen and ctypesgen.
+* **Callbacks from C into the VM** (comparators, event handlers). These need a
+  re-entrant interpreter entry point. Deferred until a library needs them.
+* **More FFI shapes**: structs by value, variadic functions, finalizers for
+  `.extern` handles (`ptr<tag>` freed by a named C function).
+* **Posting messages from native threads** to a process, for event-driven C
+  libraries.
+* **Windows**: ACL checks in `plat_path_trusted` (POSIX permission checks are
+  done).
 
 ## 2. Standard library (proposed: M11)
 
@@ -58,7 +38,7 @@ top. Details are in the design discussion; this list is the starting point.
 | `std.os` | command-line arguments, environment, exit, running external commands (with pipes) |
 | `std.net` | TCP and UDP sockets, DNS; non-blocking underneath, so only the calling *process* waits |
 | `std.time` | wall and monotonic clocks, ISO 8601 formatting and parsing, durations |
-| `std.text` | number parsing and formatting (`parse_int`, `parse_float`, printf-style `format`), UTF-8 iteration, validation and case mapping, split/join/trim/find/replace |
+| `std.text` | printf-style `format` (number parsing exists: the `parse` instruction), UTF-8 iteration, validation and case mapping, split/join/trim/find/replace |
 | `std.encoding` | hex, base64, URL encoding, JSON parse and serialize, CSV |
 | `std.hash` / `std.random` | SipHash, CRC-32, SHA-256; a seeded PRNG plus OS entropy |
 | `std.collections` | sort and binary search (with a comparator closure), set operations on maps |

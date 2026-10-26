@@ -22,6 +22,17 @@ void module_free(Module *m) {
     free(m->grefs);
     for (uint32_t i = 0; i < m->nnatives; i++) free(m->natives[i]);
     free(m->natives);
+    for (uint32_t i = 0; i < m->nextensions; i++) free(m->extensions[i]);
+    free(m->extensions);
+    for (uint32_t i = 0; i < m->nexterns; i++) {
+        MExtern *x = &m->externs[i];
+        free(x->name);
+        free(x->lib);
+        free(x->sym);
+        for (int k = 0; k < x->nargs; k++) free(x->tags[k]);
+        free(x->ret_tag);
+    }
+    free(m->externs);
     for (uint32_t i = 0; i < m->nstructs; i++) {
         MStruct *st = &m->structs[i];
         free(st->name);
@@ -147,6 +158,23 @@ void module_write(const Module *m, ByteBuf *b) {
     bb_bytes(b, m->gtags, m->gsize / 8);
     bb_uleb(b, m->codelen);
     bb_bytes(b, m->code, m->codelen);
+    bb_uleb(b, m->nextensions);
+    for (uint32_t i = 0; i < m->nextensions; i++) bb_str(b, m->extensions[i]);
+    bb_uleb(b, m->nexterns);
+    for (uint32_t i = 0; i < m->nexterns; i++) {
+        const MExtern *x = &m->externs[i];
+        bb_str(b, x->name);
+        bb_str(b, x->lib);
+        bb_str(b, x->sym);
+        bb_uleb(b, x->flags);
+        bb_u8(b, x->nargs);
+        for (int k = 0; k < x->nargs; k++) {
+            bb_u8(b, x->args[k]);
+            bb_str(b, x->tags[k] ? x->tags[k] : "");
+        }
+        bb_u8(b, x->ret);
+        bb_str(b, x->ret_tag ? x->ret_tag : "");
+    }
 }
 
 #define FAIL(...)                                                              \
@@ -352,6 +380,41 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
     m->code = xmalloc(n);
     br_bytes(&r, m->code, n);
     CHECK();
+
+    n = br_uleb(&r);
+    CHECK_COUNT(n, 1);
+    m->nextensions = (uint32_t)n;
+    m->extensions = xcalloc(n + 1, sizeof(char *));
+    for (uint32_t i = 0; i < m->nextensions; i++) m->extensions[i] = br_str(&r);
+    CHECK();
+    n = br_uleb(&r);
+    CHECK_COUNT(n, 5);
+    m->nexterns = (uint32_t)n;
+    m->externs = xcalloc(n + 1, sizeof(MExtern));
+    for (uint32_t i = 0; i < m->nexterns; i++) {
+        MExtern *x = &m->externs[i];
+        x->name = br_str(&r);
+        x->lib = br_str(&r);
+        x->sym = br_str(&r);
+        x->flags = (uint32_t)br_uleb(&r);
+        x->nargs = br_u8(&r);
+        CHECK();
+        if (x->nargs > FFI_MAX_ARGS) FAIL("extern %s: too many parameters", x->name);
+        for (int k = 0; k < x->nargs; k++) {
+            x->args[k] = br_u8(&r);
+            x->tags[k] = br_str(&r);
+            CHECK();
+            if (!*x->tags[k]) free(x->tags[k]), x->tags[k] = NULL;
+            uint8_t kind = x->args[k] & (uint8_t)~FFI_OUT;
+            if (kind == FFI_VOID || kind >= FFI__COUNT) FAIL("extern %s: bad parameter kind", x->name);
+        }
+        x->ret = br_u8(&r);
+        x->ret_tag = br_str(&r);
+        CHECK();
+        if (!*x->ret_tag) free(x->ret_tag), x->ret_tag = NULL;
+        if (x->ret >= FFI__COUNT) FAIL("extern %s: bad result kind", x->name);
+    }
+    if (r.pos != r.n) FAIL("trailing bytes after the module");
 
     for (uint32_t i = 0; i < m->nfuncs; i++) {
         MFunc *f = &m->funcs[i];

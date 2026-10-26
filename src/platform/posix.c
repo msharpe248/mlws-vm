@@ -5,6 +5,7 @@
 #include "platform.h"
 
 #include <arpa/inet.h>
+#include <dlfcn.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -270,6 +271,52 @@ void plat_cond_wait(PlatCond *c, PlatMutex *m, uint64_t timeout_ns) {
 
 void plat_cond_signal(PlatCond *c) { pthread_cond_signal(&c->c); }
 void plat_cond_broadcast(PlatCond *c) { pthread_cond_broadcast(&c->c); }
+
+void plat_thread_detach(PlatThread *t) {
+    pthread_detach(t->t);
+    /* The PlatThread struct is still read by thread_main; it is leaked deliberately. */
+}
+
+void *plat_dlopen(const char *path, char *err, size_t errlen) {
+    void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!h && err) snprintf(err, errlen, "%s", dlerror());
+    return h;
+}
+
+void *plat_dlsym(void *lib, const char *name) { return dlsym(lib ? lib : RTLD_DEFAULT, name); }
+
+const char *plat_dl_suffix(void) {
+#ifdef __APPLE__
+    return ".dylib";
+#else
+    return ".so";
+#endif
+}
+
+bool plat_path_trusted(const char *path, char *why, size_t whylen) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        snprintf(why, whylen, "%s: %s", path, strerror(errno));
+        return false;
+    }
+    if (st.st_mode & (S_IWGRP | S_IWOTH)) {
+        snprintf(why, whylen, "%s is writable by other users (mode %03o)", path, (unsigned)(st.st_mode & 0777));
+        return false;
+    }
+    if (st.st_uid != getuid() && st.st_uid != 0) {
+        snprintf(why, whylen, "%s is owned by another user (uid %u)", path, (unsigned)st.st_uid);
+        return false;
+    }
+    return true;
+}
+
+bool plat_mkdir(const char *path) { return mkdir(path, 0755) == 0 || errno == EEXIST; }
+
+bool plat_restrict_writes(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    return chmod(path, st.st_mode & 0755) == 0;
+}
 
 int plat_cpu_count(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);

@@ -1,6 +1,7 @@
 /* hooks.c - the instruction hook, the tracer (--trace) and the profiler
  * (--profile, --flame). See docs/TOOLING.md. */
 #include "../core/disasm.h"
+#include "../../include/mlwsvm/mlwsvm.h"
 #include "../heap/numeric.h"
 #include "../heap/object.h"
 #include "tools.h"
@@ -74,6 +75,11 @@ void fmt_value(StrBuf *b, Word v, MlwsType t, int depth) {
             fmt_value(b, cl->up[i], (MlwsType)cl->tags[i], depth - 1);
         }
         sb_putc(b, '>');
+        return;
+    }
+    case OBJ_FOREIGN: {
+        const ObjForeign *fo = (const ObjForeign *)o;
+        sb_printf(b, "<foreign %s%s>", ((const MlwsForeignType *)fo->type)->name, fo->ptr ? "" : " (released)");
         return;
     }
     default: break;

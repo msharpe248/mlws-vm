@@ -1,0 +1,42 @@
+; A BLOCKING native runs on the I/O thread pool, so it never holds up a worker
+; thread. With one worker, 8 processes each sleep 100 ms in demo.sleep at the
+; same time (well under the 800 ms one after another), and a spinning process
+; keeps running meanwhile.
+; option: --ext-path build/test-ext
+; threads: 1
+.include "std/test.inc"
+.extension "demo"
+.func sleeper(i64 parent)
+    ncall "demo.sleep" (100) -> (I1)
+    send parent, I1
+    ret
+.endf
+.func spinner(i64 parent)
+    mov I1, 0
+1:  inc I1
+    recvt I2, 0, 1b                    ; until told to stop
+    send parent, I1
+    ret
+.endf
+.func main
+    ncall "time.now_ns" () -> (I0)
+    spawn spinner (PID) -> (I9)
+    mov I1, 0
+1:  spawn sleeper (PID)
+    inc I1
+    blt I1, 8, 1b
+    mov I2, 0
+    mov I1, 0
+2:  recv I3
+    add I2, I3
+    inc I1
+    blt I1, 8, 2b
+    ASSERT_EQ I2, 800
+    ncall "time.now_ns" () -> (I4)
+    sub I4, I0
+    ASSERT_LT I4, 600000000            ; in parallel: about 100 ms, not 800
+    send I9, 0
+    recv I5                            ; the spinner's count
+    ASSERT_GT I5, 1000                 ; it ran while the others slept
+    ret 0
+.endf

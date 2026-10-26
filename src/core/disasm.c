@@ -203,6 +203,31 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
     sb_printf(b, "; disassembly of module %s (source: %s)\n", m->name, m->source && *m->source ? m->source : "?");
     sb_printf(b, ".module %s\n", m->name);
     for (uint32_t i = 0; i < m->nimports; i++) sb_printf(b, ".import %s\n", m->imports[i]);
+    for (uint32_t i = 0; i < m->nextensions; i++) sb_printf(b, ".extension \"%s\"\n", m->extensions[i]);
+    for (uint32_t i = 0; i < m->nexterns; i++) {
+        static const char *const K[] = {"void", "i8",  "i16", "i32",  "i64", "u8",  "u16",
+                                        "u32",  "u64", "f32", "f64", "cstr", "buf", "ptr"};
+        const MExtern *x = &m->externs[i];
+        sb_printf(b, ".extern %s, ", x->name);
+        sb_put_quoted(b, x->lib, strlen(x->lib));
+        sb_puts(b, ", ");
+        sb_put_quoted(b, x->sym, strlen(x->sym));
+        sb_puts(b, " (");
+        for (int k = 0; k < x->nargs; k++) {
+            uint8_t kind = x->args[k] & (uint8_t)~FFI_OUT;
+            sb_printf(b, "%s%s%s", k ? ", " : "", x->args[k] & FFI_OUT ? "out " : "", kind < FFI__COUNT ? K[kind] : "?");
+            if (x->tags[k]) sb_printf(b, "<%s>", x->tags[k]);
+        }
+        sb_puts(b, ")");
+        if (x->ret != FFI_VOID) {
+            sb_printf(b, " -> (%s", x->ret < FFI__COUNT ? K[x->ret] : "?");
+            if (x->ret_tag) sb_printf(b, "<%s>", x->ret_tag);
+            sb_puts(b, ")");
+        }
+        if (x->flags & MX_BLOCKING) sb_puts(b, ", blocking");
+        if (x->flags & MX_SERIAL) sb_puts(b, ", serial");
+        sb_putc(b, '\n');
+    }
     for (uint32_t i = 0; i < m->nfuncs; i++)
         if ((m->funcs[i].flags & (MF_EXPORT | MF_IMPORT)) == MF_EXPORT) sb_printf(b, ".export %s\n", m->funcs[i].name);
     for (uint32_t i = 0; i < m->nsyms; i++)

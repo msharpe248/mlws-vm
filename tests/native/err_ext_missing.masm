@@ -1,0 +1,7 @@
+; An extension that is not installed in any trusted directory is a link error.
+; option: --ext-path build/test-ext
+; expect-error: E_LINK_EXT
+.extension "nosuch"
+.func main
+    ret 0
+.endf

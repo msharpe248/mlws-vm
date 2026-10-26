@@ -3,14 +3,18 @@
  * (`; option: --max-frames 500000`). See docs/TOOLING.md ("VM options"). */
 #include "vm.h"
 
+#include "../platform/platform.h"
 #include <ctype.h>
 #include <errno.h>
 
 #define MAX_THREADS 256 /* as in sched.c */
 
-typedef enum { OPT_STACK_WORDS, OPT_THREADS, OPT_MAX_FRAMES, OPT_SLICE, OPT_GC_MIN, OPT_QUOTA, OPT__COUNT } OptId;
+typedef enum {
+    OPT_STACK_WORDS, OPT_THREADS, OPT_MAX_FRAMES, OPT_SLICE, OPT_GC_MIN, OPT_QUOTA, OPT_EXT_PATH, OPT__COUNT
+} OptId;
 
-static const char *const OPT_NAMES[OPT__COUNT] = {"stack-words", "threads", "max-frames", "slice", "gc-min", "quota"};
+static const char *const OPT_NAMES[OPT__COUNT] = {"stack-words", "threads", "max-frames", "slice",
+                                                  "gc-min",      "quota",   "ext-path"};
 
 static int opt_find(const char *name) {
     for (int i = 0; i < OPT__COUNT; i++)
@@ -63,7 +67,7 @@ static bool parse_range(const char *name, const char *value, bool bytes, uint64_
 
 /* heap=64M,raw=1G,mailbox=1000,insns=5000000 (any subset; "unlimited" resets one). */
 static bool parse_quota(VM *vm, const char *value, MlwsError *err) {
-    static const char *const KINDS[QUOTA__COUNT] = {"heap", "raw", "mailbox", "insns"};
+    static const char *const KINDS[QUOTA__COUNT] = {"heap", "raw", "mailbox", "insns", "foreign"};
     uint64_t q[QUOTA__COUNT];
     memcpy(q, vm->default_quota, sizeof q);
     const char *s = value;
@@ -77,7 +81,7 @@ static bool parse_quota(VM *vm, const char *value, MlwsError *err) {
                 if ((size_t)(eq - s) == strlen(KINDS[k]) && !strncmp(s, KINDS[k], (size_t)(eq - s))) kind = k;
         if (kind < 0)
             return mlws_err(err, "E_BAD_OPTION",
-                            "--quota: expected heap=, raw=, mailbox= or insns= (comma-separated), got '%.*s'",
+                            "--quota: expected heap=, raw=, mailbox=, insns= or foreign= (comma-separated), got '%.*s'",
                             (int)len, s),
                    false;
         const char *v = eq + 1;
@@ -117,6 +121,16 @@ bool vm_set_option(VM *vm, const char *name, const char *value, MlwsError *err) 
         vm->gc_min_threshold = n; /* 0: the default (1 MiB) */
         return true;
     case OPT_QUOTA: return parse_quota(vm, value, err);
+    case OPT_EXT_PATH: { /* trusted extension directories, searched in order; ':'-separated (';' on Windows) */
+        char sep = plat_path_sep();
+        for (const char *s = value; *s;) {
+            const char *e = strchr(s, sep);
+            size_t len = e ? (size_t)(e - s) : strlen(s);
+            if (len) VEC_PUSH(vm->ext_paths, xstrndup(s, len));
+            s = e ? e + 1 : s + len;
+        }
+        return true;
+    }
     default: return mlws_err(err, "E_BAD_OPTION", "unknown option --%s", name), false;
     }
 }

@@ -1,0 +1,8 @@
+; An extension directory that other users can write to is not trusted: anyone
+; could replace what is in it.
+; option: --ext-path build/test-ext-open
+; expect-error: E_LINK_UNTRUSTED
+.extension "demo"
+.func main
+    ret 0
+.endf

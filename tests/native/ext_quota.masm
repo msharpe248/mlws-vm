@@ -1,0 +1,37 @@
+; Quota kind 4 limits each process's foreign calls (extensions and .extern).
+; Children inherit the limit and count their own calls. A sandbox lowers it to
+; 0, so the code it runs cannot reach native code at all.
+; option: --ext-path build/test-ext
+.include "std/test.inc"
+.extension "demo"
+.const FOREIGN = 4
+; Make foreign calls until refused; returns how many succeeded.
+.func caller -> i64
+    mov I1, 0
+.try h
+1:  ncall "demo.add" (1, 2) -> (I0)
+    inc I1
+    jmp 1b
+.endtry
+h:  catch R0
+    strcmp I2, R0->Error.code, "E_QUOTA"
+    ASSERT_EQ I2, 0
+    ret I1
+.endf
+.func sandbox -> i64
+    quota FOREIGN, 0
+    call caller () -> (I0)
+    ret I0
+.endf
+.func main
+    quota FOREIGN, 3
+    call caller () -> (I0)
+    ASSERT_EQ I0, 3
+    spawnm caller -> (I1)              ; its own count, the same limit
+    recv R1
+    ASSERT_EQ R1->Down.exit, 3
+    spawnm sandbox -> (I1)
+    recv R1
+    ASSERT_EQ R1->Down.exit, 0
+    ret 0
+.endf

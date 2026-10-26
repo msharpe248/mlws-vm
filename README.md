@@ -53,6 +53,10 @@ base:
   thread per core with work stealing, `spawn`/`send`/`recv` with deep-copied
   messages, timeouts, Erlang-style `link`/`monitor` supervision, and per-process
   quotas on heap, raw memory, mailbox size and CPU.
+* **Calling C**: native extensions written against a small, versioned C API
+  (`include/mlwsvm/mlwsvm.h`), and a declarative FFI (`.extern`, via libffi) that
+  calls C functions directly. Blocking and non-thread-safe code is declared as
+  such, and native code loads only from trusted, hash-pinned directories.
 * **Structured exceptions**: `.try` regions, `throw`/`catch`, and zero cost until
   something is thrown. Every runtime fault is catchable as an `Error`.
 * **Tooling**: a gdb-style debugger (`mlwsvm debug`), an exact profiler with
@@ -67,7 +71,7 @@ base:
 ## Build and run
 
 ```sh
-make                         # builds ./mlwsvm (needs only a C11 compiler)
+make                         # builds ./mlwsvm (a C11 compiler; libffi is used for .extern if found)
 make test                    # runs tests/ and examples/
 make check-gc                # the same, collecting garbage at every allocation
 make check-tools             # smoke-test the monitor, top, profiler and tracer
@@ -102,6 +106,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/ERRORS.md](docs/ERRORS.md) | Error codes |
 | [docs/BINARY_FORMAT.md](docs/BINARY_FORMAT.md) | The `.mlwso` file and instruction encoding |
 | [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard and `top` |
+| [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks, results, and what was optimised (and why) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Remaining work: calling C libraries, the standard library, platforms, deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
@@ -143,4 +148,5 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M9 Performance: single-thread interpreter (quickening, frames, `_setjmp`; 1.2–7.8× faster) | done |
 | M9 Performance: multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes) | done |
 | M9 Performance: generational GC, more specialised memory forms | deferred: measured as low value for now ([PERFORMANCE.md](docs/PERFORMANCE.md)) |
-| M10 Calling C libraries (extension API, FFI); M11 standard library | proposed ([ROADMAP.md](docs/ROADMAP.md)) |
+| M10 Calling C: extension API, declarative FFI, trusted installation (`mlwsvm ext`) | done ([EXTENDING.md](docs/EXTENDING.md)) |
+| M11 Standard library | proposed ([ROADMAP.md](docs/ROADMAP.md)) |

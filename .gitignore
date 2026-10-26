@@ -7,3 +7,6 @@ build-asan/
 .zvec-grep/
 build-tsan/
 /mlwsvm-tsan
+build-noffi/
+/mlwsvm-noffi
+lib/ext/

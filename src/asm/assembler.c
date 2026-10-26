@@ -102,6 +102,8 @@ typedef struct {
     StrMap frefmap;        /* "sidx:field" -> idx+1 */
     StrMap ifuncmap;
     uint32_t seq;
+    VEC(char *) extensions; /* .extension */
+    VEC(MExtern) externs;   /* .extern */
 } Asm;
 
 typedef struct {
@@ -994,6 +996,149 @@ static bool dir_import(Asm *A, Cur *c) {
     return expect_eol(A, c);
 }
 
+/* `.extension "name"`: this module calls natives of an installed extension. */
+static bool dir_extension(Asm *A, Cur *c) {
+    if (A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".extension must be outside a .func");
+    Token *t = cur(c);
+    if (t->kind != TK_STRING || !t->slen) return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "expected an extension name string");
+    for (size_t i = 0; i < t->slen; i++) {
+        char ch = t->sval[i];
+        if (!(ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')))
+            return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "extension names use only a-z, 0-9 and _");
+    }
+    bool have = false;
+    for (size_t i = 0; i < A->extensions.n; i++) have = have || !strcmp(A->extensions.v[i], t->sval);
+    if (!have) VEC_PUSH(A->extensions, xstrndup(t->sval, t->slen));
+    c->pos++;
+    return expect_eol(A, c);
+}
+
+/* One FFI type: i8..u64, f32, f64, cstr, buf, ptr or ptr<tag>, optionally after `out`. */
+static bool ffi_type(Asm *A, Cur *c, bool param, uint8_t *kind, char **tag) {
+    static const struct {
+        const char *name;
+        uint8_t kind;
+    } K[] = {{"i8", FFI_I8},   {"i16", FFI_I16}, {"i32", FFI_I32}, {"i64", FFI_I64}, {"u8", FFI_U8},
+             {"u16", FFI_U16}, {"u32", FFI_U32}, {"u64", FFI_U64}, {"f32", FFI_F32}, {"f64", FFI_F64},
+             {"cstr", FFI_CSTR}, {"buf", FFI_BUF}, {"ptr", FFI_PTR}};
+    bool out = false;
+    if (param && tok_ident(cur(c), "out")) {
+        out = true;
+        c->pos++;
+    }
+    Token *t = cur(c);
+    int k = -1;
+    for (size_t i = 0; i < sizeof K / sizeof K[0]; i++)
+        if (tok_ident(t, K[i].name)) k = (int)i;
+    if (k < 0)
+        return aerr(A, c->pl, t->col, "E_ASM_SYNTAX",
+                    "expected an FFI type (i8..i64, u8..u64, f32, f64, cstr, buf, ptr, ptr<tag>)");
+    c->pos++;
+    *kind = K[k].kind;
+    *tag = NULL;
+    if (*kind == FFI_PTR && tok_is(cur(c), "<")) {
+        c->pos++;
+        if (cur(c)->kind != TK_IDENT) return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected a tag name");
+        *tag = tokdup(cur(c));
+        c->pos++;
+        if (!expect_punct(A, c, ">")) return false;
+    }
+    if (out && (*kind == FFI_CSTR || *kind == FFI_BUF))
+        return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "out parameters are numbers or ptr");
+    if (!param && *kind == FFI_BUF) return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "buf cannot be a result (use ptr)");
+    if (out) *kind |= FFI_OUT;
+    return true;
+}
+
+/* `.extern NAME, "library", "symbol" (params) -> (result) [, blocking] [, serial]` */
+static bool dir_extern(Asm *A, Cur *c) {
+    if (A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".extern must be outside a .func");
+    MExtern x;
+    memset(&x, 0, sizeof x);
+    bool ok = false;
+    Token *nt = cur(c);
+    if (nt->kind == TK_IDENT) x.name = tokdup(nt);
+    else if (nt->kind == TK_STRING && nt->slen) x.name = xstrndup(nt->sval, nt->slen);
+    else {
+        aerr(A, c->pl, nt->col, "E_ASM_SYNTAX", "expected the native's name, such as m.cos");
+        goto out;
+    }
+    if (!strchr(x.name, '.')) {
+        aerr(A, c->pl, nt->col, "E_ASM_SYNTAX", "an extern's name needs a prefix, such as m.cos");
+        goto out;
+    }
+    c->pos++;
+    if (!expect_punct(A, c, ",")) goto out;
+    if (cur(c)->kind != TK_STRING) {
+        aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected the library, such as \"libm\" (\"\" = the program itself)");
+        goto out;
+    }
+    x.lib = xstrndup(cur(c)->sval, cur(c)->slen);
+    c->pos++;
+    if (!expect_punct(A, c, ",")) goto out;
+    if (cur(c)->kind != TK_STRING || !cur(c)->slen) {
+        aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected the C symbol name as a string");
+        goto out;
+    }
+    x.sym = xstrndup(cur(c)->sval, cur(c)->slen);
+    c->pos++;
+    if (!expect_punct(A, c, "(")) goto out;
+    int nin = 0, nout = 0;
+    while (!tok_is(cur(c), ")")) {
+        if (x.nargs == FFI_MAX_ARGS) {
+            aerr(A, c->pl, cur(c)->col, "E_ASM_RANGE", "at most %d parameters", FFI_MAX_ARGS);
+            goto out;
+        }
+        if (!ffi_type(A, c, true, &x.args[x.nargs], &x.tags[x.nargs])) goto out;
+        if (x.args[x.nargs] & FFI_OUT) nout++;
+        else nin++;
+        x.nargs++;
+        if (tok_is(cur(c), ",")) c->pos++;
+        else if (!tok_is(cur(c), ")")) {
+            aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected ',' or ')'");
+            goto out;
+        }
+    }
+    c->pos++;
+    x.ret = FFI_VOID;
+    if (tok_is(cur(c), "->")) {
+        c->pos++;
+        if (!expect_punct(A, c, "(")) goto out;
+        if (!tok_is(cur(c), ")") && !ffi_type(A, c, false, &x.ret, &x.ret_tag)) goto out;
+        if (!expect_punct(A, c, ")")) goto out;
+    }
+    if (nout + (x.ret != FFI_VOID) > 4) {
+        aerr(A, c->pl, c->t[0].col, "E_ASM_RANGE", "at most 4 results (the return value and out parameters)");
+        goto out;
+    }
+    (void)nin;
+    while (tok_is(cur(c), ",")) {
+        c->pos++;
+        if (tok_ident(cur(c), "blocking")) x.flags |= MX_BLOCKING;
+        else if (tok_ident(cur(c), "serial")) x.flags |= MX_SERIAL;
+        else {
+            aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected 'blocking' or 'serial'");
+            goto out;
+        }
+        c->pos++;
+    }
+    if (!expect_eol(A, c)) goto out;
+    for (size_t i = 0; i < A->externs.n; i++)
+        if (!strcmp(A->externs.v[i].name, x.name)) {
+            aerr(A, c->pl, nt->col, "E_ASM_DUP_SYM", "extern %s is already declared", x.name);
+            goto out;
+        }
+    VEC_PUSH(A->externs, x);
+    return true;
+out:
+    free(x.name);
+    free(x.lib);
+    free(x.sym);
+    for (int k = 0; k < FFI_MAX_ARGS; k++) free(x.tags[k]);
+    free(x.ret_tag);
+    return ok;
+}
+
 static bool dir_struct(Asm *A, Cur *c) {
     if (A->cur || A->cur_struct)
         return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".struct must be at top level");
@@ -1130,6 +1275,8 @@ static bool directive(Asm *A, Cur *c) {
     if (IS(".regs")) return dir_regs(A, c);
     if (IS(".alias")) return dir_alias(A, c);
     if (IS(".import")) return dir_import(A, c);
+    if (IS(".extension")) return dir_extension(A, c);
+    if (IS(".extern")) return dir_extern(A, c);
     if (IS(".module")) {
         Token *nt = cur(c);
         if (nt->kind != TK_IDENT) return aerr(A, c->pl, nt->col, "E_ASM_SYNTAX", "expected a module name");
@@ -1670,6 +1817,14 @@ static Module *finish(Asm *A) {
     m->nnatives = (uint32_t)A->natives.n;
     m->natives = xcalloc(A->natives.n + 1, sizeof(char *));
     for (size_t i = 0; i < A->natives.n; i++) m->natives[i] = xstrdup(A->natives.v[i]);
+    m->nextensions = (uint32_t)A->extensions.n;
+    m->extensions = A->extensions.v ? A->extensions.v : xcalloc(1, sizeof(char *));
+    A->extensions.v = NULL;
+    A->extensions.n = 0;
+    m->nexterns = (uint32_t)A->externs.n;
+    m->externs = A->externs.v ? A->externs.v : xcalloc(1, sizeof(MExtern));
+    A->externs.v = NULL;
+    A->externs.n = 0;
     m->gsize = (uint32_t)A->gdata.n;
     m->gdata = xcalloc(m->gsize + 1, 1);
     memcpy(m->gdata, A->gdata.b, m->gsize);
@@ -1711,6 +1866,17 @@ static void asm_free(Asm *A) {
     VEC_FREE(A->consts);
     for (size_t i = 0; i < A->natives.n; i++) free(A->natives.v[i]);
     VEC_FREE(A->natives);
+    for (size_t i = 0; i < A->extensions.n; i++) free(A->extensions.v[i]);
+    VEC_FREE(A->extensions);
+    for (size_t i = 0; i < A->externs.n; i++) {
+        MExtern *x = &A->externs.v[i];
+        free(x->name);
+        free(x->lib);
+        free(x->sym);
+        for (int k = 0; k < x->nargs; k++) free(x->tags[k]);
+        free(x->ret_tag);
+    }
+    VEC_FREE(A->externs);
     for (size_t i = 0; i < A->grefs.n; i++) free(A->grefs.v[i].sym);
     VEC_FREE(A->grefs);
     for (size_t i = 0; i < A->ifuncs.n; i++) free(A->ifuncs.v[i].name);

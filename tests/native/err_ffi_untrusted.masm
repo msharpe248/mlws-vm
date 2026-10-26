@@ -1,0 +1,8 @@
+; .extern may only load libraries that a trusted TRUSTED manifest allows.
+; requires: ffi
+; option: --ext-path build/test-ext
+; expect-error: E_LINK_UNTRUSTED
+.extern z.version, "libz", "zlibVersion" () -> (cstr)
+.func main
+    ret 0
+.endf

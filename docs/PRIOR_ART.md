@@ -22,7 +22,7 @@ us.
 
 All code in this repository was written for this project. Nothing was ported or
 translated from another VM. A few standard public algorithms appear verbatim:
-FNV-1a hashing, the MurmurHash3 `fmix64` and SplitMix64 mixing constants, and LEB128
+FNV-1a hashing, the MurmurHash3 `fmix64` and SplitMix64 mixing constants, SHA-256 (FIPS 180-4), and LEB128
 encoding.
 
 ---
@@ -85,6 +85,17 @@ encoding.
 | `link` / `monitor` / `Down` messages / unobserved crash reports | **BEAM**: links, monitors, `DOWN` messages, OTP supervision | `Down` is an ordinary struct, inspected with the same field operands as any other. |
 | The program ends when `main` ends; deadlock detection | **Go** (main returning ends the program; "all goroutines are asleep") | The deadlock is a *catchable* exception in `main`. |
 | Quotas that can only be lowered, inherited by children | Unix `setrlimit` (soft and hard limits); BEAM's `max_heap_size` | Covers heap, raw memory, mailbox size and instruction count. A sandbox is just a wrapper that lowers its own limits before calling untrusted code. |
+
+### Calling C (M10)
+
+| MLWSVM | Influences | How MLWSVM differs |
+|---|---|---|
+| Extension API: a versioned table of VM functions passed to the extension's init | **Lua**'s C API; **CPython** extension modules; **JNI**'s `JNIEnv` function table; **Erlang NIFs**; Node-API | Extensions link against nothing from the VM, and the API version is part of the init symbol's name, so a mismatch fails to load instead of crashing. No rooting is needed, because the collector only runs between instructions. Errors are recorded and raised after the call, never by unwinding foreign code. |
+| `MLWS_NATIVE_BLOCKING` calls on an I/O thread pool | Erlang's **dirty schedulers** (dirty I/O NIFs) | The calling process just waits, as in `recv`, so the worker thread runs other processes. |
+| `MLWS_NATIVE_SERIAL`: a per-extension lock | Python's GIL (here per library, and only for code that asks for it); Java `synchronized` natives | Opt-in, so thread-safe libraries run in parallel. |
+| Foreign handles with typed finalizers | Lua full userdata with `__gc`; CPython capsules; JNI global references | Typed by the address of their descriptor, so one library's pointer can't be passed as another's. Handles can't leave their process. |
+| `.extern` declarations called through libffi; `out` parameters; `ptr<tag>` | Python **ctypes** and **cffi**; **LuaJIT** FFI; Java's FFM API (Panama); libffi itself | Declared in the assembly the compiler emits, checked by the verifier like any native; tagged pointers stop pointer mix-ups at the boundary. |
+| Trusted extension directories, SHA-256 pinning, permission checks | SSH's `StrictModes` checks of `~/.ssh`; lockfile and trust-on-first-use pinning; Deno's explicit permissions | Native code is opt-in per directory and per library, and a sandboxed process can be denied native code completely with a quota (kind 4). |
 
 ### Performance
 
@@ -159,6 +170,7 @@ run 8.2× faster on the laptop's 18 cores than on one thread.
 | M7 | gdb's command set; Brendan Gregg's collapsed stacks for flame graphs; Erlang observer/etop and Unix top for the monitor |
 | M8 | Lua upvalues and flat closures; Knuth's Algorithm D (via Hacker's Delight); Java BigDecimal / Python decimal; JavaScript's `n` literal suffix |
 | M9 | Quickening: "quick" bytecodes in Smalltalk and early JVMs, Brunthaler's work on quickening, and CPython 3.11's specialising adaptive interpreter (PEP 659). Multi-threaded scheduler: BEAM SMP schedulers and heap fragments, Go's work-stealing scheduler and `runnext`, Cilk-style work stealing |
+| M10 | Lua's C API, CPython extensions, JNI and Erlang NIFs (dirty schedulers) for the extension API; ctypes, cffi, LuaJIT's FFI and libffi for `.extern`; SSH `StrictModes` and hash pinning for the trust model |
 
 ## References
 
@@ -180,3 +192,7 @@ run 8.2× faster on the laptop's 18 cores than on one thread.
 - Dmitry Vyukov, *Scalable Go Scheduler Design Doc*, 2012, and the Go runtime's `proc.go` (`runqsteal`, `runnext`).
 - Kenneth Lundin, *Inside the Erlang VM, with focus on SMP*, Erlang User Conference, 2008; the ERTS documentation on schedulers and heap fragments.
 - Sylvan Clebsch et al., *Deny Capabilities for Safe, Fast Actors* (Pony), AGERE 2015.
+- Roberto Ierusalimschy, *Programming in Lua*, part IV (the C API); the Lua 5.4 Reference Manual, §4 (the C API).
+- The Erlang/OTP documentation, `erl_nif` (NIFs and dirty schedulers).
+- The libffi documentation; the CPython `ctypes` documentation; the LuaJIT FFI documentation.
+- FIPS 180-4, *Secure Hash Standard* (SHA-256).

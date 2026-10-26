@@ -297,7 +297,7 @@ async function loadDetail() {
       ["Mailbox", `${p.mailbox} waiting · ${human(p.msgs_received)} received · ${human(p.msgs_sent)} sent`],
       ["GC", `${p.gc_count} collections, ${ms(p.gc_ns)}`], ["Exceptions thrown", p.exceptions],
       ["Links", p.links.join(", ") || "none"], ["Monitored by", p.monitors.join(", ") || "none"],
-      ["Quotas", `heap ${q(p.quota.heap, bytes)} · raw ${q(p.quota.raw, bytes)} · mailbox ${q(p.quota.mailbox, String)} · insns ${q(p.quota.insns, human)}`],
+      ["Quotas", `heap ${q(p.quota.heap, bytes)} · raw ${q(p.quota.raw, bytes)} · mailbox ${q(p.quota.mailbox, String)} · insns ${q(p.quota.insns, human)} · foreign calls ${q(p.quota.foreign, human)}`],
     ];
     $("detail-stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
     $("detail-bt").textContent = p.backtrace.join("\n") || "(no frames)";

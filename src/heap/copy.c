@@ -125,6 +125,8 @@ static Obj *shallow(Process *from, Process *to, struct CopyState *cs, Obj *o) {
         gc_account(to, (int64_t)size);
         break;
     }
+    case OBJ_FOREIGN:
+        vm_trap(from, "E_TYPE", "foreign handles cannot be sent to another process (they are process-local)");
     default: vm_trap(from, "E_INTERNAL", "cannot copy object kind %d", o->kind);
     }
     map_insert(cs, o, c);

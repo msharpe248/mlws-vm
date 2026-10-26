@@ -102,6 +102,7 @@ it.
 | 1 | raw-memory bytes | catchable `E_QUOTA` at `alloc`/`realloc` |
 | 2 | waiting messages in the mailbox | catchable `E_QUOTA` in the **sender** |
 | 3 | instructions executed in total | the process is stopped with `E_QUOTA` (a hard CPU limit) |
+| 4 | foreign calls (natives from extensions and `.extern`); 0 shuts out native code | catchable `E_QUOTA` at the call |
 
 `mlwsvm run --stats` reports processes spawned, the most alive at once, time
 slices, and instructions across all processes. `proc.count` returns the number
@@ -210,6 +211,12 @@ call.
 `ncall "name" (args) -> (results)` calls a host function. Parameter and result
 types come from the native registry ([NATIVES.md](NATIVES.md)) and are checked by
 the verifier. Natives do not create a frame.
+
+Natives also come from native extensions (`.extension "name"`) and from C
+functions declared with `.extern` ([EXTENDING.md](EXTENDING.md)). Errors in that
+foreign code are raised as `Error`s once it returns. A *blocking* one runs on a
+pool of I/O threads, and its process waits meanwhile (state `native` in the
+monitor). Foreign calls count towards quota kind 4.
 
 ### 2.7 Program entry and exit
 

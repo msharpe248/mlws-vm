@@ -67,7 +67,20 @@ typedef struct Sched {
     _Atomic bool done; /* main has finished */
     _Atomic bool stw;  /* stop the world requested */
     Worker *stw_owner;
+    /* the I/O thread pool for blocking native calls (io_lock guards these) */
+    PlatMutex *io_lock;
+    PlatCond *io_cv;      /* idle I/O threads wait here */
+    PlatCond *io_done_cv; /* shutdown waits here for calls in progress */
+    VEC(Process *) io_queue;
+    size_t io_head;
+    VEC(PlatThread *) io_threads;
+    int io_idle, io_busy;
+    bool io_stop, io_abandoned;
+    _Atomic int io_inflight; /* queued or running: other work that can still wake processes */
 } Sched;
+
+#define IO_MAX_THREADS 64
+#define IO_SHUTDOWN_WAIT_NS 1000000000ull /* how long the end of a program waits for blocking calls */
 
 static MLWS_THREAD_LOCAL Worker *tls_worker;
 
@@ -96,6 +109,9 @@ static Sched *sched_of(VM *vm) {
     s->work_cv = plat_cond_new();
     s->stw_cv = plat_cond_new();
     s->resume_cv = plat_cond_new();
+    s->io_lock = plat_mutex_new();
+    s->io_cv = plat_cond_new();
+    s->io_done_cv = plat_cond_new();
     int n = vm->threads > 0 ? vm->threads : plat_cpu_count();
     if (n < 1) n = 1;
     if (n > MAX_THREADS) n = MAX_THREADS;
@@ -439,7 +455,7 @@ static void unlink_pid(PidVec *v, uint64_t pid) {
  * slice; any other is claimed (marked failed) and the caller must finish it:
  * returns true then. */
 static bool kill_locked(Process *t, const char *code, const char *msg) {
-    if (t->state == PROC_RUNNING) {
+    if (t->state == PROC_RUNNING || t->state == PROC_NATIVE) { /* in a blocking call: stops when it returns */
         if (tls_worker && tls_worker->current == t) {
             snprintf(t->err.code, sizeof t->err.code, "%s", code);
             snprintf(t->err.msg, sizeof t->err.msg, "%s", msg);
@@ -670,7 +686,7 @@ static void idle(Worker *w) {
         if (work_available(s)) break;
         uint64_t nt = s->next_timer, now = plat_now_ns();
         if (nt && nt <= now) break;
-        if (!nt && s->nidle == s->nrun) { /* nothing can ever run again */
+        if (!nt && s->nidle == s->nrun && !s->io_inflight) { /* nothing can ever run again */
             deadlock = true;
             break;
         }
@@ -699,6 +715,87 @@ static void idle(Worker *w) {
     }
 }
 
+/* A kill_req is carried out: the process ends with the killer's error and no
+ * backtrace (it was stopped from outside). */
+static void kill_from_outside(Process *p) {
+    snprintf(p->err.code, sizeof p->err.code, "%s", p->kill_code);
+    snprintf(p->err.msg, sizeof p->err.msg, "%s", p->kill_msg);
+    p->backtrace.n = 0;
+    if (p->backtrace.s) p->backtrace.s[0] = 0;
+}
+
+/* ---- the I/O thread pool ------------------------------------------------------- */
+
+/* Blocking natives run here, so a worker thread is never stuck in one. The
+ * process is in PROC_NATIVE, and only this thread touches it until the call
+ * has returned and the process is ready again. */
+static void io_main(void *arg) {
+    Sched *s = arg;
+    plat_mutex_lock(s->io_lock);
+    for (;;) {
+        while (!s->io_stop && s->io_head == s->io_queue.n) {
+            s->io_idle++;
+            plat_cond_wait(s->io_cv, s->io_lock, 0);
+            s->io_idle--;
+        }
+        if (s->io_stop) break;
+        Process *p = s->io_queue.v[s->io_head++];
+        if (s->io_head == s->io_queue.n) s->io_head = s->io_queue.n = 0;
+        s->io_busy++;
+        plat_mutex_unlock(s->io_lock);
+        native_invoke(p, p->bcall.nd, p->bcall.args, p->bcall.rets);
+        plat_mutex_lock(s->io_lock);
+        bool stopping = s->io_stop;
+        plat_mutex_unlock(s->io_lock);
+        if (!stopping) { /* the process continues: its ncall completes when it runs again */
+            plat_lock(p->lock);
+            p->bcall.state = BCALL_DONE;
+            ready_locked(s, p);
+            plat_unlock(p->lock);
+        }
+        s->io_inflight--;
+        plat_mutex_lock(s->io_lock);
+        s->io_busy--;
+        plat_cond_broadcast(s->io_done_cv);
+    }
+    plat_mutex_unlock(s->io_lock);
+}
+
+static void io_submit(Sched *s, Process *p) {
+    plat_mutex_lock(s->io_lock);
+    VEC_PUSH(s->io_queue, p);
+    if (s->io_idle == 0 && (int)s->io_threads.n < IO_MAX_THREADS) {
+        PlatThread *t = plat_thread_start(io_main, s);
+        if (t) VEC_PUSH(s->io_threads, t);
+    }
+    plat_cond_signal(s->io_cv);
+    plat_mutex_unlock(s->io_lock);
+}
+
+/* At the end of the program: drop calls not yet started, and wait (a while)
+ * for those in progress. A call that never returns (say, a read from a
+ * terminal) is abandoned with its process, and the VM is then leaked rather
+ * than freed under it. */
+static void io_shutdown(Sched *s) {
+    plat_mutex_lock(s->io_lock);
+    s->io_stop = true;
+    s->io_queue.n = s->io_head = 0;
+    plat_cond_broadcast(s->io_cv);
+    uint64_t deadline = plat_now_ns() + IO_SHUTDOWN_WAIT_NS;
+    while (s->io_busy > 0) {
+        uint64_t now = plat_now_ns();
+        if (now >= deadline) break;
+        plat_cond_wait(s->io_done_cv, s->io_lock, deadline - now);
+    }
+    s->io_abandoned = s->io_busy > 0;
+    plat_mutex_unlock(s->io_lock);
+    if (s->io_abandoned) return;
+    for (size_t i = 0; i < s->io_threads.n; i++) plat_thread_join(s->io_threads.v[i]);
+    s->io_threads.n = 0;
+}
+
+bool sched_abandoned(VM *vm) { return vm->sched && vm->sched->io_abandoned; }
+
 /* After a time slice: requeue, park, or finish the process. Returns true if a
  * tool hook stopped the scheduler. */
 static bool after_slice(Worker *w, Process *p, int r) {
@@ -709,10 +806,7 @@ static bool after_slice(Worker *w, Process *p, int r) {
     }
     plat_lock(p->lock);
     if (p->kill_req) { /* killed from another thread during the slice */
-        snprintf(p->err.code, sizeof p->err.code, "%s", p->kill_code);
-        snprintf(p->err.msg, sizeof p->err.msg, "%s", p->kill_msg);
-        p->backtrace.n = 0;
-        if (p->backtrace.s) p->backtrace.s[0] = 0;
+        kill_from_outside(p);
         plat_unlock(p->lock);
         finish(s, p, true);
         return false;
@@ -737,6 +831,12 @@ static bool after_slice(Worker *w, Process *p, int r) {
         w->vm->stopped = p;
         stop = true;
         break;
+    case SLICE_NATIVE: /* a blocking native call: the I/O pool makes it */
+        p->state = PROC_NATIVE;
+        s->io_inflight++;
+        plat_unlock(p->lock);
+        io_submit(s, p);
+        return false;
     default: break;
     }
     plat_unlock(p->lock);
@@ -776,6 +876,12 @@ static bool worker_loop(Worker *w) {
         if (!p) {
             idle(w);
             now = plat_now_ns();
+            continue;
+        }
+        if (p->kill_req) { /* killed during a blocking native call */
+            kill_from_outside(p);
+            plat_unlock(p->lock);
+            finish(s, p, true);
             continue;
         }
         p->state = PROC_RUNNING;
@@ -846,6 +952,8 @@ bool sched_run(VM *vm, Process *main) {
 void sched_shutdown(VM *vm, Process *keep) {
     Sched *s = vm->sched;
     if (!s) return;
+    if (!s->io_stop) io_shutdown(s);
+    if (s->io_abandoned) return; /* a blocking call still uses its process: free nothing */
     for (uint32_t c = 0; c < PT_CHUNKS; c++) {
         Process **chunk = atomic_load(&s->chunks[c]);
         if (!chunk) continue;
@@ -861,6 +969,12 @@ void sched_free(VM *vm) {
     Sched *s = vm->sched;
     if (!s) return;
     sched_shutdown(vm, NULL);
+    if (s->io_abandoned) return; /* see io_shutdown */
+    plat_mutex_free(s->io_lock);
+    plat_cond_free(s->io_cv);
+    plat_cond_free(s->io_done_cv);
+    VEC_FREE(s->io_queue);
+    VEC_FREE(s->io_threads);
     for (uint32_t c = 0; c < PT_CHUNKS; c++) free(atomic_load(&s->chunks[c]));
     for (int i = 0; i < s->nworkers; i++) {
         Worker *w = s->workers[i];

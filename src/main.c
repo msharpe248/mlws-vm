@@ -17,19 +17,22 @@ static void usage(FILE *f) {
           "        --trace FILE|- [--trace-limit N] log every instruction\n"
           "        --monitor [HOST:]PORT [--hold]  serve the web dashboard and /api while running\n"
           "        --gc-stress                     collect garbage at every allocation (VM testing)\n"
+          "        --unsafe-native                 load native code without the trust checks (development)\n"
           "      VM options (also for test; or MLWSVM_<NAME>, e.g. MLWSVM_MAX_FRAMES=500000):\n"
           "        --threads N                     worker threads (default: one per core)\n"
           "        --stack-words N                 data stack per process, in 8-byte words (131072)\n"
           "        --max-frames N                  call depth limit (100000)\n"
           "        --slice N                       time slice, in instructions (2000)\n"
           "        --gc-min BYTES                  smallest heap that triggers a collection (1M)\n"
-          "        --quota heap=B,raw=B,mailbox=N,insns=N   starting limits for every process\n"
+          "        --quota heap=B,raw=B,mailbox=N,insns=N,foreign=N   starting limits for every process\n"
+          "        --ext-path DIR[:DIR]            trusted extension directories, before lib/ext\n"
           "  debug [-L dir] file.(masm|mlwso)      interactive debugger (type 'help')\n"
           "  top   [HOST:PORT] [--once]            live process table of a VM run with --monitor\n"
           "  asm  [-L dir] [-o out.mlwso] [-E] file.masm                   assemble (-E: preprocess only)\n"
           "  dis  [-L dir] file.(masm|mlwso)                               disassemble\n"
           "  test [-L dir] [-v] [VM options] [paths...]                  run assembly tests (default: tests/)\n"
           "  doc  isa|natives [-o file]                                  generate reference docs\n"
+          "  ext  list|install|remove|allow-ffi|deny-ffi [--dir D] ...  manage trusted native code\n"
           "  version\n"
           "\n"
           "Libraries are searched in: the program's directory, -L dirs, $MLWSVM_PATH, and lib/\n"
@@ -43,6 +46,7 @@ static char *g_exe_lib;
 
 void tool_env_libpaths(const ToolEnv *env, VM *vm) {
     for (size_t i = 0; i < env->libpaths.n; i++) vm_add_libpath(vm, env->libpaths.v[i]);
+    if (env->ext_dir) VEC_PUSH(vm->ext_paths, xstrdup(env->ext_dir)); /* searched last */
 }
 
 static void env_init(const char *argv0) {
@@ -67,8 +71,12 @@ static void env_init(const char *argv0) {
             lib = plat_realpath(up);
             free(up);
         }
-        if (lib && plat_is_dir(lib)) g_exe_lib = lib;
-        else free(lib);
+        if (lib && plat_is_dir(lib)) {
+            g_exe_lib = lib;
+            g_env.ext_dir = path_join(lib, "ext");
+        } else {
+            free(lib);
+        }
         free(dir);
         free(exe);
     }
@@ -93,7 +101,7 @@ static void print_error(const MlwsError *e) {
 
 static int cmd_run(int argc, char **argv) {
     const char *file = NULL;
-    bool stats = false, gc_stress = false, profile = false, hold = false;
+    bool stats = false, gc_stress = false, profile = false, hold = false, unsafe_native = false;
     const char *trace = NULL, *flame = NULL, *monitor = NULL;
     uint64_t trace_limit = 0;
     VEC(const char *) opts = {0}; /* VM options: name, value pairs */
@@ -106,6 +114,7 @@ static int cmd_run(int argc, char **argv) {
         else if (!strcmp(argv[i], "--trace-limit") && i + 1 < argc) trace_limit = strtoull(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor = argv[++i];
         else if (!strcmp(argv[i], "--gc-stress")) gc_stress = true;
+        else if (!strcmp(argv[i], "--unsafe-native")) unsafe_native = true;
         else if (!strncmp(argv[i], "--", 2) && vm_option_known(argv[i] + 2)) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "mlwsvm run: %s needs a value\n", argv[i]);
@@ -138,6 +147,7 @@ static int cmd_run(int argc, char **argv) {
     }
     VEC_FREE(opts);
     if (gc_stress) vm->gc_stress = true;
+    if (unsafe_native) vm->unsafe_native = true;
     if (trace && !tools_trace(vm, trace, trace_limit)) {
         fprintf(stderr, "mlwsvm run: cannot write trace file %s\n", trace);
         vm_free(vm);
@@ -357,6 +367,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "debug")) rc = cmd_debug(n, args);
     else if (!strcmp(cmd, "top")) rc = tool_top(n, args);
     else if (!strcmp(cmd, "doc")) rc = tool_doc(n, args);
+    else if (!strcmp(cmd, "ext")) rc = tool_ext(n, args, &g_env);
     else if (!strcmp(cmd, "version") || !strcmp(cmd, "--version")) {
         printf("mlwsvm %s\n", MLWSVM_VERSION);
         rc = 0;

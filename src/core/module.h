@@ -6,7 +6,7 @@
 #include "types.h"
 
 #define MLWSO_MAGIC "MLWS"
-#define MLWSO_VERSION 3
+#define MLWSO_VERSION 4
 
 /* A call has a target and an argc operand, leaving 30 for arguments/results. */
 #define MAX_PARAMS 30
@@ -86,6 +86,37 @@ typedef struct {
     char *field;
 } MFieldRef;
 
+/* FFI parameter and result kinds (`.extern`). FFI_OUT marks an "out"
+ * parameter: no argument is passed; the callee fills a temporary whose value
+ * becomes an extra result. */
+enum {
+    FFI_VOID = 0,
+    FFI_I8, FFI_I16, FFI_I32, FFI_I64, FFI_U8, FFI_U16, FFI_U32, FFI_U64,
+    FFI_F32, FFI_F64,
+    FFI_CSTR, /* const char *: a string or byte buffer (copied, NUL-terminated); returned: copied into a string */
+    FFI_BUF,  /* void *: a byte buffer's own bytes (the callee may write them) */
+    FFI_PTR,  /* void *: an opaque foreign handle, optionally tagged ptr<tag> */
+    FFI__COUNT
+};
+#define FFI_OUT 0x80
+#define FFI_MAX_ARGS 8
+
+/* `.extern` flags (as MLWS_NATIVE_* in include/mlwsvm/mlwsvm.h) */
+#define MX_BLOCKING 0x1
+#define MX_SERIAL 0x2
+
+/* `.extern name, "library", "symbol" (params) -> (result), flags`: a C
+ * function made callable as the native `name`. */
+typedef struct MExtern {
+    char *name, *lib, *sym;
+    uint32_t flags;
+    uint8_t nargs;
+    uint8_t args[FFI_MAX_ARGS]; /* FFI_* | FFI_OUT */
+    char *tags[FFI_MAX_ARGS];   /* ptr<tag>, or NULL */
+    uint8_t ret;                /* FFI_* (FFI_VOID: none) */
+    char *ret_tag;
+} MExtern;
+
 typedef struct Module {
     char *name;   /* dotted module name, e.g. "std.io" */
     char *source; /* source file the module was assembled from (debug) */
@@ -110,6 +141,10 @@ typedef struct Module {
     uint32_t gsize;  /* bytes, multiple of 8 */
     uint8_t *code;
     uint32_t codelen;
+    char **extensions; /* `.extension "name"`: native extensions this module needs */
+    uint32_t nextensions;
+    MExtern *externs;
+    uint32_t nexterns;
 } Module;
 
 void module_free(Module *m);

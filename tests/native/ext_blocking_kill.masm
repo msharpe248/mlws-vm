@@ -1,0 +1,25 @@
+; A process killed while it is inside a blocking native stops when the call
+; returns (foreign code is never interrupted): its monitor then sees E_KILLED,
+; and `alive` reports it dead at once. The program may also end while a
+; blocking call is still running: the VM waits for it to return.
+; option: --ext-path build/test-ext
+.include "std/test.inc"
+.extension "demo"
+.func sleeper(i64 ms)
+    ncall "demo.sleep" (ms) -> (I1)
+    FAIL "a killed process continued after its blocking call"
+    ret
+.endf
+.func main
+    spawnm sleeper (150) -> (I0)
+    sleep 20                           ; let it get into the call
+    kill I0
+    alive I1, I0
+    ASSERT_FALSE I1
+    recv R0
+    strcmp I2, R0->Down.code, "E_KILLED"
+    ASSERT_EQ I2, 0
+    spawn sleeper (100)                ; still in its call when main returns
+    sleep 10
+    ret 0
+.endf

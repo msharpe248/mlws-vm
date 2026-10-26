@@ -125,6 +125,8 @@ static void parse_expect(const char *text, Expect *e) {
             } else if (!e->option_error) {
                 e->option_error = xstrdup(v);
             }
+        } else if ((v = after_key(line, "requires:"))) { /* a build feature: "ffi" */
+            if (!strncmp(v, "ffi", 3) && !ffi_available() && !e->skip) e->skip = xstrdup("built without libffi");
         } else if ((v = after_key(line, "skip:"))) {
             free(e->skip);
             e->skip = xstrdup(v);

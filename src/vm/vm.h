@@ -31,6 +31,13 @@ typedef void (*NativeFn)(Process *p, Word *args, Word *rets);
 #define NATIVE_MAX_ARGS 8
 #define NATIVE_MAX_RETS 4
 
+/* NativeDef flags. Built-in natives have none and take the fast path. */
+#define NF_FOREIGN 0x1  /* from an extension or the FFI: foreign code (docs/EXTENDING.md) */
+#define NF_BLOCKING 0x2 /* runs on the I/O thread pool while the caller waits */
+#define NF_SERIAL 0x4   /* one call at a time per library (its `serial` lock) */
+
+struct ExtLib;
+
 typedef struct NativeDef {
     const char *name;
     uint8_t np;
@@ -39,7 +46,20 @@ typedef struct NativeDef {
     uint8_t rt[NATIVE_MAX_RETS];
     NativeFn fn;
     const char *doc;
+    uint32_t flags;      /* NF_* */
+    void *data;          /* the extension's, or the FFI call description */
+    void (*xfn)(void);   /* an extension's MlwsNativeFn (called by a trampoline) */
+    struct ExtLib *lib;  /* where foreign code came from */
 } NativeDef;
+
+/* A loaded native extension (.mlwsx) or FFI library (extensions.c). */
+typedef struct ExtLib {
+    char *name;               /* extension name, or the FFI library as declared */
+    char *path;               /* the file loaded ("" for the program's own symbols) */
+    void *handle;
+    bool ffi;
+    struct PlatLock *serial;  /* held around NF_SERIAL natives and their finalizers */
+} ExtLib;
 
 /* ---- loaded code ------------------------------------------------------------ */
 
@@ -106,7 +126,7 @@ typedef bool (*InsnHook)(struct Process *p, uint32_t pc);
 typedef void (*PollHook)(struct VM *vm, uint64_t wait_ns);
 
 /* Per-process resource limits (the `quota` instruction kinds). */
-enum { QUOTA_HEAP = 0, QUOTA_RAW = 1, QUOTA_MAILBOX = 2, QUOTA_INSNS = 3, QUOTA__COUNT };
+enum { QUOTA_HEAP = 0, QUOTA_RAW = 1, QUOTA_MAILBOX = 2, QUOTA_INSNS = 3, QUOTA_FOREIGN = 4, QUOTA__COUNT };
 
 struct PlatLock;
 struct Sched;
@@ -146,6 +166,13 @@ typedef struct VM {
     size_t exits_next;
     uint64_t start_ns;
     bool hold;                   /* --hold: keep serving the monitor after main ends */
+    /* native code (extensions.c, docs/EXTENDING.md) */
+    VEC(char *) ext_paths;       /* trusted extension directories, in search order */
+    bool unsafe_native;          /* --unsafe-native: skip the trust checks */
+    bool warned_unsafe;
+    VEC(ExtLib *) extlibs;
+    VEC(NativeDef *) foreign_natives; /* owned NativeDefs of extensions and the FFI */
+    StrMap ffi_types;            /* FFI handle tag -> its MlwsForeignType */
 } VM;
 
 /* ---- processes ------------------------------------------------------------- */
@@ -181,10 +208,21 @@ typedef struct {
     Obj *closure;         /* the closure being run (UP[n] reads it), or NULL */
 } Frame;
 
-enum { PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED };
+enum { PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED, PROC_NATIVE };
 
-/* How a time slice ended. */
-enum { SLICE_YIELD = 0, SLICE_BLOCK, SLICE_SLEEP, SLICE_DONE, SLICE_FAILED, SLICE_BREAK };
+/* How a time slice ended. SLICE_NATIVE: a blocking native call is to be made
+ * on the I/O thread pool (Process.bcall). */
+enum { SLICE_YIELD = 0, SLICE_BLOCK, SLICE_SLEEP, SLICE_DONE, SLICE_FAILED, SLICE_BREAK, SLICE_NATIVE };
+
+/* A blocking native call in progress: made by an I/O thread, then completed
+ * when the ncall instruction runs again. */
+enum { BCALL_NONE = 0, BCALL_PENDING, BCALL_DONE };
+typedef struct {
+    int state;
+    const NativeDef *nd;
+    const Insn *insn;
+    Word args[NATIVE_MAX_ARGS], rets[NATIVE_MAX_RETS]; /* GC roots while active */
+} BlockingCall;
 
 typedef struct {
     Word v;
@@ -262,6 +300,14 @@ struct Process {
     PidVec monitors;             /* [L] pids watching this process */
     struct Process *pending_spawn; /* child being set up by spawn (freed if that traps) */
     uint64_t quota[QUOTA__COUNT]; /* the mailbox quota is [L] */
+    /* native calls (extapi.c) */
+    const NativeDef *cur_native; /* the foreign native being called */
+    bool in_foreign;             /* inside foreign code: allocation never traps */
+    bool foreign_err;            /* api->error was called: raise when it returns */
+    char foreign_code[32];
+    char foreign_msg[512];
+    uint64_t foreign_calls;
+    BlockingCall bcall;
     uint64_t cpu_ns, msgs_sent, msgs_received;
 };
 
@@ -336,6 +382,7 @@ void sched_set_quota(Process *p, int kind, uint64_t limit);
 bool sched_alive(VM *vm, uint64_t pid);
 void sched_shutdown(VM *vm, Process *keep); /* free every process except `keep` */
 void sched_free(VM *vm);
+bool sched_abandoned(VM *vm); /* a blocking native call never returned: the VM cannot be freed */
 /* Pause every other worker thread at a time-slice boundary (tools that read
  * other processes' state), and let them continue. No-ops when single-threaded. */
 void sched_stop_world(VM *vm);
@@ -350,5 +397,27 @@ void copy_state_free(void); /* the calling thread's copy scratch */
 /* natives.c */
 void natives_register_builtin(VM *vm);
 const NativeDef *natives_builtin_table(size_t *n);
+
+/* extapi.c: calling foreign natives. native_call runs one in the caller
+ * (traps on failure); native_invoke only runs it (also on an I/O thread);
+ * native_complete raises what it recorded. */
+void native_call(Process *p, const NativeDef *nd, Word *args, Word *rets);
+void native_invoke(Process *p, const NativeDef *nd, Word *args, Word *rets);
+void native_complete(Process *p);
+void native_count_call(Process *p); /* the foreign-call quota */
+/* Inside a foreign call: fail it (raised when the call returns). */
+void native_fail(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);
+void foreign_finalize(Obj *o);       /* run a foreign handle's finalizer (GC) */
+ObjForeign *foreign_new_obj(Process *p, const void *type, void *ptr, ExtLib *lib);
+bool ext_run_init(VM *vm, ExtLib *lib, void *init, MlwsError *err);
+
+/* extensions.c: loading native code, with the trust checks. */
+bool ext_load(VM *vm, const char *name, MlwsError *err);           /* `.extension "name"` */
+ExtLib *ext_ffi_library(VM *vm, const char *spec, MlwsError *err); /* `.extern` libraries */
+void ext_free_all(VM *vm);
+/* ffi.c: an `.extern` declaration as a native (false if built without libffi). */
+struct MExtern;
+bool ffi_define(VM *vm, const struct MExtern *x, MlwsError *err);
+bool ffi_available(void);
 
 #endif

@@ -13,7 +13,7 @@ file produces `E_LOAD_FORMAT` (or `E_VERIFY`) rather than a crash.
 
 ```
 magic        4 bytes  "MLWS"
-version      u16      3
+version      u16      4
 flags        u16      0
 name         str      dotted module name, e.g. "std.io"
 source       str      source file name (for backtraces); may be empty
@@ -69,6 +69,20 @@ globals      uleb size (multiple of 8)
              tags  × size/8                   one MlwsType tag per word (0xFF = raw bytes)
 
 code         uleb size, then bytes × size     all functions' instructions
+
+extensions   uleb n, then n × str           .extension names (docs/EXTENDING.md)
+
+externs      uleb n, then n × {             .extern declarations (the FFI)
+               name str, library str, symbol str
+               flags uleb                   1 = blocking, 2 = serial
+               nparams u8, then nparams × { kind u8, tag str }
+               result kind u8, result tag str
+             }
+             kinds: 0 void, 1..4 i8..i64, 5..8 u8..u64, 9 f32, 10 f64,
+             11 cstr, 12 buf, 13 ptr; +0x80 = an out parameter;
+             tag: the ptr<tag> name, or "" for none
+
+(nothing may follow)
 ```
 
 Operands refer to these tables by index: `CONST` refers to constants, `FUNC` to
@@ -147,5 +161,5 @@ interpreter relies on.
 * Opcode numbers and mode bytes never change meaning. New ones are added in unused
   slots.
 * The version number changes if the layout above changes. Version 2 added the
-  struct and field-ref tables, and version 3 the exception handler tables. Older
-  files must be re-assembled.
+  struct and field-ref tables, version 3 the exception handler tables, and
+  version 4 the extension and extern tables. Older files must be re-assembled.

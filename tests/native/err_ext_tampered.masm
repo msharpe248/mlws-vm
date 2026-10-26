@@ -1,0 +1,8 @@
+; An extension changed after it was installed (its SHA-256 no longer matches
+; TRUSTED) is refused.
+; option: --ext-path build/test-ext-tampered
+; expect-error: E_LINK_UNTRUSTED
+.extension "demo"
+.func main
+    ret 0
+.endf

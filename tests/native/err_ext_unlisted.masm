@@ -1,0 +1,8 @@
+; A .mlwsx file in an extension directory, but not recorded in its TRUSTED
+; manifest (not installed with `mlwsvm ext install`), is refused.
+; option: --ext-path build/test-ext-unlisted
+; expect-error: E_LINK_UNTRUSTED
+.extension "demo"
+.func main
+    ret 0
+.endf

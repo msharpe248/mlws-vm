@@ -212,6 +212,34 @@ void plat_cond_wait(PlatCond *c, PlatMutex *m, uint64_t timeout_ns) {
 void plat_cond_signal(PlatCond *c) { WakeConditionVariable(&c->c); }
 void plat_cond_broadcast(PlatCond *c) { WakeAllConditionVariable(&c->c); }
 
+void plat_thread_detach(PlatThread *t) { CloseHandle(t->h); }
+
+void *plat_dlopen(const char *path, char *err, size_t errlen) {
+    HMODULE h = path ? LoadLibraryA(path) : GetModuleHandleA(NULL);
+    if (!h && err) snprintf(err, errlen, "LoadLibrary failed (error %lu)", (unsigned long)GetLastError());
+    return (void *)h;
+}
+
+void *plat_dlsym(void *lib, const char *name) {
+    return (void *)GetProcAddress(lib ? (HMODULE)lib : GetModuleHandleA(NULL), name);
+}
+
+const char *plat_dl_suffix(void) { return ".dll"; }
+
+bool plat_path_trusted(const char *path, char *why, size_t whylen) {
+    /* TODO: check the file's ACL. Until then, only existence is checked. */
+    DWORD a = GetFileAttributesA(path);
+    if (a == INVALID_FILE_ATTRIBUTES) {
+        snprintf(why, whylen, "%s: not found", path);
+        return false;
+    }
+    return true;
+}
+
+bool plat_mkdir(const char *path) { return CreateDirectoryA(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS; }
+
+bool plat_restrict_writes(const char *path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
+
 int plat_cpu_count(void) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);

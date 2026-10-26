@@ -53,5 +53,16 @@ void plat_cond_wait(PlatCond *c, PlatMutex *m, uint64_t timeout_ns); /* 0 = no t
 void plat_cond_signal(PlatCond *c);
 void plat_cond_broadcast(PlatCond *c);
 int plat_cpu_count(void);
+void plat_thread_detach(PlatThread *t); /* let it run on; its resources go when it ends */
+
+/* Shared libraries (native extensions and the FFI). */
+void *plat_dlopen(const char *path, char *err, size_t errlen); /* NULL: the program's own symbols */
+void *plat_dlsym(void *lib, const char *name);
+const char *plat_dl_suffix(void);              /* ".dylib", ".so" or ".dll" */
+/* Is a file or directory safe to trust code from: not writable by other users,
+ * and owned by the current user or the administrator? If not, says why. */
+bool plat_path_trusted(const char *path, char *why, size_t whylen);
+bool plat_mkdir(const char *path);            /* one level; true if it now exists */
+bool plat_restrict_writes(const char *path);  /* writable only by its owner (0644 / 0755) */
 
 #endif

@@ -19,7 +19,7 @@ typedef struct Monitor {
     uint64_t last_top_ns;
 } Monitor;
 
-static const char *const STATE_NAMES[] = {"ready", "running", "waiting", "sleeping", "done", "failed"};
+static const char *const STATE_NAMES[] = {"ready", "running", "waiting", "sleeping", "done", "failed", "native"};
 
 static void json_str(StrBuf *b, const char *s) {
     sb_putc(b, '"');
@@ -69,7 +69,7 @@ static void proc_json(StrBuf *b, const Process *p, bool detail) {
         sb_printf(b, "%s%llu", i ? "," : "", (unsigned long long)p->monitors.v[i]);
     sb_puts(b, "]");
     if (detail) {
-        static const char *const qn[] = {"heap", "raw", "mailbox", "insns"};
+        static const char *const qn[] = {"heap", "raw", "mailbox", "insns", "foreign"};
         sb_puts(b, ",\"quota\":{");
         for (int q = 0; q < QUOTA__COUNT; q++) {
             sb_printf(b, "%s\"%s\":", q ? "," : "", qn[q]);

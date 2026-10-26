@@ -20,6 +20,7 @@ enum {
     OBJ_CLOSURE = 7,
     OBJ_BIG = 8,
     OBJ_DEC = 9,
+    OBJ_FOREIGN = 10, /* a C resource owned by native code (docs/EXTENDING.md) */
 };
 
 #define OBJF_IMMORTAL 0x01
@@ -109,5 +110,15 @@ typedef struct {
 } ObjClosure;
 
 const char *obj_kind_name(int kind);
+
+/* A foreign handle: an opaque C pointer with a typed finalizer. MLWSVM code
+ * can hold one as a reference but cannot see or forge the pointer, and it
+ * cannot leave its process. */
+typedef struct {
+    Obj h;
+    const void *type; /* const MlwsForeignType * (include/mlwsvm/mlwsvm.h) */
+    void *ptr;        /* NULL once released */
+    struct ExtLib *lib;
+} ObjForeign;
 
 #endif

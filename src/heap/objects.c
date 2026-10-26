@@ -2,6 +2,7 @@
  * size change goes through gc_account so heap statistics and GC triggering
  * stay accurate. Limits trap with E_BAD_ALLOC rather than exhausting the host. */
 #include <math.h>
+#include "../../include/mlwsvm/mlwsvm.h"
 
 #include "heap.h"
 #include "numeric.h"
@@ -9,9 +10,9 @@
 #define MAX_ELEMS ((int64_t)1 << 31)
 
 const char *obj_kind_name(int kind) {
-    static const char *const names[] = {"null", "string", "bytes", "array", "struct", "list",
-                                        "map",  "closure", "bigint", "decimal"};
-    return kind >= 0 && kind <= OBJ_DEC ? names[kind] : "object";
+    static const char *const names[] = {"null", "string", "bytes",  "array",   "struct", "list",
+                                        "map",  "closure", "bigint", "decimal", "foreign"};
+    return kind >= 0 && kind <= OBJ_FOREIGN ? names[kind] : "object";
 }
 
 static void check_len(Process *p, int64_t n, const char *what) {
@@ -356,6 +357,11 @@ ObjString *value_to_string(Process *p, Word v, MlwsType t) {
             ObjString *s = str_new(p, nb.s, nb.n);
             sb_free(&nb);
             return s;
+        }
+        case OBJ_FOREIGN: {
+            const ObjForeign *fo = (const ObjForeign *)o;
+            snprintf(buf, sizeof buf, "<foreign %.60s%s>", ((const MlwsForeignType *)fo->type)->name, fo->ptr ? "" : " (released)");
+            break;
         }
         default: snprintf(buf, sizeof buf, "<object>"); break;
         }

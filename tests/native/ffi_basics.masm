@@ -1,0 +1,68 @@
+; The declarative FFI: `.extern` makes a C function callable as a native, with
+; no glue code. Libraries must be allowed in a trusted TRUSTED manifest
+; (`mlwsvm ext allow-ffi libm`); "" is the program's own symbols (the C library).
+; requires: ffi
+; option: --ext-path build/test-ext
+; expect-stdout: 0.5 * 2^4
+.include "std/test.inc"
+.include "std/io.inc"
+.extern m.pow, "libm.so.6|libm", "pow" (f64, f64) -> (f64)
+.extern m.frexp, "libm.so.6|libm", "frexp" (f64, out i32) -> (f64)
+.extern m.sqrtf, "libm.so.6|libm", "sqrtf" (f32) -> (f32)
+.extern c.strlen, "", "strlen" (cstr) -> (u64)
+.extern c.abs, "", "abs" (i32) -> (i32)
+.extern c.atoi, "", "atoi" (cstr) -> (i32)
+.extern c.toupper, "", "toupper" (i32) -> (i32)
+.extern c.memset, "", "memset" (buf, i32, u64) -> (ptr)
+.extern c.malloc, "", "malloc" (u64) -> (ptr<mem>)
+.extern c.free, "", "free" (ptr<mem>)
+.extern c.strchr, "", "strchr" (cstr, i32) -> (cstr)
+.func main
+    ncall "m.pow" (2.0, 10.0) -> (F0)
+    ASSERT_EQ F0, 1024.0
+    ncall "m.frexp" (8.0) -> (F1, I0)  ; an out parameter becomes an extra result
+    PRINT_F F1
+    PRINT_S " * 2^"
+    PRINTLN_I I0
+    ncall "m.sqrtf" (2.25) -> (F2)     ; f32 in and out
+    ASSERT_EQ F2, 1.5
+
+    ncall "c.strlen" ("hello") -> (I1)
+    ASSERT_EQ I1, 5
+    bufnew R0, 3                       ; a byte buffer is copied and NUL-terminated for cstr
+    mov R0[0], 'a'
+    mov R0[1], 'b'
+    mov R0[2], 'c'
+    ncall "c.strlen" (R0) -> (I1)
+    ASSERT_EQ I1, 3
+    ncall "c.abs" (-7) -> (I2)
+    ASSERT_EQ I2, 7
+    ncall "c.atoi" ("-1234") -> (I3)
+    ASSERT_EQ I3, -1234
+    ncall "c.toupper" ('q') -> (I4)
+    ASSERT_EQ I4, 'Q'
+    ncall "c.strchr" ("hello", 'l') -> (R1)   ; a char * result is copied into a string
+    strcmp I5, R1, "llo"
+    ASSERT_EQ I5, 0
+    ncall "c.strchr" ("hello", 'z') -> (R1)   ; NULL is null
+    ASSERT_FALSE R1, r
+
+    bufnew R2, 8                       ; buf: C writes into the buffer itself
+    ncall "c.memset" (R2, 0x41, 8) -> (R3)
+    mov I6, R2[7]
+    ASSERT_EQ I6, 0x41
+    typeof I7, R3                      ; the returned pointer is an opaque handle
+    ASSERT_EQ I7, 10
+
+    ncall "c.malloc" (64) -> (R4)      ; ptr<mem>: tagged handles
+    ASSERT_TRUE R4, r
+.try h
+    ncall "c.free" (R3)                ; an untagged ptr is not a ptr<mem>
+.endtry
+    FAIL "a ptr was accepted as a ptr<mem>"
+h:  catch R5
+    strcmp I8, R5->Error.code, "E_TYPE"
+    ASSERT_EQ I8, 0
+    ncall "c.free" (R4)
+    ret 0
+.endf

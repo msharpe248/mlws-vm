@@ -35,7 +35,10 @@ the message also names the macro and where it was expanded.
 | `E_LOAD_LIMIT` | Too many modules |
 | `E_LINK_CYCLE` | Import cycle (the message shows the chain) |
 | `E_LINK_UNDEF` | Imported function, data symbol or struct type not exported by the module, or a struct field that does not exist |
-| `E_LINK_NATIVE` | Unknown native function name in `ncall` |
+| `E_LINK_NATIVE` | Unknown native function name in `ncall`, or two `.extern` declarations of one name that differ |
+| `E_LINK_EXT` | A native extension is not installed, cannot be loaded, or failed to initialise ([EXTENDING.md](EXTENDING.md)) |
+| `E_LINK_UNTRUSTED` | Native code failed a trust check: not installed, changed since installation, unsafe permissions, or an FFI library not allowed |
+| `E_LINK_FFI` | `.extern`: library or symbol not found, or built without libffi |
 | `E_LINK_NO_MAIN` | The program has no `main`, or `main` takes parameters |
 | `E_VERIFY` | Bytecode verification failed: an operand shape, a register outside the window, a branch target, call or native arity or argument kinds, `ret` versus declared results, or code that runs off the end. Reported with source file, line and function |
 
@@ -74,7 +77,8 @@ status 70.
 | `E_ASSERT` | `assert` failed, or `test.fail` was called (as the `std/test.inc` macros do) |
 | `E_UNCAUGHT` | An exception that is not an `Error` struct (e.g. `throw "text"`) was not caught |
 | `E_DEADLOCK` | `recv` in `main` while every process is waiting, so no message can ever arrive |
-| `E_QUOTA` | A heap, raw-memory or mailbox quota was exceeded (catchable), or the instruction quota (the process is stopped) |
+| `E_QUOTA` | A heap, raw-memory, mailbox or foreign-call quota was exceeded (catchable), or the instruction quota (the process is stopped) |
+| `E_NATIVE` | An extension reported an error without giving a code (extensions normally use their own codes, such as `E_DEMO`) |
 | `E_KILLED` | The process was killed with `kill` |
 | `E_LINKED` | A process linked to this one failed |
 | `E_NOPROC` | `link` to a process that does not exist or has finished |
