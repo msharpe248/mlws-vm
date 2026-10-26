@@ -18,9 +18,27 @@ typedef struct {
     uint32_t max_depth;
     uint64_t heap_peak, heap_live, gc_count, gc_ns, objects_allocated, objects_freed;
     uint64_t spawned, max_live, slices, total_insns; /* all processes */
+    /* the function's results; a reference comes back as text (malloc'd): a
+     * string or byte buffer as itself, anything else as `tostr` shows it */
+    int nresults;
+    uint8_t result_types[NATIVE_MAX_RETS];
+    Word results[NATIVE_MAX_RETS];
+    char *result_text[NATIVE_MAX_RETS];
+    size_t result_len[NATIVE_MAX_RETS];
 } RunResult;
 
 bool vm_run_file(VM *vm, const char *path, RunResult *res);
+/* Optional steps around vm_run_function: `prepare` runs once the process
+ * exists, before it starts (to make reference arguments in its heap);
+ * `started` is told its pid once it is in the process table. */
+typedef struct {
+    void (*prepare)(void *ctx, Process *p, Word *args);
+    void (*started)(void *ctx, uint64_t pid);
+    void *ctx;
+} RunHooks;
+
+/* Run a function as the main process (the program ends when it returns). */
+bool vm_run_function(VM *vm, Function *fn, Word *args, int nargs, RunResult *res, const RunHooks *hooks);
 Function *vm_find_main(LModule *root, MlwsError *err);
 void run_result_free(RunResult *res);
 

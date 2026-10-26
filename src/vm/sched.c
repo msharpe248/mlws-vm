@@ -82,6 +82,9 @@ typedef struct Sched {
     PlatThread *poll_thread;
     _Atomic bool poll_stop;
     _Atomic int io_waiting;
+    /* messages sent from outside the VM (sched_post): its own scratch heap */
+    PlatLock *host_lock;
+    Process *host_frag;
 } Sched;
 
 #define IO_MAX_THREADS 64
@@ -117,6 +120,11 @@ static Sched *sched_of(VM *vm) {
     s->io_lock = plat_mutex_new();
     s->io_cv = plat_cond_new();
     s->io_done_cv = plat_cond_new();
+    s->host_lock = plat_lock_new();
+    s->host_frag = xcalloc(1, sizeof *s->host_frag);
+    s->host_frag->vm = vm;
+    s->host_frag->state = PROC_DONE;
+    for (int q = 0; q < QUOTA__COUNT; q++) s->host_frag->quota[q] = UINT64_MAX;
     int n = vm->threads > 0 ? vm->threads : plat_cpu_count();
     if (n < 1) n = 1;
     if (n > MAX_THREADS) n = MAX_THREADS;
@@ -881,7 +889,8 @@ static void idle(Worker *w) {
         if (work_available(s)) break;
         uint64_t nt = s->next_timer, now = plat_now_ns();
         if (nt && nt <= now) break;
-        if (!nt && s->nidle == s->nrun && !s->io_inflight && !s->io_waiting) { /* nothing can ever run again */
+        if (!nt && s->nidle == s->nrun && !s->io_inflight && !s->io_waiting && !vm->external_input) {
+            /* nothing can ever run again */
             deadlock = true;
             break;
         }
@@ -989,6 +998,7 @@ static void io_shutdown(Sched *s) {
     if (s->io_abandoned) return;
     for (size_t i = 0; i < s->io_threads.n; i++) plat_thread_join(s->io_threads.v[i]);
     s->io_threads.n = 0;
+    s->io_stop = false; /* the VM may run again (embedding) */
 }
 
 bool sched_abandoned(VM *vm) { return vm->sched && vm->sched->io_abandoned; }
@@ -1018,10 +1028,8 @@ static void poll_main(void *arg) {
 /* Start the poller on first use. Called with a process lock held (leaf locks only). */
 static bool poller_ready(Sched *s) {
     plat_mutex_lock(s->lock);
-    if (!s->poller) {
-        s->poller = plat_poller_new();
-        if (s->poller) s->poll_thread = plat_thread_start(poll_main, s);
-    }
+    if (!s->poller) s->poller = plat_poller_new();
+    if (s->poller && !s->poll_thread) s->poll_thread = plat_thread_start(poll_main, s); /* (again, after a shutdown) */
     bool ok = s->poller && s->poll_thread;
     plat_mutex_unlock(s->lock);
     return ok;
@@ -1033,6 +1041,7 @@ static void poller_shutdown(Sched *s) {
     plat_poller_wake(s->poller);
     plat_thread_join(s->poll_thread);
     s->poll_thread = NULL;
+    s->poll_stop = false; /* the VM may run again (embedding) */
 }
 
 /* A process asked to wait for a descriptor (SLICE_IOWAIT); p is locked. */
@@ -1233,6 +1242,24 @@ void sched_shutdown(VM *vm, Process *keep) {
     for (int i = 0; i < s->nworkers; i++) s->workers[i]->qlen = 0;
     s->timers.n = 0;
     timers_changed(s);
+    smap_free(&vm->registry); /* every named process is gone */
+}
+
+bool sched_post(VM *vm, uint64_t pid, Word v, uint8_t tag, const char *str, size_t len) {
+    Sched *s = sched_of(vm);
+    plat_lock(s->host_lock);
+    InMsg m = {v, tag, NULL, 0, 0};
+    if (str) {
+        frag_reset(s->host_frag);
+        m = frag_take(s->host_frag, (Word){.r = str_new(s->host_frag, str, len)}, T_R);
+    }
+    Process *to = pin(s, pid);
+    bool ok = to && accepts(to);
+    if (ok) push_locked(s, to, &m);
+    else gc_free_list(m.objs);
+    if (to) plat_unlock(to->lock);
+    plat_unlock(s->host_lock);
+    return ok;
 }
 
 void sched_free(VM *vm) {
@@ -1261,6 +1288,9 @@ void sched_free(VM *vm) {
     plat_cond_free(s->stw_cv);
     plat_cond_free(s->resume_cv);
     plat_poller_free(s->poller);
+    heap_free_all(s->host_frag);
+    free(s->host_frag);
+    plat_lock_free(s->host_lock);
     VEC_FREE(s->timers);
     free(s);
     vm->sched = NULL;

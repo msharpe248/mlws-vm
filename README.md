@@ -60,6 +60,9 @@ base:
   quota.
 * **Text and JSON**: a typed, safe `text.format` (`{:>8.2f}`), string utilities,
   UTF-8 iteration, and JSON that maps onto maps and lists with exact integers.
+* **Embeddable**: `libmlwsvm` and `include/mlwsvm/embed.h` let a C or C++ program
+  load MLWSVM code from files or memory, call it, give it host functions, and
+  run background services it feeds with messages.
 * **Calling C**: native extensions written against a small, versioned C API
   (`include/mlwsvm/mlwsvm.h`), and a declarative FFI (`.extern`, via libffi) that
   calls C functions directly. Blocking and non-thread-safe code is declared as
@@ -85,6 +88,7 @@ make check-tools             # smoke-test the monitor, top, profiler and tracer
 make bench                   # benchmarks, with output checks (docs/PERFORMANCE.md)
 make check-asan              # both of the above, under AddressSanitizer + UBSan
 make check-tsan              # the tests on several threads, under ThreadSanitizer
+make lib check-embed         # the embedding library, and its example host program
 
 ./mlwsvm run examples/hello.masm
 ./mlwsvm run --stats examples/fib.masm
@@ -115,6 +119,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/BINARY_FORMAT.md](docs/BINARY_FORMAT.md) | The `.mlwso` file and instruction encoding |
 | [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard and `top` |
 | [docs/STDLIB.md](docs/STDLIB.md) | The standard library: files, commands, the OS, and how I/O waits |
+| [docs/EMBEDDING.md](docs/EMBEDDING.md) | Running MLWSVM inside a C or C++ program (`libmlwsvm`) |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks, results, and what was optimised (and why) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Remaining work: calling C libraries, the standard library, platforms, deferred performance work |
@@ -163,4 +168,4 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 | M13 networking (`std.net`: TCP, UDP, DNS; handle transfer between processes) | done |
 | M14 text and JSON (`text.format`, string utilities, UTF-8, `json.*`) | done |
 | M15 `std.proc` (registry, request/reply), `std.supervisor`, and a supervised HTTP server example (~168k requests/s between two Linux machines) | done |
-| M16 embedding API | planned ([ROADMAP.md](docs/ROADMAP.md#next-milestones)) |
+| M16 Embedding API (`libmlwsvm`, `embed.h`: load, call, host natives, background services) | done ([EMBEDDING.md](docs/EMBEDDING.md)) |

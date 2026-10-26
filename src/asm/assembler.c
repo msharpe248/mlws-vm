@@ -1924,6 +1924,23 @@ Module *assemble_file(const char *path, const char *default_name, const char *co
     return m;
 }
 
+Module *assemble_text(const char *name, const char *text, const char *default_name, const char *const *libpaths,
+                      size_t nlib, MlwsError *err) {
+    Asm A;
+    memset(&A, 0, sizeof A);
+    A.err = err;
+    pp_init(&A.pp, libpaths, nlib, err);
+    A.modname = xstrdup(default_name ? default_name : "main");
+    Module *m = NULL;
+    if (pp_run_text(&A.pp, name, text)) {
+        bool ok = true;
+        for (size_t i = 0; ok && i < A.pp.out.n; i++) ok = statement(&A, &A.pp.out.v[i]);
+        if (ok) m = finish(&A);
+    }
+    asm_free(&A);
+    return m;
+}
+
 bool preprocess_file(const char *path, const char *const *libpaths, size_t nlib, StrBuf *out, MlwsError *err) {
     PP pp;
     pp_init(&pp, libpaths, nlib, err);

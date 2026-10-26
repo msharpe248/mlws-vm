@@ -1120,6 +1120,15 @@ static void spawn_watch(Process *p, Process *child, bool link, bool monitor) {
     if (monitor) VEC_PUSH(child->monitors, p->pid);
 }
 
+/* The entry function returned: keep its results (the embedding API reads them). */
+static void keep_results(Process *p, const Word *vals, const MlwsType *types, int n) {
+    p->nresults = (uint8_t)(n < NATIVE_MAX_RETS ? n : NATIVE_MAX_RETS);
+    for (int k = 0; k < p->nresults; k++) {
+        p->results[k] = vals[k];
+        p->result_types[k] = (uint8_t)types[k];
+    }
+}
+
 int interp_run(Process *p, uint32_t budget) {
     Ctx c;
     VM *vm = p->vm;
@@ -1212,6 +1221,9 @@ int interp_run(Process *p, uint32_t budget) {
             proc_pop_frame(p);
             if (p->nframes == 0) {
                 p->exit_code = n > 0 && type_is_int((MlwsType)mf->rets[0]) ? vals[0].i : 0;
+                MlwsType rt[NATIVE_MAX_RETS];
+                for (int k = 0; k < n && k < NATIVE_MAX_RETS; k++) rt[k] = (MlwsType)mf->rets[k];
+                keep_results(p, vals, rt, n);
                 return SLICE_DONE;
             }
             ctx_load(&c);
@@ -1473,6 +1485,7 @@ int interp_run(Process *p, uint32_t budget) {
             proc_pop_frame(p);
             if (p->nframes == 0) {
                 p->exit_code = in->nops > 0 && type_is_int(vt[0]) ? vals[0].i : 0;
+                keep_results(p, vals, vt, in->nops);
                 return SLICE_DONE;
             }
             ctx_load(&c);
@@ -1895,8 +1908,9 @@ int interp_run(Process *p, uint32_t budget) {
             for (int k = 0; k < argc; k++) args[k] = msg_copy(p, child, args[k], mf->params[k]);
             p->pending_spawn = NULL;
             spawn_watch(p, child, in->op == OP_SPAWNIL, in->op == OP_SPAWNIM);
+            uint64_t cpid = child->pid; /* once started, the child may run, end and be freed at once */
             proc_start(child, cl->fn, clw.r, args, argc);
-            if (in->nops > 2 + argc) wr_int(&c, &ops[2 + argc], T_I64, (int64_t)child->pid);
+            if (in->nops > 2 + argc) wr_int(&c, &ops[2 + argc], T_I64, (int64_t)cpid);
             break;
         }
 
@@ -1924,8 +1938,9 @@ int interp_run(Process *p, uint32_t budget) {
             for (int k = 0; k < argc; k++) args[k] = msg_copy(p, child, args[k], fn->mf->params[k]);
             p->pending_spawn = NULL;
             spawn_watch(p, child, in->op == OP_SPAWNL, in->op == OP_SPAWNM);
+            uint64_t cpid = child->pid; /* once started, the child may run, end and be freed at once */
             proc_start(child, fn, NULL, args, argc);
-            if (in->nops > 2 + argc) wr_int(&c, &ops[2 + argc], T_I64, (int64_t)child->pid);
+            if (in->nops > 2 + argc) wr_int(&c, &ops[2 + argc], T_I64, (int64_t)cpid);
             break;
         }
         case OP_SEND: {

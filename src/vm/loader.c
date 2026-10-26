@@ -317,6 +317,12 @@ LModule *vm_require(VM *vm, const char *name, MlwsError *err) {
     return lm;
 }
 
+LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err) {
+    Module *m = assemble_text(name, text, name, (const char *const *)vm->libpaths.v, vm->libpaths.n, err);
+    if (!m) return NULL;
+    return register_module(vm, m, name, err);
+}
+
 LModule *vm_load_root(VM *vm, const char *path, MlwsError *err) {
     const char *base = path_basename(path);
     const char *dot = strrchr(base, '.');

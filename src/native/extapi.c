@@ -6,7 +6,7 @@
  * recorded as an error, heap quotas are not enforced (Process.in_foreign), and
  * both are raised by native_complete once the foreign code has returned.
  * The collector only runs between instructions, so values need no rooting. */
-#include "../../include/mlwsvm/mlwsvm.h"
+#include "extapi.h"
 #include "../heap/heap.h"
 #include "../platform/platform.h"
 
@@ -299,31 +299,31 @@ static void api_init_error(MlwsExtension *ext, const char *fmt, ...) {
     ext->failed = true;
 }
 
-static bool api_define(MlwsExtension *ext, const MlwsNativeDesc *d) {
-    if (ext->failed) return false;
-    size_t nl = strlen(ext->lib->name);
-    if (!d || !d->name || strncmp(d->name, ext->lib->name, nl) != 0 || d->name[nl] != '.' || !d->name[nl + 1]) {
-        api_init_error(ext, "native '%s' must be named %s.something", d && d->name ? d->name : "(null)", ext->lib->name);
+/* Check and register a native described with the extension API's types: an
+ * extension's (foreign: quota 4), or the embedding host's. On failure, `why`. */
+bool native_define(VM *vm, ExtLib *lib, const MlwsNativeDesc *d, bool foreign, char *why, size_t whylen) {
+    if (!d || !d->name || !*d->name || !strchr(d->name, '.')) {
+        snprintf(why, whylen, "native '%s' needs a prefix (module.name)", d && d->name ? d->name : "(null)");
         return false;
     }
     if (!d->fn || d->nparams > MLWS_MAX_PARAMS || d->nresults > MLWS_MAX_RESULTS) {
-        api_init_error(ext, "native %s: missing function, or too many parameters or results", d->name);
+        snprintf(why, whylen, "native %s: missing function, or too many parameters or results", d->name);
         return false;
     }
     for (int k = 0; k < d->nparams + d->nresults; k++) {
         uint8_t t = k < d->nparams ? d->params[k] : d->results[k - d->nparams];
         if (t < MLWS_T_B || t > MLWS_T_R) {
-            api_init_error(ext, "native %s: invalid type code %u", d->name, t);
+            snprintf(why, whylen, "native %s: invalid type code %u", d->name, t);
             return false;
         }
     }
     if (d->flags & ~(uint32_t)(MLWS_NATIVE_BLOCKING | MLWS_NATIVE_SERIAL)) {
-        api_init_error(ext, "native %s: unknown flags 0x%x", d->name, d->flags);
+        snprintf(why, whylen, "native %s: unknown flags 0x%x", d->name, d->flags);
         return false;
     }
     void *old;
-    if (smap_get(&ext->vm->natives, d->name, &old)) {
-        api_init_error(ext, "native %s is already defined", d->name);
+    if (smap_get(&vm->natives, d->name, &old)) {
+        snprintf(why, whylen, "native %s is already defined", d->name);
         return false;
     }
     NativeDef *nd = xcalloc(1, sizeof *nd);
@@ -336,13 +336,29 @@ static bool api_define(MlwsExtension *ext, const MlwsNativeDesc *d) {
     nd->fn = ext_trampoline;
     nd->xfn = (void (*)(void))d->fn;
     nd->data = d->data;
-    nd->lib = ext->lib;
-    nd->flags = NF_FOREIGN | NF_CHECKED | (d->flags & MLWS_NATIVE_BLOCKING ? NF_BLOCKING : 0) |
+    nd->lib = lib;
+    nd->flags = (foreign ? NF_FOREIGN : 0) | NF_CHECKED | (d->flags & MLWS_NATIVE_BLOCKING ? NF_BLOCKING : 0) |
                 (d->flags & MLWS_NATIVE_SERIAL ? NF_SERIAL : 0);
-    VEC_PUSH(ext->vm->foreign_natives, nd);
-    vm_register_native(ext->vm, nd);
+    VEC_PUSH(vm->foreign_natives, nd);
+    vm_register_native(vm, nd);
     return true;
 }
+
+static bool api_define(MlwsExtension *ext, const MlwsNativeDesc *d) {
+    if (ext->failed) return false;
+    size_t nl = strlen(ext->lib->name);
+    if (!d || !d->name || strncmp(d->name, ext->lib->name, nl) != 0 || d->name[nl] != '.' || !d->name[nl + 1]) {
+        api_init_error(ext, "native '%s' must be named %s.something", d && d->name ? d->name : "(null)", ext->lib->name);
+        return false;
+    }
+    char why[512];
+    if (!native_define(ext->vm, ext->lib, d, true, why, sizeof why)) {
+        api_init_error(ext, "%s", why);
+        return false;
+    }
+    return true;
+}
+
 
 static const MlwsApi API = {
     .version = MLWSVM_API_VERSION,
@@ -368,6 +384,8 @@ static const MlwsApi API = {
     .foreign_get = api_foreign_get,
     .foreign_release = api_foreign_release,
 };
+
+const MlwsApi *native_api(void) { return &API; }
 
 /* Run an extension's init function; on failure `err` says why. */
 bool ext_run_init(VM *vm, ExtLib *lib, void *init, MlwsError *err) {

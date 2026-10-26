@@ -195,6 +195,7 @@ typedef struct VM {
     _Atomic int64_t exit_code;
     VEC(FdTicket) tickets;       /* handles given away with fs.give, not yet taken (under `lock`) */
     StrMap registry;             /* proc.register: name -> pid (0 once released), under `lock` */
+    bool external_input;         /* the host may send messages (mlws_start): never a deadlock */
 } VM;
 
 /* ---- processes ------------------------------------------------------------- */
@@ -353,6 +354,10 @@ struct Process {
     bool reply_ready;            /* [L] */
     InMsg reply;                 /* [L] detached until taken */
     uint64_t cpu_ns, msgs_sent, msgs_received;
+    /* what the entry function returned (for embedding: mlws_call) */
+    Word results[NATIVE_MAX_RETS];
+    uint8_t result_types[NATIVE_MAX_RETS];
+    uint8_t nresults;
 };
 
 /* vm.c */
@@ -371,6 +376,7 @@ void vm_options_from_env(VM *vm);
 
 /* loader.c */
 LModule *vm_load_root(VM *vm, const char *path, MlwsError *err);
+LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err); /* source in memory */
 LModule *vm_require(VM *vm, const char *name, MlwsError *err);
 /* verify.c */
 bool vm_verify_module(VM *vm, LModule *lm, MlwsError *err);
@@ -466,11 +472,15 @@ void natives_register_text(VM *vm);
 const NativeDef *natives_text_table(size_t *n);
 /* sched.c: os.exit: end the whole program now with this exit code. */
 void sched_request_exit(VM *vm, int64_t code);
+/* Send a message from outside the VM (any thread): a number, or a string if
+ * str is not NULL. False if the process does not exist or has finished. */
+bool sched_post(VM *vm, uint64_t pid, Word v, uint8_t tag, const char *str, size_t len);
 /* Inside a foreign call: fail it (raised when the call returns). */
 void native_fail(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);
 void foreign_finalize(Obj *o);       /* run a foreign handle's finalizer (GC) */
 ObjForeign *foreign_new_obj(Process *p, const void *type, void *ptr, ExtLib *lib);
 bool ext_run_init(VM *vm, ExtLib *lib, void *init, MlwsError *err);
+
 
 /* extensions.c: loading native code, with the trust checks. */
 bool ext_load(VM *vm, const char *name, MlwsError *err);           /* `.extension "name"` */

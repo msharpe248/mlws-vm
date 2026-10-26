@@ -67,9 +67,9 @@ h1: catch R8
     recv I4                            ; the unrelated message is still there
     ASSERT_EQ I4, 12345
 
-    spawn slow (100) -> (I5)           ; a call that times out...
+    spawn slow (300) -> (I5)           ; a call that times out (a 30x margin, for loaded machines)...
 .try h2
-    ncall "proc.call" (I5, null, 20) -> (R1)
+    ncall "proc.call" (I5, null, 10) -> (R1)
 .endtry
     FAIL "the call did not time out"
 h2: catch R8

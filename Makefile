@@ -6,6 +6,8 @@
 #   make check-gc     run the tests with a garbage collection at every allocation
 #   make check-asan   build with AddressSanitizer + UBSan and run the tests (normal and GC stress)
 #   make check-tsan   build with ThreadSanitizer and run the tests on several worker threads
+#   make lib          the embedding library: build/libmlwsvm.a and a shared libmlwsvm
+#   make check-embed  build and run the embedding example (examples/embed/host.c)
 #   make bench        run the benchmarks in bench/
 #   make docs         regenerate docs/ISA.md and docs/NATIVES.md from the code
 
@@ -43,7 +45,7 @@ DL_LIBS := -ldl -lpthread
 endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: all test test-ext check-gc check-tools check-asan check-tsan bench docs clean
+.PHONY: all test test-ext check-gc check-tools check-asan check-tsan bench docs clean lib embed-example check-embed
 
 all: $(BIN)
 
@@ -52,7 +54,7 @@ $(BIN): $(OBJ)
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(WARN) $(CFLAGS) $(FFI_CFLAGS) -MMD -MP -c $< -o $@
+	$(CC) $(WARN) $(CFLAGS) -fPIC $(FFI_CFLAGS) -MMD -MP -c $< -o $@
 
 # The web dashboard is compiled into the binary (served by --monitor).
 $(BUILD)/embed: build-tools/embed.c
@@ -64,7 +66,38 @@ $(BUILD)/gen/dashboard.c: web/dashboard.html $(BUILD)/embed
 	$(BUILD)/embed web/dashboard.html DASHBOARD_HTML > $@
 
 $(BUILD)/gen/dashboard.o: $(BUILD)/gen/dashboard.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -fPIC -c $< -o $@
+
+# The embedding library (include/mlwsvm/embed.h): everything but the command
+# line (main, and the test runner, doc generator, top and ext commands).
+CLI_OBJ := $(addprefix $(BUILD)/src/,main.o tools/testrunner.o tools/doc.o tools/top.o tools/ext.o)
+LIB_OBJ := $(filter-out $(CLI_OBJ),$(OBJ))
+LIB_LIBS := -lm $(FFI_LIBS) $(DL_LIBS) -lpthread
+ifeq ($(shell uname -s),Darwin)
+SHLIB := $(BUILD)/libmlwsvm.dylib
+SHLIB_FLAGS := -dynamiclib -install_name @rpath/libmlwsvm.dylib
+else
+SHLIB := $(BUILD)/libmlwsvm.so
+SHLIB_FLAGS := -shared
+endif
+
+lib: $(BUILD)/libmlwsvm.a $(SHLIB)
+	@echo "embed with: -I include and $(BUILD)/libmlwsvm.a $(LIB_LIBS)  (or $(SHLIB))"
+
+$(BUILD)/libmlwsvm.a: $(LIB_OBJ)
+	@rm -f $@
+	ar rcs $@ $(LIB_OBJ)
+
+$(SHLIB): $(LIB_OBJ)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(SHLIB_FLAGS) -o $@ $(LIB_OBJ) $(LIB_LIBS)
+
+$(BUILD)/embed-host: examples/embed/host.c include/mlwsvm/embed.h include/mlwsvm/mlwsvm.h $(BUILD)/libmlwsvm.a
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic $(CFLAGS) $(LDFLAGS) -Iinclude -o $@ $< $(BUILD)/libmlwsvm.a $(LIB_LIBS)
+
+embed-example: $(BUILD)/embed-host
+
+check-embed: $(BUILD)/embed-host
+	./$(BUILD)/embed-host lib
 
 -include $(OBJ:.o=.d)
 
@@ -103,12 +136,19 @@ check-asan: test-ext
 	    LDFLAGS="-fsanitize=address,undefined"
 	$(ASAN_ENV) ./mlwsvm-asan test tests examples
 	$(ASAN_ENV) MLWSVM_GC_STRESS=1 ./mlwsvm-asan test tests examples
+	$(MAKE) BUILD=build-asan BIN=mlwsvm-asan \
+	    CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
+	    LDFLAGS="-fsanitize=address,undefined" build-asan/embed-host
+	$(ASAN_ENV) ./build-asan/embed-host lib
 
 check-tsan: test-ext
 	$(MAKE) BUILD=build-tsan BIN=mlwsvm-tsan \
 	    CFLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" LDFLAGS="-fsanitize=thread"
 	TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=4 ./mlwsvm-tsan test tests examples
 	TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=8 ./mlwsvm-tsan test tests/processes tests/threads tests/native tests/os tests/net
+	$(MAKE) BUILD=build-tsan BIN=mlwsvm-tsan \
+	    CFLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" LDFLAGS="-fsanitize=thread" build-tsan/embed-host
+	TSAN_OPTIONS=halt_on_error=1 ./build-tsan/embed-host lib
 
 bench: $(BIN)
 	sh bench/run.sh ./$(BIN)

@@ -39,6 +39,9 @@ jobs:
       - name: Tests
         run: make CC=$CC test
 
+      - name: Embedding library and example host
+        run: make CC=$CC lib check-embed
+
       - name: Tests on one worker thread
         run: MLWSVM_THREADS=1 ./mlwsvm test tests examples
 

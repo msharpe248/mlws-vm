@@ -99,6 +99,12 @@ encoding.
 | `.extern` declarations called through libffi; `out` parameters; `ptr<tag>` | Python **ctypes** and **cffi**; **LuaJIT** FFI; Java's FFM API (Panama); libffi itself | Declared in the assembly the compiler emits, checked by the verifier like any native; tagged pointers stop pointer mix-ups at the boundary. |
 | Trusted extension directories, SHA-256 pinning, permission checks | SSH's `StrictModes` checks of `~/.ssh`; lockfile and trust-on-first-use pinning; Deno's explicit permissions | Native code is opt-in per directory and per library, and a sandboxed process can be denied native code completely with a quota (kind 4). |
 
+### Embedding (M16)
+
+| MLWSVM | Influences | How MLWSVM differs |
+|---|---|---|
+| `libmlwsvm`: load from files or memory, call exported functions, host natives, background runs fed with `mlws_send` | **Lua**'s embedding API; CPython's embedding API; Wasmtime and V8 embedders; Erlang ports and `enif_send` | Host natives use the same table as extensions, so one wrapper serves both. Each call is a fresh program run with its own processes, and a background run can be fed messages from any host thread. The VM's quotas make an embedded script a sandbox. |
+
 ### Performance
 
 | MLWSVM | Influences | How MLWSVM differs |
@@ -175,6 +181,7 @@ run 8.2× faster on the laptop's 18 cores than on one thread.
 | M10 | Lua's C API, CPython extensions, JNI and Erlang NIFs (dirty schedulers) for the extension API; ctypes, cffi, LuaJIT's FFI and libffi for `.extern`; SSH `StrictModes` and hash pinning for the trust model |
 | M11–M12 | Go's netpoller, BEAM's I/O polling and libuv for the I/O core; `posix_spawn` and Python's `subprocess` (argument lists, no shell) for commands |
 | M13–M15 | BSD sockets with the poller; Erlang/OTP for calls, names and supervisors; Python's `str.format` and Rust's `format!` for `text.format`; RFC 8259 for JSON |
+| M16 | Lua's and CPython's embedding APIs; Erlang's `enif_send` for messages from host threads |
 
 ## References
 
