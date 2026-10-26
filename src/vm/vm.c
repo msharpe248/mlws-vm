@@ -1,5 +1,6 @@
 /* vm.c - VM lifetime, library path, natives registry, output. */
 #include "vm.h"
+#include "../heap/heap.h"
 
 #include "../platform/platform.h"
 
@@ -41,6 +42,8 @@ VM *vm_new(void) {
     vm->slice_insns = 2000;
     vm->start_ns = plat_now_ns();
     for (int i = 0; i < QUOTA__COUNT; i++) vm->default_quota[i] = UINT64_MAX;
+    const char *no_slabs = getenv("MLWSVM_NO_SLABS");
+    vm->slabs = gc_slabs_enabled() && !(no_slabs && *no_slabs && strcmp(no_slabs, "0"));
     const char *stress = getenv("MLWSVM_GC_STRESS");
     vm->gc_stress = stress && *stress && strcmp(stress, "0") != 0;
     vm_options_from_env(vm); /* MLWSVM_THREADS, MLWSVM_MAX_FRAMES, ... */

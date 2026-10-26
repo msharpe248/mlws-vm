@@ -38,7 +38,8 @@ static void usage(FILE *f) {
           "\n"
           "Libraries are searched in: the program's directory, -L dirs, $MLWSVM_PATH, and lib/\n"
           "next to the mlwsvm executable. MLWSVM_GC_STRESS=1 collects garbage at every\n"
-          "instruction boundary after an allocation (for testing the VM).\n",
+          "instruction boundary after an allocation, and MLWSVM_NO_SLABS=1 allocates\n"
+          "every object with malloc (both for testing the VM).\n",
           f);
 }
 

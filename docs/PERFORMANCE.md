@@ -113,6 +113,42 @@ semantics at the edges: overflow, negative divisors, unsigned compares,
    data before the next collection, so a process near its quota collects a
    handful of times and then gets its `E_QUOTA`.
 
+## The small-object allocator (M21)
+
+Profiles of the allocation-heavy benchmarks showed `malloc` and `free` at about
+10% on Linux. Since M21, every object up to 256 bytes comes from its process's
+own chunks, in 16-byte size classes with a free list each:
+
+* **Allocation** pops the class's free list, or carves from the current chunk.
+  There is no lock and no `malloc` call. The collector's sweep frees an object
+  by pushing it on its list.
+* **Chunks** start at 1 KiB and double up to 64 KiB, so ten thousand small
+  processes stay small. `bench/connections` peaks 3% higher than with `malloc`.
+* **No sharing.** A process's objects never move to another heap: messages are
+  copied, and only the copies (built in a scratch heap that still uses `malloc`)
+  are adopted by the receiver. So a process's chunks are simply freed with it.
+  The object header records which allocator an object came from.
+* **Zeroing** a new object uses one fixed-size `memset` per size class, which
+  the compiler inlines into stores. The same profile showed `memset` at about 9%,
+  much of it zeroing the register windows of new call frames. Those small
+  windows are now zeroed with inline stores too.
+
+AddressSanitizer builds use `malloc` for every object, so that it still sees
+each object's lifetime. `MLWSVM_NO_SLABS=1` does the same in any build, for
+comparisons. Under `MLWSVM_GC_STRESS=1` (`make check-gc`), freed objects are
+filled with a garbage pattern, so a use after a free fails loudly there too.
+
+| Benchmark | Linux, Ryzen 9 5900X: M20 → M21 | macOS, M5 Pro: M20 → M21 |
+|---|---|---|
+| binarytrees | 420 → 348 ms (−17%) | 210 → 191 ms (−9%) |
+| maps | 143 → 107 ms (−25%) | 60 → 60 ms |
+| closures | 267 → 260 ms (−2%) | 150 → 145 ms (−3%) |
+| fib | 232 → 234 ms | 121 → 116 ms (−3%) |
+| others | unchanged | unchanged |
+
+macOS gains less because its allocator's small-object zone is already very
+fast.
+
 ## The multi-threaded scheduler
 
 Processes run on N worker threads (`--threads N`; default one per core). The
@@ -164,8 +200,8 @@ for each request it serves.
 * **A generational GC.** Deferred. Collection is about 9% of `binarytrees` and 5%
   of `maps`, the most allocation-heavy benchmarks. Halving it would save under
   5% overall, while a generational collector needs a write barrier on every
-  reference store. The better next target for allocation-heavy code is `malloc`
-  itself (about 10%); a size-class allocator would help there.
+  reference store. (The other cost of allocation, `malloc` itself, is gone since
+  M21's size-class allocator.)
 * **More specialised memory and array operand forms.** `sieve` and `nbody` now
   spend most of their time in the generic memory and element paths. There are
   many possible shapes, so the right ones to specialise are the ones the

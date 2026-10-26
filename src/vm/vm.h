@@ -159,6 +159,7 @@ typedef struct VM {
     uint32_t max_frames;
     uint64_t next_pid;           /* under `lock` */
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
+    bool slabs;              /* processes use the small-object allocator (gc.c); MLWSVM_NO_SLABS=1: malloc */
     uint64_t gc_min_threshold;
     /* processes and scheduling (sched.c) */
     struct Sched *sched;         /* process table, run queues, timers, worker threads */
@@ -363,6 +364,11 @@ struct Process {
     struct PlatLock *serial_held; /* the serial library lock held by the call in progress */
     Obj *cb_exception;           /* what a failed callback threw: rethrown when its caller returns */
     VEC(Obj *) pins;             /* objects C may be using during the call: GC roots */
+    /* the small-object allocator (gc.c) */
+    bool slabs;                  /* small objects come from this process's chunks */
+    void *slab_free[16];         /* a free list per 16-byte size class */
+    struct Chunk *chunks;
+    uint32_t chunk_next;         /* the size of the next chunk */
     uint64_t rng[4];             /* std.random's generator (util.c) */
     bool rng_seeded;
     /* what the entry function returned (for embedding: mlws_call), or a callback */

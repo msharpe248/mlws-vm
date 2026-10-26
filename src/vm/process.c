@@ -10,6 +10,7 @@ Process *proc_new(VM *vm) {
     Process *p = xcalloc(1, sizeof *p);
     p->vm = vm;
     p->lock = plat_lock_new();
+    p->slabs = vm->slabs;
     uint32_t bytes = vm->stack_words * 8;
     p->stack.data = xcalloc(bytes, 1);
     p->stack.tags = xcalloc(vm->stack_words, 1);

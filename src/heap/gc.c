@@ -56,8 +56,74 @@ void gc_account(Process *p, int64_t delta) {
         vm_trap(p, "E_QUOTA", "heap quota of %llu bytes exceeded", (unsigned long long)p->quota[QUOTA_HEAP]);
 }
 
+/* ---- the small-object allocator ------------------------------------------------------
+ *
+ * Objects up to SLAB_MAX bytes are carved from the process's own chunks, in
+ * 16-byte size classes with a free list each: no malloc call, no malloc lock,
+ * and a sweep that frees an object just pushes it on a list. Chunks start small
+ * (a process may hold only a few objects) and double up to 64 KiB.
+ *
+ * A process's objects never move to another heap (messages are copied), so its
+ * chunks are freed with it. Objects that do move are those built in a
+ * fragment heap for a message, which uses malloc (Process.slabs is false). */
+#define SLAB_GRAIN 16
+#define SLAB_MAX 256
+#define CHUNK_MIN 1024
+#define CHUNK_MAX 65536
+
+typedef struct Chunk {
+    struct Chunk *next;
+    size_t size, used, pad;
+    unsigned char data[]; /* 16-byte aligned: malloc's alignment, after a 32-byte header */
+} Chunk;
+
+#if defined(__SANITIZE_ADDRESS__)
+#define SLABS_DEFAULT false /* AddressSanitizer must see every object's lifetime */
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SLABS_DEFAULT false
+#endif
+#endif
+#ifndef SLABS_DEFAULT
+#define SLABS_DEFAULT true
+#endif
+
+bool gc_slabs_enabled(void) { return SLABS_DEFAULT; }
+
+static void *chunk_carve(Process *p, size_t n) {
+    Chunk *c = p->chunks;
+    if (!c || c->used + n > c->size) {
+        size_t size = p->chunk_next ? p->chunk_next : CHUNK_MIN;
+        p->chunk_next = (uint32_t)(size < CHUNK_MAX ? size * 2 : size);
+        c = xmalloc(sizeof(Chunk) + size);
+        c->size = size;
+        c->used = 0;
+        c->next = p->chunks;
+        p->chunks = c;
+    }
+    void *b = c->data + c->used;
+    c->used += n;
+    return b;
+}
+
 Obj *gc_alloc_unaccounted(Process *p, uint8_t kind, size_t size) {
-    Obj *o = xcalloc(1, size);
+    Obj *o;
+    if (p->slabs && size <= SLAB_MAX) {
+        unsigned cls = (unsigned)((size - 1) / SLAB_GRAIN);
+        void *b = p->slab_free[cls];
+        if (b) p->slab_free[cls] = *(void **)b;
+        else b = chunk_carve(p, (size_t)(cls + 1) * SLAB_GRAIN);
+        switch (cls) { /* a constant size for each class: the compiler inlines the stores */
+#define ZERO(k) case k: memset(b, 0, (k + 1) * SLAB_GRAIN); break;
+            ZERO(0) ZERO(1) ZERO(2) ZERO(3) ZERO(4) ZERO(5) ZERO(6) ZERO(7)
+            ZERO(8) ZERO(9) ZERO(10) ZERO(11) ZERO(12) ZERO(13) ZERO(14) ZERO(15)
+#undef ZERO
+        }
+        o = b;
+        o->slab = (uint16_t)(cls + 1);
+    } else {
+        o = xcalloc(1, size);
+    }
     o->kind = kind;
     o->next = p->heap;
     p->heap = o;
@@ -72,7 +138,9 @@ Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
     return o;
 }
 
-static void obj_release(Obj *o) {
+/* Free an object: its own buffers, then the object (to p's free list, if it
+ * came from p's chunks; with p NULL, its chunk is about to be freed). */
+static void obj_release(Process *p, Obj *o) {
     switch (o->kind) {
     case OBJ_FOREIGN: foreign_finalize(o); break;
     case OBJ_BYTES: free(((ObjBytes *)o)->data); break;
@@ -86,19 +154,27 @@ static void obj_release(Obj *o) {
         break;
     default: break;
     }
-    free(o);
+    unsigned cls = o->slab;
+    if (!cls) free(o);
+    else if (p) {
+        /* Under GC stress, garbage-fill freed objects, so that a use after a
+         * free goes wrong loudly (ASan cannot see inside the chunks). */
+        if (p->vm->gc_stress) memset(o, 0xDB, cls * SLAB_GRAIN);
+        *(void **)o = p->slab_free[cls - 1];
+        p->slab_free[cls - 1] = o;
+    }
 }
 
 static void obj_free(Process *p, Obj *o) {
     p->heap_bytes -= obj_footprint(o);
-    obj_release(o);
+    obj_release(p, o);
 }
 
-void gc_free_list(Obj *list) {
+void gc_free_list(Obj *list) { /* objects of a fragment heap: never from chunks */
     while (list) {
         Obj *o = list;
         list = o->next;
-        obj_release(o);
+        obj_release(NULL, o);
     }
 }
 
@@ -221,8 +297,16 @@ void heap_free_all(Process *p) {
     while (p->heap) {
         Obj *o = p->heap;
         p->heap = o->next;
-        obj_free(p, o);
+        p->heap_bytes -= obj_footprint(o);
+        obj_release(NULL, o); /* the chunks go below, all at once */
     }
+    while (p->chunks) {
+        Chunk *c = p->chunks;
+        p->chunks = c->next;
+        free(c);
+    }
+    memset(p->slab_free, 0, sizeof p->slab_free);
+    p->chunk_next = 0;
     VEC_FREE(p->handles);
     VEC_FREE(p->handle_free);
     VEC_FREE(p->markstack);

@@ -123,6 +123,7 @@ encoding.
 
 | MLWSVM | Influences | How MLWSVM differs |
 |---|---|---|
+| Per-process size-class allocator for small objects (M21) | BEAM's per-scheduler allocators (`erts_alloc`), tcmalloc and jemalloc size classes and thread caches, Go's per-P `mcache` | The cache is per process rather than per thread: a process's objects never leave its heap, so it needs no locks, no cross-thread frees, and its chunks are freed with it. |
 | Quickening into specialised execution opcodes after verification | JVM "quick" bytecodes; Stefan Brunthaler, *Inline Caching Meets Quickening* (ECOOP 2010); CPython's specialising adaptive interpreter (PEP 659) | Specialisation happens once, at load time, from static operand shapes (register banks and type suffixes), not adaptively at run time. The rich operand model makes the shapes knowable statically. |
 
 ### Toolchain
@@ -200,6 +201,7 @@ run 8.2× faster on the laptop's 18 cores than on one thread.
 | M18 | ctypes `CFUNCTYPE`, cffi callbacks, Java FFM upcalls, libffi closures; Erlang `enif_send`, libuv `uv_async_send` |
 | M19 | Go's `time` and RFC 3339; Hinnant's civil-date algorithms; xoshiro256\*\* and SipHash; RFC 4648 (base64), RFC 3986 (URLs), RFC 4180 (CSV); Python's `bisect` |
 | M20 | Rust's bindgen, ctypesgen, Zig's `@cImport`; clang's `-ast-dump=json` |
+| M21 | BEAM's `erts_alloc`, tcmalloc/jemalloc size classes, Go's `mcache` |
 
 ## References
 

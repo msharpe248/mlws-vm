@@ -6,6 +6,26 @@
 
 void proc_frame_slow(Process *p, const uint16_t *nr);
 
+/* Zero n registers of a bank, through the bank's own element type. Windows
+ * are usually a few registers, where a call to memset costs more than the
+ * stores (and compilers turn a plain loop back into that call). */
+#define ZERO_REGS(regs, n)                                                     \
+    do {                                                                       \
+        __typeof__(&(regs)[0]) w_ = (regs);                                    \
+        switch (n) {                                                           \
+        case 8: w_[7] = 0; /* fall through */                                  \
+        case 7: w_[6] = 0; /* fall through */                                  \
+        case 6: w_[5] = 0; /* fall through */                                  \
+        case 5: w_[4] = 0; /* fall through */                                  \
+        case 4: w_[3] = 0; /* fall through */                                  \
+        case 3: w_[2] = 0; /* fall through */                                  \
+        case 2: w_[1] = 0; /* fall through */                                  \
+        case 1: w_[0] = 0; /* fall through */                                  \
+        case 0: break;                                                         \
+        default: memset(w_, 0, (n) * sizeof *w_); break;                       \
+        }                                                                      \
+    } while (0)
+
 /* Push a call frame with a fresh, zeroed register window (inline: every call). */
 static inline void proc_push_frame(Process *p, Function *fn, const Insn *ret_insn) {
     const uint16_t *nr = fn->mf->nregs;
@@ -25,10 +45,10 @@ static inline void proc_push_frame(Process *p, Function *fn, const Insn *ret_ins
         p->rtop[b] += nr[b];
     }
     /* Only the banks the function uses; most functions use one or two. */
-    if (nr[BANK_I]) memset(p->ireg + fr->base[BANK_I], 0, nr[BANK_I] * sizeof *p->ireg);
-    if (nr[BANK_F]) memset(p->freg + fr->base[BANK_F], 0, nr[BANK_F] * sizeof *p->freg);
-    if (nr[BANK_R]) memset(p->rreg + fr->base[BANK_R], 0, nr[BANK_R] * sizeof *p->rreg);
-    if (nr[BANK_P]) memset(p->preg + fr->base[BANK_P], 0, nr[BANK_P] * sizeof *p->preg);
+    if (nr[BANK_I]) ZERO_REGS(p->ireg + fr->base[BANK_I], nr[BANK_I]);
+    if (nr[BANK_F]) ZERO_REGS(p->freg + fr->base[BANK_F], nr[BANK_F]);
+    if (nr[BANK_R]) ZERO_REGS(p->rreg + fr->base[BANK_R], nr[BANK_R]);
+    if (nr[BANK_P]) ZERO_REGS(p->preg + fr->base[BANK_P], nr[BANK_P]);
     if (p->nframes > p->max_depth) p->max_depth = p->nframes;
 }
 

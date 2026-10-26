@@ -25,7 +25,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M18 Callbacks** (done) | C calling back into MLWSVM during a call, through a re-entrant interpreter (1.3); asynchronous callbacks delivered as messages, and `api->post` for extensions (1.4) |
 | **M19 Standard library II** (done) | `std.time`, `std.hash`, `std.random`, `std.encoding` (hex, base64, URL, CSV), `std.collections` (sorting with a comparator closure, using M18's re-entrant calls), more `std.math` (section 2) |
 | **M20 Bindgen** (done) | `mlwsvm bindgen header.h`: `.extern`, `.cstruct` and `.callback` declarations from clang's JSON AST (1.5) |
-| **M21 Performance** | a size-class allocator first, then what measurements call for (section 4) |
+| **M21 Performance** (done: the allocator) | a size-class allocator first, then what measurements call for (section 4) |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -138,8 +138,8 @@ untrusted process cannot reach the OS at all (compare Deno's permissions).
 
 Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 
-* A size-class allocator for the GC heap: `malloc` is about 10% of
-  allocation-heavy benchmarks.
+* ~~A size-class allocator for the GC heap~~ (M21: done; allocation-heavy
+  benchmarks are 9–25% faster).
 * Specialised memory and array operand forms, chosen from what the
   scripting-language compiler actually emits.
 * A generational collector, if collection grows past roughly 10% of real

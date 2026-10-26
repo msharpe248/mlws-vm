@@ -54,6 +54,11 @@ $ mlwsvm run --max-frames 1000000 deep_recursion.masm
 $ MLWSVM_QUOTA=heap=256M,insns=10000000000 mlwsvm run untrusted.masm
 ```
 
+Two environment variables are for testing the VM itself: `MLWSVM_GC_STRESS=1`
+collects garbage at every instruction boundary after an allocation, and
+`MLWSVM_NO_SLABS=1` allocates every object with `malloc` instead of the
+small-object allocator ([PERFORMANCE.md](PERFORMANCE.md#the-small-object-allocator-m21)).
+
 A backtrace from a runaway recursion stays short: runs of identical frames are
 collapsed (`... repeated 99998 more times`), and a very deep stack shows only its
 innermost 40 and outermost 10 frames.

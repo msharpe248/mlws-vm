@@ -30,7 +30,7 @@ enum {
 typedef struct Obj {
     uint8_t kind;
     uint8_t flags;
-    uint16_t pad;
+    uint16_t slab; /* its size class + 1, if it was carved from its process's chunks (gc.c); 0: malloc */
     uint32_t pad2;
     struct Obj *next; /* heap list */
 } Obj;
