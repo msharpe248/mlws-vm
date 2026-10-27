@@ -63,6 +63,9 @@ jobs:
       - name: Switch dispatch (no computed goto)
         run: make CC=$CC check-switch
 
+      - name: Dispatch loop (no tail calls)
+        run: make CC=$CC check-loop
+
       - name: Without libffi
         run: |
           make CC=$CC BUILD=build-noffi BIN=mlwsvm-noffi FFI=0 -j4

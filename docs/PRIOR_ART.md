@@ -126,7 +126,7 @@ civil-date conversions.
 | MLWSVM | Influences | How MLWSVM differs |
 |---|---|---|
 | Per-process size-class allocator for small objects (M21) | BEAM's per-scheduler allocators (`erts_alloc`), tcmalloc and jemalloc size classes and thread caches, Go's per-P `mcache` | The cache is per process rather than per thread: a process's objects never leave its heap, so it needs no locks, no cross-thread frees, and its chunks are freed with it. |
-| Threaded dispatch for quickened forms, a `switch` for the rest (M22) | Bell's threaded code (1973); Ertl and Gregg on the structure of efficient interpreters; computed goto in Lua, CPython and Ruby's YARV | Only the quickened forms are threaded; generic instructions share one `switch`, and a fast handler that meets an unexpected object jumps to it. The program counter and the slice count stay in locals and are written back only where something can observe them. |
+| Tail-call dispatch: a function per quickened form, each tail-calling the next; one function for the generic forms (M27). A threaded loop or a `switch` where tail calls cannot be guaranteed (M22) | Bell's threaded code (1973); Ertl and Gregg on the structure of efficient interpreters; computed goto in Lua, CPython and Ruby's YARV; Haberman's `musttail` protobuf parser (upb, 2021); wasm3; CPython 3.14's tail-calling interpreter with Clang's `preserve_none` | Chosen for predictable speed more than raw speed: in one loop, any added code moved other handlers' speed by 5–50% through register allocation, differently on each compiler. The frame and its code pointer are handler arguments too, where the convention has registers for them: through memory, they put a store and a load on every call's critical path. |
 | Specialised forms chosen from what a compiler emits, and a profiler that lists the hottest instructions still on the general path (M24) | CPython's specialisation statistics (`--enable-pystats`) and PEP 659; V8's and LuaJIT's tracing of slow paths | The forms are chosen once, at load time, from operand shapes alone, never from observed types, so they cost nothing to keep correct: a form that meets something unexpected hands that one execution to the generic instruction. |
 | Quickening into specialised execution opcodes after verification | JVM "quick" bytecodes; Stefan Brunthaler, *Inline Caching Meets Quickening* (ECOOP 2010); CPython's specialising adaptive interpreter (PEP 659) | Specialisation happens once, at load time, from static operand shapes (register banks and type suffixes), not adaptively at run time. The rich operand model makes the shapes knowable statically. |
 
@@ -180,10 +180,10 @@ Experiments that would show whether the combination pays off:
 | Is the GC simpler but competitive? | Pause times and throughput on allocation-heavy benchmarks; the cost of scanning stack tags as stacks grow |
 
 Current data points (see [PERFORMANCE.md](PERFORMANCE.md)): about 2.1G
-instructions/s on a tight register loop and about 440M/s on recursive `fib`, on an
+instructions/s on a tight register loop and about 470M/s on recursive `fib`, on an
 Apple Silicon laptop with one thread. On the loop that is 14× faster than CPython
-3.14, 2.5× faster than Lua 5.5 and 2.1× faster than the JVM's interpreter. On
-`fib` it is 1.8× faster than CPython and 1.3× faster than the JVM's interpreter,
+3.14, 2.5× faster than Lua 5.5 and 2.2× faster than the JVM's interpreter. On
+`fib` it is 1.9× faster than CPython and 1.3× faster than the JVM's interpreter,
 while Lua is 1.4× faster than MLWSVM. A two-process ping-pong reaches about 18M
 messages/s, and 16 independent CPU-bound processes run 7.8× faster on the
 laptop's 18 cores than on one thread. Instructions with up
@@ -215,12 +215,14 @@ of the instructions in call-heavy code.
 | M24 | CPython 3.11's specialising interpreter and Brunthaler's quickening (forms chosen from the shapes compilers emit); the inline caches of Smalltalk-80 and Self, which the Lox compiler builds from `bne.r R, @cache, L` |
 | M25 | Lua's tagged values (`TValue`: a value plus its type tag, here kept in the slot's own tag and read with `tagof`) |
 | M26 | Amortised growth of dynamic arrays (Lua's and CPython's list resizing), with the no-growth case as the fast path |
+| M27 | Haberman's `musttail` interpreter style (upb), wasm3, CPython 3.14's tail-calling interpreter and Clang's `preserve_none` |
 
 ## References
 
 - Roberto Ierusalimschy, Luiz Henrique de Figueiredo and Waldemar Celes, *The Implementation of Lua 5.0*, Journal of Universal Computer Science, 2005.
 - Yunhe Shi, Kevin Casey, M. Anton Ertl and David Gregg, *Virtual Machine Showdown: Stack Versus Registers*, ACM TACO, 2008 (earlier version at VEE 2005).
 - James R. Bell, *Threaded Code*, Communications of the ACM 16(6), 1973.
+- Josh Haberman, *Parsing Protobuf at 2+GB/s: How I Learned To Love Tail Calls in C*, 2021; the CPython 3.14 "What's New" notes on the tail-calling interpreter.
 - M. Anton Ertl and David Gregg, *The Structure and Performance of Efficient Interpreters*, Journal of Instruction-Level Parallelism 5, 2003.
 - The Parrot virtual machine documentation (register sets I, N, S, P).
 - Erik Stenman, *The BEAM Book*, and the Erlang/OTP documentation on processes, links and monitors.

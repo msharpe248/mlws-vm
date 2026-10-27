@@ -7,6 +7,7 @@
 #   make check-gc     run the tests with a garbage collection at every allocation
 #   make check-asan   build with AddressSanitizer + UBSan and run the tests (normal and GC stress)
 #   make check-switch build with switch dispatch instead of threaded code (as MSVC would) and run the tests
+#   make check-loop   build with the threaded dispatch loop instead of tail calls (as GCC before 15 would) and run the tests
 #   make check-tsan   build with ThreadSanitizer and run the tests on several worker threads
 #   make lib          the embedding library: build/libmlwsvm.a and a shared libmlwsvm
 #   make check-embed  build and run the embedding example (examples/embed/host.c)
@@ -55,7 +56,7 @@ DL_LIBS := -ldl -lpthread
 endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: all test test-ext check-gc check-tools check-asan check-tsan check-switch check-bindgen bench docs clean lib embed-example check-embed
+.PHONY: all test test-ext check-gc check-tools check-asan check-tsan check-switch check-loop check-bindgen bench docs clean lib embed-example check-embed
 
 all: $(BIN)
 
@@ -166,6 +167,10 @@ check-switch: test-ext
 	$(MAKE) BUILD=build-switch BIN=mlwsvm-switch CFLAGS="$(CFLAGS) -DMLWS_NO_THREADED"
 	./mlwsvm-switch test tests examples
 
+check-loop: test-ext
+	$(MAKE) BUILD=build-loop BIN=mlwsvm-loop CFLAGS="$(CFLAGS) -DMLWS_NO_TAILCALL"
+	./mlwsvm-loop test tests examples
+
 check-tsan: test-ext
 	$(MAKE) BUILD=build-tsan BIN=mlwsvm-tsan \
 	    CFLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" LDFLAGS="-fsanitize=thread"
@@ -183,4 +188,4 @@ docs: $(BIN)
 	./$(BIN) doc natives -o docs/NATIVES.md
 
 clean:
-	rm -rf build build-asan build-tsan build-noffi build-switch mlwsvm mlwsvm-asan mlwsvm-tsan mlwsvm-noffi mlwsvm-switch
+	rm -rf build build-asan build-tsan build-noffi build-switch build-loop mlwsvm mlwsvm-asan mlwsvm-tsan mlwsvm-noffi mlwsvm-switch mlwsvm-loop

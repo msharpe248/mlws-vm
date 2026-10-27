@@ -99,6 +99,7 @@ make bench                   # benchmarks, with output checks (docs/PERFORMANCE.
 make check-asan              # test and check-gc, under AddressSanitizer + UBSan
 make check-tsan              # the tests on several threads, under ThreadSanitizer
 make check-switch            # the tests with switch dispatch (for compilers without computed goto)
+make check-loop              # the tests with the dispatch loop (for compilers without guaranteed tail calls)
 make lib check-embed         # the embedding library, and its example host program
 make check-bindgen           # generate, compare and call bindings for a test header (needs clang)
 
@@ -172,7 +173,7 @@ The current release is 0.1.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
 on GitHub. Everything described in `docs/` is implemented and tested on macOS and Linux
 (GitHub Actions: Linux GCC and Clang, macOS Clang), in every test mode: the
 plain suite, GC stress, AddressSanitizer, ThreadSanitizer, the tools, and builds
-without libffi or computed goto. Windows support is written but untested.
+without libffi, tail calls or computed goto. Windows support is written but untested.
 [docs/ROADMAP.md](docs/ROADMAP.md) lists the milestones and what remains.
 
 ## License

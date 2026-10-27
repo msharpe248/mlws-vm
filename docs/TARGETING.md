@@ -402,7 +402,7 @@ them by emitting these shapes; nothing else changes.
   register or a constant. Arithmetic
   directly on a field or element works, but takes the general path. Loading
   into registers, computing there and storing back is much faster in a loop:
-  `bench/nbody.masm` runs in 97 ms with element operands and in 24 ms rewritten
+  `bench/nbody.masm` runs in 96 ms with element operands and in 24 ms rewritten
   that way, although it executes more instructions.
 * **Lists:** `lpush R0, I1, F2, R3` of untyped register values, while the list
   has room: each value is tagged with its register's type. Growing the list

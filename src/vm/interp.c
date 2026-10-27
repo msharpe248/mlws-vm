@@ -13,6 +13,29 @@
 #include "../platform/platform.h"
 #include "proc_internal.h"
 
+/* Tail-call dispatch (see run_loop): each quickened form is a function that
+ * ends by tail-calling the next instruction's, which needs a compiler that can
+ * guarantee the tail call. Other compilers, and MLWS_NO_TAILCALL builds, use
+ * one dispatch loop. */
+/* ThreadSanitizer builds use the loop: with the tail-call chain, its runtime
+ * failed an internal check (in its allocator) after the tests ran. */
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define MLWS_NO_TAILCALL 1
+#endif
+#endif
+#if defined(__SANITIZE_THREAD__) && !defined(MLWS_NO_TAILCALL)
+#define MLWS_NO_TAILCALL 1
+#endif
+#if defined(__has_attribute) && !defined(MLWS_NO_TAILCALL) && !defined(MLWS_NO_THREADED)
+#if __has_attribute(musttail)
+#define MLWS_TAILCALL 1
+#endif
+#endif
+#ifndef MLWS_TAILCALL
+#define MLWS_TAILCALL 0
+#endif
+
 typedef struct {
     Process *p;
     Frame *fr;
@@ -20,6 +43,16 @@ typedef struct {
     double *F;
     Obj **R;
     uint64_t *P;
+#if MLWS_TAILCALL
+    /* the slice, as run_loop's locals hold it in the dispatch loop */
+    VM *vm;
+    const Insn *code;  /* the current frame's function's code */
+    uint64_t ibase;    /* Process.insns = ibase - left */
+    uint64_t insns0;   /* Process.insns at the start of the slice */
+    uint32_t budget;   /* instructions the slice may run */
+    uint32_t hleft;    /* with a tool's hook: instructions left (the handlers' `left` stays 0) */
+    bool hooked;
+#endif
 } Ctx;
 
 /* The current frame, for code where `fr` names another variable (interp_run's generic forms). */
@@ -969,6 +1002,8 @@ static void bind_args(Ctx *c, const MlwsType *types, const uint8_t *ptypes, int 
 
 /* run_loop's code for an instruction it leaves to interp_run (never a scheduler's). */
 #define SLICE_EXT 100
+/* exec_generic: go on with the next instruction (tail-call dispatch) */
+#define GEN_NEXT (-1)
 
 static const char *co_state(const ObjCoro *co) {
     static const char *const st[] = {"suspended", "running", "normal", "dead"};
@@ -1222,10 +1257,14 @@ static bool quicken_call(const Insn *in) {
 }
 
 static const MFunc *quicken_fn; /* function being quickened (for ret) */
+static uint32_t quicken_idx;      /* the instruction's index in it */
 
 void interp_quicken_function(Function *f) {
     quicken_fn = f->mf;
-    for (uint32_t k = 0; k < f->ncode; k++) interp_quicken(&f->code[k]);
+    for (uint32_t k = 0; k < f->ncode; k++) {
+        quicken_idx = k;
+        interp_quicken(&f->code[k]);
+    }
     quicken_fn = NULL;
 }
 
@@ -1470,7 +1509,11 @@ void interp_quicken(Insn *in) {
                 else in->k.i = o[k].imm;
                 break;
             case OM_FIMM: in->k.f = o[k].f; break;
+#if MLWS_TAILCALL /* relative: the handlers have the instruction, not the code array */
+            case OM_LABEL: in->target = (uint32_t)((int64_t)o[k].rv.target - (int64_t)quicken_idx); break;
+#else
             case OM_LABEL: in->target = o[k].rv.target; break;
+#endif
             default: break;
             }
         }
@@ -1645,6 +1688,255 @@ static MLWS_NOINLINE void ret_rk(Process *p, const Insn *in) {
 #define MLWS_THREADED 0
 #endif
 
+#if MLWS_TAILCALL
+/* ---- tail-call dispatch ---------------------------------------------------------
+ * Every quickened form is a function of its own (h_Q_*, from qforms.inc) that
+ * ends by tail-calling the next instruction's handler, with the fast path's
+ * state in argument registers: the Ctx, the instruction, the slice counter and
+ * the I, F and R windows (six arguments, x86-64's register limit). A compiler
+ * allocates each handler's registers on its own, so no handler's speed depends
+ * on the code of any other, as it does in one dispatch loop. Branch targets
+ * are relative to the instruction (interp_quicken), so no code base is needed.
+ * Instructions without a quickened form go to h_generic, which runs them with
+ * exec_generic (generic.inc); h_slice ends the slice and runs the tools' hook. */
+#define MUSTTAIL __attribute__((musttail))
+/* No register is callee-saved between handlers (Clang): a handler that needs
+ * many registers does not save and restore them on every instruction. */
+/* (Not in sanitizer builds: with AddressSanitizer, Clang's code for run_loop
+ * expects a register back that a preserve_none handler need not preserve.) */
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(memory_sanitizer)
+#define MLWS_SANITIZED 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define MLWS_SANITIZED 1
+#endif
+#if defined(__has_attribute) && !defined(MLWS_SANITIZED)
+#if __has_attribute(preserve_none)
+#define MLWS_PRESERVE_NONE 1
+#endif
+#endif
+#ifdef MLWS_PRESERVE_NONE
+#define QCC __attribute__((preserve_none))
+#define QWIDE 1
+#else
+#define QCC
+#define QWIDE 0
+#endif
+/* With preserve_none there are registers for more arguments: the current frame
+ * and its code travel with the rest, not through c->fr and c->code (a store in
+ * one handler and a load on the critical path of the next). */
+#if QWIDE
+#define QPARAMS Ctx *c, const Insn *in, uint32_t left, int64_t *I, double *F, Obj **R, Frame *qfr, const Insn *qcode
+#define QARGSN(n) c, n, left, I, F, R, qfr, qcode
+#define QFRAME qfr
+#define QCODE qcode
+#define QSETFRAME() (qfr = c->fr, qcode = qfr->fn->code)
+#else
+#define QPARAMS Ctx *c, const Insn *in, uint32_t left, int64_t *I, double *F, Obj **R
+#define QARGSN(n) c, n, left, I, F, R
+#define QFRAME (c->fr)
+#define QCODE (c->code)
+#define QSETFRAME() (c->code = c->fr->fn->code)
+#endif
+#define QARGS QARGSN(in)
+typedef QCC int (*QHandler)(QPARAMS);
+static const QHandler qhandlers[Q__COUNT];
+static QCC int h_generic(QPARAMS);
+static QCC int h_slice(QPARAMS);
+
+#define QI I
+#define QF F
+#define QR R
+#define QP (c->P)
+#define QB(b) Q##b
+#define QCTX c
+/* The process and frame as locals of each handler (unused ones cost nothing):
+ * read through `c`, every byte stored (a frame's qret, a list tag) could
+ * alias them, and the compiler would read them again after each one. */
+#define QPRC qp
+#define QFRM qf
+#define QLOCALS                                                                \
+    const Insn *nx = in + 1;                                                   \
+    Process *const qp __attribute__((unused)) = c->p;                          \
+    Frame *const qf __attribute__((unused)) = QFRAME;
+#define IR(k) QI[in->r[k]]
+#define FR(k) QF[in->r[k]]
+#define U(x) ((uint64_t)(x))
+/* Frame.pc is the index after `in` (the return address, or where a fault is),
+ * and Process.insns counts every instruction started, as in the loop. */
+#define SPILL() (QFRM->pc = (uint32_t)(in - QCODE) + 1, QPRC->insns = c->ibase - left)
+#define RELOAD() (I = c->I, F = c->F, R = c->R, QSETFRAME(), nx = QCODE + QFRAME->pc)
+#define JUMP() (nx = in + (int32_t)in->target)
+#define GENERIC()                                                              \
+    do {                                                                       \
+        MUSTTAIL return h_generic(QARGS);                                      \
+    } while (0)
+#define NEXT                                                                   \
+    do {                                                                       \
+        if (__builtin_expect(left == 0, 0)) MUSTTAIL return h_slice(QARGSN(nx)); \
+        left--;                                                                \
+        MUSTTAIL return qhandlers[nx->xop](QARGSN(nx));                        \
+    } while (0)
+/* Each QCASE ends the previous handler's function and starts the next: the
+ * first one ends this placeholder, and the brace after the include the last. */
+#define QCASE(x)                                                               \
+    }                                                                          \
+    static QCC int h_##x(QPARAMS) {                                            \
+        QLOCALS
+#define QCASE2(x, y)                                                           \
+    }                                                                          \
+    static QCC int h_##x(QPARAMS);                                             \
+    static QCC int h_##y(QPARAMS) { MUSTTAIL return h_##x(QARGS); }            \
+    static QCC int h_##x(QPARAMS) {                                            \
+        QLOCALS
+static __attribute__((unused)) QCC int qforms_start(QPARAMS) {
+    (void)c, (void)in, (void)left, (void)I, (void)F, (void)R;
+#if QWIDE
+    (void)qfr, (void)qcode;
+#endif
+    return 0;
+#define QFORMS_RET_INLINE 0
+/* A call that needs the stacks to grow (or reaches the depth limit) is the
+ * generic call's: without a function call of its own, the handler needs no
+ * stack frame. */
+#define QPUSH_FRAME(f, ri)                                                     \
+    do {                                                                       \
+        if (__builtin_expect(!proc_frame_fits(QPRC, (f)->mf->nregs), 0)) GENERIC(); \
+        proc_push_frame_fitting(QPRC, f, ri);                                  \
+    } while (0)
+#include "qforms.inc"
+#undef QPUSH_FRAME
+#undef QFORMS_RET_INLINE
+}
+#undef QCASE
+#undef QCASE2
+#undef NEXT
+#undef GENERIC
+#undef JUMP
+#undef RELOAD
+#undef SPILL
+#undef U
+#undef IR
+#undef FR
+#undef QI
+#undef QF
+#undef QR
+#undef QP
+#undef QB
+#undef QCTX
+#undef QPRC
+#undef QFRM
+#undef QLOCALS
+
+/* `in` is the next instruction to run: the slice is used up, or a tool's hook
+ * runs before each instruction (then `left` stays 0 and hleft counts). */
+static MLWS_NOINLINE QCC int h_slice(QPARAMS) {
+    Process *p = c->p;
+    uint32_t pc = (uint32_t)(in - QCODE);
+    QFRAME->pc = pc;
+    p->insns = c->ibase - left;
+    if (!c->hooked || c->hleft == 0) return SLICE_YIELD; /* time slice used up */
+    if (c->vm->hook(p, pc)) return SLICE_BREAK; /* debugger stop: pc not advanced */
+    c->hleft--, c->ibase++;
+    left = 0;
+    MUSTTAIL return qhandlers[in->xop](QARGS);
+}
+
+/* The generic forms, in this one function: with the handlers' calling
+ * convention it saves no registers for its caller, and it goes on to the next
+ * instruction with a tail call like any handler. Its own register allocation
+ * (for the generic forms' many paths) cannot affect the quickened forms'. */
+#if defined(__has_attribute) && __has_attribute(no_stack_protector)
+#define QNOSP __attribute__((no_stack_protector))
+#else
+#define QNOSP
+#endif
+/* (Without a stack-protector check: its arrays, bounded by the operand count,
+ * would otherwise cost a canary per generic instruction, which the dispatch
+ * loop pays once per slice.) */
+static QCC QNOSP int h_generic(QPARAMS) {
+    Process *p = c->p;
+    VM *vm = p->vm;
+    Frame *fr = QFRAME;
+    fr->pc = (uint32_t)(in - QCODE) + 1;
+    p->insns = c->ibase - left;
+#define CX c
+#include "generic.inc"
+#undef CX
+    /* Safepoint: between instructions every live reference is in a root. */
+    if (p->gc_pending | p->kill_pending) {
+        if (p->kill_pending) {
+            proc_backtrace(p);
+            return SLICE_FAILED;
+        }
+        gc_collect(p);
+    }
+    /* What is left of the slice: unchanged, unless a native's callback ran
+     * instructions too. */
+    if (p->insns != c->ibase - left) {
+        uint64_t used = p->insns - c->insns0;
+        uint32_t rest = used < c->budget ? c->budget - (uint32_t)used : 0;
+        if (c->hooked) c->hleft = rest, left = 0;
+        else left = rest;
+        c->ibase = c->insns0 + c->budget - c->hleft;
+    }
+    QSETFRAME();
+    const Insn *nx = QCODE + QFRAME->pc;
+    I = c->I, F = c->F, R = c->R;
+    if (__builtin_expect(left == 0, 0)) MUSTTAIL return h_slice(QARGSN(nx));
+    left--;
+    MUSTTAIL return qhandlers[nx->xop](QARGSN(nx));
+}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#ifdef __clang__
+#pragma GCC diagnostic ignored "-Winitializer-overrides"
+#else
+#pragma GCC diagnostic ignored "-Woverride-init"
+#endif
+static const QHandler qhandlers[Q__COUNT] = {
+    [0 ... Q__COUNT - 1] = h_generic,
+#define QL(x) [x] = h_##x,
+#include "qlist.inc"
+#undef QL
+};
+#pragma GCC diagnostic pop
+
+static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
+    Ctx c;
+    c.p = p;
+    ctx_load(&c);
+    c.vm = p->vm;
+    c.hooked = p->vm->hook != NULL; /* set before a run starts (debugger, tracer, profiler) */
+    c.insns0 = p->insns;
+    c.budget = budget;
+    c.hleft = c.hooked ? budget : 0;
+    c.ibase = c.insns0 + budget - c.hleft;
+    c.code = c.fr->fn->code;
+    uint32_t left = c.hooked ? 0 : budget;
+    if (p->gc_pending | p->kill_pending) {
+        if (p->kill_pending) {
+            proc_backtrace(p);
+            return SLICE_FAILED;
+        }
+        gc_collect(p);
+    }
+    const Insn *in = c.code + c.fr->pc;
+#if QWIDE
+#define QSTART &c, in, left, c.I, c.F, c.R, c.fr, c.code
+#else
+#define QSTART &c, in, left, c.I, c.F, c.R
+#endif
+    if (left == 0) return h_slice(QSTART);
+    left--;
+    return qhandlers[in->xop](QSTART);
+#undef QSTART
+}
+#else /* the dispatch loop */
+
 static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
     Ctx c;
     VM *vm = p->vm;
@@ -1680,40 +1972,11 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
     static const void *const qtab[Q__COUNT] = {
         [0 ... Q__COUNT - 1] = &&generic,
 #define QL(x) [x] = &&L_##x,
-        QL(Q_MOV_II) QL(Q_MOV_IK) QL(Q_MOV_FF) QL(Q_MOV_FK) QL(Q_MOV_RR) QL(Q_MOV_PP)
-#define X(N, o) QL(Q_##N##_III) QL(Q_##N##_IIK) QL(Q_##N##_II) QL(Q_##N##_IK)
-        QARITH_OPS(X)
-#undef X
-#define X(N, o) QL(Q_F##N##_FFF) QL(Q_F##N##_FFK) QL(Q_F##N##_FF) QL(Q_F##N##_FK)
-        QFARITH_OPS(X)
-#undef X
-#define X(N, o) QL(Q_##N##_II) QL(Q_##N##_IK)
-        QBRANCH_OPS(X)
-#undef X
-        QL(Q_REM_IIK) QL(Q_REM_IK) QL(Q_DIV_IIK) QL(Q_DIV_IK)
-        QL(Q_INC_I) QL(Q_DEC_I) QL(Q_BZ_I) QL(Q_BNZ_I) QL(Q_JMP) QL(Q_CALL_R) QL(Q_RET_R)
-        QL(Q_BZ_R) QL(Q_BNZ_R) QL(Q_CALLI_R)
-        QL(Q_LDF_I) QL(Q_LDF_F) QL(Q_LDF_R) QL(Q_STF_I) QL(Q_STF_F) QL(Q_STF_R)
-        QL(Q_LDE_I) QL(Q_LDE_F) QL(Q_LDE_R) QL(Q_STE_I) QL(Q_STE_F) QL(Q_STE_R)
-        QL(Q_CALL_RK) QL(Q_CALLI_RK) QL(Q_RET_RK) QL(Q_MOV_RK)
-        QL(Q_LDG_I) QL(Q_LDG_F) QL(Q_LDG_R) QL(Q_STG_I) QL(Q_STG_F) QL(Q_STG_R)
-        QL(Q_LDEK_I) QL(Q_LDEK_F) QL(Q_LDEK_R) QL(Q_STEK_I) QL(Q_STEK_F) QL(Q_STEK_R)
-        QL(Q_LDU_I) QL(Q_LDU_F) QL(Q_LDU_R) QL(Q_STU_I) QL(Q_STU_F) QL(Q_STU_R)
-        QL(Q_LEN) QL(Q_TAGOF_E) QL(Q_LPUSH_R)
-#define X(N, f) QL(Q_##N##_F) QL(Q_##N##_FF)
-        QFUNARY_OPS(X)
-#undef X
-        QL(Q_BEQ_RR) QL(Q_BNE_RR) QL(Q_BEQ_RK) QL(Q_BNE_RK) QL(Q_BEQ_RG) QL(Q_BNE_RG)
-#define X(N, o) QL(Q_##N##_FF) QL(Q_##N##_FK)
-        QSET_OPS(X)
-#undef X
-#define X(N, o) QL(Q_##N##_FFL) QL(Q_##N##_FKL)
-        QBRANCH_OPS(X)
-#undef X
-        QL(Q_SEQ_RR) QL(Q_SNE_RR) QL(Q_SEQ_RK) QL(Q_SNE_RK) QL(Q_ISA) QL(Q_MGET_R)
+#include "qlist.inc"
 #undef QL
     };
 #define QCASE(x) L_##x:
+#define QCASE2(x, y) L_##x: L_##y:
 #undef NEXT
 #define NEXT                                                                   \
     {                                                                          \
@@ -1724,6 +1987,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
     }
 #else
 #define QCASE(x) case x:
+#define QCASE2(x, y) case x: case y:
 #endif
     const Insn *in;
     for (;;) {
@@ -1740,402 +2004,29 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
         }
         left--;
         in = &code[pc++];
-#define IR(k) c.I[in->r[k]]
-#define FR(k) c.F[in->r[k]]
+#define QI c.I
+#define QF c.F
+#define QR c.R
+#define QP c.P
+#define QB(b) Q##b
+#define QCTX (&c)
+#define QPRC p
+#define QFRM fr
+#define GENERIC() goto generic
+#define JUMP() (pc = in->target)
+#define IR(k) QI[in->r[k]]
+#define FR(k) QF[in->r[k]]
 #define U(x) ((uint64_t)(x))
 #if MLWS_THREADED
         goto *qtab[in->xop];
 #else
         switch (in->xop) {
 #endif
-        /* ---- quickened forms (see interp_quicken) ---- */
-        QCASE(Q_MOV_II) IR(0) = IR(1); NEXT;
-        QCASE(Q_MOV_IK) IR(0) = in->k.i; NEXT;
-        QCASE(Q_MOV_FF) FR(0) = FR(1); NEXT;
-        QCASE(Q_MOV_FK) FR(0) = in->k.f; NEXT;
-        QCASE(Q_MOV_RR) c.R[in->r[0]] = c.R[in->r[1]]; NEXT;
-        QCASE(Q_MOV_PP) c.P[in->r[0]] = c.P[in->r[1]]; NEXT;
-#define X(N, op_)                                                             \
-        QCASE(Q_##N##_III) IR(0) = (int64_t)(U(IR(1)) op_ U(IR(2))); NEXT;     \
-        QCASE(Q_##N##_IIK) IR(0) = (int64_t)(U(IR(1)) op_ U(in->k.i)); NEXT; \
-        QCASE(Q_##N##_II) IR(0) = (int64_t)(U(IR(0)) op_ U(IR(1))); NEXT;      \
-        QCASE(Q_##N##_IK) IR(0) = (int64_t)(U(IR(0)) op_ U(in->k.i)); NEXT;
-        QARITH_OPS(X)
-#undef X
-#define X(N, op_)                                                             \
-        QCASE(Q_F##N##_FFF) FR(0) = FR(1) op_ FR(2); NEXT;                     \
-        QCASE(Q_F##N##_FFK) FR(0) = FR(1) op_ in->k.f; NEXT;                   \
-        QCASE(Q_F##N##_FF) FR(0) = FR(0) op_ FR(1); NEXT;                      \
-        QCASE(Q_F##N##_FK) FR(0) = FR(0) op_ in->k.f; NEXT;
-        QFARITH_OPS(X)
-#undef X
-        QCASE(Q_DIV_IIK) IR(0) = IR(1) / in->k.i; NEXT; /* divisor is a non-zero, non -1 constant */
-        QCASE(Q_DIV_IK) IR(0) = IR(0) / in->k.i; NEXT;
-        QCASE(Q_REM_IIK) IR(0) = IR(1) % in->k.i; NEXT;
-        QCASE(Q_REM_IK) IR(0) = IR(0) % in->k.i; NEXT;
-        QCASE(Q_INC_I) IR(0) = (int64_t)(U(IR(0)) + 1); NEXT;
-        QCASE(Q_DEC_I) IR(0) = (int64_t)(U(IR(0)) - 1); NEXT;
-        QCASE(Q_BZ_I) if (IR(0) == 0) pc = in->target; NEXT;
-        QCASE(Q_BNZ_I) if (IR(0) != 0) pc = in->target; NEXT;
-        QCASE(Q_JMP) pc = in->target; NEXT;
-#define X(N, op_)                                                             \
-        QCASE(Q_##N##_II) if (IR(0) op_ IR(1)) pc = in->target; NEXT;     \
-        QCASE(Q_##N##_IK) if (IR(0) op_ in->k.i) pc = in->target; NEXT;
-        QBRANCH_OPS(X)
-#undef X
-#undef U
-        QCASE(Q_CALL_R) {
-            SPILL(); /* the caller's pc is its return address; a depth trap unwinds from here */
-            const Operand *qo = in->ops;
-            Function *fn = qo[0].rv.ptr;
-            int argc = (int)qo[1].imm;
-            proc_push_frame(p, fn, in); /* may move the frames and the banks */
-            Frame *nf = &p->frames[p->nframes - 1];
-            const Frame *of = nf - 1;
-            nf->qret = 1;
-            for (int k = 0; k < argc; k++) { /* caller register -> callee parameter, same bank */
-                uint8_t r = qo[2 + k].reg, d = qo[2 + k].ireg;
-                switch (REG_BANK(r)) {
-                case BANK_I: p->ireg[nf->base[BANK_I] + d] = p->ireg[of->base[BANK_I] + REG_IDX(r)]; break;
-                case BANK_F: p->freg[nf->base[BANK_F] + d] = p->freg[of->base[BANK_F] + REG_IDX(r)]; break;
-                case BANK_R: p->rreg[nf->base[BANK_R] + d] = p->rreg[of->base[BANK_R] + REG_IDX(r)]; break;
-                default: p->preg[nf->base[BANK_P] + d] = p->preg[of->base[BANK_P] + REG_IDX(r)]; break;
-                }
-            }
-            ctx_load(&c);
-            RELOAD();
-            NEXT;
-        }
-        QCASE(Q_RET_R) {
-            SPILL();
-            const Operand *qo = in->ops;
-            const Insn *ri = fr->ret_insn;
-            if (fr->qret) {
-                /* Back to a quickened call, whose result registers match this
-                 * function's declared result types (and so the registers this
-                 * ret names): copy each one straight across, then pop. */
-                int argc = (int)ri->ops[1].imm, nres = ri->nops - 2 - argc;
-                const Frame *of = fr - 1;
-                for (int k = 0; k < nres; k++) {
-                    uint8_t sr = qo[k].reg, dr = ri->ops[2 + argc + k].reg;
-                    switch (REG_BANK(sr)) {
-                    case BANK_I: p->ireg[of->base[BANK_I] + REG_IDX(dr)] = c.I[REG_IDX(sr)]; break;
-                    case BANK_F: p->freg[of->base[BANK_F] + REG_IDX(dr)] = c.F[REG_IDX(sr)]; break;
-                    case BANK_R: p->rreg[of->base[BANK_R] + REG_IDX(dr)] = c.R[REG_IDX(sr)]; break;
-                    default: p->preg[of->base[BANK_P] + REG_IDX(dr)] = c.P[REG_IDX(sr)]; break;
-                    }
-                }
-                proc_pop_frame(p);
-                ctx_load(&c);
-                RELOAD();
-                NEXT;
-            }
-            Word vals[MAX_OPERANDS];
-            int n = in->nops;
-            for (int k = 0; k < n; k++) {
-                uint8_t r = qo[k].reg;
-                switch (REG_BANK(r)) {
-                case BANK_I: vals[k].i = c.I[REG_IDX(r)]; break;
-                case BANK_F: vals[k].f = c.F[REG_IDX(r)]; break;
-                case BANK_R: vals[k].r = c.R[REG_IDX(r)]; break;
-                default: vals[k].p = c.P[REG_IDX(r)]; break;
-                }
-            }
-            const MFunc *mf = fr->fn->mf;
-            const char *callee = fr->fn->name;
-            proc_pop_frame(p);
-            if (p->nframes == p->cb_base) { /* the entry function, a callback or a coroutine returned */
-                if (!p->cb_base) p->exit_code = n > 0 && type_is_int((MlwsType)mf->rets[0]) ? vals[0].i : 0;
-                MlwsType rt[MAX_OPERANDS];
-                for (int k = 0; k < n; k++) rt[k] = (MlwsType)mf->rets[k];
-                keep_results(p, vals, rt, n);
-                return SLICE_DONE;
-            }
-            ctx_load(&c);
-            RELOAD();
-            if (!ri) NEXT;
-            int argc = (int)ri->ops[1].imm, nres = ri->nops - 2 - argc;
-            if (nres > n)
-                vm_trap(p, "E_RET_COUNT", "%s returned %d value(s) but the caller expects %d", callee, n, nres);
-            if (ri->xop == Q_CALL_R) { /* both sides are registers of the right banks */
-                for (int k = 0; k < nres; k++) {
-                    uint8_t r = ri->ops[2 + argc + k].reg;
-                    switch (REG_BANK(r)) {
-                    case BANK_I: c.I[REG_IDX(r)] = vals[k].i; break;
-                    case BANK_F: c.F[REG_IDX(r)] = vals[k].f; break;
-                    case BANK_R: c.R[REG_IDX(r)] = vals[k].r; break;
-                    default: c.P[REG_IDX(r)] = vals[k].p; break;
-                    }
-                }
-            } else {
-                for (int k = 0; k < nres; k++)
-                    wr(&c, &ri->ops[2 + argc + k], n ? (MlwsType)mf->rets[k] : T_NONE, vals[k]);
-            }
-            NEXT;
-        }
-        QCASE(Q_BZ_R) if (!c.R[in->r[0]]) pc = in->target; NEXT;
-        QCASE(Q_BNZ_R) if (c.R[in->r[0]]) pc = in->target; NEXT;
-        /* Fields and elements: anything unexpected goes to the generic mov. */
-#define STRUCT_OF(reg) ((ObjStruct *)c.R[reg])
-#define IS_STRUCT(o) ((o) && (o)->h.kind == OBJ_STRUCT && (o)->def == in->k.p)
-/* An array element of exactly the instruction's type, or a list element
- * tagged with it (a store retags a list element), at index i. */
-#define ELEM_LOAD(bank, w, i_)                                                \
-        {                                                                     \
-            Obj *ob = c.R[in->r[1]];                                          \
-            uint64_t i = (i_);                                                \
-            if (!ob) goto generic;                                            \
-            if (ob->kind == OBJ_ARRAY) {                                      \
-                ObjArray *a = (ObjArray *)ob;                                 \
-                if (i >= a->len || a->elem != in->type) goto generic;         \
-                c.bank[in->r[0]] = a->data[i].w;                              \
-            } else if (ob->kind == OBJ_LIST) {                                \
-                ObjList *l = (ObjList *)ob;                                   \
-                if (i >= l->len || l->tags[i] != in->type) goto generic;      \
-                c.bank[in->r[0]] = l->items[i].w;                             \
-            } else {                                                          \
-                goto generic;                                                 \
-            }                                                                 \
-            NEXT;                                                             \
-        }
-#define ELEM_STORE(bank, w, i_)                                               \
-        {                                                                     \
-            Obj *ob = c.R[in->r[0]];                                          \
-            uint64_t i = (i_);                                                \
-            if (!ob) goto generic;                                            \
-            if (ob->kind == OBJ_ARRAY) {                                      \
-                ObjArray *a = (ObjArray *)ob;                                 \
-                if (i >= a->len || a->elem != in->type) goto generic;         \
-                a->data[i].w = c.bank[in->r[1]];                              \
-            } else if (ob->kind == OBJ_LIST) {                                \
-                ObjList *l = (ObjList *)ob;                                   \
-                if (i >= l->len) goto generic;                                \
-                l->tags[i] = in->type;                                        \
-                l->items[i].w = c.bank[in->r[1]];                             \
-            } else {                                                          \
-                goto generic;                                                 \
-            }                                                                 \
-            NEXT;                                                             \
-        }
-#define X(B, bank, w)                                                         \
-        QCASE(Q_LDF_##B) {                                                    \
-            ObjStruct *so = STRUCT_OF(in->r[1]);                              \
-            if (!IS_STRUCT(so)) goto generic;                                 \
-            c.bank[in->r[0]] = so->fields[in->target].w;                      \
-            NEXT;                                                             \
-        }                                                                     \
-        QCASE(Q_STF_##B) {                                                    \
-            ObjStruct *so = STRUCT_OF(in->r[0]);                              \
-            if (!IS_STRUCT(so)) goto generic;                                 \
-            so->fields[in->target].w = c.bank[in->r[1]];                      \
-            NEXT;                                                             \
-        }                                                                     \
-        QCASE(Q_LDE_##B) ELEM_LOAD(bank, w, (uint64_t)c.I[in->r[2]])            \
-        QCASE(Q_STE_##B) ELEM_STORE(bank, w, (uint64_t)c.I[in->r[2]])           \
-        QCASE(Q_LDEK_##B) ELEM_LOAD(bank, w, (uint64_t)in->target)              \
-        QCASE(Q_STEK_##B) ELEM_STORE(bank, w, (uint64_t)in->target)             \
-        QCASE(Q_LDU_##B) {                                                    \
-            const ObjClosure *cl = (const ObjClosure *)fr->closure;          \
-            uint32_t u = in->target;                                          \
-            if (!cl || u >= cl->nup || cl->tags[u] != in->type) goto generic; \
-            c.bank[in->r[0]] = cl->up[u].w;                                   \
-            NEXT;                                                             \
-        }                                                                     \
-        QCASE(Q_STU_##B) {                                                    \
-            ObjClosure *cl = (ObjClosure *)fr->closure;                       \
-            uint32_t u = in->target;                                          \
-            if (!cl || u >= cl->nup) goto generic;                            \
-            cl->tags[u] = in->type;                                           \
-            cl->up[u].w = c.bank[in->r[1]];                                   \
-            NEXT;                                                             \
-        }                                                                     \
-        QCASE(Q_LDG_##B) {                                                    \
-            uint32_t g = (uint32_t)((uint64_t)in->k.i >> 32), off = (uint32_t)in->k.i; \
-            if (g >= p->nglobals) goto generic;                               \
-            const Segment *s = &p->globals[g];                                \
-            /* a reference only from a word tagged r; nothing else from one */ \
-            if (off + 8 > s->size || (s->tags[off >> 3] == T_R) != (in->type == T_R)) goto generic; \
-            memcpy(&c.bank[in->r[0]], s->data + off, 8);                      \
-            NEXT;                                                             \
-        }                                                                     \
-        QCASE(Q_STG_##B) {                                                    \
-            uint32_t g = (uint32_t)((uint64_t)in->k.i >> 32), off = (uint32_t)in->k.i; \
-            if (g >= p->nglobals) goto generic;                               \
-            Segment *s = &p->globals[g];                                      \
-            if (off + 8 > s->size) goto generic;                              \
-            memcpy(s->data + off, &c.bank[in->r[1]], 8);                      \
-            s->tags[off >> 3] = in->type;                                     \
-            NEXT;                                                             \
-        }
-        X(I, I, i) X(F, F, f) X(R, R, r)
-#undef X
-#undef ELEM_LOAD
-#undef ELEM_STORE
-#undef STRUCT_OF
-#undef IS_STRUCT
-        QCASE(Q_CALLI_R) {
-            const Operand *qo = in->ops;
-            Obj *ob = c.R[in->r[0]];
-            if (!ob || ob->kind != OBJ_CLOSURE) goto generic;
-            ObjClosure *cl = (ObjClosure *)ob;
-            Function *fn = cl->fn;
-            const MFunc *mf = fn->mf;
-            int argc = (int)qo[1].imm, nres = in->nops - 2 - argc;
-            if (argc != mf->nparams || nres > mf->nrets || (nres && !(mf->flags & MF_RETS_DECLARED))) goto generic;
-            for (int k = 0; k < argc; k++)
-                if (!wide_type(mf->params[k]) || REG_BANK(qo[2 + k].reg) != (int)type_bank((MlwsType)mf->params[k])) goto generic;
-            for (int k = 0; k < nres; k++)
-                if (!wide_type(mf->rets[k]) || REG_BANK(qo[2 + argc + k].reg) != (int)type_bank((MlwsType)mf->rets[k])) goto generic;
-            SPILL();
-            proc_push_frame(p, fn, in);
-            Frame *nf = &p->frames[p->nframes - 1];
-            const Frame *of = nf - 1;
-            nf->closure = &cl->h;
-            nf->qret = 1;
-            int cnt[NBANKS] = {0};
-            for (int k = 0; k < argc; k++) {
-                uint8_t r = qo[2 + k].reg;
-                int b = REG_BANK(r), d = cnt[b]++;
-                switch (b) {
-                case BANK_I: p->ireg[nf->base[BANK_I] + d] = p->ireg[of->base[BANK_I] + REG_IDX(r)]; break;
-                case BANK_F: p->freg[nf->base[BANK_F] + d] = p->freg[of->base[BANK_F] + REG_IDX(r)]; break;
-                case BANK_R: p->rreg[nf->base[BANK_R] + d] = p->rreg[of->base[BANK_R] + REG_IDX(r)]; break;
-                default: p->preg[nf->base[BANK_P] + d] = p->preg[of->base[BANK_P] + REG_IDX(r)]; break;
-                }
-            }
-            ctx_load(&c);
-            RELOAD();
-            NEXT;
-        }
-        /* ---- M24: the shapes of dynamically typed languages' code ---- */
-        QCASE(Q_MOV_RK) c.R[in->r[0]] = (Obj *)in->k.p; NEXT;
-        QCASE(Q_BEQ_RR) if (c.R[in->r[0]] == c.R[in->r[1]]) pc = in->target; NEXT;
-        QCASE(Q_BNE_RR) if (c.R[in->r[0]] != c.R[in->r[1]]) pc = in->target; NEXT;
-        QCASE(Q_BEQ_RK) if (c.R[in->r[0]] == (Obj *)in->k.p) pc = in->target; NEXT;
-        QCASE(Q_BNE_RK) if (c.R[in->r[0]] != (Obj *)in->k.p) pc = in->target; NEXT;
-        QCASE(Q_SEQ_RR) c.I[in->r[0]] = c.R[in->r[1]] == c.R[in->r[2]]; NEXT;
-        QCASE(Q_SNE_RR) c.I[in->r[0]] = c.R[in->r[1]] != c.R[in->r[2]]; NEXT;
-        QCASE(Q_SEQ_RK) c.I[in->r[0]] = c.R[in->r[1]] == (Obj *)in->k.p; NEXT;
-        QCASE(Q_SNE_RK) c.I[in->r[0]] = c.R[in->r[1]] != (Obj *)in->k.p; NEXT;
-#define X(N, op_)                                                             \
-        QCASE(Q_##N##_FF) c.I[in->r[0]] = c.F[in->r[1]] op_ c.F[in->r[2]]; NEXT;     \
-        QCASE(Q_##N##_FK) c.I[in->r[0]] = c.F[in->r[1]] op_ in->k.f; NEXT;
-        QSET_OPS(X)
-#undef X
-#define X(N, op_)                                                             \
-        QCASE(Q_##N##_FFL) if (c.F[in->r[0]] op_ c.F[in->r[1]]) pc = in->target; NEXT; \
-        QCASE(Q_##N##_FKL) if (c.F[in->r[0]] op_ in->k.f) pc = in->target; NEXT;
-        QBRANCH_OPS(X)
-#undef X
-        QCASE(Q_LEN) {
-            const Obj *ob = c.R[in->r[1]];
-            if (!ob) goto generic;
-            switch (ob->kind) {
-            case OBJ_LIST: c.I[in->r[0]] = ((const ObjList *)ob)->len; break;
-            case OBJ_STRING: c.I[in->r[0]] = ((const ObjString *)ob)->len; break;
-            case OBJ_MAP: c.I[in->r[0]] = ((const ObjMap *)ob)->count; break;
-            case OBJ_ARRAY: c.I[in->r[0]] = ((const ObjArray *)ob)->len; break;
-            case OBJ_BYTES: c.I[in->r[0]] = ((const ObjBytes *)ob)->len; break;
-            default: goto generic;
-            }
-            NEXT;
-        }
-        QCASE(Q_LPUSH_R) { /* grows (allocates) only on the generic path */
-            Obj *ob = c.R[in->r[0]];
-            if (!ob || ob->kind != OBJ_LIST) goto generic;
-            ObjList *l = (ObjList *)ob;
-            uint32_t n = (uint32_t)in->nops - 1;
-            if (l->cap - l->len < n) goto generic;
-            const Operand *qo = in->ops;
-            for (uint32_t k = 1; k <= n; k++, l->len++) {
-                uint8_t r = qo[k].reg;
-                switch (REG_BANK(r)) {
-                case BANK_I: l->items[l->len].i = c.I[REG_IDX(r)]; l->tags[l->len] = T_I64; break;
-                case BANK_F: l->items[l->len].f = c.F[REG_IDX(r)]; l->tags[l->len] = T_F64; break;
-                default: l->items[l->len].r = c.R[REG_IDX(r)]; l->tags[l->len] = T_R; break;
-                }
-            }
-            NEXT;
-        }
-#define X(N, f)                                                               \
-        QCASE(Q_##N##_F) FR(0) = f(FR(0)); NEXT;                                \
-        QCASE(Q_##N##_FF) FR(0) = f(FR(1)); NEXT;
-        QFUNARY_OPS(X)
-#undef X
-        QCASE(Q_TAGOF_E) {
-            const Obj *ob = c.R[in->r[1]];
-            uint64_t i = (uint64_t)c.I[in->r[2]];
-            if (ob && ob->kind == OBJ_LIST && i < ((const ObjList *)ob)->len)
-                c.I[in->r[0]] = ((const ObjList *)ob)->tags[i];
-            else if (ob && ob->kind == OBJ_ARRAY && i < ((const ObjArray *)ob)->len)
-                c.I[in->r[0]] = ((const ObjArray *)ob)->elem;
-            else
-                goto generic;
-            NEXT;
-        }
-        QCASE(Q_ISA) {
-            const Obj *ob = c.R[in->r[1]];
-            c.I[in->r[0]] = ob && ob->kind == OBJ_STRUCT && ((const ObjStruct *)ob)->def == in->k.p;
-            NEXT;
-        }
-        /* A global reference word: segment and offset in k. Anything but a word
-         * tagged r (never written, another type, a module loaded later) is the
-         * generic path's. */
-#define GLOBAL_REF(dst)                                                       \
-        {                                                                     \
-            uint32_t g_ = (uint32_t)((uint64_t)in->k.i >> 32), off_ = (uint32_t)in->k.i; \
-            if (g_ >= p->nglobals) goto generic;                              \
-            const Segment *s_ = &p->globals[g_];                              \
-            if (off_ + 8 > s_->size || s_->tags[off_ >> 3] != T_R) goto generic; \
-            memcpy(&(dst), s_->data + off_, sizeof(Obj *));                   \
-        }
-        QCASE(Q_BEQ_RG) {
-            Obj *v;
-            GLOBAL_REF(v);
-            if (c.R[in->r[0]] == v) pc = in->target;
-            NEXT;
-        }
-        QCASE(Q_BNE_RG) {
-            Obj *v;
-            GLOBAL_REF(v);
-            if (c.R[in->r[0]] != v) pc = in->target;
-            NEXT;
-        }
-#undef GLOBAL_REF
-        QCASE(Q_MGET_R) { /* mget.r R0, R1, "key" [, null] */
-            const Obj *ob = c.R[in->r[1]];
-            if (!ob || ob->kind != OBJ_MAP) goto generic;
-            Word key;
-            key.r = (Obj *)in->k.p;
-            const MapEntry *e = map_find((ObjMap *)ob, key, T_R);
-            if (e) {
-                if (e->vtag != T_R) goto generic;
-                c.R[in->r[0]] = e->val.r;
-            } else {
-                if (in->nops < 4) goto generic; /* no default: E_KEY */
-                c.R[in->r[0]] = NULL;
-            }
-            NEXT;
-        }
-        /* Calls with constants among the arguments, and rets with constants
-         * back to a quickened call: out of line (call_rk, ret_rk), since their
-         * code in this loop slowed the other call forms. */
-        QCASE(Q_CALL_RK)
-        QCASE(Q_CALLI_RK) {
-            SPILL();
-            if (!call_rk(p, in)) goto generic;
-            ctx_load(&c);
-            RELOAD();
-            NEXT;
-        }
-        QCASE(Q_RET_RK) {
-            if (!fr->qret) goto generic;
-            SPILL();
-            ret_rk(p, in);
-            ctx_load(&c);
-            RELOAD();
-            NEXT;
-        }
+#define QFORMS_RET_INLINE 1
+#define QPUSH_FRAME(f, ri) proc_push_frame(QPRC, f, ri)
+#include "qforms.inc"
+#undef QPUSH_FRAME
+#undef QFORMS_RET_INLINE
 #if MLWS_THREADED
     generic:
 #else
@@ -2146,6 +2037,16 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 #endif
 #undef IR
 #undef FR
+#undef QI
+#undef QF
+#undef QR
+#undef QP
+#undef QB
+#undef QCTX
+#undef QPRC
+#undef QFRM
+#undef GENERIC
+#undef JUMP
 
         /* ---- generic forms ---- */
         SPILL();
@@ -2160,846 +2061,9 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 #define in gin
 #define fr gfr
 #endif
-        const Operand *ops = in->ops;
-        MlwsType T = (MlwsType)in->type;
-        MlwsType TN = T; /* the type as written: .big / .dec select number arithmetic */
-        if (T == T_BIG || T == T_DEC) T = T_R;
-        switch (in->op) {
-        case OP_NOP:
-            break;
-        case OP_BREAK: /* a debugger stops here; without one (or in a callback) it is a no-op */
-            if (vm->hook && !p->cb_base) {
-                vm->stopped = p;
-                return SLICE_BREAK;
-            }
-            break;
-        case OP_HALT:
-            if (p->cb_base) vm_trap(p, "E_CALLBACK", "halt inside a callback from C");
-            p->exit_code = in->nops ? rd(&c, &ops[0], T_I64).i : 0;
-            return SLICE_DONE;
-        case OP_ASSERT:
-            if (rd(&c, &ops[0], T_I64).i == 0)
-                vm_trap(p, "E_ASSERT", "%s",
-                        in->nops > 1 && ((Obj *)ops[1].rv.ptr)->kind == OBJ_STRING ? ((ObjString *)ops[1].rv.ptr)->data
-                                                                                  : "assertion failed");
-            break;
-
-        case OP_MOV: {
-            Loc d;
-            loc_of(&c, &ops[0], T ? type_size(T) : 8, &d);
-            if (TN != T) { /* mov.big / mov.dec: literals become numbers */
-                wr_num(&c, &d, rd_num(&c, &ops[1], TN));
-                break;
-            }
-            MlwsType t = T;
-            Word v = rdn(&c, &ops[1], &t);
-            wr_loc(&c, &d, t, v);
-            break;
-        }
-        case OP_SWAP: {
-            Loc a, b;
-            loc_of(&c, &ops[0], T ? type_size(T) : 8, &a);
-            loc_of(&c, &ops[1], T ? type_size(T) : 8, &b);
-            MlwsType ta = T, tb = T;
-            Word va = rd_loc(&c, &a, &ta), vb = rd_loc(&c, &b, &tb);
-            wr_loc(&c, &a, tb, vb);
-            wr_loc(&c, &b, ta, va);
-            break;
-        }
-        case OP_LEA: {
-            Loc d;
-            loc_of(&c, &ops[0], 8, &d);
-            Word w;
-            w.p = op_addr(&c, &ops[1], 8);
-            wr_loc(&c, &d, T_P, w);
-            break;
-        }
-        case OP_PUSH:
-            for (int k = 0; k < in->nops; k++) {
-                MlwsType t = T;
-                Word v = rdn(&c, &ops[k], &t);
-                push_word(&c, t, v);
-            }
-            break;
-        case OP_POP:
-            for (int k = 0; k < in->nops; k++) {
-                MlwsType t = T;
-                if (t == T_NONE && ops[k].mode == OM_REG) t = reg_natural_type(ops[k].reg);
-                Loc top = mem_loc(p, p->sp);
-                Word v = rd_loc(&c, &top, &t);
-                p->sp = ptr_add(&c, p->sp, 8);
-                wr(&c, &ops[k], t, v);
-            }
-            break;
-        case OP_DROP:
-            p->sp = ptr_add(&c, p->sp, (in->nops ? ops[0].imm : 1) * 8);
-            break;
-        case OP_ENTER: {
-            int64_t n = ops[0].imm;
-            if (n > (int64_t)p->stack.size) vm_trap(p, "E_STACK_OVERFLOW", "data stack overflow");
-            uint64_t sp = ptr_add(&c, p->sp, -n * 8);
-            Loc L = mem_loc(p, sp);
-            memset(mem_ptr(&c, &L, (int)(n * 8)), 0, (size_t)n * 8);
-            if (L.seg->tags) memset(L.seg->tags + L.off / 8, T_NONE, (size_t)n);
-            p->sp = sp;
-            note_sp(p);
-            break;
-        }
-        case OP_CVT:
-        case OP_BITCAST: {
-            if (in->op == OP_CVT && (type_is_ref(in->type) || type_is_ref(in->type2))) {
-                convert_num(&c, in);
-                break;
-            }
-            Loc d;
-            loc_of(&c, &ops[0], type_size(T), &d);
-            MlwsType from = (MlwsType)in->type2;
-            Word v = rd(&c, &ops[in->nops - 1], from);
-            wr_loc(&c, &d, T, in->op == OP_CVT ? convert(T, from, v) : bitcast(T, from, v));
-            break;
-        }
-
-        case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_REM: case OP_MIN: case OP_MAX:
-        case OP_AND: case OP_OR: case OP_XOR:
-            if (TN != T) arith_num(&c, in, TN);
-            else arith(&c, in);
-            break;
-        case OP_NEG: case OP_ABS: case OP_NOT: case OP_POPCNT: case OP_CLZ: case OP_CTZ: case OP_BSWAP:
-        case OP_SQRT: case OP_FLOOR: case OP_CEIL: case OP_ROUND: case OP_TRUNC: {
-            Loc d;
-            loc_of(&c, &ops[0], type_size(T), &d);
-            if (TN != T) { /* neg/abs of a number */
-                const Obj *a;
-                if (in->nops == 2) a = rd_num(&c, &ops[1], TN);
-                else {
-                    MlwsType rt = T_R;
-                    a = rd_loc(&c, &d, &rt).r;
-                    if (!num_kind_matches(a, TN)) vm_trap(p, "E_TYPE", "destination does not hold a %s", type_name(TN));
-                }
-                wr_num(&c, &d, num_unary(p, in->op, a));
-                break;
-            }
-            MlwsType t = T;
-            Word a = in->nops == 2 ? rd(&c, &ops[1], T) : rd_loc(&c, &d, &t);
-            wr_loc(&c, &d, T, unop(&c, in->op, T, a));
-            break;
-        }
-        case OP_INC:
-        case OP_DEC: {
-            Loc d;
-            loc_of(&c, &ops[0], type_size(T), &d);
-            MlwsType t = T;
-            Word a = rd_loc(&c, &d, &t), one;
-            if (type_is_float(T)) one.f = 1.0;
-            else one.i = 1;
-            wr_loc(&c, &d, T, binop(&c, in->op == OP_INC ? OP_ADD : OP_SUB, T, a, one));
-            break;
-        }
-        case OP_SHL: case OP_SHR: case OP_SAR: case OP_ROL: case OP_ROR: {
-            Loc d;
-            loc_of(&c, &ops[0], type_size(T), &d);
-            MlwsType t = T;
-            Word a = in->nops == 3 ? rd(&c, &ops[1], T) : rd_loc(&c, &d, &t);
-            Word n = rd(&c, &ops[in->nops - 1], T);
-            wr_loc(&c, &d, T, shiftop(in->op, T, a, n));
-            break;
-        }
-        case OP_FMA: {
-            Loc d;
-            loc_of(&c, &ops[0], type_size(T), &d);
-            Word a = rd(&c, &ops[1], T), b = rd(&c, &ops[2], T), z = rd(&c, &ops[3], T), r;
-            r.f = canon_float(T, fma(a.f, b.f, z.f));
-            wr_loc(&c, &d, T, r);
-            break;
-        }
-
-        case OP_SEQ: case OP_SNE: case OP_SLT: case OP_SLE: case OP_SGT: case OP_SGE: {
-            Loc d;
-            loc_of(&c, &ops[0], 1, &d);
-            Word r;
-            if (TN != T) { /* compare numbers: as integers -1/0/1 */
-                Word x, y;
-                x.i = num_cmp(rd_num(&c, &ops[1], TN), rd_num(&c, &ops[2], TN));
-                y.i = 0;
-                r.i = compare(in->op, T_I64, x, y);
-            } else {
-                Word a = rd(&c, &ops[1], T), b = rd(&c, &ops[2], T);
-                r.i = compare(in->op, T, a, b);
-            }
-            wr_loc(&c, &d, T_B, r);
-            break;
-        }
-        case OP_SEL: {
-            Loc d;
-            loc_of(&c, &ops[0], type_size(T), &d);
-            int64_t cond = rd(&c, &ops[1], T_I64).i;
-            wr_loc(&c, &d, T, rd(&c, &ops[cond ? 2 : 3], T));
-            break;
-        }
-
-        case OP_JMP:
-            fr->pc = ops[0].rv.target;
-            break;
-        case OP_BZ:
-        case OP_BNZ: {
-            bool z = is_zero(T, rd(&c, &ops[0], T));
-            if (z == (in->op == OP_BZ)) fr->pc = ops[1].rv.target;
-            break;
-        }
-        case OP_BEQ: case OP_BNE: case OP_BLT: case OP_BLE: case OP_BGT: case OP_BGE: {
-            bool taken;
-            if (TN != T) {
-                Word x, y;
-                x.i = num_cmp(rd_num(&c, &ops[0], TN), rd_num(&c, &ops[1], TN));
-                y.i = 0;
-                taken = compare(in->op, T_I64, x, y);
-            } else {
-                Word a = rd(&c, &ops[0], T), b = rd(&c, &ops[1], T);
-                taken = compare(in->op, T, a, b);
-            }
-            if (taken) fr->pc = ops[2].rv.target;
-            break;
-        }
-        case OP_JTAB: {
-            int64_t idx = rd(&c, &ops[0], T_I64).i;
-            if (idx >= 0 && idx < in->nops - 1) fr->pc = ops[1 + idx].rv.target;
-            break;
-        }
-
-        case OP_CALL:
-        case OP_TCALL: {
-            Function *fn = ops[0].rv.ptr;
-            int argc = (int)ops[1].imm;
-            Word args[MAX_OPERANDS];
-            const MFunc *mf = fn->mf;
-            for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)mf->params[k]);
-            const Insn *ret_insn = in;
-            if (in->op == OP_TCALL) {
-                ret_insn = fr->ret_insn;
-                proc_pop_frame(p);
-            }
-            proc_push_frame(p, fn, ret_insn);
-            ctx_load(&c);
-            bind_args(&c, NULL, mf->params, argc, args);
-            break;
-        }
-        case OP_RET: {
-            Word vals[MAX_OPERANDS];
-            MlwsType vt[MAX_OPERANDS];
-            const MFunc *mf = fr->fn->mf;
-            bool decl = (mf->flags & MF_RETS_DECLARED) != 0;
-            for (int k = 0; k < in->nops; k++) {
-                vt[k] = decl ? (MlwsType)mf->rets[k] : T_NONE;
-                vals[k] = rdn(&c, &ops[k], &vt[k]);
-            }
-            const Insn *ri = fr->ret_insn;
-            const char *callee = fr->fn->name;
-            proc_pop_frame(p);
-            if (p->nframes == p->cb_base) { /* the entry function, a callback or a coroutine returned */
-                if (!p->cb_base) p->exit_code = in->nops > 0 && type_is_int(vt[0]) ? vals[0].i : 0;
-                keep_results(p, vals, vt, in->nops);
-                return SLICE_DONE;
-            }
-            ctx_load(&c);
-            if (ri) {
-                int argc = (int)ri->ops[1].imm;
-                int nres = ri->nops - 2 - argc;
-                if (nres > in->nops)
-                    vm_trap(p, "E_RET_COUNT", "%s returned %d value(s) but the caller expects %d", callee, in->nops, nres);
-                for (int k = 0; k < nres; k++) wr(&c, &ri->ops[2 + argc + k], vt[k], vals[k]);
-            }
-            break;
-        }
-        case OP_NCALL: {
-            const NativeDef *nd = ops[0].rv.ptr;
-            int argc = (int)ops[1].imm;
-            Word args[NATIVE_MAX_ARGS], rets[NATIVE_MAX_RETS];
-            memset(rets, 0, sizeof rets);
-            if (!nd->flags) { /* built in: the fast path */
-                for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)nd->pt[k]);
-                nd->fn(p, args, rets);
-                if (p->reentered) { /* it ran MLWSVM code (a comparator, say): the banks may have moved */
-                    p->reentered = false;
-                    ctx_load(&c);
-                    fr = ctx_frame(&c);
-                }
-            } else if (p->bcall.state == BCALL_DONE && p->bcall.insn == in) { /* back from the I/O pool */
-                memcpy(rets, p->bcall.rets, sizeof rets);
-                p->bcall.state = BCALL_NONE;
-                p->resumed = false;
-                p->fdwait.deadline = 0;
-                native_complete(p);
-            } else {
-                for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)nd->pt[k]);
-                bool to_pool = (nd->flags & NF_BLOCKING) != 0;
-                if (p->cb_base) { /* inside a callback: C is waiting on this thread, so run it here */
-                    native_call(p, nd, args, rets);
-                    if (p->native_req == NREQ_BLOCKING) { /* the blocking part: here as well */
-                        p->native_req = NREQ_NONE;
-                        p->resumed = true;
-                        native_call(p, nd, args, rets);
-                    }
-                    int req = p->native_req;
-                    p->native_req = NREQ_NONE;
-                    p->resumed = false;
-                    if (req != NREQ_NONE) {
-                        p->fdwait.deadline = 0;
-                        vm_trap(p, "E_CALLBACK", "%s would wait inside a callback from C", nd->name);
-                    }
-                    to_pool = false;
-                } else if (to_pool) {
-                    native_count_call(p, nd);
-                } else {
-                    native_call(p, nd, args, rets);
-                    int req = p->native_req;
-                    p->native_req = NREQ_NONE;
-                    if (req == NREQ_WAIT_FD) { /* wait for the descriptor; then this instruction runs again */
-                        p->resumed = true;
-                        fr->pc--;
-                        p->insns--;
-                        return SLICE_IOWAIT;
-                    }
-                    if (req == NREQ_WAIT_REPLY) { /* proc.call: wait like recv; then this instruction runs again */
-                        p->resumed = true;
-                        fr->pc--;
-                        p->insns--;
-                        return SLICE_BLOCK;
-                    }
-                    if (req == NREQ_EXIT) { /* os.exit: the program ends (sched_request_exit) */
-                        p->exit_code = vm->exit_code;
-                        return SLICE_DONE;
-                    }
-                    to_pool = req == NREQ_BLOCKING;
-                    if (to_pool) p->resumed = true;
-                    else p->resumed = false, p->fdwait.deadline = 0;
-                }
-                if (to_pool) { /* run it on the I/O thread pool; this instruction runs again after it */
-                    p->bcall.state = BCALL_PENDING;
-                    p->bcall.nd = nd;
-                    p->bcall.insn = in;
-                    memcpy(p->bcall.args, args, sizeof args);
-                    memset(p->bcall.rets, 0, sizeof p->bcall.rets);
-                    fr->pc--;
-                    p->insns--;
-                    return SLICE_NATIVE;
-                }
-            }
-            if (p->reentered) { /* a callback ran: the register banks and frames may have moved */
-                p->reentered = false;
-                ctx_load(&c);
-                fr = ctx_frame(&c);
-            }
-            for (int k = 0; k < in->nops - 2 - argc; k++) wr(&c, &ops[2 + argc + k], (MlwsType)nd->rt[k], rets[k]);
-            break;
-        }
-
-        case OP_ALLOC: {
-            Loc d;
-            loc_of(&c, &ops[0], 8, &d);
-            Word w;
-            w.p = proc_alloc(p, rd(&c, &ops[1], T_I64).i);
-            wr_loc(&c, &d, T_P, w);
-            break;
-        }
-        case OP_FREE:
-            proc_free_block(p, rd(&c, &ops[0], T_P).p);
-            break;
-        case OP_REALLOC: {
-            Loc d;
-            loc_of(&c, &ops[0], 8, &d);
-            uint64_t old = rd(&c, &ops[1], T_P).p;
-            Word w;
-            w.p = proc_realloc(p, old, rd(&c, &ops[2], T_I64).i);
-            wr_loc(&c, &d, T_P, w);
-            break;
-        }
-        case OP_MEMCPY:
-        case OP_MEMSET: {
-            uint64_t dst = rd(&c, &ops[0], T_P).p;
-            Word second = rd(&c, &ops[1], in->op == OP_MEMCPY ? T_P : T_I64);
-            int64_t n = rd(&c, &ops[2], T_I64).i;
-            if (n < 0) vm_trap(p, "E_BOUNDS", "negative length %lld", (long long)n);
-            if (n == 0) break;
-            if (n > (int64_t)UINT32_MAX) vm_trap(p, "E_BOUNDS", "length %lld too large", (long long)n);
-            Loc dl = mem_loc(p, dst);
-            uint8_t *dm = mem_ptr(&c, &dl, (int)0);
-            if ((uint64_t)dl.off + (uint64_t)n > dl.seg->size)
-                vm_trap(p, "E_BOUNDS", "%s of %lld bytes overruns the destination", op_info[in->op].mnem, (long long)n);
-            if (in->op == OP_MEMCPY) {
-                Loc sl = mem_loc(p, second.p);
-                const uint8_t *sm = mem_ptr(&c, &sl, 0);
-                if ((uint64_t)sl.off + (uint64_t)n > sl.seg->size)
-                    vm_trap(p, "E_BOUNDS", "memcpy of %lld bytes overruns the source", (long long)n);
-                if (sl.seg->tags)
-                    for (uint64_t w = sl.off / 8; w <= (sl.off + (uint64_t)n - 1) / 8; w++)
-                        if (sl.seg->tags[w] == T_R) vm_trap(p, "E_TYPE", "memcpy cannot copy a reference slot");
-                memmove(dm, sm, (size_t)n);
-            } else {
-                memset(dm, (int)(uint8_t)second.i, (size_t)n);
-            }
-            mark_raw(dl.seg, dl.off, (uint64_t)n);
-            break;
-        }
-        /* ---- objects ---- */
-        case OP_NEW:
-            wr_ref(&c, &ops[0], struct_new(p, ops[1].rv.ptr));
-            break;
-        case OP_ANEW:
-            wr_ref(&c, &ops[0], array_new(p, T, rd(&c, &ops[1], T_I64).i));
-            break;
-        case OP_LEN: {
-            Obj *ob = rd_obj(&c, &ops[1], 0, "len");
-            int64_t n;
-            switch (ob->kind) {
-            case OBJ_STRING: n = ((ObjString *)ob)->len; break;
-            case OBJ_BYTES: n = ((ObjBytes *)ob)->len; break;
-            case OBJ_ARRAY: n = ((ObjArray *)ob)->len; break;
-            case OBJ_LIST: n = ((ObjList *)ob)->len; break;
-            case OBJ_MAP: n = ((ObjMap *)ob)->count; break;
-            default: vm_trap(p, "E_TYPE", "len of a %s", obj_desc(ob));
-            }
-            wr_int(&c, &ops[0], T_I64, n);
-            break;
-        }
-        case OP_TAGOF: {
-            int64_t tag;
-            const Operand *o = &ops[1];
-            if (o->mode == OM_REG) {
-                tag = reg_natural_type(o->reg);
-            } else if (o->mode == OM_IMM) {
-                tag = T_I64;
-            } else if (o->mode == OM_FIMM) {
-                tag = T_F64;
-            } else if (o->mode == OM_CONST) {
-                tag = T_R;
-            } else {
-                Loc L;
-                loc_of(&c, o, 1, &L);
-                switch (L.is_reg) {
-                case LK_SLOT: tag = L.fixed ? L.fixed : *L.tag; break;
-                case LK_BYTE: tag = T_U8; break;
-                default: tag = L.seg->tags && L.off % 8 == 0 ? L.seg->tags[L.off / 8] : TAG_RAW; break;
-                }
-            }
-            wr_int(&c, &ops[0], T_I64, tag);
-            break;
-        }
-        case OP_TYPEOF: {
-            Obj *ob = rd(&c, &ops[1], T_R).r;
-            wr_int(&c, &ops[0], T_I64, ob ? ob->kind : OBJ_NULL);
-            break;
-        }
-        case OP_ISA: {
-            Obj *ob = rd(&c, &ops[1], T_R).r;
-            bool is = ob && ob->kind == OBJ_STRUCT && ((ObjStruct *)ob)->def == ops[2].rv.ptr;
-            wr_int(&c, &ops[0], T_B, is);
-            break;
-        }
-        case OP_RESIZE: {
-            Obj *ob = rd_obj(&c, &ops[0], 0, "resize");
-            int64_t n = rd(&c, &ops[1], T_I64).i;
-            if (ob->kind == OBJ_BYTES) bytes_resize(p, (ObjBytes *)ob, n);
-            else if (ob->kind == OBJ_LIST) list_resize(p, (ObjList *)ob, n);
-            else vm_trap(p, "E_TYPE", "resize needs a byte buffer or list, got %s", obj_desc(ob));
-            break;
-        }
-
-        /* ---- strings and bytes ---- */
-        case OP_STRCAT: {
-            /* Read every part before allocating, so a trap leaks nothing. */
-            const uint8_t *part[MAX_OPERANDS];
-            uint32_t plen[MAX_OPERANDS];
-            uint64_t total = 0;
-            for (int k = 1; k < in->nops; k++) {
-                part[k] = rd_text(&c, &ops[k], "strcat", &plen[k]);
-                total += plen[k];
-            }
-            if (total >= (uint64_t)1 << 31) vm_trap(p, "E_BAD_ALLOC", "strcat result too long");
-            char *buf = xmalloc((size_t)total + 1);
-            size_t at = 0;
-            for (int k = 1; k < in->nops; k++) {
-                memcpy(buf + at, part[k], plen[k]);
-                at += plen[k];
-            }
-            ObjString *s = str_new(p, buf, (size_t)total);
-            free(buf);
-            wr_ref(&c, &ops[0], s);
-            break;
-        }
-        case OP_SUBSTR: {
-            uint32_t n;
-            const uint8_t *d = rd_text(&c, &ops[1], "substr", &n);
-            int64_t start = rd(&c, &ops[2], T_I64).i, cnt = rd(&c, &ops[3], T_I64).i;
-            if (start < 0 || cnt < 0 || start + cnt > (int64_t)n)
-                vm_trap(p, "E_BOUNDS", "substr(%lld, %lld) out of range for length %u", (long long)start, (long long)cnt, n);
-            wr_ref(&c, &ops[0], str_new(p, (const char *)d + start, (size_t)cnt));
-            break;
-        }
-        case OP_STRCMP: {
-            uint32_t na, nb;
-            const uint8_t *a = rd_text(&c, &ops[1], "strcmp", &na);
-            const uint8_t *b = rd_text(&c, &ops[2], "strcmp", &nb);
-            int r = memcmp(a, b, na < nb ? na : nb);
-            if (r == 0) r = na < nb ? -1 : na > nb;
-            wr_int(&c, &ops[0], T_I64, r < 0 ? -1 : r > 0);
-            break;
-        }
-        case OP_STRFIND: {
-            uint32_t nh, nn;
-            const uint8_t *h = rd_text(&c, &ops[1], "strfind", &nh);
-            const uint8_t *nd = rd_text(&c, &ops[2], "strfind", &nn);
-            int64_t start = in->nops > 3 ? rd(&c, &ops[3], T_I64).i : 0, found = -1;
-            if (start < 0) start = 0;
-            for (int64_t i = start; i + nn <= nh; i++) {
-                if (memcmp(h + i, nd, nn) == 0) {
-                    found = i;
-                    break;
-                }
-            }
-            wr_int(&c, &ops[0], T_I64, found);
-            break;
-        }
-        case OP_TOSTR: {
-            MlwsType t = T;
-            Word v = rdn(&c, &ops[1], &t);
-            wr_ref(&c, &ops[0], value_to_string(p, v, t));
-            break;
-        }
-        case OP_PARSE: {
-            uint32_t n;
-            const uint8_t *d = rd_text(&c, &ops[1], "parse", &n);
-            Word v;
-            if (TN != T) {
-                v.r = num_parse(p, TN, (const char *)d, n);
-                if (!v.r)
-                    vm_trap(p, "E_PARSE", "cannot parse \"%.*s\" as %s", (int)(n > 60 ? 60 : n), (const char *)d, type_name(TN));
-                wr(&c, &ops[0], T_R, v);
-                break;
-            }
-            if (parse_number(&c, T, d, n, &v) < 0)
-                vm_trap(p, "E_PARSE", "cannot parse \"%.*s\" as %s", (int)(n > 60 ? 60 : n), (const char *)d, type_name(T));
-            wr(&c, &ops[0], T, v);
-            break;
-        }
-        case OP_BUFNEW:
-            wr_ref(&c, &ops[0], bytes_new(p, rd(&c, &ops[1], T_I64).i));
-            break;
-        case OP_BUFCAT: {
-            ObjBytes *b = (ObjBytes *)rd_obj(&c, &ops[0], OBJ_BYTES, "bufcat");
-            for (int k = 1; k < in->nops; k++) {
-                uint32_t n;
-                const uint8_t *d = rd_text(&c, &ops[k], "bufcat", &n);
-                bytes_append(p, b, d, n);
-            }
-            break;
-        }
-        case OP_BUFPUSH: {
-            ObjBytes *b = (ObjBytes *)rd_obj(&c, &ops[0], OBJ_BYTES, "bufpush");
-            for (int k = 1; k < in->nops; k++) {
-                uint8_t byte = (uint8_t)rd(&c, &ops[k], T_I64).i;
-                bytes_append(p, b, &byte, 1);
-            }
-            break;
-        }
-
-        /* ---- lists and maps ---- */
-        case OP_LNEW:
-            wr_ref(&c, &ops[0], list_new(p, in->nops > 1 ? rd(&c, &ops[1], T_I64).i : 0));
-            break;
-        case OP_LPUSH: {
-            ObjList *l = (ObjList *)rd_obj(&c, &ops[0], OBJ_LIST, "lpush");
-            for (int k = 1; k < in->nops; k++) {
-                MlwsType t = T;
-                Word v = rdn(&c, &ops[k], &t);
-                list_push(p, l, v, (uint8_t)t);
-            }
-            break;
-        }
-        case OP_LPOP: {
-            ObjList *l = (ObjList *)rd_obj(&c, &ops[1], OBJ_LIST, "lpop");
-            if (l->len == 0) vm_trap(p, "E_BOUNDS", "lpop of an empty list");
-            MlwsType t = T;
-            if (t == T_NONE && ops[0].mode == OM_REG) t = reg_natural_type(ops[0].reg);
-            Loc L;
-            memset(&L, 0, sizeof L);
-            L.is_reg = LK_SLOT;
-            L.slot = &l->items[l->len - 1];
-            L.tag = &l->tags[l->len - 1];
-            Word v = slot_read(&c, &L, &t);
-            list_resize(p, l, l->len - 1);
-            wr(&c, &ops[0], t, v);
-            break;
-        }
-        case OP_LINS: {
-            ObjList *l = (ObjList *)rd_obj(&c, &ops[0], OBJ_LIST, "lins");
-            int64_t at = rd(&c, &ops[1], T_I64).i;
-            MlwsType t = T;
-            Word v = rdn(&c, &ops[2], &t);
-            list_insert(p, l, at, v, (uint8_t)t);
-            break;
-        }
-        case OP_LDEL: {
-            ObjList *l = (ObjList *)rd_obj(&c, &ops[0], OBJ_LIST, "ldel");
-            list_delete(p, l, rd(&c, &ops[1], T_I64).i);
-            break;
-        }
-        case OP_MNEW:
-            wr_ref(&c, &ops[0], map_new(p));
-            break;
-        case OP_MSET: {
-            ObjMap *m = (ObjMap *)rd_obj(&c, &ops[0], OBJ_MAP, "mset");
-            MlwsType kt = T_NONE, vt = T;
-            Word k = rdn(&c, &ops[1], &kt);
-            Word v = rdn(&c, &ops[2], &vt);
-            map_set(p, m, k, (uint8_t)kt, v, (uint8_t)vt);
-            break;
-        }
-        case OP_MGET: {
-            ObjMap *m = (ObjMap *)rd_obj(&c, &ops[1], OBJ_MAP, "mget");
-            MlwsType kt = T_NONE;
-            Word k = rdn(&c, &ops[2], &kt);
-            MapEntry *e = map_find(m, k, (uint8_t)kt);
-            MlwsType t = T;
-            if (t == T_NONE && ops[0].mode == OM_REG) t = reg_natural_type(ops[0].reg);
-            Word v;
-            if (e) {
-                Loc L;
-                memset(&L, 0, sizeof L);
-                L.is_reg = LK_SLOT;
-                L.slot = &e->val;
-                L.tag = &e->vtag;
-                v = slot_read(&c, &L, &t);
-            } else if (in->nops > 3) {
-                v = rdn(&c, &ops[3], &t);
-            } else {
-                char kb[96];
-                describe_key(k, kt, kb, sizeof kb);
-                vm_trap(p, "E_KEY", "key %s not found in map", kb);
-            }
-            wr(&c, &ops[0], t, v);
-            break;
-        }
-        case OP_MHAS: {
-            ObjMap *m = (ObjMap *)rd_obj(&c, &ops[1], OBJ_MAP, "mhas");
-            MlwsType kt = T_NONE;
-            Word k = rdn(&c, &ops[2], &kt);
-            wr_int(&c, &ops[0], T_B, map_find(m, k, (uint8_t)kt) != NULL);
-            break;
-        }
-        case OP_MDEL: {
-            ObjMap *m = (ObjMap *)rd_obj(&c, &ops[0], OBJ_MAP, "mdel");
-            MlwsType kt = T_NONE;
-            Word k = rdn(&c, &ops[1], &kt);
-            map_delete(m, k, (uint8_t)kt);
-            break;
-        }
-        case OP_MKEYS:
-            wr_ref(&c, &ops[0], map_keys(p, (ObjMap *)rd_obj(&c, &ops[1], OBJ_MAP, "mkeys")));
-            break;
-
-        /* ---- handles ---- */
-        case OP_HNEW:
-            wr_int(&c, &ops[0], T_I64, handle_new(p, rd(&c, &ops[1], T_R).r));
-            break;
-        case OP_HGET:
-            wr_ref(&c, &ops[0], handle_get(p, rd(&c, &ops[1], T_I64).i));
-            break;
-        case OP_HFREE:
-            handle_free(p, rd(&c, &ops[0], T_I64).i);
-            break;
-
-        /* ---- closures ---- */
-        case OP_CLOSURE: {
-            Function *fn = ops[0].rv.ptr;
-            int nup = (int)ops[1].imm;
-            Word vals[MAX_OPERANDS];
-            uint8_t tags[MAX_OPERANDS];
-            for (int k = 0; k < nup; k++) {
-                MlwsType t = T_NONE;
-                vals[k] = rdn(&c, &ops[2 + k], &t);
-                tags[k] = (uint8_t)t;
-            }
-            ObjClosure *cl = closure_new(p, fn, (uint32_t)nup);
-            for (int k = 0; k < nup; k++) {
-                cl->up[k] = vals[k];
-                cl->tags[k] = tags[k];
-            }
-            wr_ref(&c, &ops[2 + nup], cl);
-            break;
-        }
-        case OP_CALLI:
-        case OP_TCALLI: {
-            ObjClosure *cl = rd_closure(&c, &ops[0]);
-            Function *fn = cl->fn;
-            const MFunc *mf = fn->mf;
-            int argc = (int)ops[1].imm;
-            if (argc != mf->nparams)
-                vm_trap(p, "E_TYPE", "closure %s takes %d argument(s), got %d", fn->name, mf->nparams, argc);
-            Word args[MAX_OPERANDS];
-            for (int k = 0; k < argc; k++) args[k] = rd_param(&c, &ops[2 + k], (MlwsType)mf->params[k]);
-            const Insn *ret_insn = in;
-            if (in->op == OP_TCALLI) {
-                ret_insn = fr->ret_insn;
-                proc_pop_frame(p);
-            }
-            proc_push_frame(p, fn, ret_insn);
-            p->frames[p->nframes - 1].closure = &cl->h;
-            ctx_load(&c);
-            bind_args(&c, NULL, mf->params, argc, args);
-            break;
-        }
-        case OP_SPAWNI:
-        case OP_SPAWNIL:
-        case OP_SPAWNIM: {
-            ObjClosure *cl = rd_closure(&c, &ops[0]);
-            const MFunc *mf = cl->fn->mf;
-            int argc = (int)ops[1].imm;
-            if (argc != mf->nparams)
-                vm_trap(p, "E_TYPE", "closure %s takes %d argument(s), got %d", cl->fn->name, mf->nparams, argc);
-            Word args[MAX_OPERANDS];
-            for (int k = 0; k < argc; k++) {
-                if (mf->params[k] == T_P) vm_trap(p, "E_TYPE", "pointer parameters cannot cross processes");
-                args[k] = rd_param(&c, &ops[2 + k], (MlwsType)mf->params[k]);
-            }
-            Process *child = proc_new(vm);
-            memcpy(child->quota, p->quota, sizeof child->quota);
-            p->pending_spawn = child;
-            Word clw = msg_copy(p, child, (Word){.r = cl}, T_R);
-            for (int k = 0; k < argc; k++) args[k] = msg_copy(p, child, args[k], mf->params[k]);
-            p->pending_spawn = NULL;
-            spawn_watch(p, child, in->op == OP_SPAWNIL, in->op == OP_SPAWNIM);
-            uint64_t cpid = child->pid; /* once started, the child may run, end and be freed at once */
-            proc_start(child, cl->fn, clw.r, args, argc);
-            if (in->nops > 2 + argc) wr_int(&c, &ops[2 + argc], T_I64, (int64_t)cpid);
-            break;
-        }
-
-        /* ---- exceptions ---- */
-        case OP_THROW: {
-            Obj *ex = rd(&c, &ops[0], T_R).r;
-            if (!ex) vm_trap(p, "E_NULL", "throw of null");
-            proc_throw(p, ex);
-        }
-        case OP_CATCH:
-            wr_ref(&c, &ops[0], p->exception);
-            break;
-
-        /* ---- processes ---- */
-        case OP_SPAWN:
-        case OP_SPAWNL:
-        case OP_SPAWNM: {
-            Function *fn = ops[0].rv.ptr;
-            int argc = (int)ops[1].imm;
-            Word args[MAX_OPERANDS];
-            for (int k = 0; k < argc; k++) args[k] = rd(&c, &ops[2 + k], (MlwsType)fn->mf->params[k]);
-            Process *child = proc_new(vm);
-            memcpy(child->quota, p->quota, sizeof child->quota);
-            p->pending_spawn = child; /* freed by proc_run_slice if a copy traps */
-            for (int k = 0; k < argc; k++) args[k] = msg_copy(p, child, args[k], fn->mf->params[k]);
-            p->pending_spawn = NULL;
-            spawn_watch(p, child, in->op == OP_SPAWNL, in->op == OP_SPAWNM);
-            uint64_t cpid = child->pid; /* once started, the child may run, end and be freed at once */
-            proc_start(child, fn, NULL, args, argc);
-            if (in->nops > 2 + argc) wr_int(&c, &ops[2 + argc], T_I64, (int64_t)cpid);
-            break;
-        }
-        case OP_SEND: {
-            int64_t pid = rd(&c, &ops[0], T_I64).i;
-            MlwsType t = T;
-            Word v = rdn(&c, &ops[1], &t);
-            if (t == T_P) vm_trap(p, "E_TYPE", "pointers cannot be sent to another process (they are process-local)");
-            p->msgs_sent++;
-            sched_send(p, (uint64_t)pid, v, (uint8_t)t); /* to a finished or unknown process: dropped */
-            break;
-        }
-        case OP_RECV:
-        case OP_RECVT: {
-            if (p->mbox_head == p->mbox.n) sched_take_inbox(p);
-            if (p->mbox_head < p->mbox.n) {
-                MlwsType t = T;
-                if (t == T_NONE && ops[0].mode == OM_REG) t = reg_natural_type(ops[0].reg);
-                Loc L = mbox_loc(&p->mbox.v[p->mbox_head]);
-                Word v = slot_read(&c, &L, &t); /* a type mismatch traps and leaves the message */
-                mbox_take(p);
-                p->deadline_set = false;
-                wr(&c, &ops[0], t, v);
-                break;
-            }
-            if (in->op == OP_RECVT) {
-                uint64_t now = plat_now_ns();
-                if (p->deadline_set) {
-                    if (now >= p->wake_at) { /* timed out */
-                        p->deadline_set = false;
-                        fr->pc = ops[2].rv.target;
-                        break;
-                    }
-                } else {
-                    int64_t ms = rd(&c, &ops[1], T_I64).i;
-                    if (ms <= 0) { /* poll */
-                        fr->pc = ops[2].rv.target;
-                        break;
-                    }
-                    p->deadline_set = true;
-                    p->wake_at = now + (uint64_t)ms * 1000000u;
-                }
-            } else if (p->deadlock) {
-                p->deadlock = false;
-                vm_trap(p, "E_DEADLOCK", "every process is waiting: no message can ever arrive");
-            }
-            if (p->cb_base) { /* C is waiting for the callback: it cannot wait in turn */
-                p->deadline_set = false;
-                vm_trap(p, "E_CALLBACK", "recv would wait inside a callback from C");
-            }
-            fr->pc--; /* re-execute this receive when woken */
-            p->insns--;
-            return SLICE_BLOCK;
-        }
-        case OP_YIELD:
-            if (p->cb_base) break; /* a callback runs to completion */
-            return SLICE_YIELD;
-        case OP_SLEEP: {
-            int64_t ms = rd(&c, &ops[0], T_I64).i;
-            if (p->cb_base && ms > 0) vm_trap(p, "E_CALLBACK", "sleep inside a callback from C");
-            if (ms <= 0) {
-                if (p->cb_base) break;
-                return SLICE_YIELD;
-            }
-            p->wake_at = plat_now_ns() + (uint64_t)ms * 1000000u;
-            return SLICE_SLEEP;
-        }
-        case OP_KILL: {
-            int64_t pid = rd(&c, &ops[0], T_I64).i;
-            char msg[96];
-            snprintf(msg, sizeof msg, "killed by process %llu", (unsigned long long)p->pid);
-            sched_kill(p, (uint64_t)pid, "E_KILLED", msg);
-            break; /* killing ourselves (or a linked chain back to us) stops at the next instruction */
-        }
-        case OP_LINK: {
-            sched_link(p, (uint64_t)rd(&c, &ops[0], T_I64).i);
-            break;
-        }
-        case OP_MONITOR: {
-            sched_monitor(p, (uint64_t)rd(&c, &ops[0], T_I64).i);
-            break;
-        }
-        case OP_ALIVE:
-            wr_int(&c, &ops[0], T_B, sched_alive(vm, (uint64_t)rd(&c, &ops[1], T_I64).i));
-            break;
-        case OP_QUOTA: {
-            int64_t kind = ops[0].imm, limit = rd(&c, &ops[1], T_I64).i;
-            if (kind >= QUOTA__COUNT) vm_trap(p, "E_QUOTA", "unknown quota kind %lld", (long long)kind);
-            if (limit < 0) vm_trap(p, "E_QUOTA", "a quota cannot be negative");
-            sched_set_quota(p, (int)kind, (uint64_t)limit); /* only ever lowered */
-            if (kind == QUOTA_HEAP) p->next_gc = 0, p->gc_pending = true;   /* re-derive the GC threshold */
-            break;
-        }
-        case OP_MLEN:
-            wr_int(&c, &ops[0], T_I64, (int64_t)p->mcount);
-            break;
-
-        default: /* the rest run outside this loop (interp_run) */
-            return SLICE_EXT;
-        }
+#define CX (&c)
+#include "generic.inc"
+#undef CX
 #if defined(__x86_64__) || defined(__i386__)
 #undef in
 #undef fr
@@ -3030,6 +2094,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 #if MLWS_THREADED
 #pragma GCC diagnostic pop
 #endif
+#endif /* MLWS_TAILCALL */
 
 /* run_loop's main loop is sensitive to every line added to it: how a compiler
  * then allocates its registers can move the speed of the quickened forms by

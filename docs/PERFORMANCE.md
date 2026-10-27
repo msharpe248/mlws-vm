@@ -26,26 +26,24 @@ per core:
 
 | Benchmark | Apple M5 Pro, Clang | Intel i7-11700KF, GCC | AMD Ryzen 9 5900X, Clang |
 |---|---|---|---|
-| fib | 71 | 181 | 137 |
-| loop | 86 | 185 | 164 |
-| sieve | 633 | 1,024 | 1,155 |
-| nbody | 97 | 164 | 166 |
-| binarytrees | 118 | 239 | 230 |
-| maps | 64 | 102 | 107 |
-| pingpong | 32 | 95 | 71 |
-| closures | 109 | 211 | 193 |
-| parallel | 23 | 49 | 47 |
-| connections | 1,024 | 687 | 1,200 |
+| fib | 69 | 146 | 127 |
+| loop | 86 | 151 | 135 |
+| sieve | 583 | 1,030 | 1,063 |
+| nbody | 96 | 166 | 177 |
+| binarytrees | 116 | 234 | 225 |
+| maps | 63 | 105 | 107 |
+| pingpong | 33 | 95 | 77 |
+| closures | 108 | 217 | 194 |
+| parallel | 22 | 44 | 35 |
+| connections | 1,044 | 674 | 1,260 |
 
 The Mac is a laptop with 6 performance and 12 efficiency cores, running macOS.
 The two desktops run Ubuntu 26.04: the Intel one has 8 cores (16 threads), the
 AMD one 12 (24 threads). All builds use `-O2`.
 
-The interpreter is sensitive to code layout: a change that does not touch the
-hot handlers at all (adding one opcode, say) can move `fib` on GCC or `loop`
-and `nbody` on the Ryzen by 10% in either direction, because it changes how the
-compiler allocates registers in the interpreter's loop (see item 9 below).
-Differences that size between builds are not, by themselves, regressions.
+With tail-call dispatch, a change to some handlers leaves the others' code
+alone, and builds differ by a few percent at most (item 3 below); the
+dispatch loop that other compilers get is more sensitive, by 5% or more.
 
 The tight loop runs at about 2.1G instructions per second on the Mac, about two
 clock cycles per instruction. `maps` and `pingpong` spend their time in natives
@@ -61,14 +59,14 @@ time, best of three:
 
 | Benchmark | Apple M5 Pro | Intel i7, GCC | AMD Ryzen, Clang |
 |---|---|---|---|
-| fib | 595 | 1,091 | 1,073 |
-| binary_trees | 2,076 | 4,090 | 4,189 |
-| trees | 2,111 | 5,436 | 6,643 |
-| instantiation | 529 | 861 | 924 |
-| invocation | 297 | 664 | 580 |
-| method_call | 193 | 364 | 369 |
-| properties | 413 | 843 | 814 |
-| zoo | 327 | 628 | 628 |
+| fib | 562 | 1,054 | 991 |
+| binary_trees | 2,028 | 4,131 | 4,104 |
+| trees | 2,026 | 5,324 | 6,307 |
+| instantiation | 516 | 845 | 901 |
+| invocation | 301 | 626 | 563 |
+| method_call | 181 | 353 | 332 |
+| properties | 407 | 839 | 760 |
+| zoo | 314 | 602 | 560 |
 
 These are 1.3–3.0× faster than before the forms for compiled dynamic code
 existed ([item 1](#how-the-interpreter-is-made-fast) below): `invocation` most, since every call there passed a
@@ -86,11 +84,11 @@ against the reference interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | Lua 5.5, M5 | MLWSVM, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|
-| loop | 302 | 218 | 488 | 290 |
-| iterate | 163 | 57 | 274 | 79 |
-| fib | 191 | 52 | 327 | 101 |
-| methods | 2,093 | 349 | 3,818 | 566 |
-| strings | 2,108 | 135 | 3,601 | 211 |
+| loop | 243 | 220 | 450 | 289 |
+| iterate | 151 | 60 | 261 | 78 |
+| fib | 189 | 54 | 305 | 101 |
+| methods | 1,950 | 350 | 3,782 | 567 |
+| strings | 2,021 | 137 | 3,471 | 212 |
 
 The profiler shows nearly all of these instructions on fast paths; what the
 generated code still spends is instruction count (type guards on values of
@@ -107,14 +105,14 @@ subtracted):
 
 | | `fib` (Mac) | `loop` (Mac) | `fib` (Intel) | `loop` (Intel) |
 |---|---|---|---|---|
-| MLWSVM | 72 | **87** | 149 | **189** |
-| Lua 5.5 | **52** | 215 | **101** | 288 |
-| JVM, interpreter only (`-Xint`) | 92 | 186 | 104 | 396 |
-| CPython | 133 | 1,216 | 186 | 2,375 |
+| MLWSVM | 68 | **84** | 143 | **149** |
+| Lua 5.5 | **49** | 210 | **100** | 288 |
+| JVM, interpreter only (`-Xint`) | 87 | 184 | 104 | 396 |
+| CPython | 128 | 1,177 | 186 | 2,376 |
 | JVM with its JIT compiler | 3 | 16 | 8 | 31 |
 
-MLWSVM runs the loop 2.5× faster than Lua and 2.1× faster than the JVM's
-interpreter on the Mac. Lua runs `fib` 1.4× faster on the Mac and 1.5× faster on
+MLWSVM runs the loop 2.5× faster than Lua and 2.2× faster than the JVM's
+interpreter on the Mac. Lua runs `fib` 1.4× faster on the Mac and on
 the Intel machine, where the JVM's interpreter is faster too: an MLWSVM call
 costs about 10 ns on the Mac, against 7 ns in Lua (see
 [What is not done](#what-is-not-done-and-why)). The JIT row is there for scale.
@@ -168,27 +166,39 @@ it measured faster.
    copy inside its 32-byte `Insn`: three register numbers, a branch target and
    an immediate. Its handler reads only that copy, with no pointer to follow.
    Measured with threaded dispatch, this saved 18% on `loop`.
-3. **Threaded dispatch.** Each quickened handler ends by fetching the next
-   instruction and jumping straight to its handler through a table (GCC's and
-   Clang's "labels as values"), so each handler's jump is predicted separately.
-   Instructions that are not quickened go to the generic `switch`. Without
-   threaded dispatch, `loop` takes 43% longer and `fib` 17% longer. Compilers
-   without the extension use a `switch` for the quickened forms too;
-   `make check-switch` tests that build, and CI runs it.
-4. **A lean loop head.** The program counter and the count of instructions
-   left in the time slice live in local variables, so in CPU registers. The
+3. **Tail-call dispatch.** Each quickened handler is a function of its own
+   that ends by tail-calling the next instruction's handler through a table
+   (`musttail`, which Clang and GCC 15 guarantee), so each handler's jump is
+   predicted separately and nothing grows the C stack. The hot state travels in
+   argument registers: the instruction, the slice counter, the `I`, `F` and `R`
+   windows and a pointer to the rest; with Clang's `preserve_none` calling
+   convention, also the current frame and its code, and no handler saves
+   registers for another. Each handler is compiled, and its registers
+   allocated, on its own, so a change to one does not change the others. Adding
+   an opcode and a handler moves the benchmarks by about 2% on the M5 and 1% on
+   the i7 (up to 4% on the Ryzen, whose run-to-run variation is about 3%).
+   It is faster as well: against the dispatch loop, `loop` takes 18–19% less
+   time on the x86 machines, compiled Lua's `loop` 22–37% less and its
+   `methods` 5–7% less, and `fib` 4–9% less. `nbody`, which runs mostly
+   generic instructions, is the exception, at up to 8% slower on the Ryzen.
+   The instructions that are not quickened run in one function, `h_generic`,
+   with the same calling convention and without a stack-protector check, so a
+   generic instruction costs no more than in a loop. Compilers that cannot
+   guarantee tail calls (GCC before 15, MSVC) build the same handlers into one
+   dispatch loop instead, jumping through a table of labels (GCC's and Clang's
+   "labels as values") or, failing that, a `switch`; `make check-loop` and
+   `make check-switch` test those builds, and CI runs both.
+4. **A lean dispatch.** The current instruction and the count of instructions
+   left in the time slice live in CPU registers (handler arguments, or the
+   loop's locals). The
    frame's `pc` and the process's instruction count are written back only where
    something can look at them: before a generic instruction (which may trap,
    call a native or switch frames), at calls and returns, before the tools'
    hook, and at the end of the slice. Quickened instructions never allocate or
    trap, so the safepoint that checks for a pending collection or kill comes
-   after each generic instruction and at the start of each slice. After a
-   generic instruction the count left is recomputed from the one written back,
-   rather than kept: it is then not live across the generic code's calls, and
-   the compiler can keep it in a register in the quickened handlers. (Kept,
-   GCC put it on the stack once enough code surrounded the loop, and `loop`
-   took 52% longer.) Whether a debugger hook is installed is read once per
-   slice. None of this is observable: a process that kills itself stops at the
+   after each generic instruction and at the start of each slice. Whether a
+   debugger hook is installed is read once per slice; with one, every
+   instruction goes through the slice check, which calls it. None of this is observable: a process that kills itself stops at the
    next instruction, and `--stats` counts every instruction.
 5. **Direct calls.** The loader records where each argument of a quickened
    `call` goes in the callee's register windows, so the arguments are copied
@@ -212,25 +222,17 @@ it measured faster.
    with a system call. The scheduler sets a jump buffer once per time slice, so
    message-heavy code would pay a system call per message. The VM never touches
    signal masks, so the cheaper variant is safe.
-9. **Rare and large work outside the loop.** The quickened handlers and the
-   generic `switch` are one function, and how a compiler allocates its registers
-   decides the speed of every handler. Any code added to that function can
-   change it: two never-taken branches and one call, for coroutines, made `fib`
-   7–14% and `loop` up to 43% slower, differently with each compiler. So the
-   coroutine instructions, and a coroutine's last return, are handled by a
-   wrapper around the loop: the loop returns to it for an instruction it does
-   not run, and a coroutine's first frame returns as a process's entry function
-   does. The larger fast forms (calls and returns with constants, `mget`) do
-   their work in functions of their own and keep only a call in the loop:
-   written inline, they made GCC's `fib` 14% slower. On x86 the generic forms
-   also re-read their instruction and frame from memory, so the fast path's
-   copies are not live across the generic code's calls; without that, GCC kept
-   the instruction pointer on the stack and Lua's `iterate` ran 11% slower. On
-   arm64, with twice the registers, the same change made `loop` 46% slower, so
-   it is x86 only. Moving the whole generic
-   `switch` out of the loop instead cost the Apple M5 build 11–15% on the
-   generic-heavy benchmarks (`binarytrees`, `sieve`, `nbody`), for the call per
-   generic instruction.
+9. **Rare work outside the dispatch.** The coroutine instructions, and a
+   coroutine's last return, are handled by a wrapper around the dispatch: it
+   is handed an instruction it does not run, and a coroutine's first frame
+   returns as a process's entry function does. In the dispatch loop (the
+   fallback build), this matters most: its handlers and the generic forms are
+   one function, whose register allocation decides the speed of every handler,
+   and code added to it moved `fib` and `loop` by 7–52%, differently with each
+   compiler. The loop build therefore also does the larger fast forms (calls
+   and returns with constants, `mget`) in functions of their own, recomputes the
+   slice counter after a generic instruction instead of keeping it live, and on
+   x86 has the generic forms re-read their instruction and frame.
 
 `tests/perf/quickened.masm` checks the arithmetic, branch and call forms
 against the generic semantics at the edges: overflow, negative divisors,
@@ -366,7 +368,7 @@ for each request it serves.
   barrier on every reference store.
 * **More specialised shapes.** Arithmetic directly on elements and fields
   (`nbody`) and raw memory (`sieve`) take the generic path. Rewriting `nbody` to
-  load into registers, compute there and store back takes it from 97 ms to
+  load into registers, compute there and store back takes it from 96 ms to
   24 ms, so compilers can already get most of that speed. The shapes worth a
   form of their own are the ones compiled programs run most: the profiler's
   list of instructions on the general path shows them, as it showed the ones

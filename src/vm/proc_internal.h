@@ -34,11 +34,16 @@ void proc_frame_slow(Process *p, const uint16_t *nr);
 
 /* Push a call frame with a fresh, zeroed register window (inline: every call;
  * compilers otherwise keep it out of line in the interpreter's large loop). */
-PROC_INLINE void proc_push_frame(Process *p, Function *fn, const Insn *ret_insn) {
+/* Room for a frame needing nr registers per bank, without growing anything or
+ * reaching the depth limit. */
+PROC_INLINE bool proc_frame_fits(const Process *p, const uint16_t *nr) {
+    return p->nframes < p->fcap && p->nframes < p->vm->max_frames && p->rtop[0] + nr[0] <= p->rcap[0] &&
+           p->rtop[1] + nr[1] <= p->rcap[1] && p->rtop[2] + nr[2] <= p->rcap[2] && p->rtop[3] + nr[3] <= p->rcap[3];
+}
+
+/* proc_push_frame when proc_frame_fits is known to hold. */
+PROC_INLINE void proc_push_frame_fitting(Process *p, Function *fn, const Insn *ret_insn) {
     const uint16_t *nr = fn->mf->nregs;
-    if (p->nframes >= p->fcap || p->nframes >= p->vm->max_frames || p->rtop[0] + nr[0] > p->rcap[0] ||
-        p->rtop[1] + nr[1] > p->rcap[1] || p->rtop[2] + nr[2] > p->rcap[2] || p->rtop[3] + nr[3] > p->rcap[3])
-        proc_frame_slow(p, nr);
     Frame *fr = &p->frames[p->nframes++];
     fr->fn = fn;
     fr->pc = 0;
@@ -58,6 +63,11 @@ PROC_INLINE void proc_push_frame(Process *p, Function *fn, const Insn *ret_insn)
     if (nr[BANK_R]) ZERO_REGS(p->rreg + fr->base[BANK_R], nr[BANK_R]);
     if (nr[BANK_P]) ZERO_REGS(p->preg + fr->base[BANK_P], nr[BANK_P]);
     if (p->nframes > p->max_depth) p->max_depth = p->nframes;
+}
+
+PROC_INLINE void proc_push_frame(Process *p, Function *fn, const Insn *ret_insn) {
+    if (!proc_frame_fits(p, fn->mf->nregs)) proc_frame_slow(p, fn->mf->nregs);
+    proc_push_frame_fitting(p, fn, ret_insn);
 }
 
 PROC_INLINE void proc_pop_frame(Process *p) {

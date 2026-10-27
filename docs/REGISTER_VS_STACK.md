@@ -26,8 +26,8 @@ instead of a fixed three.
   of a nanosecond. How cheaply a VM executes each instruction matters as much as
   how many it needs.
 * **MLWSVM is the fastest of these interpreters on the loop, but not on calls.**
-  On the Mac it runs the loop 2.5× faster than Lua 5.5 and 2.1× faster than the
-  JVM's interpreter. Lua runs `fib` 1.4× faster (1.5× on Linux, where the JVM's
+  On the Mac it runs the loop 2.5× faster than Lua 5.5 and 2.2× faster than the
+  JVM's interpreter. Lua runs `fib` 1.4× faster (on Linux too, where the JVM's
   interpreter is faster too), because an MLWSVM call sets up a register window
   in each bank the callee uses.
 * **Variable arity costs nothing measurable at run time.** Storing the first three
@@ -162,7 +162,13 @@ The overhead is not fixed, though. Decades of interpreter work reduce it:
 * **Threaded code and computed goto:** each handler jumps directly to the next one
   (`goto *table[op]`), instead of returning to a central `switch`. Each
   instruction then gets its own indirect branch, which the CPU predicts better.
-  Lua uses computed goto when compiled with GCC or Clang. MLWSVM uses a `switch`.
+  Lua uses computed goto when compiled with GCC or Clang.
+* **Tail calls between handlers:** each handler is a function that ends by
+  tail-calling the next one (`musttail` in Clang and GCC 15), with the
+  interpreter's state in argument registers. Branches are predicted as with
+  threaded code, and the compiler allocates each handler's registers separately,
+  so no handler's speed depends on the others' code. CPython 3.14 and MLWSVM
+  dispatch this way.
 * **Top-of-stack caching:** the stack's top value is kept in a CPU register, so
   most stack instructions never touch the stack in memory (Ertl, 1995).
 * **Template interpreters:** HotSpot (the standard JVM) generates each bytecode's
@@ -398,10 +404,10 @@ Wall time in milliseconds, best of five, with each VM's start-up time subtracted
 
 | | Kind | `fib` (Mac) | `loop` (Mac) | `fib` (Linux) | `loop` (Linux) |
 |---|---|---|---|---|---|
-| MLWSVM | register | 72 | **87** | 149 | **189** |
-| Lua 5.5 | register, fixed 3 | **52** | 215 | **101** | 288 |
-| JVM, interpreter only (`-Xint`) | stack | 92 | 186 | 104 | 396 |
-| CPython | stack | 133 | 1,216 | 186 | 2,375 |
+| MLWSVM | register | 68 | **84** | 143 | **149** |
+| Lua 5.5 | register, fixed 3 | **49** | 210 | **100** | 288 |
+| JVM, interpreter only (`-Xint`) | stack | 87 | 184 | 104 | 396 |
+| CPython | stack | 128 | 1,177 | 186 | 2,376 |
 | JVM with its JIT compiler | (machine code) | 3 | 16 | 8 | 31 |
 
 The Mac is an Apple M5 Pro with Lua 5.5.1, OpenJDK 27 and CPython 3.14. Linux is
@@ -413,8 +419,8 @@ Time per instruction executed, in nanoseconds (Mac):
 
 | | MLWSVM | Lua 5.5 | JVM `-Xint` | CPython |
 |---|---|---|---|---|
-| `fib` | 2.3 | 1.4 | 1.3 | 1.7 |
-| `loop` | 0.48 | 1.0 | 0.33 | 2.2 |
+| `fib` | 2.2 | 1.3 | 1.2 | 1.6 |
+| `loop` | 0.46 | 1.0 | 0.32 | 2.1 |
 
 ### What the measurements show
 
@@ -429,9 +435,10 @@ Time per instruction executed, in nanoseconds (Mac):
 3. **With cheap instructions, the register machine wins the loop.** MLWSVM's
    loop costs about half a nanosecond per instruction, within 1.5× of the JVM's
    template interpreter. Since it needs a third of the JVM's instructions, it
-   finishes in under half the time, and 2.5× faster than Lua on the Mac (1.5× on
+   finishes in under half the time, and 2.5× faster than Lua on the Mac (1.9× on
    Linux). Its program counter stays in a CPU register, common instructions
-   dispatch straight to the next handler (threaded code, as Lua does), and
+   dispatch straight to the next handler (with tail calls between handlers,
+   the effect of Lua's threaded code), and
    each carries a compact copy of its operands
    ([PERFORMANCE.md](PERFORMANCE.md#how-the-interpreter-is-made-fast)).
 4. **Calls are where Lua stays ahead.** A `fib` call costs about 10 ns in MLWSVM

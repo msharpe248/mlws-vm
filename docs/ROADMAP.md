@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M26 are complete. What remains is Windows (section 3) and the
+Milestones M0–M27 are complete. What remains is Windows (section 3) and the
 deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M26 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M27 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M26
+## Milestones M11–M27
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -48,6 +48,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M24 Compiled code** (done) | specialised forms for the shapes the Lox compiler emits (constants in calls and returns, reference constants and globals, reference and `f64` compares and branches, `isa`, `mget` by a constant key): the Lox benchmarks run 1.3–3.0× faster. The profiler reports the hottest instructions on the general path |
 | **M25 Compiled Lua** (done) | from the Lua compiler's measurements: fast 64-bit global, constant-index element and closure-capture (`UP[n]`) moves, and `len`; `tagof`, so one tagged slot can hold a dynamically typed value; `io.flush`, and standard output flushed before anything is written to standard error |
 | **M26 Lists and floats** (done) | from the Lua compiler's profiles: `lpush` of registers into a list's spare capacity, and `f64` `sqrt`, `neg` and `abs` (Lua's `methods` benchmark 7–8% faster) |
+| **M27 Tail-call dispatch** (done) | each quickened form a function tail-calling the next (`musttail`, Clang and GCC 15), the generic forms one more; the dispatch loop remains for other compilers (`make check-loop`). Adding a handler now moves the benchmarks by about 2%, where it moved them by 5–50%; most are faster too (PERFORMANCE.md, item 3) |
 
 ## 1. Calling existing libraries (M10: done)
 

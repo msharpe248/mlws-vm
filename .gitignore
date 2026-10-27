@@ -12,3 +12,5 @@ build-noffi/
 /mlwsvm-switch
 /build-switch/
 lib/ext/
+/mlwsvm-loop
+/build-loop/
