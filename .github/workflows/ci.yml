@@ -71,5 +71,13 @@ jobs:
           make CC=$CC BUILD=build-noffi BIN=mlwsvm-noffi FFI=0 -j4
           ./mlwsvm-noffi test tests examples
 
+      # bench/connections.masm holds 20,000 descriptors open: more than the
+      # macOS runner's per-process limit allows.
+      - name: Raise the open-file limit (macOS)
+        if: runner.os == 'macOS'
+        run: sudo sysctl -w kern.maxfiles=100000 kern.maxfilesperproc=65536
+
       - name: Benchmarks (output checks)
-        run: sh bench/run.sh ./mlwsvm
+        run: |
+          ulimit -n 65536 2>/dev/null || true
+          sh bench/run.sh ./mlwsvm
