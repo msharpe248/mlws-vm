@@ -1,0 +1,85 @@
+; The quickened lpush (Q_LPUSH_R) and f64 sqrt/neg/abs forms must behave
+; exactly like the generic instructions. lpush of register values writes into
+; the list's spare capacity, each value tagged with its register's natural type,
+; and leaves growing the list (an allocation) to the generic lpush.
+.include "std/test.inc"
+
+; Run one instruction and check that it raises an Error with this code.
+.macro EXPECT_ERROR code, insn...
+.try .Lh\@
+    \insn
+.endtry
+    FAIL "an error was expected"
+.Lh\@:
+    catch R31
+    strcmp I31, R31->Error.code, \code
+    ASSERT_EQ I31, 0
+.endm
+
+.func main
+    lnew R0, 4                           ; capacity 4, length 0
+    mov I0, 7
+    mov F0, 2.5
+    mov.r R1, "s"
+    lpush R0, I0                         ; fast: room for it
+    lpush R0, F0, R1                     ; two values, one check
+    len I1, R0
+    ASSERT_EQ I1, 3
+    ASSERT_EQ R0[0], 7
+    ASSERT_EQ R0[1], 2.5, f64
+    mov I9, 0
+    tagof I2, R0[I9]
+    ASSERT_EQ I2, 6                      ; i64
+    mov I9, 1
+    tagof I2, R0[I9]
+    ASSERT_EQ I2, 12                     ; f64
+    mov I9, 2
+    tagof I2, R0[I9]
+    ASSERT_EQ I2, 13                     ; r
+    lpush R0, I0, I0                     ; one slot left, two values: the generic lpush grows it
+    len I1, R0
+    ASSERT_EQ I1, 5
+    ASSERT_EQ R0[4], 7
+    mov I3, 0                            ; many pushes through growth and spare room
+1:  lpush R0, I3
+    inc I3
+    blt I3, 1000, 1b
+    len I1, R0
+    ASSERT_EQ I1, 1005
+    ASSERT_EQ R0[1004], 999
+    mnew R2
+    EXPECT_ERROR "E_TYPE", lpush R2, I0  ; not a list
+    mov R3, null
+    EXPECT_ERROR "E_NULL", lpush R3, I0
+    lnew R4
+    lpush.i32 R4, I0                     ; typed: the generic path, tagged i32
+    mov I9, 0
+    tagof I2, R4[I9]
+    ASSERT_EQ I2, 5
+
+    ; ---- f64 sqrt, neg, abs ----
+    mov F1, 16.0
+    sqrt F2, F1                          ; Q_SQRT_FF
+    ASSERT_EQ F2, 4.0, f64
+    sqrt F1                              ; in place: Q_SQRT_F
+    ASSERT_EQ F1, 4.0, f64
+    neg F3, F1
+    ASSERT_EQ F3, -4.0, f64
+    neg F3
+    ASSERT_EQ F3, 4.0, f64
+    mov F4, -2.5
+    abs F5, F4
+    ASSERT_EQ F5, 2.5, f64
+    abs F4
+    ASSERT_EQ F4, 2.5, f64
+    mov F6, -1.0
+    sqrt F6                              ; NaN
+    seq.f64 I4, F6, F6
+    ASSERT_EQ I4, 0
+    mov F7, 0.0
+    neg F7                               ; -0.0: equal to 0.0, sign bit set
+    ASSERT_EQ F7, 0.0, f64
+    bitcast.i64.f64 I5, F7
+    ASSERT_LT I5, 0
+    ret 0
+.endf

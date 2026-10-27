@@ -22,6 +22,9 @@ typedef struct {
     uint64_t *P;
 } Ctx;
 
+/* The current frame, for code where `fr` names another variable (interp_run's generic forms). */
+static inline Frame *ctx_frame(const Ctx *c) { return c->fr; }
+
 static void ctx_load(Ctx *c) {
     Process *p = c->p;
     c->fr = &p->frames[p->nframes - 1];
@@ -1087,6 +1090,7 @@ static MLWS_COLD void co_exec(Ctx *c, const Insn *in) {
 #define QFARITH_OPS(X) X(ADD, +) X(SUB, -) X(MUL, *) X(DIV, /)
 #define QBRANCH_OPS(X) X(BEQ, ==) X(BNE, !=) X(BLT, <) X(BLE, <=) X(BGT, >) X(BGE, >=)
 #define QSET_OPS(X) X(SEQ, ==) X(SNE, !=) X(SLT, <) X(SLE, <=) X(SGT, >) X(SGE, >=)
+#define QFUNARY_OPS(X) X(SQRT, sqrt) X(NEG, -) X(ABS, fabs)
 
 enum {
     Q__FIRST = OP__COUNT,
@@ -1138,6 +1142,12 @@ enum {
     Q_LDEK_I, Q_LDEK_F, Q_LDEK_R, Q_STEK_I, Q_STEK_F, Q_STEK_R,
     Q_LDU_I, Q_LDU_F, Q_LDU_R, Q_STU_I, Q_STU_F, Q_STU_R,
     Q_LEN, Q_TAGOF_E,
+    /* M26: lpush of register values into a list's spare capacity, and f64
+     * sqrt, neg and abs, in place or from another register. */
+    Q_LPUSH_R,
+#define X(N, f) Q_##N##_F, Q_##N##_FF,
+    QFUNARY_OPS(X)
+#undef X
     Q__COUNT
 };
 
@@ -1416,6 +1426,19 @@ void interp_quicken(Insn *in) {
     case OP_LEN:
         if (IREG(0) && RREG(1)) in->xop = Q_LEN;
         break;
+    case OP_LPUSH: { /* untyped: each value its register's natural type */
+        bool regs = t == T_NONE && RREG(0);
+        for (int k = 1; k < n; k++) regs = regs && (IREG(k) || FREG(k) || RREG(k));
+        if (regs) in->xop = Q_LPUSH_R;
+        break;
+    }
+#define X(N, f)                                                                \
+    case OP_##N:                                                               \
+        if (t == T_F64 && n == 1 && FREG(0)) in->xop = Q_##N##_F;              \
+        else if (t == T_F64 && n == 2 && FREG(0) && FREG(1)) in->xop = Q_##N##_FF; \
+        break;
+        QFUNARY_OPS(X)
+#undef X
     case OP_TAGOF:
         if (IREG(0) && o[1].mode == OM_ELEM) {
             in->xop = Q_TAGOF_E;
@@ -1676,7 +1699,10 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
         QL(Q_LDG_I) QL(Q_LDG_F) QL(Q_LDG_R) QL(Q_STG_I) QL(Q_STG_F) QL(Q_STG_R)
         QL(Q_LDEK_I) QL(Q_LDEK_F) QL(Q_LDEK_R) QL(Q_STEK_I) QL(Q_STEK_F) QL(Q_STEK_R)
         QL(Q_LDU_I) QL(Q_LDU_F) QL(Q_LDU_R) QL(Q_STU_I) QL(Q_STU_F) QL(Q_STU_R)
-        QL(Q_LEN) QL(Q_TAGOF_E)
+        QL(Q_LEN) QL(Q_TAGOF_E) QL(Q_LPUSH_R)
+#define X(N, f) QL(Q_##N##_F) QL(Q_##N##_FF)
+        QFUNARY_OPS(X)
+#undef X
         QL(Q_BEQ_RR) QL(Q_BNE_RR) QL(Q_BEQ_RK) QL(Q_BNE_RK) QL(Q_BEQ_RG) QL(Q_BNE_RG)
 #define X(N, o) QL(Q_##N##_FF) QL(Q_##N##_FK)
         QSET_OPS(X)
@@ -2014,6 +2040,28 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
             }
             NEXT;
         }
+        QCASE(Q_LPUSH_R) { /* grows (allocates) only on the generic path */
+            Obj *ob = c.R[in->r[0]];
+            if (!ob || ob->kind != OBJ_LIST) goto generic;
+            ObjList *l = (ObjList *)ob;
+            uint32_t n = (uint32_t)in->nops - 1;
+            if (l->cap - l->len < n) goto generic;
+            const Operand *qo = in->ops;
+            for (uint32_t k = 1; k <= n; k++, l->len++) {
+                uint8_t r = qo[k].reg;
+                switch (REG_BANK(r)) {
+                case BANK_I: l->items[l->len].i = c.I[REG_IDX(r)]; l->tags[l->len] = T_I64; break;
+                case BANK_F: l->items[l->len].f = c.F[REG_IDX(r)]; l->tags[l->len] = T_F64; break;
+                default: l->items[l->len].r = c.R[REG_IDX(r)]; l->tags[l->len] = T_R; break;
+                }
+            }
+            NEXT;
+        }
+#define X(N, f)                                                               \
+        QCASE(Q_##N##_F) FR(0) = f(FR(0)); NEXT;                                \
+        QCASE(Q_##N##_FF) FR(0) = f(FR(1)); NEXT;
+        QFUNARY_OPS(X)
+#undef X
         QCASE(Q_TAGOF_E) {
             const Obj *ob = c.R[in->r[1]];
             uint64_t i = (uint64_t)c.I[in->r[2]];
@@ -2101,6 +2149,17 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 
         /* ---- generic forms ---- */
         SPILL();
+#if defined(__x86_64__) || defined(__i386__)
+        /* On x86, with its 16 registers, the generic forms take their
+         * instruction and frame afresh (gin, gfr), so the fast path's `in` and
+         * `fr` are not live across these forms' calls: kept live, GCC moved
+         * `in` to the stack and every quickened handler paid a load for it.
+         * On arm64 (31 registers) the same change made `loop` 46% slower. */
+        const Insn *const gin = &fr->fn->code[fr->pc - 1];
+        Frame *gfr = fr;
+#define in gin
+#define fr gfr
+#endif
         const Operand *ops = in->ops;
         MlwsType T = (MlwsType)in->type;
         MlwsType TN = T; /* the type as written: .big / .dec select number arithmetic */
@@ -2362,7 +2421,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
                 if (p->reentered) { /* it ran MLWSVM code (a comparator, say): the banks may have moved */
                     p->reentered = false;
                     ctx_load(&c);
-                    fr = c.fr;
+                    fr = ctx_frame(&c);
                 }
             } else if (p->bcall.state == BCALL_DONE && p->bcall.insn == in) { /* back from the I/O pool */
                 memcpy(rets, p->bcall.rets, sizeof rets);
@@ -2428,7 +2487,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
             if (p->reentered) { /* a callback ran: the register banks and frames may have moved */
                 p->reentered = false;
                 ctx_load(&c);
-                fr = c.fr;
+                fr = ctx_frame(&c);
             }
             for (int k = 0; k < in->nops - 2 - argc; k++) wr(&c, &ops[2 + argc + k], (MlwsType)nd->rt[k], rets[k]);
             break;
@@ -2941,6 +3000,10 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
         default: /* the rest run outside this loop (interp_run) */
             return SLICE_EXT;
         }
+#if defined(__x86_64__) || defined(__i386__)
+#undef in
+#undef fr
+#endif
         /* Safepoint: between instructions every live reference is in a root. */
         if (p->gc_pending | p->kill_pending) {
             if (p->kill_pending) {

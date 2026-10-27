@@ -373,7 +373,8 @@ them by emitting these shapes; nothing else changes.
 
 * **64-bit registers.** Arithmetic and moves on `i64`/`u64` in `I` registers and
   `f64` in `F` registers, with register or constant operands (`add I0, I1, I2`,
-  `add I0, 1`, `mul F0, F1, 2.0`), and compare-and-branch on them
+  `add I0, 1`, `mul F0, F1, 2.0`), `sqrt`, `neg` and `abs` of `f64` registers
+  (`sqrt F0` in place, or `sqrt F0, F1`), and compare-and-branch on them
   (`blt I0, I1, L`, `bge F0, 0.5, L`). Narrow types (`i32`, `u8`, ...) and
   unsigned orderings take the general path, because they must wrap or compare
   differently.
@@ -401,15 +402,20 @@ them by emitting these shapes; nothing else changes.
   register or a constant. Arithmetic
   directly on a field or element works, but takes the general path. Loading
   into registers, computing there and storing back is much faster in a loop:
-  `bench/nbody.masm` runs in 98 ms with element operands and in 24 ms rewritten
+  `bench/nbody.masm` runs in 97 ms with element operands and in 24 ms rewritten
   that way, although it executes more instructions.
+* **Lists:** `lpush R0, I1, F2, R3` of untyped register values, while the list
+  has room: each value is tagged with its register's type. Growing the list
+  allocates, on the general path, so create lists with their final capacity
+  (`lnew R0, n`) when it is known.
 * **Objects:** `isa I0, R0, Point`; `len I0, R0`; `tagof I0, R1[I2]`; null tests
   `bz R0, L` and `bnz R0, L`; and
   `mget.r R0, R1, "name", null`, a reference looked up by a constant string key
   with a null default (an object whose fields are a map).
 
-Allocating instructions (`new`, `lnew`, `mnew`, `mset`, `strcat`, ...) always
-take the general path, since a fast form must not allocate. To see which of a
+Allocating instructions (`new`, `lnew`, `mnew`, `mset`, `strcat`, an `lpush`
+that grows its list, ...) always take the general path, since a fast form must
+not allocate. To see which of a
 program's instructions do, run it with `mlwsvm run --profile`: the report lists
 the hottest instructions on the general path, with their lines
 ([TOOLING.md](TOOLING.md#profiler---profile)).

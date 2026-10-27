@@ -26,16 +26,16 @@ per core:
 
 | Benchmark | Apple M5 Pro, Clang | Intel i7-11700KF, GCC | AMD Ryzen 9 5900X, Clang |
 |---|---|---|---|
-| fib | 71 | 179 | 137 |
-| loop | 87 | 184 | 168 |
-| sieve | 659 | 1,005 | 1,136 |
-| nbody | 98 | 160 | 172 |
-| binarytrees | 117 | 229 | 221 |
-| maps | 64 | 102 | 106 |
-| pingpong | 35 | 95 | 74 |
-| closures | 110 | 200 | 186 |
-| parallel | 25 | 48 | 49 |
-| connections | 1,020 | 674 | 1,216 |
+| fib | 71 | 181 | 137 |
+| loop | 86 | 185 | 164 |
+| sieve | 633 | 1,024 | 1,155 |
+| nbody | 97 | 164 | 166 |
+| binarytrees | 118 | 239 | 230 |
+| maps | 64 | 102 | 107 |
+| pingpong | 32 | 95 | 71 |
+| closures | 109 | 211 | 193 |
+| parallel | 23 | 49 | 47 |
+| connections | 1,024 | 687 | 1,200 |
 
 The Mac is a laptop with 6 performance and 12 efficiency cores, running macOS.
 The two desktops run Ubuntu 26.04: the Intel one has 8 cores (16 threads), the
@@ -61,20 +61,41 @@ time, best of three:
 
 | Benchmark | Apple M5 Pro | Intel i7, GCC | AMD Ryzen, Clang |
 |---|---|---|---|
-| fib | 597 | 1,112 | 1,086 |
-| binary_trees | 2,089 | 4,057 | 4,187 |
-| trees | 2,147 | 5,431 | 6,692 |
-| instantiation | 537 | 864 | 909 |
-| invocation | 294 | 666 | 601 |
-| method_call | 195 | 360 | 371 |
-| properties | 418 | 852 | 821 |
-| zoo | 326 | 626 | 637 |
+| fib | 595 | 1,091 | 1,073 |
+| binary_trees | 2,076 | 4,090 | 4,189 |
+| trees | 2,111 | 5,436 | 6,643 |
+| instantiation | 529 | 861 | 924 |
+| invocation | 297 | 664 | 580 |
+| method_call | 193 | 364 | 369 |
+| properties | 413 | 843 | 814 |
+| zoo | 327 | 628 | 628 |
 
 These are 1.3–3.0× faster than before the forms for compiled dynamic code
 existed ([item 1](#how-the-interpreter-is-made-fast) below): `invocation` most, since every call there passed a
 constant, then the property and method benchmarks, whose inline-cache checks
 and field reads took the generic path. What they spend their time on now is
 mostly field maps and allocation.
+
+### Compiled Lua
+
+The Lua 5.5 compiler in `mlws-compilers`, still in development, keeps each Lua
+value in three registers (an integer, a float and a reference whose value says
+which is live) and gives tables shapes and per-site caches. Its benchmarks, as
+whole runs (start-up and assembling included), in milliseconds, best of three,
+against the reference interpreter running the same source:
+
+| Benchmark | MLWSVM, M5 | Lua 5.5, M5 | MLWSVM, i7 | Lua 5.5, i7 |
+|---|---|---|---|---|
+| loop | 300 | 220 | 484 | 289 |
+| iterate | 165 | 58 | 275 | 78 |
+| fib | 193 | 52 | 325 | 101 |
+| methods | 2,183 | 353 | 3,941 | 564 |
+| strings | 2,302 | 136 | 3,865 | 213 |
+
+The profiler shows nearly all of these instructions on fast paths; what the
+generated code still spends is instruction count (type guards on values of
+unknown type, two-word table values, hash lookups), allocation, and, for
+`strings`, string operations, which are natives.
 
 ### Against other virtual machines
 
@@ -134,7 +155,8 @@ it measured faster.
    into registers, reference and `f64` set-compares and branches, `isa`, and
    `mget` by a constant key. A third covers what the Lua compiler measured:
    64-bit globals, elements at a constant index and closure captures (`UP[n]`)
-   moved to or from registers, `len`, and `tagof` of an element. The profiler lists the instructions that still run
+   moved to or from registers, `len`, `tagof` of an element, `lpush` of
+   registers into a list's spare capacity, and `f64` `sqrt`, `neg` and `abs`. The profiler lists the instructions that still run
    generically, which is how these were chosen. A shape qualifies only when its generic semantics are
    trivially the same: no width canonicalisation, no signedness differences
    (unsigned ordering stays generic), and no trap that cannot be checked
@@ -198,7 +220,12 @@ it measured faster.
    not run, and a coroutine's first frame returns as a process's entry function
    does. The larger fast forms (calls and returns with constants, `mget`) do
    their work in functions of their own and keep only a call in the loop:
-   written inline, they made GCC's `fib` 14% slower. Moving the whole generic
+   written inline, they made GCC's `fib` 14% slower. On x86 the generic forms
+   also re-read their instruction and frame from memory, so the fast path's
+   copies are not live across the generic code's calls; without that, GCC kept
+   the instruction pointer on the stack and Lua's `iterate` ran 11% slower. On
+   arm64, with twice the registers, the same change made `loop` 46% slower, so
+   it is x86 only. Moving the whole generic
    `switch` out of the loop instead cost the Apple M5 build 11–15% on the
    generic-heavy benchmarks (`binarytrees`, `sieve`, `nbody`), for the call per
    generic instruction.
@@ -337,7 +364,7 @@ for each request it serves.
   barrier on every reference store.
 * **More specialised shapes.** Arithmetic directly on elements and fields
   (`nbody`) and raw memory (`sieve`) take the generic path. Rewriting `nbody` to
-  load into registers, compute there and store back takes it from 98 ms to
+  load into registers, compute there and store back takes it from 97 ms to
   24 ms, so compilers can already get most of that speed. The shapes worth a
   form of their own are the ones compiled programs run most: the profiler's
   list of instructions on the general path shows them, as it showed the ones
