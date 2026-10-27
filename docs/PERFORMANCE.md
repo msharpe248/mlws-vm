@@ -26,16 +26,16 @@ per core:
 
 | Benchmark | Apple M5 Pro, Clang | Intel i7-11700KF, GCC | AMD Ryzen 9 5900X, Clang |
 |---|---|---|---|
-| fib | 69 | 153 | 139 |
-| loop | 86 | 186 | 285 |
-| sieve | 612 | 1,068 | 1,167 |
-| nbody | 94 | 162 | 173 |
-| binarytrees | 116 | 237 | 229 |
-| maps | 61 | 102 | 108 |
-| pingpong | 34 | 95 | 75 |
-| closures | 104 | 216 | 188 |
-| parallel | 23 | 48 | 58 |
-| connections | 1,031 | 799 | 1,479 |
+| fib | 72 | 163 | 138 |
+| loop | 87 | 191 | 167 |
+| sieve | 631 | 1,000 | 1,067 |
+| nbody | 96 | 162 | 156 |
+| binarytrees | 119 | 229 | 220 |
+| maps | 63 | 104 | 106 |
+| pingpong | 35 | 95 | 76 |
+| closures | 110 | 199 | 186 |
+| parallel | 24 | 49 | 43 |
+| connections | 1,029 | 696 | 1,248 |
 
 The Mac is a laptop with 6 performance and 12 efficiency cores, running macOS.
 The two desktops run Ubuntu 26.04: the Intel one has 8 cores (16 threads), the
@@ -46,6 +46,30 @@ clock cycles per instruction. `maps` and `pingpong` spend their time in natives
 (strings, hashing, message copying) and in the scheduler rather than in the
 interpreter loop.
 
+### Compiled Lox
+
+The benchmarks of *Crafting Interpreters*, compiled by the Lox compiler in the
+`mlws-compilers` project, which keeps each dynamically typed value in an F and
+an R register and caches method lookups at each call site. Milliseconds of wall
+time, best of three:
+
+| Benchmark | Apple M5 Pro | Intel i7, GCC | AMD Ryzen, Clang |
+|---|---|---|---|
+| fib | 593 | 1,135 | 1,053 |
+| binary_trees | 2,093 | 4,103 | 4,180 |
+| trees | 2,174 | 5,501 | 6,664 |
+| instantiation | 531 | 858 | 897 |
+| invocation | 303 | 633 | 605 |
+| method_call | 221 | 417 | 441 |
+| properties | 426 | 870 | 830 |
+| zoo | 376 | 684 | 688 |
+
+These are 1.3–2.9× faster than before the forms for compiled dynamic code
+existed ([item 1](#how-the-interpreter-is-made-fast) below): `invocation` most, since every call there passed a
+constant, then the property and method benchmarks, whose inline-cache checks
+and field reads took the generic path. What they spend their time on now is
+mostly field maps and allocation.
+
 ### Against other virtual machines
 
 The same `fib` and `loop` programs on Lua 5.5, the JVM and CPython
@@ -54,13 +78,13 @@ subtracted):
 
 | | `fib` (Mac) | `loop` (Mac) | `fib` (Intel) | `loop` (Intel) |
 |---|---|---|---|---|
-| MLWSVM | 69 | **87** | 151 | **183** |
-| Lua 5.5 | **49** | 210 | **100** | 289 |
-| JVM, interpreter only (`-Xint`) | 87 | 183 | 104 | 396 |
-| CPython | 128 | 1,211 | 186 | 2,374 |
-| JVM with its JIT compiler | 2 | 16 | 8 | 32 |
+| MLWSVM | 72 | **87** | 149 | **189** |
+| Lua 5.5 | **52** | 215 | **101** | 288 |
+| JVM, interpreter only (`-Xint`) | 92 | 186 | 104 | 396 |
+| CPython | 133 | 1,216 | 186 | 2,375 |
+| JVM with its JIT compiler | 3 | 16 | 8 | 31 |
 
-MLWSVM runs the loop 2.4× faster than Lua and 2.1× faster than the JVM's
+MLWSVM runs the loop 2.5× faster than Lua and 2.1× faster than the JVM's
 interpreter on the Mac. Lua runs `fib` 1.4× faster on the Mac and 1.5× faster on
 the Intel machine, where the JVM's interpreter is faster too: an MLWSVM call
 costs about 10 ns on the Mac, against 7 ns in Lua (see
@@ -98,7 +122,12 @@ it measured faster.
    64-bit integer and `f64` arithmetic on registers and immediates, moves,
    compare-and-branch, `inc`/`dec`/`bz`/`bnz`/`jmp`, `div`/`rem` by constants
    other than 0 and -1, calls and returns, field and element moves, null tests,
-   and closure calls. A shape qualifies only when its generic semantics are
+   and closure calls. A second set covers the shapes compiled dynamically typed
+   code is made of (taken from the Lox compiler's output, below): constants
+   among call arguments and `ret` values, reference constants and globals moved
+   into registers, reference and `f64` set-compares and branches, `isa`, and
+   `mget` by a constant key. The profiler lists the instructions that still run
+   generically, which is how these were chosen. A shape qualifies only when its generic semantics are
    trivially the same: no width canonicalisation, no signedness differences
    (unsigned ordering stays generic), and no trap that cannot be checked
    cheaply. The disassembler, tracer, profiler and debugger see the real opcode.
@@ -151,7 +180,7 @@ it measured faster.
    with a system call. The scheduler sets a jump buffer once per time slice, so
    message-heavy code would pay a system call per message. The VM never touches
    signal masks, so the cheaper variant is safe.
-9. **Rare instructions outside the loop.** The quickened handlers and the
+9. **Rare and large work outside the loop.** The quickened handlers and the
    generic `switch` are one function, and how a compiler allocates its registers
    decides the speed of every handler. Any code added to that function can
    change it: two never-taken branches and one call, for coroutines, made `fib`
@@ -159,15 +188,19 @@ it measured faster.
    coroutine instructions, and a coroutine's last return, are handled by a
    wrapper around the loop: the loop returns to it for an instruction it does
    not run, and a coroutine's first frame returns as a process's entry function
-   does. Moving the whole generic `switch` out of the loop instead cost the
-   Apple M5 build 11–15% on the generic-heavy benchmarks (`binarytrees`,
-   `sieve`, `nbody`), for the call per generic instruction.
+   does. The larger fast forms (calls and returns with constants, `mget`) do
+   their work in functions of their own and keep only a call in the loop:
+   written inline, they made GCC's `fib` 14% slower. Moving the whole generic
+   `switch` out of the loop instead cost the Apple M5 build 11–15% on the
+   generic-heavy benchmarks (`binarytrees`, `sieve`, `nbody`), for the call per
+   generic instruction.
 
 `tests/perf/quickened.masm` checks the arithmetic, branch and call forms
 against the generic semantics at the edges: overflow, negative divisors,
 unsigned compares, `INT64_MIN / -1`, mixed-bank calls, and results written to
 memory. `tests/perf/quickened_slots.masm` checks every fallback of the field,
-element, null-test and closure-call forms.
+element, null-test and closure-call forms, and `tests/perf/quickened_dynamic.masm`
+those of the forms for compiled dynamically typed code.
 
 [TARGETING.md §12](TARGETING.md#12-what-runs-fastest) tells compilers which
 shapes are fast.
@@ -296,10 +329,12 @@ for each request it serves.
   barrier on every reference store.
 * **More specialised shapes.** Arithmetic directly on elements and fields
   (`nbody`) and raw memory (`sieve`) take the generic path. Rewriting `nbody` to
-  load into registers, compute there and store back takes it from 94 ms to
-  23 ms, so compilers can already get most of that speed. There are many
-  possible shapes, so the right ones to add are the ones the scripting-language
-  compiler actually emits. Measure its output first.
+  load into registers, compute there and store back takes it from 96 ms to
+  24 ms, so compilers can already get most of that speed. The shapes worth a
+  form of their own are the ones compiled programs run most: the profiler's
+  list of instructions on the general path shows them, as it showed the ones
+  added for compiled Lox. What remains there for Lox is allocation (`new`,
+  `mnew`, `mset`), which a fast form must not do.
 * **Lock-free run queues** (Chase–Lev deques). Each queue's lock is almost
   always uncontended, because a thread mostly uses its own queue. Revisit if
   profiles of many-thread, message-heavy programs show queue locks.

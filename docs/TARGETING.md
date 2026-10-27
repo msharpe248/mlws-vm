@@ -358,24 +358,42 @@ Every instruction works with every operand form, but the interpreter has fast
 paths for the common shapes. They are chosen at load time, so a compiler gets
 them by emitting these shapes; nothing else changes.
 
-* **64-bit registers.** Arithmetic, moves and compare-and-branch on `i64`/`u64`
-  in `I` registers and `f64` in `F` registers, with register or constant operands
-  (`add I0, I1, I2`, `add I0, 1`, `blt I0, I1, L`, `mul F0, F1, 2.0`). Narrow types
-  (`i32`, `u8`, ...) and unsigned comparisons take the general path, because they
-  must wrap or compare differently.
-* **Calls with register arguments and results** of the declared 64-bit types:
-  `call f (I1, F0, R2) -> (I3)`. Constants and memory operands as arguments work,
-  but take the general path; move them into registers first in hot code.
-  Closure calls (`calli R0 (I1) -> (I2)`) are fast when the closure's parameter
-  and result types match the registers' banks.
+* **64-bit registers.** Arithmetic and moves on `i64`/`u64` in `I` registers and
+  `f64` in `F` registers, with register or constant operands (`add I0, I1, I2`,
+  `add I0, 1`, `mul F0, F1, 2.0`), and compare-and-branch on them
+  (`blt I0, I1, L`, `bge F0, 0.5, L`). Narrow types (`i32`, `u8`, ...) and
+  unsigned orderings take the general path, because they must wrap or compare
+  differently.
+* **Set-compares** of `f64` registers and constants (`slt.f64 I0, F0, F1`,
+  `seq.f64 I0, F0, 0.0`, all six), and reference identity (`seq.r I0, R0, R1`,
+  `sne.r I0, R0, null`).
+* **Calls with registers and constants as arguments**, and registers as results,
+  of the declared 64-bit types: `call f (I1, F0, R2) -> (I3)`,
+  `call f (F0, null) -> (F1, R1)`. A constant can be an integer or float for a
+  numeric parameter, a string for a reference, or `null`. Memory operands as
+  arguments work, but take the general path; move them into registers first in
+  hot code. Closure calls (`calli R0 (I1, 0.0) -> (I2)`) are fast when the
+  closure's parameter and result types fit, checked per call. `ret` is fast with
+  registers and constants of the declared result types (`ret F1, null`).
+* **References:** `mov.r R0, null`, `mov.r R0, "text"`, a global reference
+  (`mov.r R0, @cache`), and `beq.r`/`bne.r` of a register against a register,
+  a constant or a global (`bne.r R0, @cache, L`, the shape of an inline cache).
 * **Fields and elements moved to or from a register:** `mov I0, R1->Point.x`,
   `mov R1->Point.x, I0`, `mov F0, R1[I2]`, `mov R1[I2], F0`, for 64-bit fields,
   `i64`/`f64`/`r` arrays and list elements, indexed by a register. Arithmetic
   directly on a field or element works, but takes the general path. Loading
   into registers, computing there and storing back is much faster in a loop:
-  `bench/nbody.masm` runs in 94 ms with element operands and in 23 ms rewritten
+  `bench/nbody.masm` runs in 96 ms with element operands and in 24 ms rewritten
   that way, although it executes more instructions.
-* **Null tests:** `bz R0, L` and `bnz R0, L`.
+* **Objects:** `isa I0, R0, Point`; null tests `bz R0, L` and `bnz R0, L`; and
+  `mget.r R0, R1, "name", null`, a reference looked up by a constant string key
+  with a null default (an object whose fields are a map).
+
+Allocating instructions (`new`, `lnew`, `mnew`, `mset`, `strcat`, ...) always
+take the general path, since a fast form must not allocate. To see which of a
+program's instructions do, run it with `mlwsvm run --profile`: the report lists
+the hottest instructions on the general path, with their lines
+([TOOLING.md](TOOLING.md#profiler---profile)).
 
 Where it matters, prefer one instruction to several (`blt a, b, L` over `slt` +
 `bnz`), and keep hot values in registers rather than in `SP[...]` or globals. See

@@ -154,7 +154,9 @@ static void trace_insn(Tools *t, Process *p, Function *f, uint32_t pc) {
 }
 
 static void profile_insn(Tools *t, Process *p, Function *f, uint32_t pc) {
-    t->op_counts[f->code[pc].op]++;
+    const Insn *in = &f->code[pc];
+    t->op_counts[in->op]++;
+    if (in->xop != in->op) t->op_fast[in->op]++;
     if (!f->prof) {
         f->prof = xcalloc(f->ncode, sizeof(uint64_t));
         VEC_PUSH(t->prof_funcs, f);
@@ -288,10 +290,37 @@ void tools_profile_report(VM *vm, FILE *out, const char *flame_path) {
     for (int i = 0; i < OP__COUNT; i++)
         if (t->op_counts[i]) ops[nops++] = (Hot){NULL, (uint32_t)i, t->op_counts[i]};
     qsort(ops, (size_t)nops, sizeof *ops, hot_cmp);
-    fprintf(out, "\nopcodes:\n");
+    fprintf(out, "\nopcodes (fast = the share run by a specialised handler, chosen at load time):\n");
+    fprintf(out, "  %6s %12s %6s  %s\n", "%", "insns", "fast", "opcode");
     for (int i = 0; i < nops && i < 15; i++)
-        fprintf(out, "  %5.1f%% %12llu  %s\n", 100.0 * (double)ops[i].n / (double)total, (unsigned long long)ops[i].n,
-                op_info[ops[i].pc].mnem);
+        fprintf(out, "  %5.1f%% %12llu %5.1f%%  %s\n", 100.0 * (double)ops[i].n / (double)total, (unsigned long long)ops[i].n,
+                100.0 * (double)t->op_fast[ops[i].pc] / (double)ops[i].n, op_info[ops[i].pc].mnem);
+
+    /* The hottest instructions on the general path: the shapes worth changing
+     * in generated code, or worth a specialised handler (docs/TARGETING.md §12). */
+    VEC(Hot) slow = {0};
+    for (size_t i = 0; i < t->prof_funcs.n; i++) {
+        const Function *f = t->prof_funcs.v[i];
+        for (uint32_t pc = 0; pc < f->ncode; pc++)
+            if (f->prof[pc] && f->code[pc].xop == f->code[pc].op) {
+                Hot h = {f, pc, f->prof[pc]};
+                VEC_PUSH(slow, h);
+            }
+    }
+    qsort(slow.v, slow.n, sizeof *slow.v, hot_cmp);
+    fprintf(out, "\nhottest instructions on the general path:\n");
+    fprintf(out, "  %6s %12s  %s\n", "%", "insns", "instruction");
+    StrBuf d = {0};
+    for (size_t i = 0; i < slow.n && i < 15; i++) {
+        const Function *f = slow.v[i].f;
+        uint32_t pc = slow.v[i].pc, line = f->mf->lines && pc < f->mf->ninsns ? f->mf->lines[pc] : 0;
+        d.n = 0;
+        disasm_insn(&d, f->mod->m, &f->code[pc]);
+        fprintf(out, "  %5.1f%% %12llu  %-40s ; %s.%s line %u\n", 100.0 * (double)slow.v[i].n / (double)total,
+                (unsigned long long)slow.v[i].n, d.s ? d.s : "", f->mod->m->name, f->name, line);
+    }
+    sb_free(&d);
+    VEC_FREE(slow);
     VEC_FREE(fn);
     VEC_FREE(lines);
     if (flame_path) {

@@ -127,6 +127,7 @@ civil-date conversions.
 |---|---|---|
 | Per-process size-class allocator for small objects (M21) | BEAM's per-scheduler allocators (`erts_alloc`), tcmalloc and jemalloc size classes and thread caches, Go's per-P `mcache` | The cache is per process rather than per thread: a process's objects never leave its heap, so it needs no locks, no cross-thread frees, and its chunks are freed with it. |
 | Threaded dispatch for quickened forms, a `switch` for the rest (M22) | Bell's threaded code (1973); Ertl and Gregg on the structure of efficient interpreters; computed goto in Lua, CPython and Ruby's YARV | Only the quickened forms are threaded; generic instructions share one `switch`, and a fast handler that meets an unexpected object jumps to it. The program counter and the slice count stay in locals and are written back only where something can observe them. |
+| Specialised forms chosen from what a compiler emits, and a profiler that lists the hottest instructions still on the general path (M24) | CPython's specialisation statistics (`--enable-pystats`) and PEP 659; V8's and LuaJIT's tracing of slow paths | The forms are chosen once, at load time, from operand shapes alone, never from observed types, so they cost nothing to keep correct: a form that meets something unexpected hands that one execution to the generic instruction. |
 | Quickening into specialised execution opcodes after verification | JVM "quick" bytecodes; Stefan Brunthaler, *Inline Caching Meets Quickening* (ECOOP 2010); CPython's specialising adaptive interpreter (PEP 659) | Specialisation happens once, at load time, from static operand shapes (register banks and type suffixes), not adaptively at run time. The rich operand model makes the shapes knowable statically. |
 
 ### Toolchain
@@ -172,17 +173,17 @@ Experiments that would show whether the combination pays off:
 | Question | Experiment |
 |---|---|
 | Is code denser than a stack VM's? | Answered for two small programs ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)): MLWSVM executes 55–68% fewer instructions than the JVM and CPython, and 18% fewer than Lua, but its code is 1.7–2.9× the size of the JVM's. Still to do: real compiler output |
-| How much do rich operands cost the interpreter? | Partly answered: once decoded and quickened, very little. Since M22, MLWSVM runs a tight loop 2.4× faster than Lua 5.5, while Lua runs `fib` 1.4× faster because MLWSVM's calls set up a window per register bank ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md), [PERFORMANCE.md](PERFORMANCE.md#how-the-interpreter-is-made-fast)). Still to do: sieve, nbody and binary-trees against Lua |
+| How much do rich operands cost the interpreter? | Partly answered: once decoded and quickened, very little. Since M22, MLWSVM runs a tight loop 2.5× faster than Lua 5.5, while Lua runs `fib` 1.4× faster because MLWSVM's calls set up a window per register bank ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md), [PERFORMANCE.md](PERFORMANCE.md#how-the-interpreter-is-made-fast)). Still to do: sieve, nbody and binary-trees against Lua |
 | What do the tags cost? | Memory overhead (1/8 extra on the stack and globals), and the time spent on tag checks (a profile with tag checks disabled) |
 | Is it easier to target? | Lines of code for a code generator from a small language to MLWSVM, compared with a JVM or WebAssembly backend |
 | How do process copies scale? | Message throughput and latency against message size (deep copy cost), compared with BEAM for similar workloads |
 | Is the GC simpler but competitive? | Pause times and throughput on allocation-heavy benchmarks; the cost of scanning stack tags as stacks grow |
 
-Current data points since M22 (see [PERFORMANCE.md](PERFORMANCE.md)): about 2.1G
-instructions/s on a tight register loop and about 460M/s on recursive `fib`, on an
+Current data points (see [PERFORMANCE.md](PERFORMANCE.md)): about 2.1G
+instructions/s on a tight register loop and about 440M/s on recursive `fib`, on an
 Apple Silicon laptop with one thread. On the loop that is 14× faster than CPython
-3.14, 2.4× faster than Lua 5.5 and 2.1× faster than the JVM's interpreter. On
-`fib` it is 1.9× faster than CPython and 1.3× faster than the JVM's interpreter,
+3.14, 2.5× faster than Lua 5.5 and 2.1× faster than the JVM's interpreter. On
+`fib` it is 1.8× faster than CPython and 1.3× faster than the JVM's interpreter,
 while Lua is 1.4× faster than MLWSVM. A two-process ping-pong reaches about 18M
 messages/s, and 16 independent CPU-bound processes run 7.8× faster on the
 laptop's 18 cores than on one thread. Instructions with up
@@ -211,6 +212,7 @@ of the instructions in call-heavy code.
 | M21 | BEAM's `erts_alloc`, tcmalloc/jemalloc size classes, Go's `mcache` |
 | M22 | Threaded code (Bell; Ertl and Gregg), Lua's and CPython's computed-goto dispatch, Lua's register window for calls (as the measure to beat) |
 | M23 | Lua's asymmetric stackful coroutines (and Moura and Ierusalimschy's account of them), Wren fibers, Ruby `Fiber`, Python generators, WebAssembly stack switching |
+| M24 | CPython 3.11's specialising interpreter and Brunthaler's quickening (forms chosen from the shapes compilers emit); the inline caches of Smalltalk-80 and Self, which the Lox compiler builds from `bne.r R, @cache, L` |
 
 ## References
 
@@ -240,5 +242,6 @@ of the instructions in call-heavy code.
 - FIPS 180-4, *Secure Hash Standard* (SHA-256).
 - Jean-Philippe Aumasson and Daniel J. Bernstein, *SipHash: a Fast Short-Input PRF*, INDOCRYPT 2012.
 - David Blackman and Sebastiano Vigna, *Scrambled Linear Pseudorandom Number Generators*, ACM TOMS, 2021 (xoshiro256\*\*).
+- L. Peter Deutsch and Allan M. Schiffman, *Efficient Implementation of the Smalltalk-80 System*, POPL 1984 (inline caches); Urs Hölzle, Craig Chambers and David Ungar, *Optimizing Dynamically-Typed Object-Oriented Languages with Polymorphic Inline Caches*, ECOOP 1991.
 - Ana Lúcia de Moura and Roberto Ierusalimschy, *Revisiting Coroutines*, ACM TOPLAS 31(2), 2009; the Lua 5.4 Reference Manual, §2.6 (coroutines).
 - Howard Hinnant, *chrono-Compatible Low-Level Date Algorithms* (`days_from_civil`).

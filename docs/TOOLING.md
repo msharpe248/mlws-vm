@@ -86,15 +86,29 @@ functions (instructions executed in the function itself; ...):
 hot lines:
    22.2%       635621  examples/fib.masm:9 (fib.fib)
 ...
-opcodes:
-   22.2%       635622  ret
+opcodes (fast = the share run by a specialised handler, chosen at load time):
+       %        insns   fast  opcode
+   22.2%       635622 100.0%  ret
+...
+hottest instructions on the general path:
+       %        insns  instruction
+    0.0%            1  ncall "io.print_i" (I0)                  ; fib.main line 22
+...
 ```
 
 * **functions**: instructions executed in each function itself (exclusive).
   `entries` counts how often the function's first instruction ran: calls, plus any
   loop that jumps back to it.
 * **hot lines**: instructions per source line.
-* **opcodes**: the instruction mix.
+* **opcodes**: the instruction mix, and for each opcode the share of executions
+  that used a specialised handler ([PERFORMANCE.md](PERFORMANCE.md#how-the-interpreter-is-made-fast)).
+  The handler is chosen when the code is loaded, from the instruction's shape; one
+  that meets something unexpected at run time (a null, another type) still hands
+  that execution to the general path, and is counted as fast.
+* **hottest instructions on the general path**: the instructions that ran most
+  often without a specialised handler, disassembled, with their function and
+  line. For generated code, these are the shapes to change, or to report: see
+  [TARGETING.md §12](TARGETING.md#12-what-runs-fastest).
 * `--flame FILE` also writes sampled call stacks (one sample every 997
   instructions) in the *collapsed* format, `main;f;g 123`, which
   `flamegraph.pl` and speedscope read directly.

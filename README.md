@@ -84,7 +84,7 @@ base:
   dashboard, JSON API and `mlwsvm top`.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 240 test programs, also run under
+* **Tested in its own assembly**: 241 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, and with a
   garbage collection at every allocation.
 

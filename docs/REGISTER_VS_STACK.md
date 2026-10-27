@@ -26,7 +26,7 @@ instead of a fixed three.
   of a nanosecond. How cheaply a VM executes each instruction matters as much as
   how many it needs.
 * **MLWSVM is the fastest of these interpreters on the loop, but not on calls.**
-  On the Mac it runs the loop 2.4× faster than Lua 5.5 and 2.1× faster than the
+  On the Mac it runs the loop 2.5× faster than Lua 5.5 and 2.1× faster than the
   JVM's interpreter. Lua runs `fib` 1.4× faster (1.5× on Linux, where the JVM's
   interpreter is faster too), because an MLWSVM call sets up a register window
   in each bank the callee uses.
@@ -398,11 +398,11 @@ Wall time in milliseconds, best of five, with each VM's start-up time subtracted
 
 | | Kind | `fib` (Mac) | `loop` (Mac) | `fib` (Linux) | `loop` (Linux) |
 |---|---|---|---|---|---|
-| MLWSVM | register | 69 | **87** | 151 | **183** |
-| Lua 5.5 | register, fixed 3 | **49** | 210 | **100** | 289 |
-| JVM, interpreter only (`-Xint`) | stack | 87 | 183 | 104 | 396 |
-| CPython | stack | 128 | 1,211 | 186 | 2,374 |
-| JVM with its JIT compiler | (machine code) | 2 | 16 | 8 | 32 |
+| MLWSVM | register | 72 | **87** | 149 | **189** |
+| Lua 5.5 | register, fixed 3 | **52** | 215 | **101** | 288 |
+| JVM, interpreter only (`-Xint`) | stack | 92 | 186 | 104 | 396 |
+| CPython | stack | 133 | 1,216 | 186 | 2,375 |
+| JVM with its JIT compiler | (machine code) | 3 | 16 | 8 | 31 |
 
 The Mac is an Apple M5 Pro with Lua 5.5.1, OpenJDK 27 and CPython 3.14. Linux is
 an Intel i7-11700KF running Ubuntu 26.04 with Lua 5.5.0, OpenJDK 25 and CPython
@@ -413,8 +413,8 @@ Time per instruction executed, in nanoseconds (Mac):
 
 | | MLWSVM | Lua 5.5 | JVM `-Xint` | CPython |
 |---|---|---|---|---|
-| `fib` | 2.2 | 1.3 | 1.2 | 1.6 |
-| `loop` | 0.48 | 1.0 | 0.32 | 2.2 |
+| `fib` | 2.3 | 1.4 | 1.3 | 1.7 |
+| `loop` | 0.48 | 1.0 | 0.33 | 2.2 |
 
 ### What the measurements show
 
@@ -429,7 +429,7 @@ Time per instruction executed, in nanoseconds (Mac):
 3. **With cheap instructions, the register machine wins the loop.** MLWSVM's
    loop costs about half a nanosecond per instruction, within 1.5× of the JVM's
    template interpreter. Since it needs a third of the JVM's instructions, it
-   finishes in under half the time, and 2.4× faster than Lua on the Mac (1.6× on
+   finishes in under half the time, and 2.5× faster than Lua on the Mac (1.5× on
    Linux). Its program counter stays in a CPU register, common instructions
    dispatch straight to the next handler (threaded code, as Lua does), and
    each carries a compact copy of its operands

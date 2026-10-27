@@ -16,6 +16,7 @@ typedef struct Tools {
     /* --profile */
     bool profile;
     uint64_t op_counts[OP__COUNT];
+    uint64_t op_fast[OP__COUNT]; /* of those, run as a quickened form (interp.c) */
     VEC(Function *) prof_funcs; /* functions with a prof[] array */
     StrMap stacks;              /* collapsed stack -> sample count */
     uint64_t sample_every, sample_tick, samples;
