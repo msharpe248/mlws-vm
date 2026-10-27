@@ -84,18 +84,15 @@ against the reference interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | Lua 5.5, M5 | MLWSVM, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|
-| loop | 249 | 216 | 456 | 289 |
-| iterate | 147 | 58 | 236 | 78 |
-| fib | 167 | 54 | 236 | 101 |
-| methods | 1,856 | 351 | 3,448 | 572 |
-| strings | 1,846 | 136 | 3,039 | 213 |
+| loop | 242 | 214 | 458 | 289 |
+| iterate | 133 | 56 | 216 | 79 |
+| fib | 151 | 52 | 217 | 101 |
+| methods | 905 | 337 | 1,755 | 566 |
+| strings | 414 | 131 | 681 | 212 |
 
 The profiler shows nearly all of these instructions on fast paths; what the
 generated code still spends is instruction count (type guards on values of
-unknown type, two-word table values, hash lookups) and allocation. In
-`strings`, two thirds of the instructions are in the compiler's own Lua
-pattern matcher, which is generated code too; the VM's string natives take
-little.
+unknown type, two-word table values, hash lookups) and allocation.
 
 ### Against other virtual machines
 
@@ -155,11 +152,15 @@ it measured faster.
    `mget` by a constant key. A third covers what the Lua compiler measured:
    64-bit globals, elements at a constant index and closure captures (`UP[n]`)
    moved to or from registers, `len`, `tagof` of an element, `lpush` of
-   registers into a list's spare capacity, and `f64` `sqrt`, `neg` and `abs`. The profiler lists the instructions that still run
-   generically, which is how these were chosen. A shape qualifies only when its generic semantics are
-   trivially the same: no width canonicalisation, no signedness differences
-   (unsigned ordering stays generic), and no trap that cannot be checked
-   cheaply. The disassembler, tracer, profiler and debugger see the real opcode.
+   registers into a list's spare capacity, and `f64` `sqrt`, `neg` and `abs`. A
+   fourth, from the Lua compiler's later profiles: calls and returns with
+   constants copied inline (each constant converted at load time), closure tail
+   calls, `new` and `lnew`, constants stored to fields, `mget` of a key in any
+   register, `jtab`, `cvt.f64.i64`, shifts, unsigned compare-and-branch, and
+   `f64` arithmetic with a constant first operand. The profiler lists the
+   instructions that still run generically, which is how these were chosen. A
+   shape qualifies only when its generic semantics are trivially the same: no
+   width canonicalisation, and no trap that cannot be checked cheaply. The disassembler, tracer, profiler and debugger see the real opcode.
 2. **Compact operands.** Each decoded operand is a 72-byte `Operand` with room
    for every addressing mode. A quickened instruction also carries a compact
    copy inside its 32-byte `Insn`: three register numbers, a branch target and
@@ -193,9 +194,12 @@ it measured faster.
    frame's `pc` and the process's instruction count are written back only where
    something can look at them: before a generic instruction (which may trap,
    call a native or switch frames), at calls and returns, before the tools'
-   hook, and at the end of the slice. Quickened instructions never allocate or
-   trap, so the safepoint that checks for a pending collection or kill comes
-   after each generic instruction and at the start of each slice. Whether a
+   hook, and at the end of the slice. Quickened instructions do not trap,
+   except `new` and `lnew`, which save the `pc` before allocating. An
+   allocation only marks a collection as due: the safepoint that runs a pending
+   collection or kill comes after each generic instruction and at the start of
+   each slice, so a run of quickened instructions delays a collection by at most
+   one slice (2,000 instructions). Whether a
    debugger hook is installed is read once per slice; with one, every
    instruction goes through the slice check, which calls it. None of this is observable: a process that kills itself stops at the
    next instruction, and `--stats` counts every instruction.

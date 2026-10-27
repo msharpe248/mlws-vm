@@ -373,11 +373,12 @@ them by emitting these shapes; nothing else changes.
 
 * **64-bit registers.** Arithmetic and moves on `i64`/`u64` in `I` registers and
   `f64` in `F` registers, with register or constant operands (`add I0, I1, I2`,
-  `add I0, 1`, `mul F0, F1, 2.0`), `sqrt`, `neg` and `abs` of `f64` registers
-  (`sqrt F0` in place, or `sqrt F0, F1`), and compare-and-branch on them
-  (`blt I0, I1, L`, `bge F0, 0.5, L`). Narrow types (`i32`, `u8`, ...) and
-  unsigned orderings take the general path, because they must wrap or compare
-  differently.
+  `add I0, 1`, `mul F0, F1, 2.0`, `div F0, 1.0, F1`), shifts (`shl I0, I1, 3`,
+  `sar I0, I1`), `sqrt`, `neg` and `abs` of `f64` registers (`sqrt F0` in place,
+  or `sqrt F0, F1`), `cvt.f64.i64 F0, I0`, and compare-and-branch on them
+  (`blt I0, I1, L`, `bge F0, 0.5, L`), signed or unsigned (`bge.u64 I0, I1, L`:
+  one bounds check for `0 <= i < n`). Narrow types (`i32`, `u8`, ...) take the
+  general path, because they must wrap.
 * **Set-compares** of `f64` registers and constants (`slt.f64 I0, F0, F1`,
   `seq.f64 I0, F0, 0.0`, all six), and reference identity (`seq.r I0, R0, R1`,
   `sne.r I0, R0, null`).
@@ -386,9 +387,10 @@ them by emitting these shapes; nothing else changes.
   `call f (F0, null) -> (F1, R1)`. A constant can be an integer or float for a
   numeric parameter, a string for a reference, or `null`. Memory operands as
   arguments work, but take the general path; move them into registers first in
-  hot code. Closure calls (`calli R0 (I1, 0.0) -> (I2)`) are fast when the
-  closure's parameter and result types fit, checked per call. `ret` is fast with
-  registers and constants of the declared result types (`ret F1, null`).
+  hot code. Closure calls and tail calls (`calli R0 (I1, 0.0) -> (I2)`,
+  `tcalli R0 (I1, F1)`) are fast when the closure's parameter and result types
+  fit, checked per call. `ret` is fast with registers and constants of the
+  declared result types (`ret F1, null`). `jtab` on a register is fast.
 * **References:** `mov.r R0, null`, `mov.r R0, "text"`, and `beq.r`/`bne.r` of
   a register against a register, a constant or a global
   (`bne.r R0, @cache, L`, the shape of an inline cache).
@@ -399,23 +401,25 @@ them by emitting these shapes; nothing else changes.
 * **Fields and elements moved to or from a register:** `mov I0, R1->Point.x`,
   `mov R1->Point.x, I0`, `mov F0, R1[I2]`, `mov R1[I2], F0`, `mov I0, R1[3]`, for
   64-bit fields, and `i64`/`f64`/`r` arrays and list elements indexed by a
-  register or a constant. Arithmetic
+  register or a constant; and constants stored to fields
+  (`mov.i64 R0->Point.x, 0`, `mov.r R0->Node.next, null`). Arithmetic
   directly on a field or element works, but takes the general path. Loading
   into registers, computing there and storing back is much faster in a loop:
   `bench/nbody.masm` runs in 96 ms with element operands and in 24 ms rewritten
   that way, although it executes more instructions.
 * **Lists:** `lpush R0, I1, F2, R3` of untyped register values, while the list
   has room: each value is tagged with its register's type. Growing the list
-  allocates, on the general path, so create lists with their final capacity
+  takes the general path, so create lists with their final capacity
   (`lnew R0, n`) when it is known.
-* **Objects:** `isa I0, R0, Point`; `len I0, R0`; `tagof I0, R1[I2]`; null tests
-  `bz R0, L` and `bnz R0, L`; and
+* **Objects:** `new R0, Point`; `lnew R0` and `lnew R0, 8`; `isa I0, R0, Point`;
+  `len I0, R0`; `tagof I0, R1[I2]`; null tests `bz R0, L` and `bnz R0, L`;
   `mget.r R0, R1, "name", null`, a reference looked up by a constant string key
-  with a null default (an object whose fields are a map).
+  with a null default (an object whose fields are a map); and `mget` of a key
+  in any register into a register of each bank, with or without a constant
+  default (`mget I0, R1, R2, -1`), when the value has the bank's 64-bit type.
 
-Allocating instructions (`new`, `lnew`, `mnew`, `mset`, `strcat`, an `lpush`
-that grows its list, ...) always take the general path, since a fast form must
-not allocate. To see which of a
+Other allocating instructions (`mnew`, `mset`, `strcat`, an `lpush` that grows
+its list, ...) take the general path. To see which of a
 program's instructions do, run it with `mlwsvm run --profile`: the report lists
 the hottest instructions on the general path, with their lines
 ([TOOLING.md](TOOLING.md#profiler---profile)).

@@ -4,9 +4,9 @@
  * this vocabulary, which each includer defines:
  *
  *   QCASE(x)        start the handler for quickened form x
- *   QCASE2(x, y)    start one handler for the two forms x and y
  *   NEXT            go on with the next instruction
  *   JUMP()          make the next instruction the branch target (in->target)
+ *   JUMPTO(t)       make the next instruction the one at index t of the code
  *   GENERIC()       hand this instruction to the generic forms
  *   SPILL()/RELOAD() write the fast path's state back / read it again
  *   QI QF QR QP     the current register windows of each bank; QB(I) is QI
@@ -35,7 +35,8 @@
         QCASE(Q_F##N##_FFF) FR(0) = FR(1) op_ FR(2); NEXT;                     \
         QCASE(Q_F##N##_FFK) FR(0) = FR(1) op_ in->k.f; NEXT;                   \
         QCASE(Q_F##N##_FF) FR(0) = FR(0) op_ FR(1); NEXT;                      \
-        QCASE(Q_F##N##_FK) FR(0) = FR(0) op_ in->k.f; NEXT;
+        QCASE(Q_F##N##_FK) FR(0) = FR(0) op_ in->k.f; NEXT;                   \
+        QCASE(Q_F##N##_FKF) FR(0) = in->k.f op_ FR(2); NEXT;
         QFARITH_OPS(X)
 #undef X
         QCASE(Q_DIV_IIK) IR(0) = IR(1) / in->k.i; NEXT; /* divisor is a non-zero, non -1 constant */
@@ -231,6 +232,12 @@
         }
         X(I, I, i) X(F, F, f) X(R, R, r)
 #undef X
+        QCASE(Q_STFK) { /* mov R0->S.f, constant: the word in Operand.kw */
+            ObjStruct *so = STRUCT_OF(in->r[0]);
+            if (!IS_STRUCT(so)) GENERIC();
+            memcpy(&so->fields[in->target], &in->ops[1].kw, 8);
+            NEXT;
+        }
 #undef ELEM_LOAD
 #undef ELEM_STORE
 #undef STRUCT_OF
@@ -275,6 +282,86 @@
             RELOAD();
             NEXT;
         }
+        QCASE(Q_TCALLI_R) {
+            /* A closure tail call: the callee's frame replaces this one, at
+             * the same base, and returns to this frame's caller. */
+            const Operand *qo = in->ops;
+            Obj *ob = QR[in->r[0]];
+            if (!ob || ob->kind != OBJ_CLOSURE) GENERIC();
+            ObjClosure *cl = (ObjClosure *)ob;
+            Function *fn = cl->fn;
+            const MFunc *mf = fn->mf;
+            int argc = (int)qo[1].imm;
+            if (argc != mf->nparams || QFRM->base + fn->rsize > QPRC->rcap) GENERIC();
+            for (int k = 0; k < argc; k++)
+                if (!wide_type(mf->params[k]) || REG_BANK(qo[2 + k].reg) != (int)type_bank((MlwsType)mf->params[k])) GENERIC();
+            SPILL();
+            /* The arguments, in order, before the callee's window replaces this one. */
+            uint64_t args[MAX_OPERANDS];
+            const uint64_t *ow = QPRC->regs + QFRM->base;
+            for (int k = 0; k < argc; k++) memcpy(&args[k], &ow[qo[2 + k].pad], 8);
+            /* The caller's quickened call copies the results straight across
+             * only if they suit this callee too. */
+            const Insn *ri = QFRM->ret_insn;
+            uint8_t qret = QFRM->qret;
+            if (qret) {
+                int cargc = (int)ri->ops[1].imm, nres = ri->nops - 2 - cargc;
+                if (nres > mf->nrets || (nres && !(mf->flags & MF_RETS_DECLARED))) qret = 0;
+                for (int k = 0; k < nres && qret; k++)
+                    if (!wide_type(mf->rets[k]) || REG_BANK(ri->ops[2 + cargc + k].reg) != (int)type_bank((MlwsType)mf->rets[k]))
+                        qret = 0;
+            }
+            proc_pop_frame(QPRC);
+            proc_push_frame_fitting(QPRC, fn, ri);
+            Frame *nf = &QPRC->frames[QPRC->nframes - 1];
+            nf->closure = &cl->h;
+            nf->qret = qret;
+            uint64_t *nw = QPRC->regs + nf->base;
+            uint32_t ni = 0, nfl = fn->roff[BANK_F], nr = fn->roff[BANK_R], np = fn->roff[BANK_P];
+            for (int k = 0; k < argc; k++) {
+                uint32_t d;
+                switch (REG_BANK(qo[2 + k].reg)) {
+                case BANK_I: d = ni++; break;
+                case BANK_F: d = nfl++; break;
+                case BANK_R: d = nr++; break;
+                default: d = np++; break;
+                }
+                memcpy(&nw[d], &args[k], 8);
+            }
+            ctx_set(QCTX, nf, fn, nw);
+            RELOAD();
+            NEXT;
+        }
+        /* Allocation: a collection may run, so the frame's pc is saved first
+         * (as for any instruction that can fail). */
+        QCASE(Q_NEW) {
+            SPILL();
+            QR[in->r[0]] = &struct_new(QPRC, in->k.p)->h;
+            NEXT;
+        }
+        QCASE(Q_LNEW) {
+            SPILL();
+            QR[in->r[0]] = &list_new(QPRC, in->k.i)->h;
+            NEXT;
+        }
+        QCASE(Q_JTAB) { /* out of range: on to the next instruction */
+            uint64_t i = (uint64_t)IR(0);
+            if (i < (uint64_t)in->nops - 1) JUMPTO(in->ops[1 + i].rv.target);
+            NEXT;
+        }
+        QCASE(Q_CVT_FI) FR(0) = (double)IR(1); NEXT;
+#define X(N, op_)                                                             \
+        QCASE(Q_##N##_UU) if ((uint64_t)IR(0) op_ (uint64_t)IR(1)) JUMP(); NEXT;             \
+        QCASE(Q_##N##_UK) if ((uint64_t)IR(0) op_ (uint64_t)in->k.i) JUMP(); NEXT;
+        QUBRANCH_OPS(X)
+#undef X
+#define X(N, e)                                                               \
+        QCASE(Q_##N##_III) { int64_t a = IR(1), n = IR(2); IR(0) = (int64_t)(e); NEXT; } \
+        QCASE(Q_##N##_IIK) { int64_t a = IR(1), n = in->k.i; IR(0) = (int64_t)(e); NEXT; } \
+        QCASE(Q_##N##_II) { int64_t a = IR(0), n = IR(1); IR(0) = (int64_t)(e); NEXT; } \
+        QCASE(Q_##N##_IK) { int64_t a = IR(0), n = in->k.i; IR(0) = (int64_t)(e); NEXT; }
+        QSHIFT_OPS(X)
+#undef X
         /* ---- M24: the shapes of dynamically typed languages' code ---- */
         QCASE(Q_MOV_RK) QR[in->r[0]] = (Obj *)in->k.p; NEXT;
         QCASE(Q_BEQ_RR) if (QR[in->r[0]] == QR[in->r[1]]) JUMP(); NEXT;
@@ -385,20 +472,71 @@
             }
             NEXT;
         }
-        /* Calls with constants among the arguments, and rets with constants
-         * back to a quickened call: out of line (call_rk, ret_rk), since their
-         * code in this loop slowed the other call forms. */
-        QCASE2(Q_CALL_RK, Q_CALLI_RK) {
+        /* mget I0, R1, R2 [, k]: a key in any register (its type in target),
+         * a value of exactly the bank's 64-bit type, or the constant default
+         * (in k). */
+#define X(B, bank, w, tag)                                                    \
+        QCASE(Q_MGETV_##B) {                                                  \
+            const Obj *ob = QR[in->r[1]];                                     \
+            if (!ob || ob->kind != OBJ_MAP) GENERIC();                        \
+            Word key;                                                         \
+            if (in->target == T_I64) key.i = QI[in->r[2]];                    \
+            else if (in->target == T_F64) key.f = QF[in->r[2]];               \
+            else key.r = QR[in->r[2]];                                        \
+            const MapEntry *e = map_find((ObjMap *)ob, key, (uint8_t)in->target); \
+            if (e) {                                                          \
+                if (e->vtag != (tag)) GENERIC();                              \
+                QB(bank)[in->r[0]] = e->val.w;                                \
+            } else {                                                          \
+                if (in->nops < 4) GENERIC(); /* no default: E_KEY */          \
+                memcpy(&QB(bank)[in->r[0]], &in->k, 8);                       \
+            }                                                                 \
+            NEXT;                                                             \
+        }
+        X(I, I, i, T_I64) X(F, F, f, T_F64) X(R, R, r, T_R)
+#undef X
+        /* Calls and rets with constants among their values: Q_CALL_R and
+         * Q_RET_R with each constant converted at load time (Operand.kw). */
+        QCASE(Q_CALL_RK) {
             SPILL();
-            if (!call_rk(QPRC, in)) GENERIC();
-            ctx_load(QCTX);
+            const Operand *qo = in->ops;
+            Function *fn = qo[0].rv.ptr;
+            int argc = (int)qo[1].imm;
+            QPUSH_FRAME(fn, in);
+            Frame *nf = &QPRC->frames[QPRC->nframes - 1];
+            const Frame *of = nf - 1;
+            nf->qret = 1;
+            uint64_t *nw = QPRC->regs + nf->base;
+            const uint64_t *ow = QPRC->regs + of->base;
+            for (int k = 0; k < argc; k++) {
+                const Operand *a = &qo[2 + k];
+                memcpy(&nw[a->ireg], a->mode == OM_REG ? &ow[a->pad] : &a->kw, 8);
+            }
+            ctx_set(QCTX, nf, fn, nw);
             RELOAD();
             NEXT;
         }
         QCASE(Q_RET_RK) {
             if (!QFRM->qret) GENERIC();
             SPILL();
-            ret_rk(QPRC, in);
+            const Operand *qo = in->ops;
+            const Insn *ri = QFRM->ret_insn;
+            int argc = (int)ri->ops[1].imm, nres = ri->nops - 2 - argc;
+            const Frame *of = QFRM - 1;
+            uint64_t *cw = QPRC->regs + of->base;
+            const uint64_t *fw = QPRC->regs + QFRM->base;
+            for (int k = 0; k < nres; k++)
+                memcpy(&cw[ri->ops[2 + argc + k].pad], qo[k].mode == OM_REG ? &fw[qo[k].pad] : &qo[k].kw, 8);
+            proc_pop_frame(QPRC);
+            ctx_set(QCTX, (Frame *)of, of->fn, cw);
+            RELOAD();
+            NEXT;
+        }
+        /* A closure call with constants: checked against the callee per call,
+         * out of line (call_rk). */
+        QCASE(Q_CALLI_RK) {
+            SPILL();
+            if (!call_rk(QPRC, in)) GENERIC();
             ctx_load(QCTX);
             RELOAD();
             NEXT;

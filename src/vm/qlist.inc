@@ -4,7 +4,7 @@
 #define X(N, o) QL(Q_##N##_III) QL(Q_##N##_IIK) QL(Q_##N##_II) QL(Q_##N##_IK)
         QARITH_OPS(X)
 #undef X
-#define X(N, o) QL(Q_F##N##_FFF) QL(Q_F##N##_FFK) QL(Q_F##N##_FF) QL(Q_F##N##_FK)
+#define X(N, o) QL(Q_F##N##_FFF) QL(Q_F##N##_FFK) QL(Q_F##N##_FF) QL(Q_F##N##_FK) QL(Q_F##N##_FKF)
         QFARITH_OPS(X)
 #undef X
 #define X(N, o) QL(Q_##N##_II) QL(Q_##N##_IK)
@@ -19,7 +19,14 @@
         QL(Q_LDG_I) QL(Q_LDG_F) QL(Q_LDG_R) QL(Q_STG_I) QL(Q_STG_F) QL(Q_STG_R)
         QL(Q_LDEK_I) QL(Q_LDEK_F) QL(Q_LDEK_R) QL(Q_STEK_I) QL(Q_STEK_F) QL(Q_STEK_R)
         QL(Q_LDU_I) QL(Q_LDU_F) QL(Q_LDU_R) QL(Q_STU_I) QL(Q_STU_F) QL(Q_STU_R)
-        QL(Q_LEN) QL(Q_TAGOF_E) QL(Q_LPUSH_R)
+        QL(Q_LEN) QL(Q_TAGOF_E) QL(Q_LPUSH_R) QL(Q_TCALLI_R)
+        QL(Q_NEW) QL(Q_LNEW) QL(Q_STFK) QL(Q_MGETV_I) QL(Q_MGETV_F) QL(Q_MGETV_R) QL(Q_JTAB) QL(Q_CVT_FI)
+#define X(N, o) QL(Q_##N##_UU) QL(Q_##N##_UK)
+        QUBRANCH_OPS(X)
+#undef X
+#define X(N, e) QL(Q_##N##_III) QL(Q_##N##_IIK) QL(Q_##N##_II) QL(Q_##N##_IK)
+        QSHIFT_OPS(X)
+#undef X
 #define X(N, f) QL(Q_##N##_F) QL(Q_##N##_FF)
         QFUNARY_OPS(X)
 #undef X

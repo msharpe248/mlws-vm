@@ -55,7 +55,10 @@ typedef struct Operand {
     struct Operand *inner; /* OM_MIND* */
     /* Filled in by the loader: */
     int64_t bdisp;  /* displacement in bytes */
-    int64_t bscale; /* scale in bytes */
+    union {
+        int64_t bscale; /* scale in bytes */
+        uint64_t kw;    /* a quickened call's or ret's constant, as the word it passes */
+    };
     union {
         void *ptr;      /* const object, Function*, NativeDef* */
         uint64_t gbase; /* resolved global segment pointer */

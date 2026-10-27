@@ -1133,6 +1133,10 @@ static MLWS_COLD void co_exec(Ctx *c, const Insn *in) {
 #define QBRANCH_OPS(X) X(BEQ, ==) X(BNE, !=) X(BLT, <) X(BLE, <=) X(BGT, >) X(BGE, >=)
 #define QSET_OPS(X) X(SEQ, ==) X(SNE, !=) X(SLT, <) X(SLE, <=) X(SGT, >) X(SGE, >=)
 #define QFUNARY_OPS(X) X(SQRT, sqrt) X(NEG, -) X(ABS, fabs)
+/* unsigned 64-bit orderings (equality is the signed forms') */
+#define QUBRANCH_OPS(X) X(BLT, <) X(BLE, <=) X(BGT, >) X(BGE, >=)
+/* 64-bit shifts, by a count taken modulo 64 (shiftop) */
+#define QSHIFT_OPS(X) X(SHL, (uint64_t)a << (n & 63)) X(SHR, (uint64_t)a >> (n & 63)) X(SAR, a >> (n & 63))
 
 enum {
     Q__FIRST = OP__COUNT,
@@ -1140,7 +1144,7 @@ enum {
 #define X(N, o) Q_##N##_III, Q_##N##_IIK, Q_##N##_II, Q_##N##_IK,
     QARITH_OPS(X)
 #undef X
-#define X(N, o) Q_F##N##_FFF, Q_F##N##_FFK, Q_F##N##_FF, Q_F##N##_FK,
+#define X(N, o) Q_F##N##_FFF, Q_F##N##_FFK, Q_F##N##_FF, Q_F##N##_FK, Q_F##N##_FKF,
     QFARITH_OPS(X)
 #undef X
 #define X(N, o) Q_##N##_II, Q_##N##_IK,
@@ -1190,6 +1194,21 @@ enum {
 #define X(N, f) Q_##N##_F, Q_##N##_FF,
     QFUNARY_OPS(X)
 #undef X
+    /* M29: shapes from compiled Lua's profile: a closure tail call with
+     * register arguments; new of a struct and lnew of a constant capacity; a
+     * constant stored to a struct field; mget of a register key into each
+     * bank, with a constant default; jtab; cvt.f64.i64; 64-bit shifts; and
+     * f64 arithmetic with a constant first operand (FKF, above). */
+    Q_TCALLI_R,
+    Q_NEW, Q_LNEW, Q_STFK,
+    Q_MGETV_I, Q_MGETV_F, Q_MGETV_R,
+    Q_JTAB, Q_CVT_FI,
+#define X(N, o) Q_##N##_UU, Q_##N##_UK, /* u64 compare-and-branch */
+    QUBRANCH_OPS(X)
+#undef X
+#define X(N, e) Q_##N##_III, Q_##N##_IIK, Q_##N##_II, Q_##N##_IK,
+    QSHIFT_OPS(X)
+#undef X
     Q__COUNT
 };
 
@@ -1238,6 +1257,14 @@ static bool quicken_global(Insn *in, const Operand *o) {
     return true;
 }
 
+/* A constant argument or result of type t, converted once into the word it
+ * passes (Operand.kw). */
+static void quicken_const_word(Operand *o, int t) {
+    Word w = {0};
+    const_word(o, t, &w);
+    memcpy(&o->kw, &w, 8);
+}
+
 /* Constant arguments too: Q_CALL_RK. */
 static bool quicken_call_rk(const Insn *in) {
     const Function *fn = in->ops[0].rv.ptr;
@@ -1281,6 +1308,32 @@ void interp_quicken_function(Function *f) {
         interp_quicken(&f->code[k]);
     }
     quicken_fn = NULL;
+}
+
+/* An unsigned ordering's register-register form (the constant one is next). */
+static int quicken_ubranch(int op) {
+    switch (op) {
+#define X(N, o)                                                                \
+    case OP_##N: return Q_##N##_UU;
+        QUBRANCH_OPS(X)
+#undef X
+    default: return Q_BLT_UU; /* not reached: equality is quickened as i64 */
+    }
+}
+
+/* mov of a constant to a 64-bit struct field: Q_STFK, with the constant as the
+ * word it stores in Operand.kw. */
+static void quicken_field_const(Insn *in, MlwsType t) {
+    Operand *o = in->ops;
+    Word w = {0};
+    if (o[0].mode != OM_FIELD || o[1].mode == OM_REG || !const_word(&o[1], t, &w)) return;
+    const FieldRef *f = o[0].rv.ptr;
+    if (f->def->types[f->index] != t) return;
+    in->xop = Q_STFK;
+    in->k.p = f->def;
+    in->target = f->index;
+    in->r[0] = (uint8_t)REG_IDX(o[0].reg);
+    memcpy(&o[1].kw, &w, 8);
 }
 
 /* mov of a 64-bit I, F or R value between a register and a struct field or a
@@ -1373,6 +1426,15 @@ void interp_quicken(Insn *in) {
         if (t == T_I64 && n == 3 && IREG(0) && IREG(1) && KINT(2) && o[2].imm != 0 && o[2].imm != -1) in->xop = Q_REM_IIK;
         else if (t == T_I64 && n == 2 && IREG(0) && KINT(1) && o[1].imm != 0 && o[1].imm != -1) in->xop = Q_REM_IK;
         break;
+#define X(N, e)                                                                \
+    case OP_##N:                                                               \
+        if (i64 && n == 3 && IREG(0) && IREG(1) && IREG(2)) in->xop = Q_##N##_III; \
+        else if (i64 && n == 3 && IREG(0) && IREG(1) && KINT(2)) in->xop = Q_##N##_IIK; \
+        else if (i64 && n == 2 && IREG(0) && IREG(1)) in->xop = Q_##N##_II;   \
+        else if (i64 && n == 2 && IREG(0) && KINT(1)) in->xop = Q_##N##_IK;   \
+        break;
+        QSHIFT_OPS(X)
+#undef X
     float_arith:
         if (t != T_F64) break;
         switch (in->op) {
@@ -1382,6 +1444,7 @@ void interp_quicken(Insn *in) {
         else if (n == 3 && FREG(0) && FREG(1) && KFLT(2)) in->xop = Q_F##N##_FFK; \
         else if (n == 2 && FREG(0) && FREG(1)) in->xop = Q_F##N##_FF;         \
         else if (n == 2 && FREG(0) && KFLT(1)) in->xop = Q_F##N##_FK;         \
+        else if (n == 3 && FREG(0) && KFLT(1) && FREG(2)) in->xop = Q_F##N##_FKF; \
         break;
             QFARITH_OPS(X)
 #undef X
@@ -1415,6 +1478,30 @@ void interp_quicken(Insn *in) {
         else if (rk) in->xop = Q_CALLI_RK;
         break;
     }
+    case OP_TCALLI: {
+        bool regs = RREG(0);
+        for (int k = 2; k < n; k++) regs = regs && o[k].mode == OM_REG && REG_BANK(o[k].reg) < NBANKS;
+        if (regs) in->xop = Q_TCALLI_R;
+        break;
+    }
+    case OP_NEW:
+        if (n == 2 && RREG(0)) {
+            in->xop = Q_NEW;
+            in->k.p = o[1].rv.ptr;
+        }
+        break;
+    case OP_LNEW: /* the capacity's range is list_new's to check */
+        if (RREG(0) && (n == 1 || (n == 2 && KINT(1)))) {
+            in->xop = Q_LNEW;
+            in->k.i = n == 2 ? o[1].imm : 0;
+        }
+        break;
+    case OP_JTAB:
+        if (IREG(0)) in->xop = Q_JTAB;
+        break;
+    case OP_CVT:
+        if (n == 2 && t == T_F64 && in->type2 == T_I64 && FREG(0) && IREG(1)) in->xop = Q_CVT_FI;
+        break;
     case OP_JMP: in->xop = Q_JMP; break;
     case OP_CALL:
         if (quicken_call(in)) {
@@ -1430,6 +1517,15 @@ void interp_quicken(Insn *in) {
             }
         } else if (quicken_call_rk(in)) {
             in->xop = Q_CALL_RK;
+            /* The same slots, and each constant as the word it passes. */
+            const Function *callee = o[0].rv.ptr;
+            const MFunc *mf = callee->mf;
+            int cnt[NBANKS] = {0};
+            for (int k = 0; k < (int)o[1].imm; k++) {
+                int b = (int)type_bank((MlwsType)mf->params[k]);
+                o[2 + k].ireg = (uint8_t)(callee->roff[b] + cnt[b]++);
+                if (o[2 + k].mode != OM_REG) quicken_const_word(&o[2 + k], mf->params[k]);
+            }
         }
         break;
     case OP_RET:
@@ -1438,8 +1534,13 @@ void interp_quicken(Insn *in) {
             for (int k = 0; k < n; k++) ok = ok && reg_of_type(&o[k], quicken_fn->rets[k]);
             bool rk = true;
             for (int k = 0; k < n; k++) rk = rk && reg_or_const(&o[k], quicken_fn->rets[k]);
-            if (ok) in->xop = Q_RET_R;
-            else if (rk) in->xop = Q_RET_RK;
+            if (ok) {
+                in->xop = Q_RET_R;
+            } else if (rk) {
+                in->xop = Q_RET_RK;
+                for (int k = 0; k < n; k++)
+                    if (o[k].mode != OM_REG) quicken_const_word(&o[k], quicken_fn->rets[k]);
+            }
         } else if (quicken_fn && n == 0) {
             in->xop = Q_RET_R;
         }
@@ -1450,6 +1551,8 @@ void interp_quicken(Insn *in) {
         if (t == T_I64 || ((in->op == OP_BEQ || in->op == OP_BNE) && t == T_U64)) { \
             if (IREG(0) && IREG(1)) in->xop = Q_##N##_II;                       \
             else if (IREG(0) && KINT(1)) in->xop = Q_##N##_IK;                  \
+        } else if (t == T_U64 && IREG(0) && (IREG(1) || KINT(1))) {           \
+            in->xop = (uint16_t)(quicken_ubranch(in->op) + !IREG(1));         \
         } else if (t == T_F64 && FREG(0)) {                                   \
             if (FREG(1)) in->xop = Q_##N##_FFL;                                 \
             else if (KFLT(1)) in->xop = Q_##N##_FKL;                            \
@@ -1515,6 +1618,17 @@ void interp_quicken(Insn *in) {
             ((const Obj *)o[2].rv.ptr)->kind == OBJ_STRING && (n == 3 || (KINT(3) && o[3].imm == 0))) {
             in->xop = Q_MGET_R;
             in->k.p = o[2].rv.ptr;
+        } else if (n >= 3 && o[0].mode == OM_REG && REG_BANK(o[0].reg) < BANK_P && RREG(1) &&
+                   o[2].mode == OM_REG && REG_BANK(o[2].reg) < BANK_P) { /* mget I0, R1, R2 [, -1]: any key register */
+            /* a value of the destination's natural type (no suffix), or i64, f64, r */
+            MlwsType vt = t == T_NONE ? reg_natural_type(o[0].reg) : t;
+            Word w = {0};
+            if ((vt != T_I64 && vt != T_F64 && vt != T_R) || REG_BANK(o[0].reg) != (int)type_bank(vt) ||
+                (n == 4 && !const_word(&o[3], vt, &w)))
+                break;
+            in->xop = (uint16_t)(Q_MGETV_I + (int)type_bank(vt));
+            in->k.i = w.i;                       /* the default */
+            in->target = REG_BANK(o[2].reg) == BANK_I ? T_I64 : REG_BANK(o[2].reg) == BANK_F ? T_F64 : T_R; /* the key's type */
         }
         break;
     default: break;
@@ -1536,6 +1650,8 @@ void interp_quicken(Insn *in) {
             default: break;
             }
         }
+    /* after the compact copy, which would take the constant for k */
+    if (in->xop == OP_MOV && n == 2 && t != T_P && wide_type(t)) quicken_field_const(in, t);
 #undef IREG
 #undef FREG
 #undef RREG
@@ -1599,23 +1715,16 @@ void interp_enter(Process *p, ObjClosure *cl, const Word *args) {
     bind_args(&c, NULL, cl->fn->mf->params, cl->fn->mf->nparams, args);
 }
 
-/* Q_CALL_RK and Q_CALLI_RK: a call with constants among its arguments (a direct
- * call's checked at load time, a closure call's here). Returns false, having
- * done nothing, for anything the generic call must handle. */
+/* Q_CALLI_RK: a closure call with constants among its arguments, checked
+ * against the callee here. Returns false, having done nothing, for anything the
+ * generic call must handle. */
 static MLWS_NOINLINE bool call_rk(Process *p, const Insn *in) {
     const Operand *qo = in->ops;
-    Function *fn;
-    Obj *clo = NULL;
     const Frame *cf = &p->frames[p->nframes - 1];
-    if (in->xop == Q_CALLI_RK) {
-        Obj *ob;
-        memcpy(&ob, &p->regs[cf->base + qo[0].pad], sizeof ob);
-        if (!ob || ob->kind != OBJ_CLOSURE) return false;
-        clo = ob;
-        fn = ((ObjClosure *)ob)->fn;
-    } else {
-        fn = qo[0].rv.ptr;
-    }
+    Obj *clo;
+    memcpy(&clo, &p->regs[cf->base + qo[0].pad], sizeof clo);
+    if (!clo || clo->kind != OBJ_CLOSURE) return false;
+    Function *fn = ((ObjClosure *)clo)->fn;
     const MFunc *mf = fn->mf;
     int argc = (int)qo[1].imm, nres = in->nops - 2 - argc;
     if (argc != mf->nparams || nres > mf->nrets || (nres && !(mf->flags & MF_RETS_DECLARED))) return false;
@@ -1643,7 +1752,7 @@ static MLWS_NOINLINE bool call_rk(Process *p, const Insn *in) {
         int b = (int)type_bank((MlwsType)mf->params[k]);
         uint64_t *d = &nw[fn->roff[b] + cnt[b]++];
         if (a->mode != OM_REG) {
-            Word w;
+            Word w = {0};
             const_word(a, mf->params[k], &w);
             memcpy(d, &w, 8);
         } else {
@@ -1651,30 +1760,6 @@ static MLWS_NOINLINE bool call_rk(Process *p, const Insn *in) {
         }
     }
     return true;
-}
-
-/* Q_RET_RK: a ret with constants among its values, back to a quickened call
- * (the values have the declared result types, checked at load time). */
-static MLWS_NOINLINE void ret_rk(Process *p, const Insn *in) {
-    const Frame *fr = &p->frames[p->nframes - 1], *of = fr - 1;
-    const Operand *qo = in->ops;
-    const Insn *ri = fr->ret_insn;
-    const MFunc *mf = fr->fn->mf;
-    int argc = (int)ri->ops[1].imm, nres = ri->nops - 2 - argc;
-    uint64_t *cw = p->regs + of->base;
-    const uint64_t *fw = p->regs + fr->base;
-    for (int k = 0; k < nres; k++) {
-        const Operand *v = &qo[k];
-        uint64_t *d = &cw[ri->ops[2 + argc + k].pad]; /* slots: interp_quicken_function */
-        if (v->mode != OM_REG) {
-            Word w;
-            const_word(v, mf->rets[k], &w);
-            memcpy(d, &w, 8);
-        } else {
-            memcpy(d, &fw[v->pad], 8);
-        }
-    }
-    proc_pop_frame(p);
 }
 
 /* Threaded dispatch needs GNU C's labels as values; other compilers use the switch. */
@@ -1772,6 +1857,7 @@ static QCC int h_slice(QPARAMS);
 #define SPILL() (QFRM->pc = (uint32_t)(in - QCODE) + 1, QPRC->insns = c->ibase - left)
 #define RELOAD() (I = c->I, F = c->F, R = c->R, QSETFRAME(), nx = QCODE + QFRAME->pc)
 #define JUMP() (nx = in + (int32_t)in->target)
+#define JUMPTO(t) (nx = QCODE + (t))
 #define GENERIC()                                                              \
     do {                                                                       \
         MUSTTAIL return h_generic(QARGS);                                      \
@@ -1786,12 +1872,6 @@ static QCC int h_slice(QPARAMS);
  * first one ends this placeholder, and the brace after the include the last. */
 #define QCASE(x)                                                               \
     }                                                                          \
-    static QCC int h_##x(QPARAMS) {                                            \
-        QLOCALS
-#define QCASE2(x, y)                                                           \
-    }                                                                          \
-    static QCC int h_##x(QPARAMS);                                             \
-    static QCC int h_##y(QPARAMS) { MUSTTAIL return h_##x(QARGS); }            \
     static QCC int h_##x(QPARAMS) {                                            \
         QLOCALS
 static __attribute__((unused)) QCC int qforms_start(QPARAMS) {
@@ -1814,10 +1894,10 @@ static __attribute__((unused)) QCC int qforms_start(QPARAMS) {
 #undef QFORMS_RET_INLINE
 }
 #undef QCASE
-#undef QCASE2
 #undef NEXT
 #undef GENERIC
 #undef JUMP
+#undef JUMPTO
 #undef RELOAD
 #undef SPILL
 #undef U
@@ -1979,7 +2059,6 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 #undef QL
     };
 #define QCASE(x) L_##x:
-#define QCASE2(x, y) L_##x: L_##y:
 #undef NEXT
 #define NEXT                                                                   \
     {                                                                          \
@@ -1990,7 +2069,6 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
     }
 #else
 #define QCASE(x) case x:
-#define QCASE2(x, y) case x: case y:
 #endif
     const Insn *in;
     for (;;) {
@@ -2017,6 +2095,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 #define QFRM fr
 #define GENERIC() goto generic
 #define JUMP() (pc = in->target)
+#define JUMPTO(t) (pc = (t))
 #define IR(k) QI[in->r[k]]
 #define FR(k) QF[in->r[k]]
 #define U(x) ((uint64_t)(x))
@@ -2050,6 +2129,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 #undef QFRM
 #undef GENERIC
 #undef JUMP
+#undef JUMPTO
 
         /* ---- generic forms ---- */
         SPILL();

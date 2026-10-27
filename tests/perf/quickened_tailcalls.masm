@@ -1,0 +1,142 @@
+; A closure tail call with register arguments (Q_TCALLI_R in src/vm/interp.c)
+; must behave exactly like the generic tcalli: the callee's frame replaces the
+; caller's at the same base, so the arguments are read before the window is
+; reused; the callee returns to the tail-calling function's own caller, which
+; gets the results straight across only if they suit the new callee; and the
+; frame depth stays the same however long the chain of tail calls. Anything
+; else (not a closure, a wrong argument count or bank, no room for a larger
+; window) goes to the generic instruction.
+.include "std/test.inc"
+
+.macro EXPECT_ERROR code, insn...
+.try .Lh\@
+    \insn
+.endtry
+    FAIL "an error was expected"
+.Lh\@:
+    catch R31
+    strcmp I31, R31->Error.code, \code
+    ASSERT_EQ I31, 0
+.endm
+
+.func minus(i64 a, i64 b) -> i64
+    sub I2, a, b
+    ret I2
+.endf
+
+; Tail-calls minus with its two arguments swapped: each argument's slot in the
+; new window is another argument's slot in the old one.
+.func swapped(i64 a, i64 b, ref f) -> i64
+    tcalli f (b, a)
+.endf
+
+; Counts n down to 0 by tail calls through itself (passed as `self`), then
+; returns the sum of every step: a million frames if tail calls stacked up.
+.func down(i64 n, i64 acc, ref self) -> i64
+    bz n, 1f
+    add acc, n
+    dec n
+    tcalli self (n, acc, self)
+1:  ret acc
+.endf
+
+; One argument of each bank, passed on in a different order of the same banks.
+.func mixed(f64 x, ref s, i64 k) -> (f64, ref, i64)
+    mul.f64 F1, x, 2.0
+    ret F1, s, k
+.endf
+
+.func to_mixed(i64 k, ref s, f64 x, ref f) -> (f64, ref, i64)
+    tcalli f (x, s, k)
+.endf
+
+; A callee with a far larger register window than its tail caller.
+.func wide(i64 a) -> i64
+    mov I31, a
+    mov F31, 1.5
+    mov R31, "wide"
+    add I30, I31, 1
+    ret I30
+.endf
+
+.func narrow(i64 a, ref f) -> i64
+    tcalli f (a)
+.endf
+
+; Results not declared: a quickened call's results cannot be copied straight
+; across from this callee, so its ret takes the generic path.
+.func undeclared(i64 a)
+    add I1, a, 100
+    ret I1
+.endf
+
+.func to_undeclared(i64 a, ref f) -> i64
+    tcalli f (a)
+.endf
+
+; Tail calls that the generic instruction must handle or reject.
+.func to_null(i64 a) -> i64
+    mov.r R0, null
+    tcalli R0 (a)
+.endf
+
+.func to_string(i64 a) -> i64
+    mov R0, "not a closure"
+    tcalli R0 (a)
+.endf
+
+.func to_too_few(i64 a, ref f) -> i64
+    tcalli f (a)                         ; minus takes two: this gives one
+.endf
+
+; A process whose entry function tail-calls: its frame has no caller at all.
+.func reporter(i64 parent, i64 v)
+    send parent, v
+    ret
+.endf
+
+.func entry(i64 parent)
+    closure reporter () -> (R0)
+    tcalli R0 (parent, 77)
+.endf
+
+.func main
+    closure minus () -> (R0)
+    closure swapped () -> (R1)
+    calli R1 (10, 3, R0) -> (I0)          ; minus(3, 10)
+    ASSERT_EQ I0, -7
+
+    closure down () -> (R2)
+    calli R2 (1000000, 0, R2) -> (I1)
+    ASSERT_EQ I1, 500000500000
+
+    closure mixed () -> (R3)
+    closure to_mixed () -> (R4)
+    calli R4 (9, "s", 1.25, R3) -> (F0, R5, I2)
+    ASSERT_EQ F0, 2.5
+    strcmp I3, R5, "s"
+    ASSERT_EQ I3, 0
+    ASSERT_EQ I2, 9
+
+    closure wide () -> (R6)
+    closure narrow () -> (R7)
+    calli R7 (41, R6) -> (I4)
+    ASSERT_EQ I4, 42
+
+    closure undeclared () -> (R8)
+    closure to_undeclared () -> (R9)
+    calli R9 (1, R8) -> (I5)
+    ASSERT_EQ I5, 101
+
+    closure to_null () -> (R10)
+    EXPECT_ERROR "E_NULL", calli R10 (1) -> (I6)
+    closure to_string () -> (R11)
+    EXPECT_ERROR "E_TYPE", calli R11 (1) -> (I6)
+    closure to_too_few () -> (R12)
+    EXPECT_ERROR "E_TYPE", calli R12 (1, R0) -> (I6)
+
+    spawn entry (PID)
+    recv I7
+    ASSERT_EQ I7, 77
+    ret 0
+.endf
