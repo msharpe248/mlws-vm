@@ -192,6 +192,8 @@ OP(ISA,    0x00A4, "isa",    "Objects", "BOT", 0, 0,
    "dst = true if the reference is a struct of the given type: `isa I0, R1, Point`.")
 OP(RESIZE, 0x00A5, "resize", "Objects", "OQ", 0, 0,
    "Set the length of a byte buffer or list. New bytes are 0. New list elements are untyped zeros, which read as 0, 0.0 or null.")
+OP(TAGOF,  0x00A6, "tagof",  "Objects", "JV", 0, 0,
+   "dst = the type a slot holds, as a type code (0 for a slot never written, 255 for raw bytes; see Types in docs/ISA.md): a list element or closure capture its own tag, an array element or struct field its declared type, a stack or global word its tag, a byte of a string or buffer u8, a register or constant its natural type. With this, one tagged slot can hold a dynamically typed value: `tagof I0, R1[I2]`, then branch and read it with its type.")
 
 /* ---- strings and bytes ------------------------------------------------------ */
 OP(STRCAT, 0x00B0, "strcat", "Strings", "XO+", 0, 0,

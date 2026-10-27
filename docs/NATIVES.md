@@ -18,6 +18,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `io.print_b` | b | - | Print `true` or `false`. |
 | `io.print_p` | p | - | Print a pointer for debugging. |
 | `io.nl` | - | - | Print a newline. |
+| `io.flush` | - | - | Write out the program's buffered standard output now. Output is also flushed when the VM is idle, at exit, and before anything is written to standard error. |
 | `time.now_ns` | - | i64 | Monotonic clock in nanoseconds (the same as time.monotonic). |
 | `str.len` | r | i64 | Length of a string or byte buffer in bytes (same as the len instruction). |
 | `str.byte` | r, i64 | u8 | Byte at an index of a string (bounds checked). |

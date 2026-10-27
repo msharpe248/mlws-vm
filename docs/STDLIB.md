@@ -62,6 +62,9 @@ Handles belong to their process and cannot be sent to another (`E_TYPE`).
   descriptor (two `fs.stdin()` handles) gives each its own buffer.
 * `fs.stdout` writes go to the same place as `io.print` (and so are captured by
   the test runner); `fs.stderr` goes to standard error. They cannot be read.
+  Standard output is buffered: it is written out when the VM is idle, at exit,
+  before anything is written to `fs.stderr` (so the two appear in the order the
+  program wrote them), and when the program calls `io.flush`.
 * Seeking (`fs.seek`) works on files only.
 
 ## Networking

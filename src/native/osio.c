@@ -262,6 +262,7 @@ static void fs_write(Process *p, Word *a, Word *r) {
         return;
     }
     if (h->kind == H_STDERR) {
+        vm_flush(p->vm); /* what the program printed before this comes first */
         plat_lock(p->vm->out_lock);
         if (p->vm->err_out) p->vm->err_out(p->vm->err_ctx, (const char *)data, n);
         else fwrite(data, 1, n, stderr);

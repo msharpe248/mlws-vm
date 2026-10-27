@@ -1120,7 +1120,7 @@ enum {
      * f64 and reference set-compares (FF, FK, RR, RK), isa, and mget of a
      * constant key with a null default. */
     Q_CALL_RK, Q_CALLI_RK, Q_RET_RK,
-    Q_MOV_RK, Q_LDG_R,
+    Q_MOV_RK,
     Q_BEQ_RR, Q_BNE_RR, Q_BEQ_RK, Q_BNE_RK, Q_BEQ_RG, Q_BNE_RG,
 #define X(N, o) Q_##N##_FF, Q_##N##_FK,
     QSET_OPS(X)
@@ -1131,6 +1131,13 @@ enum {
     Q_SEQ_RR, Q_SNE_RR, Q_SEQ_RK, Q_SNE_RK,
     Q_ISA,
     Q_MGET_R,
+    /* M25: 64-bit globals, elements at a constant index (R1[5]) and closure
+     * captures (UP[n]) moved to or from a register of each bank; len; tagof of
+     * an element indexed by a register. */
+    Q_LDG_I, Q_LDG_F, Q_LDG_R, Q_STG_I, Q_STG_F, Q_STG_R,
+    Q_LDEK_I, Q_LDEK_F, Q_LDEK_R, Q_STEK_I, Q_STEK_F, Q_STEK_R,
+    Q_LDU_I, Q_LDU_F, Q_LDU_R, Q_STU_I, Q_STU_F, Q_STU_R,
+    Q_LEN, Q_TAGOF_E,
     Q__COUNT
 };
 
@@ -1230,6 +1237,13 @@ static void quicken_slot(Insn *in, MlwsType t) {
     } else if (slot->mode == OM_ELEM) {
         in->r[2] = (uint8_t)REG_IDX(slot->ireg);
         in->xop = (uint16_t)((load ? Q_LDE_I : Q_STE_I) + q);
+    } else if (slot->mode == OM_ELEMI && slot->index <= UINT32_MAX) {
+        in->target = (uint32_t)slot->index;
+        in->xop = (uint16_t)((load ? Q_LDEK_I : Q_STEK_I) + q);
+    } else if (slot->mode == OM_UPVAL && slot->index <= UINT32_MAX) {
+        in->target = (uint32_t)slot->index;
+        in->xop = (uint16_t)((load ? Q_LDU_I : Q_STU_I) + q);
+        return; /* no object register */
     } else {
         return;
     }
@@ -1266,8 +1280,12 @@ void interp_quicken(Insn *in) {
         else if (t == T_R && RREG(0) && KREF(1)) {
             in->xop = Q_MOV_RK;
             in->k.p = o[1].mode == OM_CONST ? o[1].rv.ptr : NULL;
-        } else if (t == T_R && RREG(0) && quicken_global(in, &o[1])) {
-            in->xop = Q_LDG_R;
+        } else if (t != T_P && wide_type(t) && o[0].mode == OM_REG &&
+                   REG_BANK(o[0].reg) == (int)type_bank(t) && quicken_global(in, &o[1])) {
+            in->xop = (uint16_t)(Q_LDG_I + (t == T_F64 ? 1 : t == T_R ? 2 : 0));
+        } else if (t != T_P && wide_type(t) && o[1].mode == OM_REG &&
+                   REG_BANK(o[1].reg) == (int)type_bank(t) && quicken_global(in, &o[0])) {
+            in->xop = (uint16_t)(Q_STG_I + (t == T_F64 ? 1 : t == T_R ? 2 : 0));
         } else if (t != T_P && wide_type(t)) {
             quicken_slot(in, t);
         }
@@ -1395,6 +1413,16 @@ void interp_quicken(Insn *in) {
         break;
         QSET_OPS(X)
 #undef X
+    case OP_LEN:
+        if (IREG(0) && RREG(1)) in->xop = Q_LEN;
+        break;
+    case OP_TAGOF:
+        if (IREG(0) && o[1].mode == OM_ELEM) {
+            in->xop = Q_TAGOF_E;
+            in->r[1] = (uint8_t)REG_IDX(o[1].reg);
+            in->r[2] = (uint8_t)REG_IDX(o[1].ireg);
+        }
+        break;
     case OP_ISA:
         if (IREG(0) && RREG(1)) {
             in->xop = Q_ISA;
@@ -1644,7 +1672,11 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
         QL(Q_BZ_R) QL(Q_BNZ_R) QL(Q_CALLI_R)
         QL(Q_LDF_I) QL(Q_LDF_F) QL(Q_LDF_R) QL(Q_STF_I) QL(Q_STF_F) QL(Q_STF_R)
         QL(Q_LDE_I) QL(Q_LDE_F) QL(Q_LDE_R) QL(Q_STE_I) QL(Q_STE_F) QL(Q_STE_R)
-        QL(Q_CALL_RK) QL(Q_CALLI_RK) QL(Q_RET_RK) QL(Q_MOV_RK) QL(Q_LDG_R)
+        QL(Q_CALL_RK) QL(Q_CALLI_RK) QL(Q_RET_RK) QL(Q_MOV_RK)
+        QL(Q_LDG_I) QL(Q_LDG_F) QL(Q_LDG_R) QL(Q_STG_I) QL(Q_STG_F) QL(Q_STG_R)
+        QL(Q_LDEK_I) QL(Q_LDEK_F) QL(Q_LDEK_R) QL(Q_STEK_I) QL(Q_STEK_F) QL(Q_STEK_R)
+        QL(Q_LDU_I) QL(Q_LDU_F) QL(Q_LDU_R) QL(Q_STU_I) QL(Q_STU_F) QL(Q_STU_R)
+        QL(Q_LEN) QL(Q_TAGOF_E)
         QL(Q_BEQ_RR) QL(Q_BNE_RR) QL(Q_BEQ_RK) QL(Q_BNE_RK) QL(Q_BEQ_RG) QL(Q_BNE_RG)
 #define X(N, o) QL(Q_##N##_FF) QL(Q_##N##_FK)
         QSET_OPS(X)
@@ -1820,22 +1852,12 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
         /* Fields and elements: anything unexpected goes to the generic mov. */
 #define STRUCT_OF(reg) ((ObjStruct *)c.R[reg])
 #define IS_STRUCT(o) ((o) && (o)->h.kind == OBJ_STRUCT && (o)->def == in->k.p)
-#define X(B, bank, w)                                                         \
-        QCASE(Q_LDF_##B) {                                                    \
-            ObjStruct *so = STRUCT_OF(in->r[1]);                              \
-            if (!IS_STRUCT(so)) goto generic;                                 \
-            c.bank[in->r[0]] = so->fields[in->target].w;                      \
-            NEXT;                                                             \
-        }                                                                     \
-        QCASE(Q_STF_##B) {                                                    \
-            ObjStruct *so = STRUCT_OF(in->r[0]);                              \
-            if (!IS_STRUCT(so)) goto generic;                                 \
-            so->fields[in->target].w = c.bank[in->r[1]];                      \
-            NEXT;                                                             \
-        }                                                                     \
-        QCASE(Q_LDE_##B) {                                                    \
+/* An array element of exactly the instruction's type, or a list element
+ * tagged with it (a store retags a list element), at index i. */
+#define ELEM_LOAD(bank, w, i_)                                                \
+        {                                                                     \
             Obj *ob = c.R[in->r[1]];                                          \
-            uint64_t i = (uint64_t)c.I[in->r[2]];                             \
+            uint64_t i = (i_);                                                \
             if (!ob) goto generic;                                            \
             if (ob->kind == OBJ_ARRAY) {                                      \
                 ObjArray *a = (ObjArray *)ob;                                 \
@@ -1849,10 +1871,11 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
                 goto generic;                                                 \
             }                                                                 \
             NEXT;                                                             \
-        }                                                                     \
-        QCASE(Q_STE_##B) {                                                    \
+        }
+#define ELEM_STORE(bank, w, i_)                                               \
+        {                                                                     \
             Obj *ob = c.R[in->r[0]];                                          \
-            uint64_t i = (uint64_t)c.I[in->r[2]];                             \
+            uint64_t i = (i_);                                                \
             if (!ob) goto generic;                                            \
             if (ob->kind == OBJ_ARRAY) {                                      \
                 ObjArray *a = (ObjArray *)ob;                                 \
@@ -1868,8 +1891,60 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
             }                                                                 \
             NEXT;                                                             \
         }
+#define X(B, bank, w)                                                         \
+        QCASE(Q_LDF_##B) {                                                    \
+            ObjStruct *so = STRUCT_OF(in->r[1]);                              \
+            if (!IS_STRUCT(so)) goto generic;                                 \
+            c.bank[in->r[0]] = so->fields[in->target].w;                      \
+            NEXT;                                                             \
+        }                                                                     \
+        QCASE(Q_STF_##B) {                                                    \
+            ObjStruct *so = STRUCT_OF(in->r[0]);                              \
+            if (!IS_STRUCT(so)) goto generic;                                 \
+            so->fields[in->target].w = c.bank[in->r[1]];                      \
+            NEXT;                                                             \
+        }                                                                     \
+        QCASE(Q_LDE_##B) ELEM_LOAD(bank, w, (uint64_t)c.I[in->r[2]])            \
+        QCASE(Q_STE_##B) ELEM_STORE(bank, w, (uint64_t)c.I[in->r[2]])           \
+        QCASE(Q_LDEK_##B) ELEM_LOAD(bank, w, (uint64_t)in->target)              \
+        QCASE(Q_STEK_##B) ELEM_STORE(bank, w, (uint64_t)in->target)             \
+        QCASE(Q_LDU_##B) {                                                    \
+            const ObjClosure *cl = (const ObjClosure *)fr->closure;          \
+            uint32_t u = in->target;                                          \
+            if (!cl || u >= cl->nup || cl->tags[u] != in->type) goto generic; \
+            c.bank[in->r[0]] = cl->up[u].w;                                   \
+            NEXT;                                                             \
+        }                                                                     \
+        QCASE(Q_STU_##B) {                                                    \
+            ObjClosure *cl = (ObjClosure *)fr->closure;                       \
+            uint32_t u = in->target;                                          \
+            if (!cl || u >= cl->nup) goto generic;                            \
+            cl->tags[u] = in->type;                                           \
+            cl->up[u].w = c.bank[in->r[1]];                                   \
+            NEXT;                                                             \
+        }                                                                     \
+        QCASE(Q_LDG_##B) {                                                    \
+            uint32_t g = (uint32_t)((uint64_t)in->k.i >> 32), off = (uint32_t)in->k.i; \
+            if (g >= p->nglobals) goto generic;                               \
+            const Segment *s = &p->globals[g];                                \
+            /* a reference only from a word tagged r; nothing else from one */ \
+            if (off + 8 > s->size || (s->tags[off >> 3] == T_R) != (in->type == T_R)) goto generic; \
+            memcpy(&c.bank[in->r[0]], s->data + off, 8);                      \
+            NEXT;                                                             \
+        }                                                                     \
+        QCASE(Q_STG_##B) {                                                    \
+            uint32_t g = (uint32_t)((uint64_t)in->k.i >> 32), off = (uint32_t)in->k.i; \
+            if (g >= p->nglobals) goto generic;                               \
+            Segment *s = &p->globals[g];                                      \
+            if (off + 8 > s->size) goto generic;                              \
+            memcpy(s->data + off, &c.bank[in->r[1]], 8);                      \
+            s->tags[off >> 3] = in->type;                                     \
+            NEXT;                                                             \
+        }
         X(I, I, i) X(F, F, f) X(R, R, r)
 #undef X
+#undef ELEM_LOAD
+#undef ELEM_STORE
 #undef STRUCT_OF
 #undef IS_STRUCT
         QCASE(Q_CALLI_R) {
@@ -1926,6 +2001,30 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
         QCASE(Q_##N##_FKL) if (c.F[in->r[0]] op_ in->k.f) pc = in->target; NEXT;
         QBRANCH_OPS(X)
 #undef X
+        QCASE(Q_LEN) {
+            const Obj *ob = c.R[in->r[1]];
+            if (!ob) goto generic;
+            switch (ob->kind) {
+            case OBJ_LIST: c.I[in->r[0]] = ((const ObjList *)ob)->len; break;
+            case OBJ_STRING: c.I[in->r[0]] = ((const ObjString *)ob)->len; break;
+            case OBJ_MAP: c.I[in->r[0]] = ((const ObjMap *)ob)->count; break;
+            case OBJ_ARRAY: c.I[in->r[0]] = ((const ObjArray *)ob)->len; break;
+            case OBJ_BYTES: c.I[in->r[0]] = ((const ObjBytes *)ob)->len; break;
+            default: goto generic;
+            }
+            NEXT;
+        }
+        QCASE(Q_TAGOF_E) {
+            const Obj *ob = c.R[in->r[1]];
+            uint64_t i = (uint64_t)c.I[in->r[2]];
+            if (ob && ob->kind == OBJ_LIST && i < ((const ObjList *)ob)->len)
+                c.I[in->r[0]] = ((const ObjList *)ob)->tags[i];
+            else if (ob && ob->kind == OBJ_ARRAY && i < ((const ObjArray *)ob)->len)
+                c.I[in->r[0]] = ((const ObjArray *)ob)->elem;
+            else
+                goto generic;
+            NEXT;
+        }
         QCASE(Q_ISA) {
             const Obj *ob = c.R[in->r[1]];
             c.I[in->r[0]] = ob && ob->kind == OBJ_STRUCT && ((const ObjStruct *)ob)->def == in->k.p;
@@ -1941,12 +2040,6 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
             const Segment *s_ = &p->globals[g_];                              \
             if (off_ + 8 > s_->size || s_->tags[off_ >> 3] != T_R) goto generic; \
             memcpy(&(dst), s_->data + off_, sizeof(Obj *));                   \
-        }
-        QCASE(Q_LDG_R) {
-            Obj *v;
-            GLOBAL_REF(v);
-            c.R[in->r[0]] = v;
-            NEXT;
         }
         QCASE(Q_BEQ_RG) {
             Obj *v;
@@ -2407,6 +2500,29 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
             default: vm_trap(p, "E_TYPE", "len of a %s", obj_desc(ob));
             }
             wr_int(&c, &ops[0], T_I64, n);
+            break;
+        }
+        case OP_TAGOF: {
+            int64_t tag;
+            const Operand *o = &ops[1];
+            if (o->mode == OM_REG) {
+                tag = reg_natural_type(o->reg);
+            } else if (o->mode == OM_IMM) {
+                tag = T_I64;
+            } else if (o->mode == OM_FIMM) {
+                tag = T_F64;
+            } else if (o->mode == OM_CONST) {
+                tag = T_R;
+            } else {
+                Loc L;
+                loc_of(&c, o, 1, &L);
+                switch (L.is_reg) {
+                case LK_SLOT: tag = L.fixed ? L.fixed : *L.tag; break;
+                case LK_BYTE: tag = T_U8; break;
+                default: tag = L.seg->tags && L.off % 8 == 0 ? L.seg->tags[L.off / 8] : TAG_RAW; break;
+                }
+            }
+            wr_int(&c, &ops[0], T_I64, tag);
             break;
         }
         case OP_TYPEOF: {

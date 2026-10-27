@@ -26,20 +26,26 @@ per core:
 
 | Benchmark | Apple M5 Pro, Clang | Intel i7-11700KF, GCC | AMD Ryzen 9 5900X, Clang |
 |---|---|---|---|
-| fib | 72 | 163 | 138 |
-| loop | 87 | 191 | 167 |
-| sieve | 631 | 1,000 | 1,067 |
-| nbody | 96 | 162 | 156 |
-| binarytrees | 119 | 229 | 220 |
-| maps | 63 | 104 | 106 |
-| pingpong | 35 | 95 | 76 |
-| closures | 110 | 199 | 186 |
-| parallel | 24 | 49 | 43 |
-| connections | 1,029 | 696 | 1,248 |
+| fib | 71 | 179 | 137 |
+| loop | 87 | 184 | 168 |
+| sieve | 659 | 1,005 | 1,136 |
+| nbody | 98 | 160 | 172 |
+| binarytrees | 117 | 229 | 221 |
+| maps | 64 | 102 | 106 |
+| pingpong | 35 | 95 | 74 |
+| closures | 110 | 200 | 186 |
+| parallel | 25 | 48 | 49 |
+| connections | 1,020 | 674 | 1,216 |
 
 The Mac is a laptop with 6 performance and 12 efficiency cores, running macOS.
 The two desktops run Ubuntu 26.04: the Intel one has 8 cores (16 threads), the
 AMD one 12 (24 threads). All builds use `-O2`.
+
+The interpreter is sensitive to code layout: a change that does not touch the
+hot handlers at all (adding one opcode, say) can move `fib` on GCC or `loop`
+and `nbody` on the Ryzen by 10% in either direction, because it changes how the
+compiler allocates registers in the interpreter's loop (see item 9 below).
+Differences that size between builds are not, by themselves, regressions.
 
 The tight loop runs at about 2.1G instructions per second on the Mac, about two
 clock cycles per instruction. `maps` and `pingpong` spend their time in natives
@@ -55,16 +61,16 @@ time, best of three:
 
 | Benchmark | Apple M5 Pro | Intel i7, GCC | AMD Ryzen, Clang |
 |---|---|---|---|
-| fib | 593 | 1,135 | 1,053 |
-| binary_trees | 2,093 | 4,103 | 4,180 |
-| trees | 2,174 | 5,501 | 6,664 |
-| instantiation | 531 | 858 | 897 |
-| invocation | 303 | 633 | 605 |
-| method_call | 221 | 417 | 441 |
-| properties | 426 | 870 | 830 |
-| zoo | 376 | 684 | 688 |
+| fib | 597 | 1,112 | 1,086 |
+| binary_trees | 2,089 | 4,057 | 4,187 |
+| trees | 2,147 | 5,431 | 6,692 |
+| instantiation | 537 | 864 | 909 |
+| invocation | 294 | 666 | 601 |
+| method_call | 195 | 360 | 371 |
+| properties | 418 | 852 | 821 |
+| zoo | 326 | 626 | 637 |
 
-These are 1.3–2.9× faster than before the forms for compiled dynamic code
+These are 1.3–3.0× faster than before the forms for compiled dynamic code
 existed ([item 1](#how-the-interpreter-is-made-fast) below): `invocation` most, since every call there passed a
 constant, then the property and method benchmarks, whose inline-cache checks
 and field reads took the generic path. What they spend their time on now is
@@ -126,7 +132,9 @@ it measured faster.
    code is made of (taken from the Lox compiler's output, below): constants
    among call arguments and `ret` values, reference constants and globals moved
    into registers, reference and `f64` set-compares and branches, `isa`, and
-   `mget` by a constant key. The profiler lists the instructions that still run
+   `mget` by a constant key. A third covers what the Lua compiler measured:
+   64-bit globals, elements at a constant index and closure captures (`UP[n]`)
+   moved to or from registers, `len`, and `tagof` of an element. The profiler lists the instructions that still run
    generically, which is how these were chosen. A shape qualifies only when its generic semantics are
    trivially the same: no width canonicalisation, no signedness differences
    (unsigned ordering stays generic), and no trap that cannot be checked
@@ -329,7 +337,7 @@ for each request it serves.
   barrier on every reference store.
 * **More specialised shapes.** Arithmetic directly on elements and fields
   (`nbody`) and raw memory (`sieve`) take the generic path. Rewriting `nbody` to
-  load into registers, compute there and store back takes it from 96 ms to
+  load into registers, compute there and store back takes it from 98 ms to
   24 ms, so compilers can already get most of that speed. The shapes worth a
   form of their own are the ones compiled programs run most: the profiler's
   list of instructions on the general path shows them, as it showed the ones

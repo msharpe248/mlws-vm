@@ -99,6 +99,12 @@ static void n_nl(Process *p, Word *a, Word *r) {
     out_str(p, "\n");
 }
 
+static void n_flush(Process *p, Word *a, Word *r) {
+    (void)a;
+    (void)r;
+    vm_flush(p->vm);
+}
+
 static void n_now_ns(Process *p, Word *a, Word *r) {
     (void)p;
     (void)a;
@@ -194,6 +200,7 @@ static const NativeDef BUILTINS[] = {
     {"io.print_b", 1, {T_B}, 0, {0}, n_print_b, "Print `true` or `false`."},
     {"io.print_p", 1, {T_P}, 0, {0}, n_print_p, "Print a pointer for debugging."},
     {"io.nl", 0, {0}, 0, {0}, n_nl, "Print a newline."},
+    {"io.flush", 0, {0}, 0, {0}, n_flush, "Write out the program's buffered standard output now. Output is also flushed when the VM is idle, at exit, and before anything is written to standard error."},
     {"time.now_ns", 0, {0}, 1, {T_I64}, n_now_ns, "Monotonic clock in nanoseconds (the same as time.monotonic)."},
     {"str.len", 1, {T_R}, 1, {T_I64}, n_str_len, "Length of a string or byte buffer in bytes (same as the len instruction)."},
     {"str.byte", 2, {T_R, T_I64}, 1, {T_U8}, n_str_byte, "Byte at an index of a string (bounds checked)."},

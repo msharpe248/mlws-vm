@@ -1,0 +1,8 @@
+; tagof checks its slot like any other access: an element out of range traps.
+; expect-error: E_BOUNDS
+.func main
+    lnew R0
+    mov I1, 3
+    tagof I0, R0[I1]
+    ret 0
+.endf

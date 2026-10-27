@@ -78,6 +78,10 @@ static void gen_isa(StrBuf *b) {
                "**Two-operand shorthand.** For arithmetic and bitwise instructions, `op dst, src` means\n"
                "`dst = dst op src`. With three or more operands, `dst = s1 op s2 op ... op sN`, so `add`, `mul`,\n"
                "`min`, `max`, `and`, `or` and `xor` take up to 31 sources.\n\n");
+    /* the codes tagof reports (and memory word tags hold) */
+    sb_puts(b, "## Types\n\nType codes, as `tagof` reports them: 0 for a slot never written");
+    for (int t = 1; t < T__COUNT; t++) sb_printf(b, ", %d `%s`", t, type_name((MlwsType)t));
+    sb_printf(b, ", and %d for raw bytes (written partly, unaligned, or by `memcpy`).\n\n", TAG_RAW);
     const char *cat = NULL;
     for (int i = 0; i < OP__COUNT; i++) {
         const OpInfo *oi = &op_info[i];

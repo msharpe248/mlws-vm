@@ -141,6 +141,7 @@ The heap object types map directly onto scripting-language values
 | `s[i]`, `len(s)`, slices | `R1[I2]` (a byte), `len I0, R1`, `substr R0, R1, start, n` |
 | A class or record type | `.struct Name` with typed fields; `new R0, Name`; `R0->Name.field` |
 | A field or method dispatch check | `isa I0, R0, Name`, or `typeof I0, R0` for the kind |
+| The type of a dynamically typed slot | `tagof I0, R1[I2]` (also `UP[n]`, stack and global words) |
 | A fixed-size typed array | `anew.f64 R0, n`; `R0[I1]` |
 | A dynamic list / array | `lnew`, `lpush`, `lpop`, `lins`, `ldel`, `R0[I1]`, `len` |
 | A dictionary / object literal | `mnew`, `mset`, `mget` (with a default), `mhas`, `mdel`, `mkeys` |
@@ -157,6 +158,18 @@ The heap object types map directly onto scripting-language values
   a dynamically typed language can store anything in them, and `tostr` / `typeof`
   can inspect values. Arrays and struct fields are **statically typed**, which
   suits typed languages and is more compact.
+* **One slot per dynamic value.** `tagof I0, R1[I2]` reads the type code an
+  element holds (6 `i64`, 12 `f64`, 13 `r`, 0 never written; all of them in
+  [ISA.md](ISA.md#types)), so a list element, closure capture or stack word can
+  hold an integer, a float or a reference, and code branches on the tag before
+  reading it with that type:
+
+  ```asm
+      tagof I0, R1[I2]
+      beq   I0, 12, Lfloat           ; f64
+      bne   I0, 6, Lref              ; otherwise i64, or a reference
+      mov   I3, R1[I2]               ; the integer
+  ```
 * Map keys compare by value. Integers of any width are compared by value and strings
   by content, so `"apple"` built at run time finds the key `"apple"`. `mkeys` returns
   keys in insertion order, which gives deterministic iteration.
@@ -375,17 +388,23 @@ them by emitting these shapes; nothing else changes.
   hot code. Closure calls (`calli R0 (I1, 0.0) -> (I2)`) are fast when the
   closure's parameter and result types fit, checked per call. `ret` is fast with
   registers and constants of the declared result types (`ret F1, null`).
-* **References:** `mov.r R0, null`, `mov.r R0, "text"`, a global reference
-  (`mov.r R0, @cache`), and `beq.r`/`bne.r` of a register against a register,
-  a constant or a global (`bne.r R0, @cache, L`, the shape of an inline cache).
+* **References:** `mov.r R0, null`, `mov.r R0, "text"`, and `beq.r`/`bne.r` of
+  a register against a register, a constant or a global
+  (`bne.r R0, @cache, L`, the shape of an inline cache).
+* **Globals and closure captures moved to or from a register** of the
+  matching bank, for 64-bit types: `mov I0, @count`, `mov @count, I0`,
+  `mov.r R0, @cache`, `mov F0, UP[1]`, `mov UP[0], I1`. A store sets the
+  word's or capture's type; a read of another type takes the general path.
 * **Fields and elements moved to or from a register:** `mov I0, R1->Point.x`,
-  `mov R1->Point.x, I0`, `mov F0, R1[I2]`, `mov R1[I2], F0`, for 64-bit fields,
-  `i64`/`f64`/`r` arrays and list elements, indexed by a register. Arithmetic
+  `mov R1->Point.x, I0`, `mov F0, R1[I2]`, `mov R1[I2], F0`, `mov I0, R1[3]`, for
+  64-bit fields, and `i64`/`f64`/`r` arrays and list elements indexed by a
+  register or a constant. Arithmetic
   directly on a field or element works, but takes the general path. Loading
   into registers, computing there and storing back is much faster in a loop:
-  `bench/nbody.masm` runs in 96 ms with element operands and in 24 ms rewritten
+  `bench/nbody.masm` runs in 98 ms with element operands and in 24 ms rewritten
   that way, although it executes more instructions.
-* **Objects:** `isa I0, R0, Point`; null tests `bz R0, L` and `bnz R0, L`; and
+* **Objects:** `isa I0, R0, Point`; `len I0, R0`; `tagof I0, R1[I2]`; null tests
+  `bz R0, L` and `bnz R0, L`; and
   `mget.r R0, R1, "name", null`, a reference looked up by a constant string key
   with a null default (an object whose fields are a map).
 

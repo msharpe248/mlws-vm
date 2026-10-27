@@ -213,6 +213,7 @@ of the instructions in call-heavy code.
 | M22 | Threaded code (Bell; Ertl and Gregg), Lua's and CPython's computed-goto dispatch, Lua's register window for calls (as the measure to beat) |
 | M23 | Lua's asymmetric stackful coroutines (and Moura and Ierusalimschy's account of them), Wren fibers, Ruby `Fiber`, Python generators, WebAssembly stack switching |
 | M24 | CPython 3.11's specialising interpreter and Brunthaler's quickening (forms chosen from the shapes compilers emit); the inline caches of Smalltalk-80 and Self, which the Lox compiler builds from `bne.r R, @cache, L` |
+| M25 | Lua's tagged values (`TValue`: a value plus its type tag, here kept in the slot's own tag and read with `tagof`) |
 
 ## References
 

@@ -23,6 +23,10 @@ which preserves the type tag of a stack or global word.
 `dst = dst op src`. With three or more operands, `dst = s1 op s2 op ... op sN`, so `add`, `mul`,
 `min`, `max`, `and`, `or` and `xor` take up to 31 sources.
 
+## Types
+
+Type codes, as `tagof` reports them: 0 for a slot never written, 1 `b`, 2 `c`, 3 `i8`, 4 `i16`, 5 `i32`, 6 `i64`, 7 `u8`, 8 `u16`, 9 `u32`, 10 `u64`, 11 `f32`, 12 `f64`, 13 `r`, 14 `p`, 15 `big`, 16 `dec`, and 255 for raw bytes (written partly, unaligned, or by `memcpy`).
+
 
 ## Control
 
@@ -148,6 +152,7 @@ which preserves the type tag of a stack or global word.
 | `0x00A3` | `typeof` | `?, ?` | - | Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map, 7 closure, 8 BigInt, 9 decimal, 10 foreign handle, 11 coroutine. |
 | `0x00A4` | `isa` | `bool_dst, ?, ?` | - | dst = true if the reference is a struct of the given type: `isa I0, R1, Point`. |
 | `0x00A5` | `resize` | `?, int` | - | Set the length of a byte buffer or list. New bytes are 0. New list elements are untyped zeros, which read as 0, 0.0 or null. |
+| `0x00A6` | `tagof` | `?, val` | - | dst = the type a slot holds, as a type code (0 for a slot never written, 255 for raw bytes; see Types in docs/ISA.md): a list element or closure capture its own tag, an array element or struct field its declared type, a stack or global word its tag, a byte of a string or buffer u8, a register or constant its natural type. With this, one tagged slot can hold a dynamically typed value: `tagof I0, R1[I2]`, then branch and read it with its type. |
 
 ## Strings
 

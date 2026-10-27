@@ -1,0 +1,108 @@
+; tagof reports the type a slot holds, as a type code (docs/ISA.md, Types):
+; 0 never written, 6 i64, 12 f64, 13 r, 255 raw bytes, and so on. With it one
+; tagged slot (a list element, a closure capture, a stack word) can hold a
+; dynamically typed value, read back with its own type.
+.include "std/test.inc"
+
+.struct S
+    n: i32
+    x: f64
+.ends
+
+g_int:  .i64 5
+g_raw:  .zero 8
+
+.func capture -> i64                     ; UP[0] = 2.5, UP[1] = "s"
+    tagof I0, UP[0]
+    tagof I1, UP[1]
+    mul I0, 100
+    add I0, I1
+    ret I0
+.endf
+
+; A value in one list slot: an integer, a float or a reference, told apart by
+; its tag (the shape a dynamically typed language's table can take).
+.func describe(ref list, i64 i) -> i64
+    tagof I1, list[i]
+    beq I1, 6, 1f                        ; i64
+    beq I1, 12, 2f                       ; f64
+    ret -1
+1:  mov.i64 I2, list[i]
+    ret I2
+2:  mov.f64 F0, list[i]
+    cvt.i64.f64 I2, F0
+    ret I2
+.endf
+
+.func main
+    lnew R0
+    lpush R0, 7, 2.5, "x"
+    lpush.i32 R0, 3
+    resize R0, 5                         ; element 4 never written
+    mov I9, 0
+    tagof I0, R0[I9]                     ; the fast form: an element by a register
+    ASSERT_EQ I0, 6
+    mov I9, 1
+    tagof I0, R0[I9]
+    ASSERT_EQ I0, 12
+    tagof I0, R0[2]                      ; a constant index: the general path
+    ASSERT_EQ I0, 13
+    tagof I0, R0[3]
+    ASSERT_EQ I0, 5                      ; i32
+    tagof I0, R0[4]
+    ASSERT_EQ I0, 0
+
+    call describe (R0, 0) -> (I1)
+    ASSERT_EQ I1, 7
+    call describe (R0, 1) -> (I1)
+    ASSERT_EQ I1, 2
+    call describe (R0, 2) -> (I1)
+    ASSERT_EQ I1, -1
+
+    anew.f64 R1, 3                       ; arrays and fields: the declared type
+    mov I9, 2
+    tagof I0, R1[I9]
+    ASSERT_EQ I0, 12
+    new R2, S
+    tagof I0, R2->S.n
+    ASSERT_EQ I0, 5
+    mov.r R4, "str"
+    tagof I0, R4[0]                      ; a byte of a string
+    ASSERT_EQ I0, 7
+
+    tagof I0, @g_int                     ; global words: their tag
+    ASSERT_EQ I0, 6
+    tagof I0, @g_raw
+    ASSERT_EQ I0, 0                      ; zero-filled data was never written
+    mov.u8 @g_raw, 1
+    tagof I0, @g_raw                     ; a narrower aligned write: its type
+    ASSERT_EQ I0, 7
+    lea P0, @g_raw
+    memset P0, 0, 8
+    tagof I0, @g_raw                     ; untyped bytes (memset, memcpy): raw
+    ASSERT_EQ I0, 255
+
+    enter 2                              ; stack words
+    tagof I0, LOC[0]
+    ASSERT_EQ I0, 0
+    mov.f64 LOC[0], 1.5
+    tagof I0, LOC[0]
+    ASSERT_EQ I0, 12
+    mov LOC[1], R0
+    tagof I0, LOC[1]
+    ASSERT_EQ I0, 13
+
+    closure capture (2.5, "s") -> (R3)
+    calli R3 -> (I1)
+    ASSERT_EQ I1, 1213
+
+    tagof I0, I5                         ; registers and constants: natural types
+    ASSERT_EQ I0, 6
+    tagof I0, F5
+    ASSERT_EQ I0, 12
+    tagof I0, R3
+    ASSERT_EQ I0, 13
+    tagof I0, 1.0
+    ASSERT_EQ I0, 12
+    ret 0
+.endf
