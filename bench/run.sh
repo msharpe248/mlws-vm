@@ -13,6 +13,8 @@ for f in bench/*.masm; do
     rate=$(awk -v i="$insns" -v t="$ms" 'BEGIN { if (t > 0) printf "%.1f", i / t / 1000; }')
     if [ "$out" = "$want" ]; then ok=ok; else ok="WRONG: $out"; bad=1; fi
     printf "%-14s %10s %12s %12s  %s\n" "$name" "$ms" "$insns" "$rate" "$ok"
+    # on a wrong result, what the program reported (an error, a trap)
+    [ "$ok" = ok ] || echo "$stats" | sed '/^--- mlwsvm stats/,$d' | head -5 | sed 's/^/    /' 
 done
 rm -f "${TMPDIR:-/tmp}/mlwsvm-bench.$$"
 exit ${bad:-0}
