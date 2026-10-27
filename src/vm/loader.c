@@ -109,6 +109,13 @@ static bool resolve_operand(LModule *lm, Function *f, Operand *o, MlwsError *err
 static bool decode_function(LModule *lm, Function *f, MlwsError *err) {
     const MFunc *mf = f->mf;
     Module *m = lm->m;
+    /* its register window: the banks one after another (Function.roff) */
+    uint32_t words = 0;
+    for (int b = 0; b < NBANKS; b++) {
+        f->roff[b] = (uint16_t)words;
+        words += mf->nregs[b];
+    }
+    f->rsize = (uint16_t)words;
     ByteReader r = {m->code + mf->code_off, mf->code_len, 0, false};
     VEC(Insn) code = {0};
     while (r.pos < r.n) {

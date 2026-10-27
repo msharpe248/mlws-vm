@@ -58,13 +58,20 @@ typedef struct {
 /* The current frame, for code where `fr` names another variable (interp_run's generic forms). */
 static inline Frame *ctx_frame(const Ctx *c) { return c->fr; }
 
+/* The register windows of frame fr, whose function is fn and whose window
+ * starts at w: the call handlers know all three. */
+static inline void ctx_set(Ctx *c, Frame *fr, const Function *fn, uint64_t *w) {
+    c->fr = fr;
+    c->I = (int64_t *)w; /* roff[BANK_I] is 0 */
+    c->F = (double *)(w + fn->roff[BANK_F]);
+    c->R = (Obj **)(w + fn->roff[BANK_R]);
+    c->P = w + fn->roff[BANK_P];
+}
+
 static void ctx_load(Ctx *c) {
     Process *p = c->p;
-    c->fr = &p->frames[p->nframes - 1];
-    c->I = p->ireg + c->fr->base[BANK_I];
-    c->F = p->freg + c->fr->base[BANK_F];
-    c->R = p->rreg + c->fr->base[BANK_R];
-    c->P = p->preg + c->fr->base[BANK_P];
+    Frame *fr = &p->frames[p->nframes - 1];
+    ctx_set(c, fr, fr->fn, p->regs + fr->base);
 }
 
 /* A resolved operand location: segment memory, a register, a Word slot of a
@@ -1261,6 +1268,14 @@ static uint32_t quicken_idx;      /* the instruction's index in it */
 
 void interp_quicken_function(Function *f) {
     quicken_fn = f->mf;
+    /* Every register operand's slot in f's register window (Function.roff), in
+     * its spare `pad` byte: the calls and rets copy words between slots. */
+    for (uint32_t k = 0; k < f->ncode; k++)
+        for (int j = 0; j < f->code[k].nops; j++) {
+            Operand *o = &f->code[k].ops[j];
+            if (o->mode == OM_REG && REG_BANK(o->reg) < NBANKS)
+                o->pad = (uint8_t)(f->roff[REG_BANK(o->reg)] + REG_IDX(o->reg));
+        }
     for (uint32_t k = 0; k < f->ncode; k++) {
         quicken_idx = k;
         interp_quicken(&f->code[k]);
@@ -1405,10 +1420,14 @@ void interp_quicken(Insn *in) {
         if (quicken_call(in)) {
             in->xop = Q_CALL_R;
             /* Each argument register's `ireg` (unused by a register operand) holds
-             * its destination: the parameter's index within its bank. */
-            const MFunc *mf = ((const Function *)o[0].rv.ptr)->mf;
+             * its destination: the parameter's slot in the callee's window. */
+            const Function *callee = o[0].rv.ptr;
+            const MFunc *mf = callee->mf;
             int cnt[NBANKS] = {0};
-            for (int k = 0; k < (int)o[1].imm; k++) o[2 + k].ireg = (uint8_t)cnt[type_bank((MlwsType)mf->params[k])]++;
+            for (int k = 0; k < (int)o[1].imm; k++) {
+                int b = (int)type_bank((MlwsType)mf->params[k]);
+                o[2 + k].ireg = (uint8_t)(callee->roff[b] + cnt[b]++);
+            }
         } else if (quicken_call_rk(in)) {
             in->xop = Q_CALL_RK;
         }
@@ -1589,7 +1608,8 @@ static MLWS_NOINLINE bool call_rk(Process *p, const Insn *in) {
     Obj *clo = NULL;
     const Frame *cf = &p->frames[p->nframes - 1];
     if (in->xop == Q_CALLI_RK) {
-        Obj *ob = p->rreg[cf->base[BANK_R] + REG_IDX(qo[0].reg)];
+        Obj *ob;
+        memcpy(&ob, &p->regs[cf->base + qo[0].pad], sizeof ob);
         if (!ob || ob->kind != OBJ_CLOSURE) return false;
         clo = ob;
         fn = ((ObjClosure *)ob)->fn;
@@ -1615,27 +1635,19 @@ static MLWS_NOINLINE bool call_rk(Process *p, const Insn *in) {
     const Frame *of = nf - 1;
     nf->closure = clo;
     nf->qret = 1;
+    uint64_t *nw = p->regs + nf->base;
+    const uint64_t *ow = p->regs + of->base;
     int cnt[NBANKS] = {0};
     for (int k = 0; k < argc; k++) {
         const Operand *a = &qo[2 + k];
-        int pt = mf->params[k], b = (int)type_bank((MlwsType)pt), d = cnt[b]++;
-        Word w;
+        int b = (int)type_bank((MlwsType)mf->params[k]);
+        uint64_t *d = &nw[fn->roff[b] + cnt[b]++];
         if (a->mode != OM_REG) {
-            const_word(a, pt, &w);
+            Word w;
+            const_word(a, mf->params[k], &w);
+            memcpy(d, &w, 8);
         } else {
-            int r = REG_IDX(a->reg);
-            switch (b) {
-            case BANK_I: w.i = p->ireg[of->base[BANK_I] + r]; break;
-            case BANK_F: w.f = p->freg[of->base[BANK_F] + r]; break;
-            case BANK_R: w.r = p->rreg[of->base[BANK_R] + r]; break;
-            default: w.p = p->preg[of->base[BANK_P] + r]; break;
-            }
-        }
-        switch (b) {
-        case BANK_I: p->ireg[nf->base[BANK_I] + d] = w.i; break;
-        case BANK_F: p->freg[nf->base[BANK_F] + d] = w.f; break;
-        case BANK_R: p->rreg[nf->base[BANK_R] + d] = w.r; break;
-        default: p->preg[nf->base[BANK_P] + d] = w.p; break;
+            memcpy(d, &ow[a->pad], 8); /* the caller's slot (interp_quicken_function) */
         }
     }
     return true;
@@ -1649,26 +1661,17 @@ static MLWS_NOINLINE void ret_rk(Process *p, const Insn *in) {
     const Insn *ri = fr->ret_insn;
     const MFunc *mf = fr->fn->mf;
     int argc = (int)ri->ops[1].imm, nres = ri->nops - 2 - argc;
+    uint64_t *cw = p->regs + of->base;
+    const uint64_t *fw = p->regs + fr->base;
     for (int k = 0; k < nres; k++) {
         const Operand *v = &qo[k];
-        uint8_t dr = ri->ops[2 + argc + k].reg;
-        Word w;
+        uint64_t *d = &cw[ri->ops[2 + argc + k].pad]; /* slots: interp_quicken_function */
         if (v->mode != OM_REG) {
+            Word w;
             const_word(v, mf->rets[k], &w);
+            memcpy(d, &w, 8);
         } else {
-            int r = REG_IDX(v->reg);
-            switch (REG_BANK(v->reg)) {
-            case BANK_I: w.i = p->ireg[fr->base[BANK_I] + r]; break;
-            case BANK_F: w.f = p->freg[fr->base[BANK_F] + r]; break;
-            case BANK_R: w.r = p->rreg[fr->base[BANK_R] + r]; break;
-            default: w.p = p->preg[fr->base[BANK_P] + r]; break;
-            }
-        }
-        switch (REG_BANK(dr)) {
-        case BANK_I: p->ireg[of->base[BANK_I] + REG_IDX(dr)] = w.i; break;
-        case BANK_F: p->freg[of->base[BANK_F] + REG_IDX(dr)] = w.f; break;
-        case BANK_R: p->rreg[of->base[BANK_R] + REG_IDX(dr)] = w.r; break;
-        default: p->preg[of->base[BANK_P] + REG_IDX(dr)] = w.p; break;
+            memcpy(d, &fw[v->pad], 8);
         }
     }
     proc_pop_frame(p);
@@ -1803,7 +1806,7 @@ static __attribute__((unused)) QCC int qforms_start(QPARAMS) {
  * stack frame. */
 #define QPUSH_FRAME(f, ri)                                                     \
     do {                                                                       \
-        if (__builtin_expect(!proc_frame_fits(QPRC, (f)->mf->nregs), 0)) GENERIC(); \
+        if (__builtin_expect(!proc_frame_fits(QPRC, (f)->rsize), 0)) GENERIC();   \
         proc_push_frame_fitting(QPRC, f, ri);                                  \
     } while (0)
 #include "qforms.inc"

@@ -202,10 +202,19 @@ static void mark(Process *p, Obj *o) {
 
 static void mark_segment(Process *p, const Segment *s, uint32_t from_word);
 
+/* The R registers of every frame's window, and the closures being run. */
+static void mark_frames(Process *p, uint64_t *regs, const Frame *frames, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        const Frame *f = &frames[i];
+        Obj *const *r = (Obj *const *)frame_reg(regs, f, BANK_R, 0);
+        for (uint32_t k = 0; k < f->fn->mf->nregs[BANK_R]; k++) mark(p, r[k]);
+        mark(p, f->closure);
+    }
+}
+
 /* The roots of an execution context: what gc_collect marks for the running one. */
 static void mark_ctx(Process *p, const ExecCtx *x) {
-    for (uint32_t i = 0; i < x->rtop[BANK_R]; i++) mark(p, x->rreg[i]);
-    for (uint32_t i = 0; i < x->nframes; i++) mark(p, x->frames[i].closure);
+    mark_frames(p, x->regs, x->frames, x->nframes);
     mark_segment(p, &x->stack, x->stack_ref_lo);
 }
 
@@ -268,8 +277,7 @@ static void mark_segment(Process *p, const Segment *s, uint32_t from_word) {
 
 void gc_collect(Process *p) {
     uint64_t t0 = plat_now_ns();
-    for (uint32_t i = 0; i < p->rtop[BANK_R]; i++) mark(p, p->rreg[i]);
-    for (uint32_t i = 0; i < p->nframes; i++) mark(p, p->frames[i].closure); /* closures being run */
+    mark_frames(p, p->regs, p->frames, p->nframes);
     /* The stack from the lowest word ever tagged as a reference: code may legally
      * write references below SP, so SP is not the bound. */
     mark_segment(p, &p->stack, p->stack_ref_lo);

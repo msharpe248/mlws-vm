@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M27 are complete. What remains is Windows (section 3) and the
+Milestones M0–M28 are complete. What remains is Windows (section 3) and the
 deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M27 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M28 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M27
+## Milestones M11–M28
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -49,6 +49,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M25 Compiled Lua** (done) | from the Lua compiler's measurements: fast 64-bit global, constant-index element and closure-capture (`UP[n]`) moves, and `len`; `tagof`, so one tagged slot can hold a dynamically typed value; `io.flush`, and standard output flushed before anything is written to standard error |
 | **M26 Lists and floats** (done) | from the Lua compiler's profiles: `lpush` of registers into a list's spare capacity, and `f64` `sqrt`, `neg` and `abs` (Lua's `methods` benchmark 7–8% faster) |
 | **M27 Tail-call dispatch** (done) | each quickened form a function tail-calling the next (`musttail`, Clang and GCC 15), the generic forms one more; the dispatch loop remains for other compilers (`make check-loop`). Adding a handler now moves the benchmarks by about 2%, where it moved them by 5–50%; most are faster too (PERFORMANCE.md, item 3) |
+| **M28 Cheaper calls** (done) | one register stack: each frame's `I`, `F`, `R` and `P` registers one window, at offsets fixed per function, so a call moves one stack top and copies arguments and results word by word between slots computed at load time. `fib` 27–36% less time, level with Lua 5.5 |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -171,9 +172,9 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 * A compact decoded form for every instruction. Quickened instructions carry a
   compact copy since M22, but each decoded operand still takes 72 bytes, so
   programs with a lot of hot code may run out of cache before the benchmarks do.
-* Calls, further. Lua 5.5 still runs `fib` 1.4× faster: its callee's window
-  starts at the caller's argument registers, while MLWSVM sets up a window per
-  register bank ([REGISTER_VS_STACK.md](REGISTER_VS_STACK.md)).
+* ~~Calls: one window per frame~~ (M28: done). Calls without copying, through
+  overlapping windows, would need an ABI change; only if call-heavy programs
+  show the argument copies.
 * A generational collector, if collection grows past roughly 10% of real
   workloads (it is 11% of `binarytrees`).
 * Lock-free run queues and spinning before sleeping, for many-thread,

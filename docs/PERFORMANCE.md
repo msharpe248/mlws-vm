@@ -26,16 +26,16 @@ per core:
 
 | Benchmark | Apple M5 Pro, Clang | Intel i7-11700KF, GCC | AMD Ryzen 9 5900X, Clang |
 |---|---|---|---|
-| fib | 69 | 146 | 127 |
-| loop | 86 | 151 | 135 |
-| sieve | 583 | 1,030 | 1,063 |
-| nbody | 96 | 166 | 177 |
-| binarytrees | 116 | 234 | 225 |
-| maps | 63 | 105 | 107 |
-| pingpong | 33 | 95 | 77 |
-| closures | 108 | 217 | 194 |
-| parallel | 22 | 44 | 35 |
-| connections | 1,044 | 674 | 1,260 |
+| fib | 50 | 93 | 92 |
+| loop | 86 | 152 | 135 |
+| sieve | 582 | 1,023 | 1,039 |
+| nbody | 98 | 167 | 158 |
+| binarytrees | 103 | 196 | 190 |
+| maps | 62 | 104 | 109 |
+| pingpong | 33 | 96 | 74 |
+| closures | 99 | 176 | 166 |
+| parallel | 24 | 44 | 33 |
+| connections | 1,061 | 680 | 1,212 |
 
 The Mac is a laptop with 6 performance and 12 efficiency cores, running macOS.
 The two desktops run Ubuntu 26.04: the Intel one has 8 cores (16 threads), the
@@ -59,14 +59,14 @@ time, best of three:
 
 | Benchmark | Apple M5 Pro | Intel i7, GCC | AMD Ryzen, Clang |
 |---|---|---|---|
-| fib | 562 | 1,054 | 991 |
-| binary_trees | 2,028 | 4,131 | 4,104 |
-| trees | 2,026 | 5,324 | 6,307 |
-| instantiation | 516 | 845 | 901 |
-| invocation | 301 | 626 | 563 |
-| method_call | 181 | 353 | 332 |
-| properties | 407 | 839 | 760 |
-| zoo | 314 | 602 | 560 |
+| fib | 513 | 932 | 921 |
+| binary_trees | 2,002 | 4,011 | 4,036 |
+| trees | 1,864 | 5,012 | 6,135 |
+| instantiation | 490 | 835 | 837 |
+| invocation | 272 | 597 | 515 |
+| method_call | 175 | 329 | 313 |
+| properties | 383 | 752 | 688 |
+| zoo | 307 | 600 | 493 |
 
 These are 1.3–3.0× faster than before the forms for compiled dynamic code
 existed ([item 1](#how-the-interpreter-is-made-fast) below): `invocation` most, since every call there passed a
@@ -84,11 +84,11 @@ against the reference interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | Lua 5.5, M5 | MLWSVM, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|
-| loop | 243 | 220 | 450 | 289 |
-| iterate | 151 | 60 | 261 | 78 |
-| fib | 189 | 54 | 305 | 101 |
-| methods | 1,950 | 350 | 3,782 | 567 |
-| strings | 2,021 | 137 | 3,471 | 212 |
+| loop | 249 | 216 | 456 | 289 |
+| iterate | 147 | 58 | 236 | 78 |
+| fib | 167 | 54 | 236 | 101 |
+| methods | 1,856 | 351 | 3,448 | 572 |
+| strings | 1,846 | 136 | 3,039 | 213 |
 
 The profiler shows nearly all of these instructions on fast paths; what the
 generated code still spends is instruction count (type guards on values of
@@ -105,17 +105,16 @@ subtracted):
 
 | | `fib` (Mac) | `loop` (Mac) | `fib` (Intel) | `loop` (Intel) |
 |---|---|---|---|---|
-| MLWSVM | 68 | **84** | 143 | **149** |
-| Lua 5.5 | **49** | 210 | **100** | 288 |
-| JVM, interpreter only (`-Xint`) | 87 | 184 | 104 | 396 |
-| CPython | 128 | 1,177 | 186 | 2,376 |
+| MLWSVM | **50** | **86** | **92** | **149** |
+| Lua 5.5 | 51 | 213 | 101 | 289 |
+| JVM, interpreter only (`-Xint`) | 90 | 185 | 104 | 396 |
+| CPython | 128 | 1,177 | 186 | 2,374 |
 | JVM with its JIT compiler | 3 | 16 | 8 | 31 |
 
-MLWSVM runs the loop 2.5× faster than Lua and 2.2× faster than the JVM's
-interpreter on the Mac. Lua runs `fib` 1.4× faster on the Mac and on
-the Intel machine, where the JVM's interpreter is faster too: an MLWSVM call
-costs about 10 ns on the Mac, against 7 ns in Lua (see
-[What is not done](#what-is-not-done-and-why)). The JIT row is there for scale.
+MLWSVM is the fastest of these interpreters on both programs. It runs the
+loop 2.5× faster than Lua and 2.2× faster than the JVM's interpreter on the
+Mac, and `fib` as fast as Lua there and 1.1× faster on the Intel machine: a
+call costs about 7 ns on the Mac, as in Lua. The JIT row is there for scale.
 [REGISTER_VS_STACK.md](REGISTER_VS_STACK.md) explains these numbers, with the
 instruction counts and listings of each VM's code.
 
@@ -200,13 +199,18 @@ it measured faster.
    debugger hook is installed is read once per slice; with one, every
    instruction goes through the slice check, which calls it. None of this is observable: a process that kills itself stops at the
    next instruction, and `--stats` counts every instruction.
-5. **Direct calls.** The loader records where each argument of a quickened
-   `call` goes in the callee's register windows, so the arguments are copied
-   straight from the caller's registers to the callee's. Frame push and pop are
-   always inlined, and only the register banks a function uses are zeroed. A
-   frame pushed this way is marked, and its quickened `ret` copies the results
-   straight back. Closure calls (`calli`) work the same way, with the closure's
-   type and banks checked per call.
+5. **One register stack, and direct calls.** A frame's registers are one window
+   on a single register stack: its `I`, `F`, `R` and `P` registers one after
+   another, at offsets fixed for each function when it is loaded. Pushing a
+   frame checks one limit, moves one stack top and zeroes one window; popping
+   restores one top. The loader records every register operand's slot in its
+   function's window, and each argument of a quickened `call` its slot in the
+   callee's, so arguments are copied word by word straight across, with no
+   test of their bank; a frame pushed this way is marked, and its quickened
+   `ret` copies the results back the same way. Closure calls (`calli`) work
+   alike, with the closure's type and banks checked per call. Measured with a
+   window per bank instead, every call and return does its bookkeeping four
+   times, and `fib` takes 37% longer.
 6. **Fields and elements.** `mov` between a register and a struct field, or an
    array or list element indexed by a register, for 64-bit types, has its own
    handlers. Each checks the object at run time and hands anything unexpected
@@ -349,11 +353,12 @@ for each request it serves.
 
 ## What is not done, and why
 
-* **Cheaper calls, further.** A `fib` call costs about 10 ns; Lua 5.5 takes 7.
-  The rest is the frame itself: a separate window in each register bank the
-  callee uses, zeroed, and four bank tops to restore on return, where Lua slides
-  one window over a single stack. A shared window would need a different
-  register model, so this waits until real programs show calls dominating.
+* **Calls without copying.** A call costs about as much as in Lua 5.5, but
+  still copies its arguments (a word each): Lua's callee window starts at the
+  caller's argument registers, so a call copies nothing. Overlapping windows
+  would need compilers to put arguments at the end of the caller's window, and
+  a register model in which banks overlap too, so this waits until call-heavy
+  programs show the copies.
 * **Fewer operands per instruction.** Measured, and rejected. Storing the
   operands inside each instruction, as a fixed 3-operand format would, was no
   faster, and fixed-format calls make `fib` 13–17% slower. See

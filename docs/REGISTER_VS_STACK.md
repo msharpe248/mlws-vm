@@ -25,11 +25,10 @@ instead of a fixed three.
   three times as many instructions, because each of its instructions costs a third
   of a nanosecond. How cheaply a VM executes each instruction matters as much as
   how many it needs.
-* **MLWSVM is the fastest of these interpreters on the loop, but not on calls.**
-  On the Mac it runs the loop 2.5× faster than Lua 5.5 and 2.2× faster than the
-  JVM's interpreter. Lua runs `fib` 1.4× faster (on Linux too, where the JVM's
-  interpreter is faster too), because an MLWSVM call sets up a register window
-  in each bank the callee uses.
+* **MLWSVM is the fastest of these interpreters on both programs.** On the Mac
+  it runs the loop 2.5× faster than Lua 5.5 and 2.2× faster than the JVM's
+  interpreter, and `fib` as fast as Lua (1.1× faster on Linux), since each
+  frame's registers are one window on a single stack.
 * **Variable arity costs nothing measurable at run time.** Storing the first three
   operands inside the instruction, as a fixed format would, was no faster on
   macOS and up to 5% slower on Linux. Its costs are one byte per instruction in the
@@ -120,7 +119,8 @@ MLWSVM gives each call a fresh register window, with separate banks for
 integers, floats, references and pointers. A `call` instruction lists its
 arguments and the registers for its results (`call f (I1, F0, R2) -> (I3)`), and
 copies each argument into the callee's bank. That is one instruction too, but the
-copy is real work, and Part 2 shows it costs more than Lua's sliding window.
+copy is real work. Part 2 shows that it costs about the same as Lua's sliding
+window, since the banks of each frame's window sit together on one stack.
 
 ### Instruction encoding and code size
 
@@ -404,10 +404,10 @@ Wall time in milliseconds, best of five, with each VM's start-up time subtracted
 
 | | Kind | `fib` (Mac) | `loop` (Mac) | `fib` (Linux) | `loop` (Linux) |
 |---|---|---|---|---|---|
-| MLWSVM | register | 68 | **84** | 143 | **149** |
-| Lua 5.5 | register, fixed 3 | **49** | 210 | **100** | 288 |
-| JVM, interpreter only (`-Xint`) | stack | 87 | 184 | 104 | 396 |
-| CPython | stack | 128 | 1,177 | 186 | 2,376 |
+| MLWSVM | register | **50** | **86** | **92** | **149** |
+| Lua 5.5 | register, fixed 3 | 51 | 213 | 101 | 289 |
+| JVM, interpreter only (`-Xint`) | stack | 90 | 185 | 104 | 396 |
+| CPython | stack | 128 | 1,177 | 186 | 2,374 |
 | JVM with its JIT compiler | (machine code) | 3 | 16 | 8 | 31 |
 
 The Mac is an Apple M5 Pro with Lua 5.5.1, OpenJDK 27 and CPython 3.14. Linux is
@@ -419,8 +419,8 @@ Time per instruction executed, in nanoseconds (Mac):
 
 | | MLWSVM | Lua 5.5 | JVM `-Xint` | CPython |
 |---|---|---|---|---|
-| `fib` | 2.2 | 1.3 | 1.2 | 1.6 |
-| `loop` | 0.46 | 1.0 | 0.32 | 2.1 |
+| `fib` | 1.6 | 1.3 | 1.2 | 1.6 |
+| `loop` | 0.48 | 1.0 | 0.32 | 2.1 |
 
 ### What the measurements show
 
@@ -441,14 +441,14 @@ Time per instruction executed, in nanoseconds (Mac):
    the effect of Lua's threaded code), and
    each carries a compact copy of its operands
    ([PERFORMANCE.md](PERFORMANCE.md#how-the-interpreter-is-made-fast)).
-4. **Calls are where Lua stays ahead.** A `fib` call costs about 10 ns in MLWSVM
-   against 7 ns in Lua, so Lua runs `fib` 1.4× faster on the Mac while executing
-   22% more instructions. On the Intel machine with GCC, the JVM's interpreter is
-   faster on `fib` too. Lua's callee window starts at the caller's argument
-   registers, on a single stack of values, so a call copies nothing. An MLWSVM
-   call copies its arguments straight into the callee's registers, but it still
-   sets up and zeroes a separate window in each register bank the callee uses,
-   and restores four bank tops on return.
+4. **Calls cost about what Lua's do.** A `fib` call takes about 7 ns in MLWSVM
+   and in Lua on the Mac, and MLWSVM executes 18% fewer instructions for it.
+   Lua's callee window starts at the caller's argument registers, on a single
+   stack of values, so a call copies nothing. An MLWSVM frame's registers are
+   one window on a single stack too (its banks one after another), and a call
+   copies its arguments word by word between slots computed at load time.
+   Measured with a separate window per bank instead, every call and return
+   does its bookkeeping four times, and Lua runs `fib` 1.4× faster.
 5. **CPython is slow on the loop for a different reason.** Its integers are heap
    objects of arbitrary size, so each arithmetic operation does more work. Its
    cost per instruction on `fib` is close to Lua's.
@@ -617,8 +617,9 @@ The measurements did point at two other costs:
   immediate inside its 32-byte `Insn`. With `switch` dispatch it made no
   difference, but with threaded dispatch it saves 18% on the loop: once
   dispatch is cheap, the pointer chase shows.
-* **Calls cost more than Lua's** (Part 2). Setting up a window in each register
-  bank is where `fib`'s time goes, and Lua stays 1.4× faster there.
+* **Calls cost about what Lua's do** (Part 2), with each frame's register banks
+  in one window on a single stack. What is left is that MLWSVM copies its
+  arguments, where Lua's windows overlap.
 
 What remains of both is listed in [ROADMAP.md](ROADMAP.md) §4.
 

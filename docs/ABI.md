@@ -8,7 +8,8 @@ it alongside [TARGETING.md](TARGETING.md).
 
 A program runs as a **process**. Each process owns:
 
-* a call-frame stack and per-bank register stacks (for the register windows)
+* a call-frame stack and a register stack, on which each frame's window holds
+  its `I`, `F`, `R` and `P` registers one after another
 * a **data stack** of 8-byte words (1 MiB by default; `mlwsvm run --stack-words N`)
 * any number of **coroutines**, each with frames, registers and a data stack of
   its own (§8)

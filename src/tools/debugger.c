@@ -244,10 +244,10 @@ static void reg_value(const Process *p, uint8_t reg, Word *w, MlwsType *t) {
     const Frame *fr = &p->frames[p->nframes - 1];
     int b = REG_BANK(reg), i = REG_IDX(reg);
     switch (b) {
-    case BANK_I: w->i = p->ireg[fr->base[b] + i]; *t = T_I64; break;
-    case BANK_F: w->f = p->freg[fr->base[b] + i]; *t = T_F64; break;
-    case BANK_R: w->r = p->rreg[fr->base[b] + i]; *t = T_R; break;
-    case BANK_P: w->p = p->preg[fr->base[b] + i]; *t = T_P; break;
+    case BANK_I: w->i = *(const int64_t *)frame_reg(p->regs, fr, b, i); *t = T_I64; break;
+    case BANK_F: w->f = *(const double *)frame_reg(p->regs, fr, b, i); *t = T_F64; break;
+    case BANK_R: w->r = *(Obj *const *)frame_reg(p->regs, fr, b, i); *t = T_R; break;
+    case BANK_P: w->p = *frame_reg(p->regs, fr, b, i); *t = T_P; break;
     default:
         *t = i == SREG_PID ? T_I64 : T_P;
         w->u = i == SREG_SP ? p->sp : i == SREG_FP ? p->fp : p->pid;

@@ -27,17 +27,13 @@
 
 void coro_swap(Process *p, ObjCoro *co) {
     ExecCtx *x = &co->ctx;
-    SWAP(p->ireg, x->ireg);
-    SWAP(p->freg, x->freg);
-    SWAP(p->rreg, x->rreg);
-    SWAP(p->preg, x->preg);
-    for (int b = 0; b < NBANKS; b++) {
-        SWAP(p->rcap[b], x->rcap[b]);
-        SWAP(p->rtop[b], x->rtop[b]);
-    }
+    SWAP(p->regs, x->regs);
+    SWAP(p->rcap, x->rcap);
+    SWAP(p->rtop, x->rtop);
     SWAP(p->frames, x->frames);
     SWAP(p->nframes, x->nframes);
     SWAP(p->fcap, x->fcap);
+    SWAP(p->flimit, x->flimit);
     SWAP(p->stack, x->stack);
     SWAP(p->sp, x->sp);
     SWAP(p->fp, x->fp);
@@ -75,10 +71,7 @@ ObjCoro *coro_new(Process *p, ObjClosure *fn, int64_t words) {
 }
 
 static void free_ctx(ExecCtx *x) {
-    free(x->ireg);
-    free(x->freg);
-    free(x->rreg);
-    free(x->preg);
+    free(x->regs);
     free(x->frames);
     free(x->stack.data); /* and the tags, in the same block */
     memset(x, 0, sizeof *x);

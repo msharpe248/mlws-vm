@@ -3,7 +3,9 @@
 ; and `alive` reports it dead at once. The program may also end while a
 ; blocking call is still running: the VM waits for it to return.
 ; option: --ext-path build/test-ext
+; expect-stdout: E_KILLED
 .include "std/test.inc"
+.include "std/io.inc"
 .extension "demo"
 .func sleeper(i64 ms)
     ncall "demo.sleep" (ms) -> (I1)
@@ -17,8 +19,7 @@
     alive I1, I0
     ASSERT_FALSE I1
     recv R0
-    strcmp I2, R0->Down.code, "E_KILLED"
-    ASSERT_EQ I2, 0
+    PRINTLN_S R0->Down.code              ; checked as output, so a failure shows the code
     spawn sleeper (100)                ; still in its call when main returns
     sleep 10
     ret 0

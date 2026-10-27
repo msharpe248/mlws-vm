@@ -62,16 +62,11 @@
             Frame *nf = &QPRC->frames[QPRC->nframes - 1];
             const Frame *of = nf - 1;
             nf->qret = 1;
-            for (int k = 0; k < argc; k++) { /* caller register -> callee parameter, same bank */
-                uint8_t r = qo[2 + k].reg, d = qo[2 + k].ireg;
-                switch (REG_BANK(r)) {
-                case BANK_I: QPRC->ireg[nf->base[BANK_I] + d] = QPRC->ireg[of->base[BANK_I] + REG_IDX(r)]; break;
-                case BANK_F: QPRC->freg[nf->base[BANK_F] + d] = QPRC->freg[of->base[BANK_F] + REG_IDX(r)]; break;
-                case BANK_R: QPRC->rreg[nf->base[BANK_R] + d] = QPRC->rreg[of->base[BANK_R] + REG_IDX(r)]; break;
-                default: QPRC->preg[nf->base[BANK_P] + d] = QPRC->preg[of->base[BANK_P] + REG_IDX(r)]; break;
-                }
-            }
-            ctx_load(QCTX);
+            /* caller slot -> callee slot, a word each (slots: interp_quicken) */
+            uint64_t *nw = QPRC->regs + nf->base;
+            const uint64_t *ow = QPRC->regs + of->base;
+            for (int k = 0; k < argc; k++) memcpy(&nw[qo[2 + k].ireg], &ow[qo[2 + k].pad], 8);
+            ctx_set(QCTX, nf, fn, nw);
             RELOAD();
             NEXT;
         }
@@ -85,17 +80,11 @@
                  * ret names): copy each one straight across, then pop. */
                 int argc = (int)ri->ops[1].imm, nres = ri->nops - 2 - argc;
                 const Frame *of = QFRM - 1;
-                for (int k = 0; k < nres; k++) {
-                    uint8_t sr = qo[k].reg, dr = ri->ops[2 + argc + k].reg;
-                    switch (REG_BANK(sr)) {
-                    case BANK_I: QPRC->ireg[of->base[BANK_I] + REG_IDX(dr)] = QI[REG_IDX(sr)]; break;
-                    case BANK_F: QPRC->freg[of->base[BANK_F] + REG_IDX(dr)] = QF[REG_IDX(sr)]; break;
-                    case BANK_R: QPRC->rreg[of->base[BANK_R] + REG_IDX(dr)] = QR[REG_IDX(sr)]; break;
-                    default: QPRC->preg[of->base[BANK_P] + REG_IDX(dr)] = QP[REG_IDX(sr)]; break;
-                    }
-                }
+                uint64_t *cw = QPRC->regs + of->base;
+                const uint64_t *fw = QPRC->regs + QFRM->base;
+                for (int k = 0; k < nres; k++) memcpy(&cw[ri->ops[2 + argc + k].pad], &fw[qo[k].pad], 8);
                 proc_pop_frame(QPRC);
-                ctx_load(QCTX);
+                ctx_set(QCTX, (Frame *)of, of->fn, cw);
                 RELOAD();
                 NEXT;
             }
@@ -265,19 +254,24 @@
             const Frame *of = nf - 1;
             nf->closure = &cl->h;
             nf->qret = 1;
-            /* the next parameter register of each bank (scalars: an array here
-             * costs a stack frame and a stack-protector check per call) */
-            uint32_t ni = nf->base[BANK_I], nfl = nf->base[BANK_F], nr = nf->base[BANK_R], np = nf->base[BANK_P];
+            /* the next parameter slot of each bank in the callee's window
+             * (scalars: an array here costs a stack frame and a stack-protector
+             * check per call) */
+            uint64_t *nw = QPRC->regs + nf->base;
+            const uint64_t *ow = QPRC->regs + of->base;
+            uint32_t ni = 0, nfl = fn->roff[BANK_F], nr = fn->roff[BANK_R], np = fn->roff[BANK_P];
             for (int k = 0; k < argc; k++) {
-                uint8_t r = qo[2 + k].reg;
-                switch (REG_BANK(r)) {
-                case BANK_I: QPRC->ireg[ni++] = QPRC->ireg[of->base[BANK_I] + REG_IDX(r)]; break;
-                case BANK_F: QPRC->freg[nfl++] = QPRC->freg[of->base[BANK_F] + REG_IDX(r)]; break;
-                case BANK_R: QPRC->rreg[nr++] = QPRC->rreg[of->base[BANK_R] + REG_IDX(r)]; break;
-                default: QPRC->preg[np++] = QPRC->preg[of->base[BANK_P] + REG_IDX(r)]; break;
+                const Operand *a = &qo[2 + k];
+                uint32_t d;
+                switch (REG_BANK(a->reg)) {
+                case BANK_I: d = ni++; break;
+                case BANK_F: d = nfl++; break;
+                case BANK_R: d = nr++; break;
+                default: d = np++; break;
                 }
+                memcpy(&nw[d], &ow[a->pad], 8);
             }
-            ctx_load(QCTX);
+            ctx_set(QCTX, nf, fn, nw);
             RELOAD();
             NEXT;
         }

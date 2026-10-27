@@ -81,6 +81,11 @@ typedef struct Function {
     struct Function *target; /* itself, or the resolved import */
     uint8_t *bp;             /* debugger breakpoints per instruction (tools), or NULL */
     uint64_t *prof;          /* profiler counts per instruction (tools), or NULL */
+    /* Its register window, one block in the process's register stack: the I
+     * registers, then F, R and P. roff[b] is where bank b starts (roff[BANK_I]
+     * is 0); rsize is the whole window, in 8-byte words. */
+    uint16_t roff[NBANKS];
+    uint16_t rsize;
 } Function;
 
 enum { LM_LOADING = 1, LM_READY = 2 };
@@ -233,24 +238,28 @@ typedef struct {
      * the results straight across. A tail call replaces the frame with one
      * that is not marked. */
     uint8_t qret;
-    uint32_t base[NBANKS];
+    uint32_t base; /* its register window: regs[base .. base + fn->rsize) */
     uint64_t entry_sp; /* SP at the call; restored on return */
     uint64_t saved_fp;
     const Insn *ret_insn; /* caller's call instruction that receives results */
     Obj *closure;         /* the closure being run (UP[n] reads it), or NULL */
 } Frame;
 
-/* What a coroutine switch exchanges: the register stacks, the frames and the
+/* Register i of bank b in frame fr's window: a word of the register stack,
+ * read and written with the bank's type (int64_t, double, Obj * or uint64_t). */
+static inline uint64_t *frame_reg(uint64_t *regs, const Frame *fr, int b, int i) {
+    return regs + fr->base + fr->fn->roff[b] + i;
+}
+
+/* What a coroutine switch exchanges: the register stack, the frames and the
  * data stack, the same fields as in Process (coro.c swaps them one by one, so
  * the rest of the VM always finds the running context in Process). */
 typedef struct {
-    int64_t *ireg;
-    double *freg;
-    Obj **rreg;
-    uint64_t *preg;
-    uint32_t rcap[NBANKS], rtop[NBANKS];
+    uint64_t *regs;
+    uint32_t rcap, rtop;
     Frame *frames;
     uint32_t nframes, fcap;
+    uint32_t flimit; /* frames that fit without growing or the depth limit: min(fcap, max_frames) */
     Segment stack;
     uint64_t sp, fp;
     uint32_t stack_low_off, stack_ref_lo;
@@ -324,14 +333,14 @@ struct Process {
     uint64_t pid;
     int state;
     int64_t exit_code;
-    /* register stacks, one per bank; each frame owns a window */
-    int64_t *ireg;
-    double *freg;
-    Obj **rreg;
-    uint64_t *preg;
-    uint32_t rcap[NBANKS], rtop[NBANKS];
+    /* the register stack: each frame owns a window of 8-byte words, its I, F,
+     * R and P registers one after another (Function.roff), each word read and
+     * written with its bank's type */
+    uint64_t *regs;
+    uint32_t rcap, rtop;
     Frame *frames;
     uint32_t nframes, fcap;
+    uint32_t flimit; /* frames that fit without growing or the depth limit: min(fcap, max_frames) */
     Segment stack;
     Segment *globals;
     uint32_t nglobals;

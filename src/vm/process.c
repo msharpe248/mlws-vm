@@ -35,7 +35,6 @@ Process *proc_new(VM *vm) {
         s->kind = SEGK_GLOBAL;
         s->live = 1;
     }
-    for (int b = 0; b < NBANKS; b++) p->rcap[b] = 0;
     memcpy(p->quota, vm->default_quota, sizeof p->quota);
     /* The pid is assigned now; the process joins the table in sched_start. */
     plat_lock(vm->lock);
@@ -55,12 +54,12 @@ void proc_start(Process *p, Function *fn, Obj *closure, const Word *args, int na
     int cnt[NBANKS] = {0};
     for (int k = 0; k < nargs; k++) {
         Bank b = type_bank((MlwsType)fn->mf->params[k]);
-        uint32_t at = fr->base[b] + (uint32_t)cnt[b]++;
+        uint64_t *at = frame_reg(p->regs, fr, b, cnt[b]++);
         switch (b) {
-        case BANK_I: p->ireg[at] = args[k].i; break;
-        case BANK_F: p->freg[at] = args[k].f; break;
-        case BANK_R: p->rreg[at] = args[k].r; break;
-        default: p->preg[at] = args[k].p; break;
+        case BANK_I: *(int64_t *)at = args[k].i; break;
+        case BANK_F: *(double *)at = args[k].f; break;
+        case BANK_R: *(Obj **)at = args[k].r; break;
+        default: *at = args[k].p; break;
         }
     }
     sched_start(p->vm, p);
@@ -92,10 +91,7 @@ void proc_free(Process *p) {
     for (size_t i = 0; i < p->raw.n; i++) free(p->raw.v[i].data);
     VEC_FREE(p->raw);
     VEC_FREE(p->rawfree);
-    free(p->ireg);
-    free(p->freg);
-    free(p->rreg);
-    free(p->preg);
+    free(p->regs);
     free(p->frames);
     sb_free(&p->backtrace);
     free(p);
@@ -240,28 +236,21 @@ static void describe_uncaught(Process *p) {
 
 /* ---- frames ------------------------------------------------------------------ */
 
-static void grow_bank(Process *p, int b, uint32_t need) {
-    if (need <= p->rcap[b]) return;
-    uint32_t nc = p->rcap[b] ? p->rcap[b] * 2 : 256;
-    while (nc < need) nc *= 2;
-    switch (b) {
-    case BANK_I: p->ireg = xrealloc(p->ireg, nc * sizeof *p->ireg); break;
-    case BANK_F: p->freg = xrealloc(p->freg, nc * sizeof *p->freg); break;
-    case BANK_R: p->rreg = xrealloc(p->rreg, nc * sizeof *p->rreg); break;
-    default: p->preg = xrealloc(p->preg, nc * sizeof *p->preg); break;
-    }
-    p->rcap[b] = nc;
-}
-
 /* Out-of-line slow path of proc_push_frame: limits and growth. */
-void proc_frame_slow(Process *p, const uint16_t *nr) {
+void proc_frame_slow(Process *p, uint32_t words) {
     if (p->nframes >= p->vm->max_frames)
         vm_trap(p, "E_CALL_DEPTH", "call depth limit of %u frames exceeded (unbounded recursion?)", p->vm->max_frames);
     if (p->nframes == p->fcap) {
         p->fcap = p->fcap ? p->fcap * 2 : 64;
         p->frames = xrealloc(p->frames, p->fcap * sizeof *p->frames);
     }
-    for (int b = 0; b < NBANKS; b++) grow_bank(p, b, p->rtop[b] + nr[b]);
+    p->flimit = p->fcap < p->vm->max_frames ? p->fcap : p->vm->max_frames;
+    if (p->rtop + words > p->rcap) {
+        uint32_t nc = p->rcap ? p->rcap * 2 : 1024;
+        while (nc < p->rtop + words) nc *= 2;
+        p->regs = xrealloc(p->regs, nc * sizeof *p->regs);
+        p->rcap = nc;
+    }
 }
 
 void proc_backtrace(Process *p) { build_backtrace(p); }
