@@ -125,6 +125,8 @@ Type codes, as `tagof` reports them: 0 for a slot never written, 1 `b`, 2 `c`, 3
 | `0x0077` | `bgt` | `src, src, label` | int float p | Branch if a > b. |
 | `0x0078` | `bge` | `src, src, label` | int float p | Branch if a >= b. |
 | `0x0079` | `jtab` | `int, label, ...` | - | Jump table: `jtab idx, L0, L1, ..., Ln` jumps to L<idx>. If idx is out of range, execution falls through to the next instruction. |
+| `0x007A` | `bisa` | `obj, Struct, label` | - | Branch if the reference is a struct of the given type: `bisa R1, Point, L`. One instruction for `isa` and `bnz`. |
+| `0x007B` | `bnisa` | `obj, Struct, label` | - | Branch unless the reference is a struct of the given type (null included): `bnisa R1, Point, L`. One instruction for `isa` and `bz`, the guard before a struct's fields are read. |
 
 ## Calls
 

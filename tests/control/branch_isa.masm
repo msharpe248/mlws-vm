@@ -1,0 +1,78 @@
+; bisa and bnisa branch on whether a reference is a struct of a given type:
+; `bnisa R0, Point, L` is `isa I0, R0, Point` and `bz I0, L` in one
+; instruction, the guard a compiler puts before reading a struct's fields.
+; null, another struct type and any other object (a string, a list) are not
+; the type. With a register they are quickened (Q_BISA, Q_BNISA in
+; src/vm/interp.c); any other operand takes the generic instruction.
+.include "std/test.inc"
+
+.struct Point
+    x: i64
+    y: i64
+.ends
+
+.struct Other
+    x: i64
+.ends
+
+; 1 if `bisa` takes the branch for v, 0 if not; `bnisa` must disagree.
+.func is_point(ref v) -> i64
+    bisa v, Point, 1f
+    bnisa v, Point, 2f
+    FAIL "neither bisa nor bnisa took its branch"
+1:  bnisa v, Point, 3f
+    ret 1
+2:  ret 0
+3:  FAIL "both bisa and bnisa took their branches"
+    ret 0
+.endf
+
+; The same, with the reference read from a list element: the generic path.
+.func is_point_elem(ref l) -> i64
+    bisa l[0], Point, 1f
+    bnisa l[0], Point, 2f
+    FAIL "neither bisa nor bnisa took its branch"
+1:  ret 1
+2:  ret 0
+.endf
+
+; A guarded field read, as a compiler emits it.
+.func x_or_minus_one(ref v) -> i64
+    bnisa v, Point, 1f
+    mov I0, v->Point.x
+    ret I0
+1:  ret -1
+.endf
+
+.func main
+    new R0, Point
+    mov R0->Point.x, 7
+    new R1, Other
+    mov.r R2, null
+    mov R3, "text"
+    lnew R4
+    call is_point (R0) -> (I0)
+    ASSERT_EQ I0, 1
+    call is_point (R1) -> (I0)           ; another struct type
+    ASSERT_EQ I0, 0
+    call is_point (R2) -> (I0)           ; null
+    ASSERT_EQ I0, 0
+    call is_point (R3) -> (I0)           ; a string
+    ASSERT_EQ I0, 0
+    call is_point (R4) -> (I0)           ; a list
+    ASSERT_EQ I0, 0
+
+    lpush R4, R0
+    call is_point_elem (R4) -> (I0)
+    ASSERT_EQ I0, 1
+    lnew R5
+    lpush R5, R1
+    call is_point_elem (R5) -> (I0)
+    ASSERT_EQ I0, 0
+
+    call x_or_minus_one (R0) -> (I0)
+    ASSERT_EQ I0, 7
+    call x_or_minus_one (R3) -> (I0)
+    ASSERT_EQ I0, -1
+    ret 0
+.endf

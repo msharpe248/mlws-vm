@@ -39,7 +39,7 @@ integer.
 | 19 | `[SP[0]]{4}` | `0x13` MINDB | the same, with a byte displacement |
 | 20 | `ARG[n]` | DISP on FP | `FP[n]`: the n-th stack-passed argument |
 | 21 | `LOC[n]` | DISP on FP | `FP[-1-n]`: the n-th local reserved by `enter` |
-| 22 | `R2[I4]` | `0x17` ELEM | element I4 of the string, byte buffer, array or list in R2 |
+| 22 | `R2[I4]` `R2[I4+1]` `R2[I4-2]` | `0x17` ELEM | element I4 (plus a constant, if given) of the string, byte buffer, array or list in R2 |
 | 23 | `R2[7]` `R2[N-1]` | `0x18` ELEMI | element 7 (a constant index) |
 | 24 | `R2->Point.x` `R2->geo.Point.x` | `0x19` FIELD | field `x` of the `Point` struct in R2 |
 | 25 | `UP[2]` | `0x1B` UPVAL | capture 2 of the closure currently running (read/write) |
@@ -156,7 +156,13 @@ add  R0->Point.x, R1[0]      ; struct field + array element
 lpush R3, R0->Point.label    ; fields are ordinary operands
 mov.u8 R4[0], 'H'            ; byte buffer byte
 mov  I5, R6[I1]              ; byte of a string (read-only)
+ldv  I3, F3, R1[I2+1]        ; the element after element I2
 ```
+
+An element indexed by a register may add a constant number of elements,
+positive or negative: `R1[I2+1]` is element I2 + 1, checked against the
+length like any other index. It reads the second word of a two-word value
+without changing the index register.
 
 The base must be an `R` register holding a non-null object (`E_NULL`
 otherwise). The index is an `I` register or a non-negative constant, with no scale

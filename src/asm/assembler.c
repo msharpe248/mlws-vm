@@ -492,6 +492,13 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
             c->pos++;
             op_init_mode(out, OM_ELEM, col);
             out->o.ireg = (uint8_t)ir;
+            /* "+ d" / "- d": a constant number of elements past the index (as
+             * in parse_index, the expression parser takes the sign as unary) */
+            if (tok_is(cur(c), "+") || tok_is(cur(c), "-")) {
+                int64_t d;
+                if (!eval_int(A, c, &d)) return false;
+                out->o.imm = d;
+            }
         } else {
             int icol = cur(c)->col;
             int64_t idx;
@@ -503,7 +510,7 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
         out->o.reg = (uint8_t)r;
         if (!tok_is(cur(c), "]"))
             return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX",
-                        "expected ']' (an element index is an I register or a constant; no scale or displacement)");
+                        "expected ']' (an element index is an I register, with an optional + or - constant, or a constant)");
         c->pos++;
         return true;
     }

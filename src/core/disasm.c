@@ -102,7 +102,11 @@ static void put_operand(StrBuf *b, const Module *m, const Operand *o) {
         sb_putc(b, ']');
         if (o->imm || o->mode == OM_MINDB) put_index(b, o, o->mode == OM_MINDB, false);
         break;
-    case OM_ELEM: sb_printf(b, "%s[%s]", reg_name(o->reg, rb), reg_name(o->ireg, fb)); break;
+    case OM_ELEM:
+        sb_printf(b, "%s[%s", reg_name(o->reg, rb), reg_name(o->ireg, fb));
+        if (o->imm) sb_printf(b, "%+lld", (long long)o->imm);
+        sb_puts(b, "]");
+        break;
     case OM_ELEMI: sb_printf(b, "%s[%llu]", reg_name(o->reg, rb), (unsigned long long)o->index); break;
     case OM_FIELD:
         sb_printf(b, "%s->", reg_name(o->reg, rb));

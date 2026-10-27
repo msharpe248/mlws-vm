@@ -36,7 +36,7 @@ typedef enum {
     OM_LABEL = 0x14,      /* insn:uleb (index within the function)    loop          */
     OM_FUNC = 0x15,       /* func:uleb (module function table)        fib, io.print */
     OM_NATIVE = 0x16,     /* native:uleb (module native table)        "io.print_i"  */
-    OM_ELEM = 0x17,       /* reg:u8 ireg:u8                           R2[I4]        */
+    OM_ELEM = 0x17,       /* reg:u8 ireg:u8 disp:sleb (elements)      R2[I4], R2[I4+1] */
     OM_ELEMI = 0x18,      /* reg:u8 index:uleb                        R2[7]         */
     OM_FIELD = 0x19,      /* reg:u8 fref:uleb (module field refs)     R2->Point.x   */
     OM_STRUCT = 0x1A,     /* struct:uleb (module struct table)        Point         */
@@ -48,7 +48,7 @@ typedef struct Operand {
     uint8_t reg;    /* register / base register */
     uint8_t ireg;   /* index register */
     uint8_t pad;
-    int64_t imm;    /* OM_IMM value, or displacement in encoded units */
+    int64_t imm;    /* OM_IMM value, or displacement in encoded units (elements for OM_ELEM) */
     uint64_t scale; /* index scale in encoded units */
     uint64_t index; /* const / gref / label / func / native index */
     double f;       /* OM_FIMM */

@@ -159,6 +159,10 @@ OP(BGE,    0x0078, "bge",    "Branches", "SSL", TS_ORD, 0,
    "Branch if a >= b.")
 OP(JTAB,   0x0079, "jtab",   "Branches", "QL+", 0, 0,
    "Jump table: `jtab idx, L0, L1, ..., Ln` jumps to L<idx>. If idx is out of range, execution falls through to the next instruction.")
+OP(BISA,   0x007A, "bisa",   "Branches", "OTL", 0, 0,
+   "Branch if the reference is a struct of the given type: `bisa R1, Point, L`. One instruction for `isa` and `bnz`.")
+OP(BNISA,  0x007B, "bnisa",  "Branches", "OTL", 0, 0,
+   "Branch unless the reference is a struct of the given type (null included): `bnisa R1, Point, L`. One instruction for `isa` and `bz`, the guard before a struct's fields are read.")
 
 /* ---- calls --------------------------------------------------------------- */
 OP(CALL,   0x0080, "call",   "Calls", "FC", 0, OPF_CALL,

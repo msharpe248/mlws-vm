@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M31 are complete. What remains is Windows (section 3) and the
+Milestones M0–M32 are complete. What remains is Windows (section 3) and the
 deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M31 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M32 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M31
+## Milestones M11–M32
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -53,6 +53,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M29 Compiled Lua's shapes** (done) | fast forms for what compiled Lua still ran on the general path: calls and returns with constants copied inline, closure tail calls, `new` and `lnew`, constants stored to fields, `mget` of a register key, `jtab`, `cvt.f64.i64`, shifts, unsigned compare-and-branch, f64 arithmetic with a constant first operand. Compiled Lua's `methods` 26% less time |
 | **M30 Two-word values** (done) | `ldv I, F, src`: the number half of a dynamically typed value, into the register its tag picks, with fast forms for list and array elements. The Lua compiler's value load drops from six instructions with a branch to three without |
 | **M31 Cheaper allocation and collection** (done) | A list's values and tags in one buffer, carved from the process's chunks while small; the sweep walks the chunks in address order and rebuilds the free lists in that order. Compiled Lua's `methods` takes 6–14% less time and `binarytrees` 3–6% less; a program with 200,000 long-lived lists and 20 million short ones, half or less. A generational collector, and clearing only part of each call's register window, were built, measured and not kept (section 4) |
+| **M32 Shapes from the instruction-pair counts** (done) | Elements at a register index plus a constant (`R1[I2+1]`), so a two-word value's number is read without an `inc`, with quickened forms of their own; `bisa` and `bnisa`, which test a struct's type and branch in one. Rewriting compiled Lua's existing output this way runs 3–10% fewer instructions and takes up to 8% less time (fannkuch 5–8%, nbody 1–5%) on the M5, i7 and Ryzen |
 
 ## 1. Calling existing libraries (M10: done)
 

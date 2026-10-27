@@ -1,0 +1,127 @@
+; An element operand indexed by a register may add a constant: R1[I2+1] is
+; element I2 + 1, R1[I2-1] element I2 - 1. It reads a dynamically typed value
+; kept as two words (a tag word, then the number) without an `inc` between
+; them: `mov R3, R1[I2]` then `ldv I3, F3, R1[I2+1]`. Every instruction that
+; takes an element takes the offset: moves and ldv have quickened forms for it
+; (Q_LDED, Q_STED, Q_LDV_ED in src/vm/interp.c), the rest go through the
+; generic instruction, and the bounds check applies to the index with the
+; offset added.
+.include "std/test.inc"
+
+.struct Pt
+    x: i64
+.ends
+
+.macro EXPECT_ERROR code, insn...
+.try .Lh\@
+    \insn
+.endtry
+    FAIL "an error was expected"
+.Lh\@:
+    catch R31
+    strcmp I31, R31->Error.code, \code
+    ASSERT_EQ I31, 0
+.endm
+
+; The sum of the numbers in a list of two-word values (tag, number), each
+; read with an offset: what a compiler emits for a dynamically typed array.
+.func sum_pairs(ref l) -> (i64, f64)
+    mov I0, 0                            ; the tag word's index
+    mov I1, 0                            ; integer sum
+    mov F1, 0.0                          ; float sum
+    len I2, l
+1:  bge I0, I2, 3f
+    mov R1, l[I0]                        ; the tag (Q_LDE_R)
+    ldv I3, F3, l[I0+1]                  ; the number (Q_LDV_ED)
+    bnz R1, 2f                           ; tag null: an integer
+    add I1, I3
+    add I0, 2
+    jmp 1b
+2:  add.f64 F1, F3
+    add I0, 2
+    jmp 1b
+3:  ret I1, F1
+.endf
+
+.func main
+    ; ---- loads and stores in each bank, on arrays and lists ----
+    anew.i64 R0, 6
+    mov I0, 2
+    mov R0[I0+1], 30                     ; element 3 (a constant: generic)
+    mov R0[I0-2], 7                      ; element 0
+    mov I1, R0[I0+1]                     ; Q_LDED_I
+    ASSERT_EQ I1, 30
+    mov I1, R0[I0-2]
+    ASSERT_EQ I1, 7
+    mov I5, 31
+    mov R0[I0+2], I5                     ; Q_STED_I: element 4
+    mov I1, R0[4]
+    ASSERT_EQ I1, 31
+    mov I1, R0[3]                        ; the same element by a constant index
+    ASSERT_EQ I1, 30
+    anew.f64 R1, 4
+    mov.f64 R1[I0+1], 2.5                ; generic (a constant)
+    mov.f64 F0, R1[I0+1]                 ; Q_LDED_F
+    ASSERT_EQ F0, 2.5
+    mov.f64 F5, -1.25
+    mov R1[I0-1], F5                     ; Q_STED_F: element 1
+    mov.f64 F0, R1[1]
+    ASSERT_EQ F0, -1.25
+    lnew R2, 4
+    lpush R2, 1, 2, 3, 4
+    mov.r R2[I0+1], "four"               ; element 3, retagged r
+    mov R3, R2[I0+1]                     ; Q_LDED_R
+    strcmp I1, R3, "four"
+    ASSERT_EQ I1, 0
+    mov R2[I0-2], R3                     ; Q_STED_R: element 0
+    mov R6, R2[0]
+    strcmp I1, R6, "four"
+    ASSERT_EQ I1, 0
+    mov I1, R2[I0-1]                     ; element 1 of the list
+    ASSERT_EQ I1, 2
+    mov I3, 1
+    mov I1, R2[I3+2*1-1]                 ; a constant expression: element 2
+    ASSERT_EQ I1, 3
+
+    ; ---- the generic instruction: narrow types and arithmetic on elements ----
+    anew.i32 R4, 4
+    mov.i32 R4[I0+1], -9
+    mov.i32 I1, R4[I0+1]
+    ASSERT_EQ I1, -9
+    add R0[I0+1], 5                      ; element 3: 30 + 5
+    mov I1, R0[3]
+    ASSERT_EQ I1, 35
+
+    ; ---- tagof and ldv ----
+    tagof I1, R2[I0+1]                   ; generic: element 3, a reference
+    ASSERT_EQ I1, 13                     ; r (type codes: docs/ISA.md)
+    tagof I1, R2[I0-1]
+    ASSERT_EQ I1, 6                      ; i64
+    lnew R5, 8
+    mov.r R6, null
+    lpush R5, R6, 40                     ; value 0: an integer
+    mov.r R6, "float"
+    lpush R5, R6, 0.5                    ; value 1: a float
+    lpush R5, R6, 1.5                    ; value 2
+    call sum_pairs (R5) -> (I1, F1)
+    ASSERT_EQ I1, 40
+    ASSERT_EQ F1, 2.0
+    mov I4, 0
+    ldv I1, F1, R5[I4+200-199]           ; offset 1: Q_LDV_ED
+    ASSERT_EQ I1, 40
+    mov I4, -300
+    ldv I1, F1, R5[I4+303]               ; an offset past a byte: the generic ldv
+    ASSERT_EQ F1, 0.5
+
+    ; ---- the bounds check counts the offset ----
+    mov I0, 5
+    EXPECT_ERROR "E_BOUNDS", mov I1, R0[I0+1]     ; element 6 of 6
+    EXPECT_ERROR "E_BOUNDS", mov R0[I0+1], 1
+    mov I0, 0
+    EXPECT_ERROR "E_BOUNDS", mov I1, R0[I0-1]     ; element -1
+    EXPECT_ERROR "E_BOUNDS", ldv I1, F1, R5[I0-1]
+    EXPECT_ERROR "E_BOUNDS", tagof I1, R2[I0+4]
+    new R7, Pt
+    EXPECT_ERROR "E_TYPE", mov I1, R7[I0+1]       ; a struct has no elements
+    ret 0
+.endf

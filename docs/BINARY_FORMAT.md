@@ -160,7 +160,7 @@ operand := mode:u8 payload
 | `0x14` | LABEL | instruction index within the function:uleb |
 | `0x15` | FUNC | function table index:uleb |
 | `0x16` | NATIVE | native table index:uleb |
-| `0x17` | ELEM | reg:u8 ireg:u8 |
+| `0x17` | ELEM | reg:u8 ireg:u8 disp:sleb (elements) |
 | `0x18` | ELEMI | reg:u8 index:uleb |
 | `0x19` | FIELD | reg:u8 field_ref:uleb |
 | `0x1A` | STRUCT | struct table index:uleb |

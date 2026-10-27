@@ -195,6 +195,8 @@
         }                                                                     \
         QCASE(Q_LDE_##B) ELEM_LOAD(bank, w, (uint64_t)QI[in->r[2]])            \
         QCASE(Q_STE_##B) ELEM_STORE(bank, w, (uint64_t)QI[in->r[2]])           \
+        QCASE(Q_LDED_##B) ELEM_LOAD(bank, w, (uint64_t)QI[in->r[2]] + (uint64_t)in->k.i) \
+        QCASE(Q_STED_##B) ELEM_STORE(bank, w, (uint64_t)QI[in->r[2]] + (uint64_t)in->k.i) \
         QCASE(Q_LDEK_##B) ELEM_LOAD(bank, w, (uint64_t)in->target)              \
         QCASE(Q_STEK_##B) ELEM_STORE(bank, w, (uint64_t)in->target)             \
         QCASE(Q_LDU_##B) {                                                    \
@@ -377,6 +379,7 @@
             NEXT;                                                             \
         }
         QCASE(Q_LDV_E) LDV_ELEM((uint64_t)QI[in->target])
+        QCASE(Q_LDV_ED) LDV_ELEM((uint64_t)QI[in->target] + (uint64_t)(int64_t)(int8_t)in->r[2])
         QCASE(Q_LDV_EK) LDV_ELEM((uint64_t)in->target)
 #undef LDV_ELEM
 #define X(N, op_)                                                             \
@@ -460,6 +463,16 @@
         QCASE(Q_ISA) {
             const Obj *ob = QR[in->r[1]];
             QI[in->r[0]] = ob && ob->kind == OBJ_STRUCT && ((const ObjStruct *)ob)->def == in->k.p;
+            NEXT;
+        }
+        QCASE(Q_BISA) {
+            const Obj *ob = QR[in->r[0]];
+            if (ob && ob->kind == OBJ_STRUCT && ((const ObjStruct *)ob)->def == in->k.p) JUMP();
+            NEXT;
+        }
+        QCASE(Q_BNISA) {
+            const Obj *ob = QR[in->r[0]];
+            if (!(ob && ob->kind == OBJ_STRUCT && ((const ObjStruct *)ob)->def == in->k.p)) JUMP();
             NEXT;
         }
         /* A global reference word: segment and offset in k. Anything but a word

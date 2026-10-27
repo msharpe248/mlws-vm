@@ -20,6 +20,7 @@ void encode_operand(ByteBuf *b, const Operand *o) {
     case OM_ELEM:
         bb_u8(b, o->reg);
         bb_u8(b, o->ireg);
+        bb_sleb(b, o->imm);
         break;
     case OM_ELEMI: case OM_FIELD:
         bb_u8(b, o->reg);
@@ -78,6 +79,7 @@ static bool decode_operand(ByteReader *r, Operand *o, int depth, MlwsError *err)
     case OM_ELEM:
         o->reg = br_u8(r);
         o->ireg = br_u8(r);
+        o->imm = br_sleb(r);
         break;
     case OM_ELEMI: case OM_FIELD:
         o->reg = br_u8(r);

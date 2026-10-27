@@ -185,6 +185,13 @@
         case OP_JMP:
             fr->pc = ops[0].rv.target;
             break;
+        case OP_BISA:
+        case OP_BNISA: {
+            Obj *ob = rd(CX, &ops[0], T_R).r;
+            bool is = ob && ob->kind == OBJ_STRUCT && ((ObjStruct *)ob)->def == ops[1].rv.ptr;
+            if (is == (in->op == OP_BISA)) fr->pc = ops[2].rv.target;
+            break;
+        }
         case OP_BZ:
         case OP_BNZ: {
             bool z = is_zero(T, rd(CX, &ops[0], T));

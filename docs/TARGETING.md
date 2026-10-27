@@ -144,7 +144,7 @@ The heap object types map directly onto scripting-language values
 | `int("42")`, `float(s)` | `parse.i64 I0, R1` / `parse.f64 F0, R1` (`E_PARSE` on failure) |
 | `s[i]`, `len(s)`, slices | `R1[I2]` (a byte), `len I0, R1`, `substr R0, R1, start, n` |
 | A class or record type | `.struct Name` with typed fields; `new R0, Name`; `R0->Name.field` |
-| A field or method dispatch check | `isa I0, R0, Name`, or `typeof I0, R0` for the kind |
+| A field or method dispatch check | `bnisa R0, Name, L` (branch unless R0 is a `Name` struct), `isa I0, R0, Name`, or `typeof I0, R0` for the kind |
 | The type of a dynamically typed slot | `tagof I0, R1[I2]` (also `UP[n]`, stack and global words) |
 | A number of either kind from one slot | `ldv I0, F0, R1[I2]`: the slot's tag picks `I0` or `F0` |
 | A fixed-size typed array | `anew.f64 R0, n`; `R0[I1]` |
@@ -183,8 +183,7 @@ The heap object types map directly onto scripting-language values
 
   ```asm
       mov   R3, R1[I2]               ; what the value is
-      add   I4, I2, 1
-      ldv   I3, F3, R1[I4]           ; its number: I3 if an integer, F3 if a float
+      ldv   I3, F3, R1[I2+1]         ; its number: I3 if an integer, F3 if a float
   ```
 * Map keys compare by value. Integers of any width are compared by value and strings
   by content, so `"apple"` built at run time finds the key `"apple"`. `mkeys` returns
@@ -415,11 +414,12 @@ them by emitting these shapes; nothing else changes.
   `mov.r R0, @cache`, `mov F0, UP[1]`, `mov UP[0], I1`. A store sets the
   word's or capture's type; a read of another type takes the general path.
 * **Fields and elements moved to or from a register:** `mov I0, R1->Point.x`,
-  `mov R1->Point.x, I0`, `mov F0, R1[I2]`, `mov R1[I2], F0`, `mov I0, R1[3]`, for
+  `mov R1->Point.x, I0`, `mov F0, R1[I2]`, `mov R1[I2], F0`, `mov I0, R1[3]`,
+  `mov I0, R1[I2+1]`, for
   64-bit fields, and `i64`/`f64`/`r` arrays and list elements indexed by a
   register or a constant; constants stored to fields
   (`mov.i64 R0->Point.x, 0`, `mov.r R0->Node.next, null`); and `ldv I0, F0, R1[I2]`
-  (or `R1[3]`) of an `i64` or `f64` list or array element. Arithmetic
+  (or `R1[I2+1]`, `R1[3]`) of an `i64` or `f64` list or array element. Arithmetic
   directly on a field or element works, but takes the general path. Loading
   into registers, computing there and storing back is much faster in a loop:
   `bench/nbody.masm` runs in 96 ms with element operands and in 24 ms rewritten
@@ -428,7 +428,8 @@ them by emitting these shapes; nothing else changes.
   has room: each value is tagged with its register's type. Growing the list
   takes the general path, so create lists with their final capacity
   (`lnew R0, n`) when it is known.
-* **Objects:** `new R0, Point`; `lnew R0` and `lnew R0, 8`; `isa I0, R0, Point`;
+* **Objects:** `new R0, Point`; `lnew R0` and `lnew R0, 8`; `isa I0, R0, Point`,
+  and `bisa`/`bnisa R0, Point, L`, which branch on it in one instruction;
   `len I0, R0`; `tagof I0, R1[I2]`; null tests `bz R0, L` and `bnz R0, L`;
   `mget.r R0, R1, "name", null`, a reference looked up by a constant string key
   with a null default (an object whose fields are a map); and `mget` of a key

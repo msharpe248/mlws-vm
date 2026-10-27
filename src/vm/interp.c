@@ -234,7 +234,7 @@ static void obj_loc(Ctx *c, const Operand *o, Loc *L) {
         L->fixed = fr->def->types[fr->index];
         return;
     }
-    int64_t idx = o->mode == OM_ELEM ? c->I[REG_IDX(o->ireg)] : (int64_t)o->index;
+    int64_t idx = o->mode == OM_ELEM ? (int64_t)((uint64_t)c->I[REG_IDX(o->ireg)] + (uint64_t)o->imm) : (int64_t)o->index;
     uint32_t len;
     switch (ob->kind) {
     case OBJ_ARRAY: len = ((ObjArray *)ob)->len; break;
@@ -496,7 +496,7 @@ static Word rdn(Ctx *c, const Operand *o, MlwsType *t) {
         return w;
     case OM_ELEM: { /* shortcut: an array element of exactly this type, in range */
         const ObjArray *a = (const ObjArray *)c->R[REG_IDX(o->reg)];
-        uint64_t i = (uint64_t)c->I[REG_IDX(o->ireg)];
+        uint64_t i = (uint64_t)c->I[REG_IDX(o->ireg)] + (uint64_t)o->imm;
         if (a && a->h.kind == OBJ_ARRAY && a->elem == *t && i < a->len) return a->data[i];
         break;
     }
@@ -524,7 +524,7 @@ static void wr(Ctx *c, const Operand *o, MlwsType t, Word w) {
     }
     if (o->mode == OM_ELEM) { /* shortcut: an array element of exactly this type, in range */
         ObjArray *a = (ObjArray *)c->R[REG_IDX(o->reg)];
-        uint64_t i = (uint64_t)c->I[REG_IDX(o->ireg)];
+        uint64_t i = (uint64_t)c->I[REG_IDX(o->ireg)] + (uint64_t)o->imm;
         if (a && a->h.kind == OBJ_ARRAY && a->elem == t && i < a->len && wide_type(t)) {
             a->data[i] = w;
             return;
@@ -1206,6 +1206,11 @@ enum {
     Q_NEW, Q_LNEW, Q_STFK,
     Q_MGETV_I, Q_MGETV_F, Q_MGETV_R,
     Q_JTAB, Q_CVT_FI,
+    /* M32: elements at a register index plus a constant (R1[I2+1]): moves in
+     * each bank and ldv; the offset in k (r[2] for ldv). Forms of their own,
+     * so that the plain index's pay nothing for it. */
+    Q_LDED_I, Q_LDED_F, Q_LDED_R, Q_STED_I, Q_STED_F, Q_STED_R, Q_LDV_ED,
+    Q_BISA, Q_BNISA,
 #define X(N, o) Q_##N##_UU, Q_##N##_UK, /* u64 compare-and-branch */
     QUBRANCH_OPS(X)
 #undef X
@@ -1356,7 +1361,12 @@ static void quicken_slot(Insn *in, MlwsType t) {
         in->xop = (uint16_t)((load ? Q_LDF_I : Q_STF_I) + q);
     } else if (slot->mode == OM_ELEM) {
         in->r[2] = (uint8_t)REG_IDX(slot->ireg);
-        in->xop = (uint16_t)((load ? Q_LDE_I : Q_STE_I) + q);
+        if (slot->imm) { /* elements past the index */
+            in->k.i = slot->imm;
+            in->xop = (uint16_t)((load ? Q_LDED_I : Q_STED_I) + q);
+        } else {
+            in->xop = (uint16_t)((load ? Q_LDE_I : Q_STE_I) + q);
+        }
     } else if (slot->mode == OM_ELEMI && slot->index <= UINT32_MAX) {
         in->target = (uint32_t)slot->index;
         in->xop = (uint16_t)((load ? Q_LDEK_I : Q_STEK_I) + q);
@@ -1502,11 +1512,12 @@ void interp_quicken(Insn *in) {
     case OP_JTAB:
         if (IREG(0)) in->xop = Q_JTAB;
         break;
-    case OP_LDV: /* ldv I0, F0, R1[I2] or R1[5]: the object's register in k, the index's in target */
+    case OP_LDV: /* ldv I0, F0, R1[I2], R1[I2+d] or R1[5]: the object's register in k, the index's in target, d in r[2] */
         if (IREG(0) && FREG(1) && REG_BANK(o[2].reg) == BANK_R) {
-            if (o[2].mode == OM_ELEM && REG_BANK(o[2].ireg) == BANK_I) {
-                in->xop = Q_LDV_E;
+            if (o[2].mode == OM_ELEM && REG_BANK(o[2].ireg) == BANK_I && o[2].imm >= INT8_MIN && o[2].imm <= INT8_MAX) {
+                in->xop = o[2].imm ? Q_LDV_ED : Q_LDV_E;
                 in->target = (uint32_t)REG_IDX(o[2].ireg);
+                in->r[2] = (uint8_t)(int8_t)o[2].imm;
             } else if (o[2].mode == OM_ELEMI && o[2].index <= UINT32_MAX) {
                 in->xop = Q_LDV_EK;
                 in->target = (uint32_t)o[2].index;
@@ -1618,7 +1629,7 @@ void interp_quicken(Insn *in) {
         QFUNARY_OPS(X)
 #undef X
     case OP_TAGOF:
-        if (IREG(0) && o[1].mode == OM_ELEM) {
+        if (IREG(0) && o[1].mode == OM_ELEM && !o[1].imm) {
             in->xop = Q_TAGOF_E;
             in->r[1] = (uint8_t)REG_IDX(o[1].reg);
             in->r[2] = (uint8_t)REG_IDX(o[1].ireg);
@@ -1628,6 +1639,13 @@ void interp_quicken(Insn *in) {
         if (IREG(0) && RREG(1)) {
             in->xop = Q_ISA;
             in->k.p = o[2].rv.ptr;
+        }
+        break;
+    case OP_BISA: /* bisa R0, Point, L: the struct type in k (the label is taken below) */
+    case OP_BNISA:
+        if (RREG(0)) {
+            in->xop = in->op == OP_BISA ? Q_BISA : Q_BNISA;
+            in->k.p = o[1].rv.ptr;
         }
         break;
     case OP_MGET: /* mget.r R0, R1, "key" [, null] */
