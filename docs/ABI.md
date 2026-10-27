@@ -339,8 +339,10 @@ exception is constant-pool strings, which are immutable and immortal.
   requests one explicitly.
 * **Allocation.** Objects of up to 256 bytes are carved from the process's own
   chunks, in 16-byte size classes with a free list each; larger ones use
-  `malloc`. A list keeps its values and their type tags in one buffer, which
-  also comes from the process's chunks while it is small. `MLWSVM_NO_SLABS=1`
+  `malloc`. A list keeps its values and their type tags in one block: inside
+  the list's own allocation if it is made with a capacity of up to 24
+  (`lnew R0, 4`), otherwise a buffer, which also comes from the process's
+  chunks while it is small. `MLWSVM_NO_SLABS=1`
   allocates every object and buffer with `malloc` (as do AddressSanitizer
   builds).
 * **Safepoints.** Collections happen only *between* instructions. During one

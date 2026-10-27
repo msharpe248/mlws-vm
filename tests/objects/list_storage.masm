@@ -1,0 +1,76 @@
+; A list's values and tags live in one block of storage: inside the list's
+; own allocation when it is made with a capacity of up to 24 (list_new in
+; src/heap/objects.c), else in a buffer of its own. Lists of every kind must
+; behave the same: values of each type kept through growth from one kind of
+; storage to the other, through collections in between, and through a
+; message, which copies the list into another heap.
+.include "std/test.inc"
+
+; Fills a new list of capacity `cap` with n values: i, then "s", then 0.5*i,
+; repeating, collecting garbage halfway through.
+.func fill(i64 cap, i64 n) -> ref
+    lnew R0, cap
+    mov I0, 0
+1:  rem I1, I0, 3
+    jtab I1, 2f, 3f, 4f
+2:  lpush R0, I0                         ; an integer
+    jmp 5f
+3:  lpush R0, "s"                        ; a reference
+    jmp 5f
+4:  cvt.f64.i64 F0, I0
+    mul.f64 F0, 0.5
+    lpush R0, F0                         ; a float
+5:  shr I2, n, 1
+    bne I0, I2, 6f
+    ncall "gc.collect" ()
+6:  inc I0
+    blt I0, n, 1b
+    ret R0
+.endf
+
+; Checks what fill put in: the same values, in order.
+.func check(ref l, i64 n)
+    len I0, l
+    ASSERT_EQ I0, n
+    mov I0, 0
+1:  rem I1, I0, 3
+    jtab I1, 2f, 3f, 4f
+2:  mov I2, l[I0]
+    ASSERT_EQ I2, I0
+    jmp 5f
+3:  mov R1, l[I0]
+    strcmp I2, R1, "s"
+    ASSERT_EQ I2, 0
+    jmp 5f
+4:  mov.f64 F1, l[I0]
+    cvt.f64.i64 F0, I0
+    mul.f64 F0, 0.5
+    ASSERT_EQ F1, F0
+5:  inc I0
+    blt I0, n, 1b
+    ret
+.endf
+
+.func main
+    call fill (4, 4) -> (R0)             ; inline, full
+    call check (R0, 4)
+    call fill (4, 30) -> (R0)            ; inline, then a buffer
+    call check (R0, 30)
+    call fill (24, 24) -> (R0)           ; the largest inline
+    call check (R0, 24)
+    call fill (25, 60) -> (R0)           ; a buffer from the start, then a larger one
+    call check (R0, 60)
+    call fill (0, 10) -> (R0)            ; no storage until the first value
+    call check (R0, 10)
+    ncall "gc.collect" ()
+    call check (R0, 10)
+
+    call fill (4, 3) -> (R1)             ; copied by a message, then grown
+    send PID, R1
+    recv R2
+    call check (R2, 3)
+    lpush R2, 3, "s"
+    call check (R2, 5)
+    call check (R1, 3)                   ; the original is untouched
+    ret 0
+.endf

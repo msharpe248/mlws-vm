@@ -75,13 +75,17 @@ typedef struct {
 } ObjStruct;
 
 /* Growable list of dynamically typed values (each with a type tag). Its
- * storage is one buffer (gc_buf_alloc): cap items, then cap tags. */
+ * storage is cap items, then cap tags: right after the list itself if it was
+ * made with a small capacity (list_new), else a buffer (gc_buf_alloc). */
 typedef struct {
     Obj h;
     uint32_t len, cap;
     Word *items;
     uint8_t *tags; /* items + cap */
 } ObjList;
+
+/* The list's storage is in its own allocation, freed with it. */
+static inline bool list_storage_inline(const ObjList *l) { return l->items == (const Word *)(l + 1); }
 
 typedef struct {
     Word key, val;

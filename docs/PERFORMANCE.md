@@ -290,9 +290,13 @@ size classes with a free list each:
   of their own. This cut collection time by 31% in compiled Lua's `strings`
   and by 21% in a program with 200,000 long-lived lists; `binarytrees`, whose
   sweep frees most of what it visits, did not change.
-* **List storage.** A list keeps its values and their type tags in one buffer,
-  carved from separate chunks of the same kind while it is small (up to 28
-  values), so making or growing a short list calls no `malloc` either. With a
+* **List storage.** A list keeps its values and their type tags in one block.
+  A list made with a capacity of up to 24 has it inside its own allocation, so
+  `lnew R0, 4` is one allocation; any other list, or one that outgrows that,
+  has a buffer, carved from separate chunks of the same kind while it is small
+  (up to 28 values), so making or growing a short list calls no `malloc`
+  either. Storage inside the list took 2–4% off compiled Lua's `binarytrees`,
+  whose inner nodes are a table and a list of two. With a
   buffer each for values and tags from `malloc`, and the sweep following a
   list, compiled Lua's `methods` spent two to three times as long collecting
   and took 6–14% longer, and a program that makes 20 million short lists
@@ -322,8 +326,8 @@ are filled with a garbage pattern, so a use after a free fails loudly there too.
 
 The collector is a non-moving mark-and-sweep, one per process. It takes about
 12% of `binarytrees` and 4% of `maps`, the most allocation-heavy benchmarks,
-and 20–29% of compiled Lua's `binarytrees`, whose tables are three allocations
-each (the table, its list and the list's storage).
+and 20–29% of compiled Lua's `binarytrees`, whose inner nodes are two
+allocations each (a table, and a list that holds its storage).
 
 * **Near a heap quota.** The collection threshold is capped at three-quarters
   of the process's heap quota, so the collector runs before the quota is hit.

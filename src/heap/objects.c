@@ -91,8 +91,20 @@ ObjStruct *struct_new(Process *p, const StructDef *def) {
 
 /* ---- lists ------------------------------------------------------------------ */
 
+/* Lists made with a capacity up to this keep their storage in their own
+ * allocation, which stays within the largest small object (256 bytes, gc.c):
+ * one allocation instead of two. */
+#define LIST_INLINE_MAX 24
+
 ObjList *list_new(Process *p, int64_t cap) {
     check_len(p, cap, "list");
+    if (cap > 0 && cap <= LIST_INLINE_MAX) {
+        ObjList *l = (ObjList *)gc_alloc(p, OBJ_LIST, sizeof(ObjList) + (size_t)cap * (sizeof(Word) + 1));
+        l->items = (Word *)(l + 1);
+        l->tags = (uint8_t *)(l->items + cap);
+        l->cap = (uint32_t)cap;
+        return l;
+    }
     ObjList *l = (ObjList *)gc_alloc(p, OBJ_LIST, sizeof(ObjList));
     if (cap) {
         l->items = gc_buf_alloc(p, &l->h, (size_t)cap * (sizeof(Word) + 1));
@@ -115,7 +127,7 @@ static void list_reserve(Process *p, ObjList *l, uint64_t need) {
         memcpy(items, l->items, (size_t)l->len * sizeof(Word));
         memcpy(tags, l->tags, l->len);
     }
-    gc_buf_free(p, &l->h, l->items, (size_t)l->cap * (sizeof(Word) + 1));
+    if (!list_storage_inline(l)) gc_buf_free(p, &l->h, l->items, (size_t)l->cap * (sizeof(Word) + 1));
     l->items = items;
     l->tags = tags;
     uint64_t grown = nc - l->cap;

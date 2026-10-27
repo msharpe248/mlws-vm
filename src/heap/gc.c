@@ -187,7 +187,7 @@ static void obj_release_buffers(Process *p, Obj *o) {
     case OBJ_BYTES: free(((ObjBytes *)o)->data); break;
     case OBJ_LIST: {
         ObjList *l = (ObjList *)o;
-        gc_buf_free(p, o, l->items, (size_t)l->cap * (sizeof(Word) + 1));
+        if (!list_storage_inline(l)) gc_buf_free(p, o, l->items, (size_t)l->cap * (sizeof(Word) + 1));
         break;
     }
     case OBJ_MAP:
