@@ -174,3 +174,7 @@ on GitHub. Everything described in `docs/` is implemented and tested on macOS an
 plain suite, GC stress, AddressSanitizer, ThreadSanitizer, the tools, and builds
 without libffi or computed goto. Windows support is written but untested.
 [docs/ROADMAP.md](docs/ROADMAP.md) lists the milestones and what remains.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
