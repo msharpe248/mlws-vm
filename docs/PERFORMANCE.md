@@ -156,8 +156,9 @@ it measured faster.
    fourth, from the Lua compiler's later profiles: calls and returns with
    constants copied inline (each constant converted at load time), closure tail
    calls, `new` and `lnew`, constants stored to fields, `mget` of a key in any
-   register, `jtab`, `cvt.f64.i64`, shifts, unsigned compare-and-branch, and
-   `f64` arithmetic with a constant first operand. The profiler lists the
+   register, `jtab`, `cvt.f64.i64`, shifts, unsigned compare-and-branch,
+   `f64` arithmetic with a constant first operand, and `ldv` of a list or
+   array element. The profiler lists the
    instructions that still run generically, which is how these were chosen. A
    shape qualifies only when its generic semantics are trivially the same: no
    width canonicalisation, and no trap that cannot be checked cheaply. The disassembler, tracer, profiler and debugger see the real opcode.

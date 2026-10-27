@@ -142,6 +142,7 @@ The heap object types map directly onto scripting-language values
 | A class or record type | `.struct Name` with typed fields; `new R0, Name`; `R0->Name.field` |
 | A field or method dispatch check | `isa I0, R0, Name`, or `typeof I0, R0` for the kind |
 | The type of a dynamically typed slot | `tagof I0, R1[I2]` (also `UP[n]`, stack and global words) |
+| A number of either kind from one slot | `ldv I0, F0, R1[I2]`: the slot's tag picks `I0` or `F0` |
 | A fixed-size typed array | `anew.f64 R0, n`; `R0[I1]` |
 | A dynamic list / array | `lnew`, `lpush`, `lpop`, `lins`, `ldel`, `R0[I1]`, `len` |
 | A dictionary / object literal | `mnew`, `mset`, `mget` (with a default), `mhas`, `mdel`, `mkeys` |
@@ -169,6 +170,17 @@ The heap object types map directly onto scripting-language values
       beq   I0, 12, Lfloat           ; f64
       bne   I0, 6, Lref              ; otherwise i64, or a reference
       mov   I3, R1[I2]               ; the integer
+  ```
+* **Two words per dynamic value.** A language that keeps a value in registers
+  as a reference (saying what the value is) plus an integer or a float can
+  store it in a list as two words, the reference and then the number. `ldv`
+  reads the number word into whichever register its tag picks, without a
+  branch; a word never written reads as the integer 0:
+
+  ```asm
+      mov   R3, R1[I2]               ; what the value is
+      add   I4, I2, 1
+      ldv   I3, F3, R1[I4]           ; its number: I3 if an integer, F3 if a float
   ```
 * Map keys compare by value. Integers of any width are compared by value and strings
   by content, so `"apple"` built at run time finds the key `"apple"`. `mkeys` returns
@@ -401,8 +413,9 @@ them by emitting these shapes; nothing else changes.
 * **Fields and elements moved to or from a register:** `mov I0, R1->Point.x`,
   `mov R1->Point.x, I0`, `mov F0, R1[I2]`, `mov R1[I2], F0`, `mov I0, R1[3]`, for
   64-bit fields, and `i64`/`f64`/`r` arrays and list elements indexed by a
-  register or a constant; and constants stored to fields
-  (`mov.i64 R0->Point.x, 0`, `mov.r R0->Node.next, null`). Arithmetic
+  register or a constant; constants stored to fields
+  (`mov.i64 R0->Point.x, 0`, `mov.r R0->Node.next, null`); and `ldv I0, F0, R1[I2]`
+  (or `R1[3]`) of an `i64` or `f64` list or array element. Arithmetic
   directly on a field or element works, but takes the general path. Loading
   into registers, computing there and storing back is much faster in a loop:
   `bench/nbody.masm` runs in 96 ms with element operands and in 24 ms rewritten

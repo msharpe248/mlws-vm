@@ -20,6 +20,7 @@ static void pattern_str(StrBuf *b, const OpInfo *oi) {
     } names[] = {
         {'D', "dst"}, {'S', "src"}, {'V', "val"}, {'W', "dst"}, {'B', "bool_dst"}, {'Q', "int"}, {'A', "ptr"},
         {'E', "ptr_dst"}, {'M', "mem"}, {'K', "\"msg\""}, {'I', "n"}, {'L', "label"}, {'F', "func"}, {'N', "\"native\""},
+        {'O', "obj"}, {'X', "obj_dst"}, {'J', "int_dst"}, {'H', "float_dst"}, {'T', "Struct"},
     };
     for (int i = 0; i < oi->nelems; i++) {
         const char *n = "?";
@@ -67,8 +68,10 @@ static void gen_isa(StrBuf *b) {
                "[ABI.md](ABI.md) for calls and the stack.\n\n"
                "**Operand names.** `dst` is a writable location (a register or memory). `src` and `val`\n"
                "are any value operand (register, literal, string or memory). `int` is read as `i64`,\n"
-               "`ptr` is read as a pointer (`p`), and `bool_dst` is written as `b`. `mem` must be a memory\n"
-               "operand, `n` is a non-negative integer constant, and `[x]` marks an optional operand.\n\n"
+               "`ptr` is read as a pointer (`p`), and `obj` as a reference. `bool_dst` is written as `b`,\n"
+               "`int_dst` as `i64`, `float_dst` as `f64` and `obj_dst` as a reference. `mem` must be a\n"
+               "memory operand, `Struct` a struct type's name, `n` a non-negative integer constant, and\n"
+               "`[x]` marks an optional operand.\n\n"
                "**Types column.** This lists the type suffixes the instruction accepts. `int` covers\n"
                "`b c i8 i16 i32 i64 u8 u16 u32 u64` and `float` covers `f32 f64`. Without a suffix the\n"
                "type is inferred from the first register operand: I gives `i64`, F `f64`, R `r`, P/SP/FP `p`.\n"

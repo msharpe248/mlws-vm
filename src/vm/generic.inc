@@ -406,6 +406,14 @@
             wr_int(CX, &ops[0], T_I64, n);
             break;
         }
+        case OP_LDV: { /* the slot's own type picks the destination */
+            MlwsType t = T_NONE;
+            Word v = rdn(CX, &ops[2], &t); /* never written: i64 0 */
+            if (type_is_int(t)) wr(CX, &ops[0], T_I64, v);
+            else if (type_is_float(t)) wr(CX, &ops[1], T_F64, v);
+            else vm_trap(p, "E_TYPE", "ldv: the value is %s, not a number", type_name(t));
+            break;
+        }
         case OP_TAGOF: {
             int64_t tag;
             const Operand *o = &ops[1];

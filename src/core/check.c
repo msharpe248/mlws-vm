@@ -120,6 +120,7 @@ MlwsType operand_type(const Insn *in, int k) {
     case 'B': return T_B;
     case 'Q': return T_I64;
     case 'J': return T_I64;
+    case 'H': return T_F64;
     case 'A': case 'E': return T_P;
     case 'O': case 'X': return T_R;
     default: return T_NONE;
@@ -178,7 +179,7 @@ bool check_insn(const Insn *in, CheckErr *ce) {
         char pat = op_pattern_at(oi, k);
         MlwsType t = operand_type(in, k);
         switch (pat) {
-        case 'D': case 'W': case 'B': case 'E': case 'X': case 'J':
+        case 'D': case 'W': case 'B': case 'E': case 'X': case 'J': case 'H':
             if (!check_operand(o, k, t, true, ce)) return false;
             break;
         case 'S': case 'V': case 'Q': case 'A': case 'O':

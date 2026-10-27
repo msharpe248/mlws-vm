@@ -350,6 +350,35 @@
             NEXT;
         }
         QCASE(Q_CVT_FI) FR(0) = (double)IR(1); NEXT;
+        /* ldv I0, F0, R1[i]: an i64 or f64 element of a list (by its tag, or
+         * a never-written one, as 0) or of an array (by its element type). */
+#define LDV_ELEM(i_)                                                          \
+        {                                                                     \
+            const Obj *ob = QR[in->k.i];                                      \
+            uint64_t i = (i_);                                                \
+            if (!ob) GENERIC();                                               \
+            uint8_t tag;                                                      \
+            const Word *w;                                                    \
+            if (ob->kind == OBJ_LIST) {                                       \
+                const ObjList *l = (const ObjList *)ob;                       \
+                if (i >= l->len) GENERIC();                                   \
+                tag = l->tags[i], w = &l->items[i];                           \
+            } else if (ob->kind == OBJ_ARRAY) {                               \
+                const ObjArray *a = (const ObjArray *)ob;                     \
+                if (i >= a->len) GENERIC();                                   \
+                tag = a->elem, w = &a->data[i];                               \
+            } else {                                                          \
+                GENERIC();                                                    \
+            }                                                                 \
+            if (tag == T_I64) IR(0) = w->i;                                   \
+            else if (tag == T_F64) FR(1) = w->f;                              \
+            else if (tag == T_NONE) IR(0) = 0;                                \
+            else GENERIC();                                                   \
+            NEXT;                                                             \
+        }
+        QCASE(Q_LDV_E) LDV_ELEM((uint64_t)QI[in->target])
+        QCASE(Q_LDV_EK) LDV_ELEM((uint64_t)in->target)
+#undef LDV_ELEM
 #define X(N, op_)                                                             \
         QCASE(Q_##N##_UU) if ((uint64_t)IR(0) op_ (uint64_t)IR(1)) JUMP(); NEXT;             \
         QCASE(Q_##N##_UK) if ((uint64_t)IR(0) op_ (uint64_t)in->k.i) JUMP(); NEXT;

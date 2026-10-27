@@ -9,8 +9,10 @@ Every instruction is written `mnemonic[.type[.type2]] operands`. See
 
 **Operand names.** `dst` is a writable location (a register or memory). `src` and `val`
 are any value operand (register, literal, string or memory). `int` is read as `i64`,
-`ptr` is read as a pointer (`p`), and `bool_dst` is written as `b`. `mem` must be a memory
-operand, `n` is a non-negative integer constant, and `[x]` marks an optional operand.
+`ptr` is read as a pointer (`p`), and `obj` as a reference. `bool_dst` is written as `b`,
+`int_dst` as `i64`, `float_dst` as `f64` and `obj_dst` as a reference. `mem` must be a
+memory operand, `Struct` a struct type's name, `n` a non-negative integer constant, and
+`[x]` marks an optional operand.
 
 **Types column.** This lists the type suffixes the instruction accepts. `int` covers
 `b c i8 i16 i32 i64 u8 u16 u32 u64` and `float` covers `f32 f64`. Without a suffix the
@@ -50,6 +52,7 @@ Type codes, as `tagof` reports them: 0 for a slot never written, 1 `b`, 2 `c`, 3
 | `0x0016` | `enter` | `n` | - | Reserve n zeroed words of locals: SP -= n words. Locals are then addressed as LOC[0]..LOC[n-1] (FP[-1]..FP[-n]). |
 | `0x0017` | `cvt` | `dst, src` | int float (to.from) | Value conversion `cvt.<to>.<from> dst, src`. int->int wraps or extends, int->float rounds, float->int truncates toward zero and saturates (NaN becomes 0), to-bool tests for non-zero. |
 | `0x0018` | `bitcast` | `dst, src` | int float (to.from) | Reinterpret the bits of src as dst's type: `bitcast.<to>.<from>`. Both types must have the same size, e.g. bitcast.i64.f64 or bitcast.f32.u32. |
+| `0x0019` | `ldv` | `int_dst, float_dst, val` | - | Load a number into the destination its type tag picks: `ldv I0, F0, R1[I2]` sets I0 (as i64) if the slot holds an integer (b, c, i8 ... u64) and F0 (as f64) if it holds a float, and leaves the other unchanged. A slot never written reads as the integer 0; any other type traps E_TYPE. This reads the number half of a dynamically typed value without a branch on its type. |
 
 ## Arithmetic
 
@@ -146,58 +149,58 @@ Type codes, as `tagof` reports them: 0 for a slot never written, 1 `b`, 2 `c`, 3
 
 | Opcode | Mnemonic | Operands | Types | Description |
 |---|---|---|---|---|
-| `0x00A0` | `new` | `?, ?` | - | Allocate a struct with every field zero (0, 0.0 or null): `new R0, Point`. Fields are then accessed as R0->Point.x. |
-| `0x00A1` | `anew` | `?, int` | int float r p | Allocate an array of n zeroed elements of the instruction type: `anew.f64 R0, 100`. Elements are accessed as R0[I1] or R0[5] and are bounds checked. |
-| `0x00A2` | `len` | `?, ?` | - | Length: bytes of a string or byte buffer, elements of an array or list, entries of a map. Traps E_TYPE for a struct and E_NULL for null. |
-| `0x00A3` | `typeof` | `?, ?` | - | Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map, 7 closure, 8 BigInt, 9 decimal, 10 foreign handle, 11 coroutine. |
-| `0x00A4` | `isa` | `bool_dst, ?, ?` | - | dst = true if the reference is a struct of the given type: `isa I0, R1, Point`. |
-| `0x00A5` | `resize` | `?, int` | - | Set the length of a byte buffer or list. New bytes are 0. New list elements are untyped zeros, which read as 0, 0.0 or null. |
-| `0x00A6` | `tagof` | `?, val` | - | dst = the type a slot holds, as a type code (0 for a slot never written, 255 for raw bytes; see Types in docs/ISA.md): a list element or closure capture its own tag, an array element or struct field its declared type, a stack or global word its tag, a byte of a string or buffer u8, a register or constant its natural type. With this, one tagged slot can hold a dynamically typed value: `tagof I0, R1[I2]`, then branch and read it with its type. |
+| `0x00A0` | `new` | `obj_dst, Struct` | - | Allocate a struct with every field zero (0, 0.0 or null): `new R0, Point`. Fields are then accessed as R0->Point.x. |
+| `0x00A1` | `anew` | `obj_dst, int` | int float r p | Allocate an array of n zeroed elements of the instruction type: `anew.f64 R0, 100`. Elements are accessed as R0[I1] or R0[5] and are bounds checked. |
+| `0x00A2` | `len` | `int_dst, obj` | - | Length: bytes of a string or byte buffer, elements of an array or list, entries of a map. Traps E_TYPE for a struct and E_NULL for null. |
+| `0x00A3` | `typeof` | `int_dst, obj` | - | Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map, 7 closure, 8 BigInt, 9 decimal, 10 foreign handle, 11 coroutine. |
+| `0x00A4` | `isa` | `bool_dst, obj, Struct` | - | dst = true if the reference is a struct of the given type: `isa I0, R1, Point`. |
+| `0x00A5` | `resize` | `obj, int` | - | Set the length of a byte buffer or list. New bytes are 0. New list elements are untyped zeros, which read as 0, 0.0 or null. |
+| `0x00A6` | `tagof` | `int_dst, val` | - | dst = the type a slot holds, as a type code (0 for a slot never written, 255 for raw bytes; see Types in docs/ISA.md): a list element or closure capture its own tag, an array element or struct field its declared type, a stack or global word its tag, a byte of a string or buffer u8, a register or constant its natural type. With this, one tagged slot can hold a dynamically typed value: `tagof I0, R1[I2]`, then branch and read it with its type. |
 
 ## Strings
 
 | Opcode | Mnemonic | Operands | Types | Description |
 |---|---|---|---|---|
-| `0x00B0` | `strcat` | `?, ?, ...` | - | Concatenate strings and/or byte buffers into a new string: `strcat R0, R1, "-", R2` (up to 31 parts). `strcat R0, buf` copies a byte buffer into a string. |
-| `0x00B1` | `substr` | `?, ?, int, int` | - | `substr dst, s, start, n`: new string of the n bytes starting at byte offset start. Traps E_BOUNDS if the range is outside s. |
-| `0x00B2` | `strcmp` | `?, ?, ?` | - | Compare two strings or byte buffers bytewise: dst = -1, 0 or 1. |
-| `0x00B3` | `strfind` | `?, ?, ?, [int]` | - | `strfind dst, s, needle [, start]`: byte offset of the first occurrence of needle at or after start (default 0), or -1. |
-| `0x00B4` | `tostr` | `?, val` | int float r p | Convert a value to a new string, using the instruction type or the value's natural type: integers in decimal, floats in shortest round-trip form, bools as true/false, chars as UTF-8. A string converts to itself, a byte buffer to a copy, and other objects to a description such as <list len=3>. |
-| `0x00B5` | `parse` | `dst, ?` | int float | Parse a number from the whole string: `parse.i64 I0, s` (decimal, or 0x/0b/0o prefixed), `parse.f64 F0, s`. Anything else traps E_PARSE. |
-| `0x00B6` | `bufnew` | `?, int` | - | New mutable byte buffer of n zero bytes. Its bytes are accessed as R0[I1] (u8). |
-| `0x00B7` | `bufcat` | `?, ?, ...` | - | Append strings and/or byte buffers to a byte buffer: `bufcat buf, s1, s2, ...`. |
-| `0x00B8` | `bufpush` | `?, int, ...` | - | Append byte values (the low 8 bits of each operand) to a byte buffer. |
+| `0x00B0` | `strcat` | `obj_dst, obj, ...` | - | Concatenate strings and/or byte buffers into a new string: `strcat R0, R1, "-", R2` (up to 31 parts). `strcat R0, buf` copies a byte buffer into a string. |
+| `0x00B1` | `substr` | `obj_dst, obj, int, int` | - | `substr dst, s, start, n`: new string of the n bytes starting at byte offset start. Traps E_BOUNDS if the range is outside s. |
+| `0x00B2` | `strcmp` | `int_dst, obj, obj` | - | Compare two strings or byte buffers bytewise: dst = -1, 0 or 1. |
+| `0x00B3` | `strfind` | `int_dst, obj, obj, [int]` | - | `strfind dst, s, needle [, start]`: byte offset of the first occurrence of needle at or after start (default 0), or -1. |
+| `0x00B4` | `tostr` | `obj_dst, val` | int float r p | Convert a value to a new string, using the instruction type or the value's natural type: integers in decimal, floats in shortest round-trip form, bools as true/false, chars as UTF-8. A string converts to itself, a byte buffer to a copy, and other objects to a description such as <list len=3>. |
+| `0x00B5` | `parse` | `dst, obj` | int float | Parse a number from the whole string: `parse.i64 I0, s` (decimal, or 0x/0b/0o prefixed), `parse.f64 F0, s`. Anything else traps E_PARSE. |
+| `0x00B6` | `bufnew` | `obj_dst, int` | - | New mutable byte buffer of n zero bytes. Its bytes are accessed as R0[I1] (u8). |
+| `0x00B7` | `bufcat` | `obj, obj, ...` | - | Append strings and/or byte buffers to a byte buffer: `bufcat buf, s1, s2, ...`. |
+| `0x00B8` | `bufpush` | `obj, int, ...` | - | Append byte values (the low 8 bits of each operand) to a byte buffer. |
 
 ## Lists and maps
 
 | Opcode | Mnemonic | Operands | Types | Description |
 |---|---|---|---|---|
-| `0x00C0` | `lnew` | `?, [int]` | - | New empty list, with an optional initial capacity. |
-| `0x00C1` | `lpush` | `?, val, ...` | int float r p | Append values to a list. Each element remembers its type: untyped operands use their natural type, typed ones (lpush.i32) the instruction type. |
-| `0x00C2` | `lpop` | `dst, ?` | int float r p | Remove the last element of a list into dst: `lpop dst, list`. Traps E_BOUNDS on an empty list. |
-| `0x00C3` | `lins` | `?, int, val` | int float r p | Insert a value before index i (0..len): `lins list, i, value`. |
-| `0x00C4` | `ldel` | `?, int` | - | Delete the element at index i, shifting later elements down. |
-| `0x00C5` | `mnew` | `?` | - | New empty map. Maps iterate in insertion order. |
-| `0x00C6` | `mset` | `?, val, val` | int float r p | `mset map, key, value`. Keys compare by value: integers of any width by value, floats by value, strings by content, other references by identity, pointers by value. A type suffix applies to the value. |
-| `0x00C7` | `mget` | `dst, ?, val, [val]` | int float r p | `mget dst, map, key [, default]`. A missing key yields the default if given, and otherwise traps E_KEY. A type suffix applies to the value and the default. |
-| `0x00C8` | `mhas` | `bool_dst, ?, val` | - | dst = true if the map contains the key. |
-| `0x00C9` | `mdel` | `?, val` | - | Remove a key from a map (no effect if it is absent). |
-| `0x00CA` | `mkeys` | `?, ?` | - | New list of a map's keys, in insertion order. |
+| `0x00C0` | `lnew` | `obj_dst, [int]` | - | New empty list, with an optional initial capacity. |
+| `0x00C1` | `lpush` | `obj, val, ...` | int float r p | Append values to a list. Each element remembers its type: untyped operands use their natural type, typed ones (lpush.i32) the instruction type. |
+| `0x00C2` | `lpop` | `dst, obj` | int float r p | Remove the last element of a list into dst: `lpop dst, list`. Traps E_BOUNDS on an empty list. |
+| `0x00C3` | `lins` | `obj, int, val` | int float r p | Insert a value before index i (0..len): `lins list, i, value`. |
+| `0x00C4` | `ldel` | `obj, int` | - | Delete the element at index i, shifting later elements down. |
+| `0x00C5` | `mnew` | `obj_dst` | - | New empty map. Maps iterate in insertion order. |
+| `0x00C6` | `mset` | `obj, val, val` | int float r p | `mset map, key, value`. Keys compare by value: integers of any width by value, floats by value, strings by content, other references by identity, pointers by value. A type suffix applies to the value. |
+| `0x00C7` | `mget` | `dst, obj, val, [val]` | int float r p | `mget dst, map, key [, default]`. A missing key yields the default if given, and otherwise traps E_KEY. A type suffix applies to the value and the default. |
+| `0x00C8` | `mhas` | `bool_dst, obj, val` | - | dst = true if the map contains the key. |
+| `0x00C9` | `mdel` | `obj, val` | - | Remove a key from a map (no effect if it is absent). |
+| `0x00CA` | `mkeys` | `obj_dst, obj` | - | New list of a map's keys, in insertion order. |
 
 ## Handles
 
 | Opcode | Mnemonic | Operands | Types | Description |
 |---|---|---|---|---|
-| `0x00D0` | `hnew` | `?, ?` | - | Make a handle: an i64 that keeps the object alive and can be stored anywhere, including raw memory. Freed handle numbers may be reused. |
-| `0x00D1` | `hget` | `?, int` | - | Get a handle's object. Traps E_BAD_HANDLE for an unknown or freed handle. |
+| `0x00D0` | `hnew` | `int_dst, obj` | - | Make a handle: an i64 that keeps the object alive and can be stored anywhere, including raw memory. Freed handle numbers may be reused. |
+| `0x00D1` | `hget` | `obj_dst, int` | - | Get a handle's object. Traps E_BAD_HANDLE for an unknown or freed handle. |
 | `0x00D2` | `hfree` | `int` | - | Release a handle. The object becomes collectable if nothing else refers to it. |
 
 ## Exceptions
 
 | Opcode | Mnemonic | Operands | Types | Description |
 |---|---|---|---|---|
-| `0x00E0` | `throw` | `?` | - | Raise an exception: any non-null reference, often an Error struct (`new R0, Error`). Control passes to the handler of the innermost enclosing .try region in this function or a caller, and frames without a handler are unwound. An uncaught exception ends the process. To rethrow, throw the caught value again. |
-| `0x00E1` | `catch` | `?` | - | At the start of a handler: dst = the exception being handled. Runtime faults arrive as Error structs whose code field holds the error code (e.g. "E_DIV_ZERO"). |
+| `0x00E0` | `throw` | `obj` | - | Raise an exception: any non-null reference, often an Error struct (`new R0, Error`). Control passes to the handler of the innermost enclosing .try region in this function or a caller, and frames without a handler are unwound. An uncaught exception ends the process. To rethrow, throw the caught value again. |
+| `0x00E1` | `catch` | `obj_dst` | - | At the start of a handler: dst = the exception being handled. Runtime faults arrive as Error structs whose code field holds the error code (e.g. "E_DIV_ZERO"). |
 
 ## Processes
 
@@ -214,7 +217,7 @@ Type codes, as `tagof` reports them: 0 for a slot never written, 1 `b`, 2 `c`, 3
 | `0x0108` | `monitor` | `int` | - | Watch a process. When it ends, this process receives a Down struct message with fields pid, exit (exit code), and code/message (null for a normal exit). Monitoring a finished or unknown process delivers a Down message immediately, with code E_NOPROC. |
 | `0x0109` | `alive` | `bool_dst, int` | - | dst = true if the process exists and has not finished. |
 | `0x010A` | `quota` | `n, int` | - | `quota kind, limit` lowers one of this process's limits (it can never raise them): 0 heap bytes, 1 raw-memory bytes, 2 mailbox messages, 3 instructions executed, 4 foreign calls (natives from extensions and .extern; 0 forbids native code), 5 OS calls (fs.* and os.*; 0 forbids files, commands and the environment). Processes it spawns inherit its limits (and count their own use). Exceeding a limit traps E_QUOTA. |
-| `0x010B` | `mlen` | `?` | - | dst = the number of messages waiting in this process's mailbox. |
+| `0x010B` | `mlen` | `int_dst` | - | dst = the number of messages waiting in this process's mailbox. |
 | `0x010C` | `spawnl` | `func (args...) -> (results...)` | - | Like spawn, and the new process is linked to this one before it starts (see link), so it cannot fail unnoticed in between. |
 | `0x010D` | `spawnm` | `func (args...) -> (results...)` | - | Like spawn, and this process monitors the new one from the start (see monitor): a Down message reports how it ends, however quickly. |
 
@@ -233,9 +236,9 @@ Type codes, as `tagof` reports them: 0 for a slot never written, 1 `b`, 2 `c`, 3
 
 | Opcode | Mnemonic | Operands | Types | Description |
 |---|---|---|---|---|
-| `0x0120` | `conew` | `?, ?, [int]` | - | Make a coroutine that will run a closure: `conew R0, R1 [, words]`. It starts suspended; the first coresume calls the closure. It has its own registers, call frames and data stack (words 8-byte words, default 1024), and shares the heap, globals and raw memory with the rest of the process. Its stack is charged to the heap quota. |
+| `0x0120` | `conew` | `obj_dst, obj, [int]` | - | Make a coroutine that will run a closure: `conew R0, R1 [, words]`. It starts suspended; the first coresume calls the closure. It has its own registers, call frames and data stack (words 8-byte words, default 1024), and shares the heap, globals and raw memory with the rest of the process. Its stack is charged to the heap quota. |
 | `0x0121` | `coresume` | `coroutine (args...) -> (results...)` | - | Run a suspended coroutine until it yields, returns or throws: `coresume R0 (args) -> (results)`. The first resume passes the arguments to the closure as a calli would; later ones deliver them to the results of the coyield it is suspended at. The results are its coyield values, or its return values once it finishes (it is then dead). An exception it does not catch kills it and is thrown again here. Resuming a coroutine that is running, normal (it resumed another) or dead traps E_CORO; resuming inside a callback from C traps E_CALLBACK. |
 | `0x0122` | `coyield` | `(values...) -> (results...)` | - | Suspend the running coroutine: `coyield (values) -> (results)`. Its resumer's coresume receives the values; the next coresume's arguments arrive in results. Values keep their natural types (as an untyped ret's), and a destination of the wrong bank traps E_TYPE, too few values E_RET_COUNT. Outside a coroutine it traps E_CORO, inside a callback from C E_CALLBACK. |
-| `0x0123` | `costatus` | `?, ?` | - | dst = a coroutine's state: 0 suspended (or not yet started), 1 running, 2 normal (it resumed another coroutine), 3 dead (it returned, threw or was closed). |
-| `0x0124` | `cocur` | `?` | - | dst = the running coroutine, or null outside one. |
-| `0x0125` | `coclose` | `?` | - | Kill a suspended coroutine and free its stack at once (its .try handlers do not run). Closing a dead one does nothing; closing a running or normal one traps E_CORO. |
+| `0x0123` | `costatus` | `int_dst, obj` | - | dst = a coroutine's state: 0 suspended (or not yet started), 1 running, 2 normal (it resumed another coroutine), 3 dead (it returned, threw or was closed). |
+| `0x0124` | `cocur` | `obj_dst` | - | dst = the running coroutine, or null outside one. |
+| `0x0125` | `coclose` | `obj` | - | Kill a suspended coroutine and free its stack at once (its .try handlers do not run). Closing a dead one does nothing; closing a running or normal one traps E_CORO. |

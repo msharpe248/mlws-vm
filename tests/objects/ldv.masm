@@ -1,0 +1,163 @@
+; ldv loads a number into one of two destinations, picked by the slot's type
+; tag: an integer (any of b, c, i8 ... u64) into the first, as i64, and a float
+; into the second, as f64, leaving the other unchanged. A slot never written
+; reads as the integer 0; a reference traps E_TYPE. This is the number half of
+; a dynamically typed value kept as two words (a tag word, then the number), as
+; the Lua compiler stores table values: one instruction instead of a branch on
+; the tag and a load into each bank.
+;
+; The list and array element forms indexed by a register or a constant are
+; quickened (Q_LDV_E, Q_LDV_EK in src/vm/interp.c); every other operand, and any
+; element they cannot take, goes through the generic instruction.
+.include "std/test.inc"
+
+.struct S
+    n: i32
+    x: f32
+    r: ref
+.ends
+
+g_int:  .i64 -9
+g_raw:  .zero 8                          ; never written
+
+.macro EXPECT_ERROR code, insn...
+.try .Lh\@
+    \insn
+.endtry
+    FAIL "an error was expected"
+.Lh\@:
+    catch R31
+    strcmp I31, R31->Error.code, \code
+    ASSERT_EQ I31, 0
+.endm
+
+; Reset the two destinations to markers, so each check also shows which one
+; ldv left alone.
+.macro MARK
+    mov I0, -1
+    mov.f64 F0, -1.0
+.endm
+
+; The number half of value k of a two-word list (tag word, number word), the
+; way LOADV in the Lua compiler reads it: the destination not chosen keeps its
+; marker.
+.func number_of(ref list, i64 k) -> (i64, f64)
+    mov I2, -1
+    mov.f64 F0, -1.0
+    add I1, k, k
+    inc I1                               ; the number word
+    ldv I2, F0, list[I1]                 ; Q_LDV_E
+    ret I2, F0
+.endf
+
+; A closure capture: the generic path.
+.func capture -> (i64, f64)              ; UP[0] = 2.5
+    mov I0, 7
+    mov.f64 F0, 0.0
+    ldv I0, F0, UP[0]
+    ret I0, F0
+.endf
+
+.func main
+    ; ---- list elements, by a register and by a constant ----
+    lnew R0, 8
+    mov.r R8, null
+    lpush R0, R8, 42                     ; value 0: an integer (tag word null)
+    mov.r R1, "float"
+    lpush R0, R1, 2.5                    ; value 1: a float
+    call number_of (R0, 0) -> (I3, F3)
+    ASSERT_EQ I3, 42
+    ASSERT_EQ F3, -1.0                   ; untouched
+    call number_of (R0, 1) -> (I3, F3)
+    ASSERT_EQ I3, -1                     ; untouched
+    ASSERT_EQ F3, 2.5
+    MARK
+    ldv I0, F0, R0[3]                    ; Q_LDV_EK
+    ASSERT_EQ F0, 2.5
+    ASSERT_EQ I0, -1
+    MARK
+    ldv I0, F0, R0[1]
+    ASSERT_EQ I0, 42
+    ASSERT_EQ F0, -1.0
+
+    ; ---- never written: the integer 0 ----
+    resize R0, 6
+    MARK
+    ldv I0, F0, R0[5]
+    ASSERT_EQ I0, 0
+    ASSERT_EQ F0, -1.0
+    mov I4, 4
+    MARK
+    ldv I0, F0, R0[I4]
+    ASSERT_EQ I0, 0
+
+    ; ---- other integer and float types: the generic path ----
+    lpush.i32 R0, -3
+    lpush.u8 R0, 255
+    lpush.b R0, 1
+    lpush.f32 R0, 0.5
+    MARK
+    ldv I0, F0, R0[6]
+    ASSERT_EQ I0, -3
+    ldv I0, F0, R0[7]
+    ASSERT_EQ I0, 255
+    ldv I0, F0, R0[8]
+    ASSERT_EQ I0, 1
+    ldv I0, F0, R0[9]
+    ASSERT_EQ F0, 0.5
+
+    ; ---- arrays: their element type is the tag ----
+    anew.i64 R2, 3
+    mov R2[1], 11
+    anew.f64 R3, 3
+    mov.f64 R3[2], 1.25
+    anew.i32 R4, 2
+    mov.i32 R4[0], -8
+    MARK
+    ldv I0, F0, R2[1]
+    ASSERT_EQ I0, 11
+    mov I4, 2
+    ldv I0, F0, R3[I4]
+    ASSERT_EQ F0, 1.25
+    ldv I0, F0, R4[0]                    ; i32: generic
+    ASSERT_EQ I0, -8
+
+    ; ---- registers, constants, globals, fields and captures ----
+    mov I5, 6
+    MARK
+    ldv I0, F0, I5
+    ASSERT_EQ I0, 6
+    ldv I0, F0, 0.75
+    ASSERT_EQ F0, 0.75
+    MARK
+    ldv I0, F0, 12
+    ASSERT_EQ I0, 12
+    ASSERT_EQ F0, -1.0
+    ldv I0, F0, @g_int
+    ASSERT_EQ I0, -9
+    MARK
+    ldv I0, F0, @g_raw                   ; never written
+    ASSERT_EQ I0, 0
+    new R5, S
+    mov.i32 R5->S.n, 4
+    mov.f32 R5->S.x, 1.5
+    ldv I0, F0, R5->S.n
+    ASSERT_EQ I0, 4
+    ldv I0, F0, R5->S.x
+    ASSERT_EQ F0, 1.5
+    closure capture (2.5) -> (R6)
+    calli R6 -> (I6, F6)
+    ASSERT_EQ I6, 7
+    ASSERT_EQ F6, 2.5
+
+    ; ---- any other value, a bad index, not a list ----
+    EXPECT_ERROR "E_TYPE", ldv I0, F0, R0[2]     ; a reference
+    EXPECT_ERROR "E_TYPE", ldv I0, F0, R5->S.r
+    EXPECT_ERROR "E_BOUNDS", ldv I0, F0, R0[99]
+    mov I7, -1
+    EXPECT_ERROR "E_BOUNDS", ldv I0, F0, R0[I7]
+    mov.r R7, null
+    EXPECT_ERROR "E_NULL", ldv I0, F0, R7[0]
+    EXPECT_ERROR "E_TYPE", ldv I0, F0, R5[0]     ; a struct has no elements
+    ret 0
+.endf

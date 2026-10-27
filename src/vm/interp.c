@@ -1200,6 +1200,9 @@ enum {
      * bank, with a constant default; jtab; cvt.f64.i64; 64-bit shifts; and
      * f64 arithmetic with a constant first operand (FKF, above). */
     Q_TCALLI_R,
+    /* M30: ldv from a list or array element indexed by a register or a
+     * constant, into an I and an F register. */
+    Q_LDV_E, Q_LDV_EK,
     Q_NEW, Q_LNEW, Q_STFK,
     Q_MGETV_I, Q_MGETV_F, Q_MGETV_R,
     Q_JTAB, Q_CVT_FI,
@@ -1498,6 +1501,20 @@ void interp_quicken(Insn *in) {
         break;
     case OP_JTAB:
         if (IREG(0)) in->xop = Q_JTAB;
+        break;
+    case OP_LDV: /* ldv I0, F0, R1[I2] or R1[5]: the object's register in k, the index's in target */
+        if (IREG(0) && FREG(1) && REG_BANK(o[2].reg) == BANK_R) {
+            if (o[2].mode == OM_ELEM && REG_BANK(o[2].ireg) == BANK_I) {
+                in->xop = Q_LDV_E;
+                in->target = (uint32_t)REG_IDX(o[2].ireg);
+            } else if (o[2].mode == OM_ELEMI && o[2].index <= UINT32_MAX) {
+                in->xop = Q_LDV_EK;
+                in->target = (uint32_t)o[2].index;
+            } else {
+                break;
+            }
+            in->k.i = REG_IDX(o[2].reg);
+        }
         break;
     case OP_CVT:
         if (n == 2 && t == T_F64 && in->type2 == T_I64 && FREG(0) && IREG(1)) in->xop = Q_CVT_FI;
