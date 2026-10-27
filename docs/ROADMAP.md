@@ -177,6 +177,14 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   workloads (it is 11% of `binarytrees`).
 * Lock-free run queues and spinning before sleeping, for many-thread,
   message-heavy programs.
+* A bytecode optimizer: a language-independent pass over each function as it
+  is loaded or assembled. Dead moves, copy and constant propagation, branch
+  threading, and rewriting general-path shapes into fast ones (a compare and
+  a branch into one compare-and-branch, a constant operand into a register).
+  Removing type checks needs the source language's types, so that stays in
+  the compilers. Worth doing once profiles of generated code (`--profile`'s
+  general-path list) show waste a generic pass would remove; in the Lox and
+  Lua compilers' output, so far, they show little.
 
 ## 5. The scripting language
 
