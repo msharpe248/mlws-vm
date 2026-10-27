@@ -76,12 +76,15 @@ base:
   such, and native code loads only from trusted, hash-pinned directories.
 * **Structured exceptions**: `.try` regions, `throw`/`catch`, and zero cost until
   something is thrown. Every runtime fault is catchable as an `Error`.
+* **Coroutines**: stackful coroutines inside a process (`conew`, `coresume`,
+  `coyield`), passing values both ways, for generators and Lua-style
+  `coroutine` libraries.
 * **Tooling**: a gdb-style debugger (`mlwsvm debug`), an exact profiler with
   flame-graph output, an instruction tracer, and a live monitor with a web
   dashboard, JSON API and `mlwsvm top`.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 220+ test programs, also run under
+* **Tested in its own assembly**: 240 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, and with a
   garbage collection at every allocation.
 
@@ -134,7 +137,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks and results, how the interpreter and scheduler are made fast, and what is left alone (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M22 and what remains: Windows and the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M23 and what remains: Windows and the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
@@ -144,7 +147,7 @@ src/main.c      the mlwsvm command line
 src/core/       types, opcode table (opcodes.def), instruction codec, shared checker, disassembler
 src/asm/        lexer, constant expressions, preprocessor (macros etc.), assembler
 src/loader/     .mlwso reader/writer
-src/vm/         loader/linker, verifier, processes and memory, scheduler, interpreter, VM options, run helper
+src/vm/         loader/linker, verifier, processes and memory, coroutines, scheduler, interpreter, VM options, run helper
 src/heap/       garbage collector, heap objects (strings, bytes, arrays, structs, lists, maps), BigInt and decimal, message copying
 src/native/     built-in and standard-library natives, the extension API and the FFI
 src/embed/      the embedding API (libmlwsvm)

@@ -1,0 +1,12 @@
+; Yielded values keep their types: an integer cannot land in an F register.
+; expect-error: E_TYPE
+.func body
+    coyield (1)
+    ret
+.endf
+.func main
+    closure body -> (R0)
+    conew R1, R0
+    coresume R1 -> (F0)
+    ret 0
+.endf

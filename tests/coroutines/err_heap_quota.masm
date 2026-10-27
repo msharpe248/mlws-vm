@@ -1,0 +1,11 @@
+; A coroutine's stack counts against the heap quota.
+; expect-error: E_QUOTA
+.func body
+    ret
+.endf
+.func main
+    quota 0, 1000000                     ; 1 MB of heap
+    closure body -> (R0)
+    conew R1, R0, 200000                 ; a 1.6 MB stack
+    ret 0
+.endf

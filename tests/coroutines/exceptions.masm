@@ -1,0 +1,89 @@
+; Exceptions and coroutines: a coroutine catches its own exceptions, a .try
+; around a coyield is still in force after the resume, and an exception the
+; coroutine does not catch kills it and is thrown again at the coresume.
+; expect-stdout: caught inside: E_DIV_ZERO
+; expect-stdout: handler survived the yield: boom
+; expect-stdout: at the resume: E_BOUNDS
+; expect-stdout: trace crosses the resume: 1
+; expect-stdout: resuming a dead one: E_CORO
+.include "std/test.inc"
+.include "std/io.inc"
+
+.func catcher -> i64
+    mov I1, 0
+.try 1f
+    div I0, 1, I1
+.endtry
+1:  catch R0
+    strcat R1, "caught inside: ", R0->Error.code
+    PRINTLN_S R1
+    ret 7
+.endf
+
+.func yield_in_try -> i64
+.try 1f
+    coyield (1)                          ; suspended inside the .try
+    throw "boom"                         ; thrown after the resume
+.endtry
+1:  catch R0
+    strcat R1, "handler survived the yield: ", R0
+    PRINTLN_S R1
+    ret 2
+.endf
+
+.func deep(ref list)
+    mov I0, list[5]                      ; out of range: E_BOUNDS
+    ret
+.endf
+
+.func thrower -> i64
+    lnew R0
+    coyield (1)
+    call deep (R0)
+    ret 0
+.endf
+
+.func main
+    closure catcher -> (R0)
+    conew R1, R0
+    coresume R1 -> (I0)
+    ASSERT_EQ I0, 7
+
+    closure yield_in_try -> (R0)
+    conew R1, R0
+    coresume R1 -> (I0)
+    ASSERT_EQ I0, 1
+    coresume R1 -> (I0)
+    ASSERT_EQ I0, 2
+
+    closure thrower -> (R0)
+    conew R2, R0
+    coresume R2 -> (I0)
+.try 1f
+    coresume R2 -> (I0)                  ; thrower dies in deep
+    FAIL "not reached"
+.endtry
+1:  catch R3
+    strcat R4, "at the resume: ", R3->Error.code
+    PRINTLN_S R4
+    costatus I1, R2
+    ASSERT_EQ I1, 3                      ; dead
+    ; the trace shows the coroutine's frames, then the resumer's
+    strfind I2, R3->Error.trace, "(in a coroutine resumed by)"
+    strfind I3, R3->Error.trace, "exceptions.deep"
+    strfind I4, R3->Error.trace, "exceptions.main"
+    slt I5, I3, I2
+    slt I6, I2, I4
+    and I5, I6
+    PRINT_S "trace crosses the resume: "
+    PRINTLN_I I5
+
+.try 2f
+    coresume R2                          ; dead
+    FAIL "not reached"
+.endtry
+2:  catch R3
+    strcat R4, "resuming a dead one: ", R3->Error.code
+    PRINTLN_S R4
+    ret 0
+.endf

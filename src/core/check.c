@@ -157,7 +157,9 @@ bool check_insn(const Insn *in, CheckErr *ce) {
     if (oi->flags & OPF_CALL) {
         bool indirect = op_calls_closure(in->op);
         uint8_t want = in->op == OP_NCALL ? OM_NATIVE : OM_FUNC;
-        if (indirect) {
+        if (in->op == OP_COYIELD) { /* no target: a placeholder 0 keeps the call block's layout */
+            if (in->ops[0].mode != OM_IMM || in->ops[0].imm != 0) return fail(ce, 0, "malformed coyield");
+        } else if (indirect) {
             if (!check_operand(&in->ops[0], 0, T_R, false, ce)) return false;
         } else if (in->ops[0].mode != want) {
             return fail(ce, 0, "%s target must be a %s", oi->mnem, in->op == OP_NCALL ? "native name string" : "function");

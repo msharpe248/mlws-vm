@@ -84,6 +84,7 @@ enum {
     MLWS_KIND_BIGINT = 8,
     MLWS_KIND_DECIMAL = 9,
     MLWS_KIND_FOREIGN = 10,
+    MLWS_KIND_COROUTINE = 11,
 };
 
 /* Native flags. */

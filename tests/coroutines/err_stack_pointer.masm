@@ -1,0 +1,17 @@
+; Each stack has its own generation: a pointer into the resumer's stack is
+; not valid while the coroutine runs (it would read the wrong stack).
+; expect-error: E_BAD_PTR
+.func body(ptr p)
+    mov I0, [p]
+    ret
+.endf
+.func main
+    enter 1
+    mov LOC[0], 5
+    lea P0, LOC[0]
+    mov I0, [P0]                         ; fine here
+    closure body -> (R0)
+    conew R1, R0
+    coresume R1 (P0)
+    ret 0
+.endf

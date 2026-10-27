@@ -127,6 +127,8 @@ static Obj *shallow(Process *from, Process *to, struct CopyState *cs, Obj *o) {
     }
     case OBJ_FOREIGN:
         vm_trap(from, "E_TYPE", "foreign handles cannot be sent to another process (they are process-local)");
+    case OBJ_CORO:
+        vm_trap(from, "E_TYPE", "coroutines cannot be sent to another process (they are process-local)");
     default: vm_trap(from, "E_INTERNAL", "cannot copy object kind %d", o->kind);
     }
     map_insert(cs, o, c);

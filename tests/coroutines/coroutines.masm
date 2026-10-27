@@ -1,0 +1,107 @@
+; Coroutines: conew makes one from a closure, coresume runs it until it yields
+; or returns, and coyield passes values out and receives the next resume's.
+; The first resume's arguments become the closure's parameters; values in
+; both directions keep their own types and banks.
+.include "std/test.inc"
+
+; A generator: yields from, from+1, ..., to-1, then returns -1.
+.func range(i64 from, i64 to) -> i64
+1:  bge from, to, 2f
+    coyield (from)                       ; no results: the resume passes nothing
+    inc from
+    jmp 1b
+2:  ret -1
+.endf
+
+; A running total: each resume sends a number and gets the sum so far back.
+.func summer(i64 first) -> i64
+    mov I1, first
+1:  coyield (I1) -> (I2)                 ; out: the sum; in: the next number
+    bz I2, 2f                            ; 0 ends it
+    add I1, I2
+    jmp 1b
+2:  ret I1
+.endf
+
+; Values of every bank in one yield, and a declared multi-value return.
+.func mixed(ref name) -> (i64, f64, ref)
+    strcat R1, "hello, ", name
+    coyield (42, 2.5, R1) -> (I0, F0)    ; and two values in
+    add I0, 1
+    mul F0, 2.0
+    ret I0, F0, "done"
+.endf
+
+.func status_probe -> i64                 ; UP[0] = a list holding the probe's own coroutine
+    cocur R0
+    mov R1, UP[0]
+    seq.r I0, R0, R1[0]                  ; cocur is this coroutine
+    costatus I1, R0
+    ASSERT_EQ I1, 1                      ; running
+    ret I0
+.endf
+
+.func main
+    ; a generator, resumed until it is dead
+    closure range -> (R0)
+    conew R1, R0
+    costatus I0, R1
+    ASSERT_EQ I0, 0                      ; suspended: not started yet
+    coresume R1 (3, 6) -> (I1)           ; the first resume: range(3, 6)
+    ASSERT_EQ I1, 3
+    coresume R1 -> (I1)
+    ASSERT_EQ I1, 4
+    coresume R1 -> (I1)
+    ASSERT_EQ I1, 5
+    costatus I0, R1
+    ASSERT_EQ I0, 0                      ; suspended at its coyield
+    coresume R1 -> (I1)                  ; it returns
+    ASSERT_EQ I1, -1
+    costatus I0, R1
+    ASSERT_EQ I0, 3                      ; dead
+
+    ; two-way: the resumer's arguments arrive at the coyield's results
+    closure summer -> (R2)
+    conew R3, R2
+    coresume R3 (10) -> (I2)
+    ASSERT_EQ I2, 10
+    coresume R3 (5) -> (I2)
+    ASSERT_EQ I2, 15
+    coresume R3 (7) -> (I2)
+    ASSERT_EQ I2, 22
+    coresume R3 (0) -> (I2)              ; the final return value
+    ASSERT_EQ I2, 22
+
+    ; every bank, both ways; the results can be fewer than the values
+    closure mixed -> (R4)
+    conew R5, R4
+    coresume R5 ("world") -> (I3, F1, R6)
+    ASSERT_EQ I3, 42
+    ASSERT_EQ F1, 2.5, f64
+    strcmp I4, R6, "hello, world"
+    ASSERT_EQ I4, 0
+    coresume R5 (99, 1.25) -> (I3, F1)   ; "done" is dropped
+    ASSERT_EQ I3, 100
+    ASSERT_EQ F1, 2.5, f64
+
+    ; cocur and costatus from inside
+    cocur R7
+    ASSERT_FALSE R7, r                   ; null: not in a coroutine
+    lnew R10                             ; captures are copies: share a list
+    closure status_probe (R10) -> (R8)
+    conew R9, R8
+    lpush R10, R9
+    coresume R9 -> (I5)
+    ASSERT_EQ I5, 1
+
+    ; kinds and descriptions
+    typeof I6, R9
+    ASSERT_EQ I6, 11
+    tostr R11, R9
+    strcmp I7, R11, "<coroutine status_probe dead>"
+    ASSERT_EQ I7, 0
+    tostr R11, R3
+    strcmp I7, R11, "<coroutine summer dead>"
+    ASSERT_EQ I7, 0
+    ret 0
+.endf

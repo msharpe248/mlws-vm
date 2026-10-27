@@ -1,0 +1,11 @@
+; Coroutines belong to their process: they cannot be sent.
+; expect-error: E_TYPE
+.func body
+    ret
+.endf
+.func main
+    closure body -> (R0)
+    conew R1, R0
+    send PID, R1
+    ret 0
+.endf

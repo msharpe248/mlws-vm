@@ -1,0 +1,22 @@
+; A coroutine that has resumed another ("normal") cannot be resumed until
+; that one yields back to it.
+; expect-error: E_CORO
+.func inner                              ; UP[0] = [outer]
+    mov R0, UP[0]
+    coresume R0[0]
+    ret
+.endf
+.func outer(ref inner)
+    coresume inner
+    ret
+.endf
+.func main
+    lnew R5
+    closure inner (R5) -> (R0)
+    conew R1, R0
+    closure outer -> (R2)
+    conew R3, R2
+    lpush R5, R3
+    coresume R3 (R1)
+    ret 0
+.endf

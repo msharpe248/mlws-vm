@@ -240,6 +240,41 @@ typedef struct {
     Obj *closure;         /* the closure being run (UP[n] reads it), or NULL */
 } Frame;
 
+/* What a coroutine switch exchanges: the register stacks, the frames and the
+ * data stack, the same fields as in Process (coro.c swaps them one by one, so
+ * the rest of the VM always finds the running context in Process). */
+typedef struct {
+    int64_t *ireg;
+    double *freg;
+    Obj **rreg;
+    uint64_t *preg;
+    uint32_t rcap[NBANKS], rtop[NBANKS];
+    Frame *frames;
+    uint32_t nframes, fcap;
+    Segment stack;
+    uint64_t sp, fp;
+    uint32_t stack_low_off, stack_ref_lo;
+} ExecCtx;
+
+/* Coroutine states, as the costatus instruction reports them. */
+enum { CO_SUSPENDED = 0, CO_RUNNING = 1, CO_NORMAL = 2, CO_DEAD = 3 };
+
+/* A coroutine (coro.c): a second execution context in the same process and
+ * heap. While it is suspended, `ctx` holds its own context; while it runs (or
+ * has resumed another coroutine), `ctx` holds the context of the code that
+ * resumed it, since a switch swaps the two. */
+typedef struct ObjCoro {
+    Obj h;
+    uint8_t status;     /* CO_* */
+    uint32_t words;     /* its data stack's size, charged to the heap; 0 once dead */
+    ObjClosure *fn;     /* the body */
+    struct ObjCoro *prev; /* running or normal: the coroutine that resumed it (NULL: the process's own code) */
+    /* Suspended: its coyield, which receives the next coresume's values (NULL
+     * before the first resume). Running: the coresume that receives its results. */
+    const Insn *wait;
+    ExecCtx ctx;
+} ObjCoro;
+
 /* PROC_NATIVE: in a blocking native call on the I/O pool. PROC_IOWAIT: waiting
  * for a descriptor (Process.fdwait), woken by the poller. */
 enum { PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED, PROC_NATIVE, PROC_IOWAIT };
@@ -377,10 +412,13 @@ struct Process {
     uint32_t chunk_next;         /* the size of the next chunk */
     uint64_t rng[4];             /* std.random's generator (util.c) */
     bool rng_seeded;
-    /* what the entry function returned (for embedding: mlws_call), or a callback */
-    Word results[NATIVE_MAX_RETS];
-    uint8_t result_types[NATIVE_MAX_RETS];
+    /* what the entry function returned (for embedding: mlws_call), a callback or a coroutine */
+    Word results[MAX_OPERANDS];
+    uint8_t result_types[MAX_OPERANDS];
     uint8_t nresults;
+    /* coroutines (coro.c) */
+    struct ObjCoro *co;          /* the running coroutine (a GC root), or NULL */
+    uint16_t stack_gen;          /* the generation given to the last coroutine stack */
 };
 
 /* vm.c */
@@ -439,6 +477,16 @@ static inline Segment *proc_segment_fast(Process *p, uint64_t ptr) {
 uint64_t proc_alloc(Process *p, int64_t size);
 void proc_free_block(Process *p, uint64_t ptr);
 uint64_t proc_realloc(Process *p, uint64_t ptr, int64_t size);
+
+/* coro.c - coroutines: see docs/ABI.md ("Coroutines"). */
+ObjCoro *coro_new(Process *p, ObjClosure *fn, int64_t words);
+/* Exchange the running context with the one co holds. */
+void coro_swap(Process *p, ObjCoro *co);
+/* Switch from the running coroutine back to its resumer, as `status` (CO_SUSPENDED
+ * or CO_DEAD; a dead coroutine's context is freed). Returns the coroutine. */
+ObjCoro *coro_leave(Process *p, int status);
+void coro_free_ctx(Process *p, ObjCoro *co); /* free a suspended or dead coroutine's context */
+void coro_release(ObjCoro *co);              /* the collector frees co */
 
 /* interp.c */
 int interp_run(Process *p, uint32_t budget); /* SLICE_* */

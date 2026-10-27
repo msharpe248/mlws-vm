@@ -1,0 +1,33 @@
+; A coroutine's function can return many values (more than a native's four),
+; and end in a tail call: the function it tail-calls returns them instead.
+.include "std/test.inc"
+
+.func six(i64 base) -> (i64, i64, i64, f64, ref, i64)
+    add I1, base, 1
+    add I2, base, 2
+    cvt.f64.i64 F0, base
+    ret base, I1, I2, F0, "six", 6
+.endf
+
+.func body(i64 base) -> (i64, i64, i64, f64, ref, i64)
+    coyield (base)
+    tcall six (base)                     ; the coroutine's first frame is replaced
+.endf
+
+.func main
+    closure body -> (R0)
+    conew R1, R0
+    coresume R1 (40) -> (I0)
+    ASSERT_EQ I0, 40
+    coresume R1 -> (I0, I1, I2, F0, R2, I3)
+    ASSERT_EQ I0, 40
+    ASSERT_EQ I1, 41
+    ASSERT_EQ I2, 42
+    ASSERT_EQ F0, 40.0, f64
+    strcmp I4, R2, "six"
+    ASSERT_EQ I4, 0
+    ASSERT_EQ I3, 6
+    costatus I5, R1
+    ASSERT_EQ I5, 3
+    ret 0
+.endf

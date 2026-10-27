@@ -15,10 +15,12 @@
 #define MLWS_PRINTF(f, a) __attribute__((format(printf, f, a)))
 #define MLWS_NORETURN __attribute__((noreturn))
 #define MLWS_COLD __attribute__((cold, noinline))
+#define MLWS_NOINLINE __attribute__((noinline))
 #else
 #define MLWS_PRINTF(f, a)
 #define MLWS_NORETURN
 #define MLWS_COLD
+#define MLWS_NOINLINE
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)

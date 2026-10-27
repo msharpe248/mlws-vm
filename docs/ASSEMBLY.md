@@ -158,11 +158,13 @@ with `cvt` or reinterpret with `bitcast`.
 call  target (arg, arg, ...) -> (dst, dst, ...)
 tcall target (arg, arg, ...)              ; tail call: no results
 ncall "native.name" (arg, ...) -> (dst, ...)
+coresume R0 (arg, ...) -> (dst, ...)      ; run a coroutine until it yields
+coyield (value, ...) -> (dst, ...)        ; no target: back to the resumer
 ```
 
 The argument list and the `-> (...)` result list are both optional. With a single
 result the parentheses can be dropped: `call f (1) -> I0`. See [ABI.md](ABI.md) for
-how arguments are bound.
+how arguments are bound, and [ABI.md §8](ABI.md#8-coroutines) for coroutines.
 
 ## 5. Functions
 
@@ -328,6 +330,7 @@ no longer reachable ([ABI.md §6](ABI.md#6-the-garbage-collected-heap)).
 | bigint (8) | `123n`, `cvt.big.i64`, `parse.big` | `add.big`, `blt.big`, ... | Immutable, arbitrary precision |
 | decimal (9) | `19.99d`, `cvt.dec.f64`, `parse.dec` | `add.dec`, `div.dec`, ... | Immutable; exact except inexact division |
 | foreign handle (10) | a `ptr` result of an `.extern`, or a native from an extension | passed back to `ncall` | An opaque C pointer ([EXTENDING.md](EXTENDING.md)) |
+| coroutine (11) | `conew R0, R1` (from a closure) | `coresume`, `coyield`, `costatus`, `cocur`, `coclose` | Its own frames, registers and data stack in this process ([ABI.md §8](ABI.md#8-coroutines)) |
 
 ```asm
 .struct Point                 ; a struct type, usable as `Point` in this module

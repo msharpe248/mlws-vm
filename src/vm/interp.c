@@ -962,6 +962,120 @@ static void bind_args(Ctx *c, const MlwsType *types, const uint8_t *ptypes, int 
     }
 }
 
+/* ---- coroutines (coro.c) ------------------------------------------------------------ */
+
+/* run_loop's code for an instruction it leaves to interp_run (never a scheduler's). */
+#define SLICE_EXT 100
+
+static const char *co_state(const ObjCoro *co) {
+    static const char *const st[] = {"suspended", "running", "normal", "dead"};
+    return st[co->status];
+}
+
+/* Write values to the results of a coresume or coyield, as ret does to a call's. */
+static void co_deliver(Ctx *c, const Insn *ri, const Word *vals, const MlwsType *vt, int n, const char *what) {
+    int argc = (int)ri->ops[1].imm, nres = ri->nops - 2 - argc;
+    if (nres > n)
+        vm_trap(c->p, "E_RET_COUNT", "%s %d value(s) but %s expects %d", what, n, op_info[ri->op].mnem, nres);
+    for (int k = 0; k < nres; k++) wr(c, &ri->ops[2 + argc + k], vt[k], vals[k]);
+}
+
+/* The running coroutine's function returned (its results are in p->results,
+ * as an entry function's are): it is dead, and the coresume that ran it
+ * receives them. */
+static MLWS_COLD void co_finish(Ctx *c) {
+    Process *p = c->p;
+    ObjCoro *co = coro_leave(p, CO_DEAD);
+    MlwsType vt[MAX_OPERANDS];
+    for (int k = 0; k < p->nresults; k++) vt[k] = (MlwsType)p->result_types[k];
+    ctx_load(c);
+    co_deliver(c, co->wait, p->results, vt, p->nresults, "the coroutine returned");
+}
+
+static MLWS_COLD void co_resume(Ctx *c, const Insn *in) {
+    Process *p = c->p;
+    const Operand *ops = in->ops;
+    ObjCoro *co = (ObjCoro *)rd_obj(c, &ops[0], OBJ_CORO, "coresume");
+    if (p->cb_base) vm_trap(p, "E_CALLBACK", "coresume inside a callback from C");
+    if (co->status != CO_SUSPENDED) vm_trap(p, "E_CORO", "cannot resume a %s coroutine", co_state(co));
+    const MFunc *mf = co->fn->fn->mf;
+    const Insn *yi = co->wait; /* where it is suspended; NULL: not started */
+    int argc = (int)ops[1].imm;
+    Word args[MAX_OPERANDS];
+    MlwsType at[MAX_OPERANDS];
+    if (!yi && argc != mf->nparams)
+        vm_trap(p, "E_TYPE", "closure %s takes %d argument(s), got %d", co->fn->fn->name, mf->nparams, argc);
+    for (int k = 0; k < argc; k++) {
+        at[k] = yi ? T_NONE : (MlwsType)mf->params[k];
+        args[k] = yi ? rdn(c, &ops[2 + k], &at[k]) : rd_param(c, &ops[2 + k], at[k]);
+    }
+    if (p->co) p->co->status = CO_NORMAL;
+    co->prev = p->co;
+    co->status = CO_RUNNING;
+    co->wait = in;
+    p->co = co;
+    coro_swap(p, co);
+    if (!yi) { /* its first frame, on its own stacks */
+        proc_push_frame(p, co->fn->fn, NULL);
+        p->frames[0].closure = &co->fn->h;
+        ctx_load(c);
+        bind_args(c, NULL, mf->params, argc, args);
+    } else {
+        ctx_load(c);
+        co_deliver(c, yi, args, at, argc, "coresume passed");
+    }
+}
+
+static MLWS_COLD void co_yield(Ctx *c, const Insn *in) {
+    Process *p = c->p;
+    ObjCoro *co = p->co;
+    if (!co) vm_trap(p, "E_CORO", "coyield outside a coroutine");
+    if (p->cb_base) vm_trap(p, "E_CALLBACK", "coyield inside a callback from C");
+    int n = (int)in->ops[1].imm;
+    Word vals[MAX_OPERANDS];
+    MlwsType vt[MAX_OPERANDS];
+    for (int k = 0; k < n; k++) {
+        vt[k] = T_NONE;
+        vals[k] = rdn(c, &in->ops[2 + k], &vt[k]);
+    }
+    const Insn *ri = co->wait;
+    co->wait = in;
+    coro_leave(p, CO_SUSPENDED);
+    ctx_load(c);
+    co_deliver(c, ri, vals, vt, n, "the coroutine yielded");
+}
+
+/* The instructions that run_loop leaves to interp_run: the coroutines'. */
+static MLWS_COLD void co_exec(Ctx *c, const Insn *in) {
+    Process *p = c->p;
+    const Operand *ops = in->ops;
+    switch (in->op) {
+    case OP_CONEW: {
+        ObjClosure *cl = (ObjClosure *)rd_obj(c, &ops[1], OBJ_CLOSURE, "conew");
+        int64_t words = in->nops > 2 ? rd(c, &ops[2], T_I64).i : 0;
+        wr_ref(c, &ops[0], coro_new(p, cl, words));
+        break;
+    }
+    case OP_CORESUME: co_resume(c, in); break;
+    case OP_COYIELD: co_yield(c, in); break;
+    case OP_COSTATUS:
+        wr_int(c, &ops[0], T_I64, ((ObjCoro *)rd_obj(c, &ops[1], OBJ_CORO, "costatus"))->status);
+        break;
+    case OP_COCUR: wr_ref(c, &ops[0], p->co); break;
+    case OP_COCLOSE: {
+        ObjCoro *co = (ObjCoro *)rd_obj(c, &ops[0], OBJ_CORO, "coclose");
+        if (co->status == CO_RUNNING || co->status == CO_NORMAL)
+            vm_trap(p, "E_CORO", "cannot close a %s coroutine", co_state(co));
+        if (co->status == CO_SUSPENDED) {
+            co->status = CO_DEAD;
+            coro_free_ctx(p, co);
+        }
+        break;
+    }
+    default: vm_trap(p, "E_INTERNAL", "unimplemented opcode %s", op_info[in->op].mnem);
+    }
+}
+
 /* ---- quickening ------------------------------------------------------------------
  * After verification, common instruction shapes get a specialised execution
  * opcode (Insn.xop) that skips the generic operand machinery. The original
@@ -1220,9 +1334,10 @@ static void spawn_watch(Process *p, Process *child, bool link, bool monitor) {
     if (monitor) VEC_PUSH(child->monitors, p->pid);
 }
 
-/* The entry function returned: keep its results (the embedding API reads them). */
+/* The entry function, a callback or a coroutine returned: keep its results
+ * (for the embedding API, proc_callback's caller or interp_run). */
 static void keep_results(Process *p, const Word *vals, const MlwsType *types, int n) {
-    p->nresults = (uint8_t)(n < NATIVE_MAX_RETS ? n : NATIVE_MAX_RETS);
+    p->nresults = (uint8_t)n;
     for (int k = 0; k < p->nresults; k++) {
         p->results[k] = vals[k];
         p->result_types[k] = (uint8_t)types[k];
@@ -1252,7 +1367,7 @@ void interp_enter(Process *p, ObjClosure *cl, const Word *args) {
 #define MLWS_THREADED 0
 #endif
 
-int interp_run(Process *p, uint32_t budget) {
+static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
     Ctx c;
     VM *vm = p->vm;
     c.p = p;
@@ -1435,10 +1550,10 @@ int interp_run(Process *p, uint32_t budget) {
             const MFunc *mf = fr->fn->mf;
             const char *callee = fr->fn->name;
             proc_pop_frame(p);
-            if (p->nframes == p->cb_base) { /* the entry function (or a callback) returned */
+            if (p->nframes == p->cb_base) { /* the entry function, a callback or a coroutine returned */
                 if (!p->cb_base) p->exit_code = n > 0 && type_is_int((MlwsType)mf->rets[0]) ? vals[0].i : 0;
-                MlwsType rt[NATIVE_MAX_RETS];
-                for (int k = 0; k < n && k < NATIVE_MAX_RETS; k++) rt[k] = (MlwsType)mf->rets[k];
+                MlwsType rt[MAX_OPERANDS];
+                for (int k = 0; k < n; k++) rt[k] = (MlwsType)mf->rets[k];
                 keep_results(p, vals, rt, n);
                 return SLICE_DONE;
             }
@@ -1803,7 +1918,7 @@ int interp_run(Process *p, uint32_t budget) {
             const Insn *ri = fr->ret_insn;
             const char *callee = fr->fn->name;
             proc_pop_frame(p);
-            if (p->nframes == p->cb_base) { /* the entry function (or a callback) returned */
+            if (p->nframes == p->cb_base) { /* the entry function, a callback or a coroutine returned */
                 if (!p->cb_base) p->exit_code = in->nops > 0 && type_is_int(vt[0]) ? vals[0].i : 0;
                 keep_results(p, vals, vt, in->nops);
                 return SLICE_DONE;
@@ -2382,9 +2497,8 @@ int interp_run(Process *p, uint32_t budget) {
             wr_int(&c, &ops[0], T_I64, (int64_t)p->mcount);
             break;
 
-        case OP__COUNT:
-        default:
-            vm_trap(p, "E_INTERNAL", "unimplemented opcode %s", op_info[in->op].mnem);
+        default: /* the rest run outside this loop (interp_run) */
+            return SLICE_EXT;
         }
         /* Safepoint: between instructions every live reference is in a root. */
         if (p->gc_pending | p->kill_pending) {
@@ -2393,6 +2507,14 @@ int interp_run(Process *p, uint32_t budget) {
                 return SLICE_FAILED;
             }
             gc_collect(p);
+        }
+        /* The slice counter is recomputed from what SPILL wrote, not kept: then
+         * it is not live across this path's calls, and the compiler is free to
+         * keep it in a register in the quickened forms. (Instructions run by a
+         * callback during a native call count against the slice too.) */
+        {
+            uint64_t used = p->insns - insns0;
+            left = used < budget ? budget - (uint32_t)used : 0;
         }
         RELOAD(); /* the instruction may have branched, called, returned or thrown */
     }
@@ -2404,3 +2526,33 @@ int interp_run(Process *p, uint32_t budget) {
 #if MLWS_THREADED
 #pragma GCC diagnostic pop
 #endif
+
+/* run_loop's main loop is sensitive to every line added to it: how a compiler
+ * then allocates its registers can move the speed of the quickened forms by
+ * 10% or more, differently with each compiler. So rare instructions (the
+ * coroutines') and a coroutine's end are handled here, outside it: run_loop
+ * returns SLICE_EXT for an instruction it does not run, and a coroutine's last
+ * frame returns like an entry function does (SLICE_DONE with no frames left). */
+int interp_run(Process *p, uint32_t budget) {
+    const uint64_t insns0 = p->insns;
+    for (;;) {
+        uint64_t used = p->insns - insns0;
+        if (used >= budget) return SLICE_YIELD;
+        int64_t exit_code = p->exit_code;
+        int r = run_loop(p, budget - (uint32_t)used);
+        if (r == SLICE_EXT) {
+            Frame *fr = &p->frames[p->nframes - 1];
+            Ctx c;
+            c.p = p;
+            ctx_load(&c);
+            co_exec(&c, &fr->fn->code[fr->pc - 1]);
+        } else if (r == SLICE_DONE && p->co && !p->nframes) {
+            p->exit_code = exit_code; /* its ret set this, as an entry function's would */
+            Ctx c;
+            c.p = p;
+            co_finish(&c);
+        } else {
+            return r;
+        }
+    }
+}

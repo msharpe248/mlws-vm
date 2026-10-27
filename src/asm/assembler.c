@@ -1684,7 +1684,12 @@ static void infer_type(Asm *A, AsmInsn *ai, bool has_type, bool has_type2) {
 static bool parse_call(Asm *A, Cur *c, AsmInsn *ai, AsmOpVec *ops) {
     AsmOp target, argc;
     bool indirect = op_calls_closure(ai->op);
-    if (!parse_operand(A, c, ai->op == OP_NCALL ? 'N' : indirect ? 'S' : 'F', &target)) return false;
+    if (ai->op == OP_COYIELD) { /* no target: a placeholder 0 keeps the call block's layout */
+        op_init_mode(&target, OM_IMM, cur(c)->col);
+        target.o.imm = 0;
+    } else if (!parse_operand(A, c, ai->op == OP_NCALL ? 'N' : indirect ? 'S' : 'F', &target)) {
+        return false;
+    }
     VEC_PUSH(*ops, target);
     op_init_mode(&argc, OM_IMM, cur(c)->col);
     VEC_PUSH(*ops, argc);

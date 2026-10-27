@@ -121,10 +121,14 @@ it measured faster.
    call a native or switch frames), at calls and returns, before the tools'
    hook, and at the end of the slice. Quickened instructions never allocate or
    trap, so the safepoint that checks for a pending collection or kill comes
-   after each generic instruction and at the start of each slice. Whether a
-   debugger hook is installed is read once per slice. None of this is
-   observable: a process that kills itself stops at the next instruction, and
-   `--stats` counts every instruction.
+   after each generic instruction and at the start of each slice. After a
+   generic instruction the count left is recomputed from the one written back,
+   rather than kept: it is then not live across the generic code's calls, and
+   the compiler can keep it in a register in the quickened handlers. (Kept,
+   GCC put it on the stack once enough code surrounded the loop, and `loop`
+   took 52% longer.) Whether a debugger hook is installed is read once per
+   slice. None of this is observable: a process that kills itself stops at the
+   next instruction, and `--stats` counts every instruction.
 5. **Direct calls.** The loader records where each argument of a quickened
    `call` goes in the callee's register windows, so the arguments are copied
    straight from the caller's registers to the callee's. Frame push and pop are
@@ -147,6 +151,17 @@ it measured faster.
    with a system call. The scheduler sets a jump buffer once per time slice, so
    message-heavy code would pay a system call per message. The VM never touches
    signal masks, so the cheaper variant is safe.
+9. **Rare instructions outside the loop.** The quickened handlers and the
+   generic `switch` are one function, and how a compiler allocates its registers
+   decides the speed of every handler. Any code added to that function can
+   change it: two never-taken branches and one call, for coroutines, made `fib`
+   7–14% and `loop` up to 43% slower, differently with each compiler. So the
+   coroutine instructions, and a coroutine's last return, are handled by a
+   wrapper around the loop: the loop returns to it for an instruction it does
+   not run, and a coroutine's first frame returns as a process's entry function
+   does. Moving the whole generic `switch` out of the loop instead cost the
+   Apple M5 build 11–15% on the generic-heavy benchmarks (`binarytrees`,
+   `sieve`, `nbody`), for the call per generic instruction.
 
 `tests/perf/quickened.masm` checks the arithmetic, branch and call forms
 against the generic semantics at the edges: overflow, negative divisors,
@@ -156,6 +171,21 @@ element, null-test and closure-call forms.
 
 [TARGETING.md §12](TARGETING.md#12-what-runs-fastest) tells compilers which
 shapes are fast.
+
+## Coroutines
+
+Measured on the Apple M5 Pro (best of 3; Lua 5.5 for comparison):
+
+| Operation | MLWSVM | Lua 5.5 |
+|---|---|---|
+| A resume and a yield, in a generator loop (5 million) | 177 ms (35 ns each) | 272 ms (`coroutine.wrap`) |
+| Make a coroutine, resume it twice, let it end (1 million) | 230 ms (230 ns each) | 196 ms |
+
+A switch swaps about fifteen fields between the process and the coroutine object
+and reloads the frame. It is not on the interpreter's fast path (see item 9
+above), but costs no more than a few generic instructions. Making a coroutine
+is mostly allocating and zeroing its data stack (8 KiB by default), so a larger
+stack costs proportionally more.
 
 ## Memory
 

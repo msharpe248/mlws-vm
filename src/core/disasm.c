@@ -134,8 +134,10 @@ void disasm_insn(StrBuf *b, const Module *m, const Insn *in) {
     bool well_formed_call = (oi->flags & OPF_CALL) && in->nops >= 2 && in->ops[1].mode == OM_IMM &&
                             in->ops[1].imm >= 0 && in->ops[1].imm <= in->nops - 2;
     if (well_formed_call) {
-        sb_putc(b, ' ');
-        put_operand(b, m, &in->ops[0]);
+        if (in->op != OP_COYIELD) { /* coyield's target is a placeholder */
+            sb_putc(b, ' ');
+            put_operand(b, m, &in->ops[0]);
+        }
         int argc = in->nops > 1 ? (int)in->ops[1].imm : 0;
         sb_puts(b, " (");
         for (int k = 0; k < argc && 2 + k < in->nops; k++) {

@@ -12,8 +12,8 @@ Process *proc_new(VM *vm) {
     p->lock = plat_lock_new();
     p->slabs = vm->slabs;
     uint32_t bytes = vm->stack_words * 8;
-    p->stack.data = xcalloc(bytes, 1);
-    p->stack.tags = xcalloc(vm->stack_words, 1);
+    p->stack.data = xcalloc((size_t)bytes + vm->stack_words, 1); /* the words, then a tag per word */
+    p->stack.tags = p->stack.data + bytes;
     p->stack.size = bytes;
     p->stack.gen = 1;
     p->stack.kind = SEGK_STACK;
@@ -83,8 +83,7 @@ void proc_free(Process *p) {
     VEC_FREE(p->monitors);
     VEC_FREE(p->pins);
     heap_free_all(p);
-    free(p->stack.data);
-    free(p->stack.tags);
+    free(p->stack.data); /* the tags too: one block (and maybe a coroutine's stack, coro.c) */
     for (uint32_t i = 0; i < p->nglobals; i++) {
         free(p->globals[i].data);
         free(p->globals[i].tags);
@@ -115,32 +114,41 @@ static void frame_line(StrBuf *b, const Frame *fr) {
  * frames, so a runaway recursion gives a short report. */
 #define BT_INNER 40
 #define BT_OUTER 10
-static void build_backtrace(Process *p) {
-    StrBuf *b = &p->backtrace;
-    b->n = 0;
-    if (b->s) b->s[0] = 0;
+static void bt_frames(StrBuf *b, const Frame *frames, uint32_t nframes, StrBuf *cur, StrBuf *next) {
     uint32_t entries = 0; /* distinct lines printed so far */
-    StrBuf cur = {0}, next = {0};
-    for (uint32_t i = p->nframes; i-- > 0;) {
+    for (uint32_t i = nframes; i-- > 0;) {
         if (entries == BT_INNER && i >= BT_OUTER) { /* skip to the outermost frames */
             sb_printf(b, "  ... %u more frames ...\n", i - BT_OUTER + 1);
             i = BT_OUTER;
             entries++;
             continue;
         }
-        cur.n = 0;
-        frame_line(&cur, &p->frames[i]);
+        cur->n = 0;
+        frame_line(cur, &frames[i]);
         uint32_t repeat = 0;
         while (i > 0) { /* identical callers below this frame */
-            next.n = 0;
-            frame_line(&next, &p->frames[i - 1]);
-            if (strcmp(next.s, cur.s) != 0) break;
+            next->n = 0;
+            frame_line(next, &frames[i - 1]);
+            if (strcmp(next->s, cur->s) != 0) break;
             repeat++;
             i--;
         }
-        sb_puts(b, cur.s);
+        sb_puts(b, cur->s);
         if (repeat) sb_printf(b, "  ... repeated %u more time%s\n", repeat, repeat == 1 ? "" : "s");
         entries++;
+    }
+}
+
+static void build_backtrace(Process *p) {
+    StrBuf *b = &p->backtrace;
+    b->n = 0;
+    if (b->s) b->s[0] = 0;
+    StrBuf cur = {0}, next = {0};
+    bt_frames(b, p->frames, p->nframes, &cur, &next);
+    /* In a coroutine: the code that resumed it, and so on outwards. */
+    for (const ObjCoro *co = p->co; co; co = co->prev) {
+        sb_puts(b, "  (in a coroutine resumed by)\n");
+        bt_frames(b, co->ctx.frames, co->ctx.nframes, &cur, &next);
     }
     sb_free(&cur);
     sb_free(&next);
@@ -175,9 +183,22 @@ void vm_trap(Process *p, const char *code, const char *fmt, ...) {
     proc_throw(p, &e->h);
 }
 
+static bool unwind_frames(Process *p);
+
 /* Find the innermost handler covering the faulting instruction, popping frames
  * that have none. Returns false if the exception is uncaught. */
 static bool unwind(Process *p) {
+    for (;;) {
+        if (unwind_frames(p)) return true;
+        /* Past the first frame of a coroutine: it dies, and the exception goes
+         * on from the coresume that ran it. */
+        if (p->cb_base || !p->co) return false;
+        coro_leave(p, CO_DEAD);
+    }
+}
+
+/* The same, within the running context. */
+static bool unwind_frames(Process *p) {
     while (p->nframes > p->cb_base) { /* a callback's exceptions never unwind the code that called C */
         Frame *fr = &p->frames[p->nframes - 1];
         const MFunc *mf = fr->fn->mf;
@@ -369,7 +390,9 @@ Segment *proc_segment(Process *p, uint64_t ptr) {
         if (!s->live || s->gen != gen) vm_trap(p, "E_UAF", "use of a freed or reallocated raw block");
         return s;
     }
-    if (s->gen != gen) vm_trap(p, "E_BAD_PTR", "invalid pointer (bad generation)");
+    if (s->gen != gen)
+        vm_trap(p, "E_BAD_PTR", seg == SEG_STACK ? "pointer into a data stack that is not running (another coroutine's)"
+                                                 : "invalid pointer (bad generation)");
     return s;
 }
 

@@ -1,0 +1,6 @@
+; coyield outside a coroutine has nowhere to go.
+; expect-error: E_CORO
+.func main
+    coyield (1)
+    ret 0
+.endf

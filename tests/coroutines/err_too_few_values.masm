@@ -1,0 +1,13 @@
+; A coresume that expects more values than the coroutine yields traps, as a
+; call expecting more results than the function returns does.
+; expect-error: E_RET_COUNT
+.func body
+    coyield (1)
+    ret
+.endf
+.func main
+    closure body -> (R0)
+    conew R1, R0
+    coresume R1 -> (I0, I1)
+    ret 0
+.endf

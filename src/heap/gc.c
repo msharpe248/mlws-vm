@@ -24,6 +24,7 @@ size_t obj_footprint(const Obj *o) {
     case OBJ_CLOSURE: return sizeof(ObjClosure) + ((const ObjClosure *)o)->nup * (sizeof(Word) + 1);
     case OBJ_BIG: case OBJ_DEC: return num_footprint(o);
     case OBJ_FOREIGN: return sizeof(ObjForeign);
+    case OBJ_CORO: return sizeof(ObjCoro) + (size_t)((const ObjCoro *)o)->words * 9; /* the stack and its tags */
     default: return sizeof(Obj);
     }
 }
@@ -143,6 +144,7 @@ Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
 static void obj_release(Process *p, Obj *o) {
     switch (o->kind) {
     case OBJ_FOREIGN: foreign_finalize(o); break;
+    case OBJ_CORO: coro_release((ObjCoro *)o); break;
     case OBJ_BYTES: free(((ObjBytes *)o)->data); break;
     case OBJ_LIST:
         free(((ObjList *)o)->items);
@@ -198,6 +200,15 @@ static void mark(Process *p, Obj *o) {
     VEC_PUSH(p->markstack, o);
 }
 
+static void mark_segment(Process *p, const Segment *s, uint32_t from_word);
+
+/* The roots of an execution context: what gc_collect marks for the running one. */
+static void mark_ctx(Process *p, const ExecCtx *x) {
+    for (uint32_t i = 0; i < x->rtop[BANK_R]; i++) mark(p, x->rreg[i]);
+    for (uint32_t i = 0; i < x->nframes; i++) mark(p, x->frames[i].closure);
+    mark_segment(p, &x->stack, x->stack_ref_lo);
+}
+
 static void scan(Process *p, Obj *o) {
     switch (o->kind) {
     case OBJ_ARRAY: {
@@ -234,6 +245,13 @@ static void scan(Process *p, Obj *o) {
         }
         break;
     }
+    case OBJ_CORO: { /* its own context, or (running) its resumer's */
+        ObjCoro *co = (ObjCoro *)o;
+        mark(p, &co->fn->h);
+        if (co->prev) mark(p, &co->prev->h);
+        if (co->status != CO_DEAD) mark_ctx(p, &co->ctx);
+        break;
+    }
     default: break;
     }
 }
@@ -258,6 +276,7 @@ void gc_collect(Process *p) {
     for (uint32_t i = 0; i < p->nglobals; i++) mark_segment(p, &p->globals[i], 0);
     for (size_t i = 0; i < p->handles.n; i++) mark(p, p->handles.v[i]);
     mark(p, p->exception);
+    if (p->co) mark(p, &p->co->h); /* the coroutines that resumed it, and the context below each */
     for (size_t i = 0; i < p->pins.n; i++) mark(p, p->pins.v[i]);
     mark(p, p->cb_exception);
     if (p->bcall.state != BCALL_NONE) { /* a blocking native call's arguments and results */

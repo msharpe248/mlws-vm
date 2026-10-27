@@ -1,0 +1,68 @@
+; The collector treats a suspended coroutine's registers, frames and data
+; stack as reachable from the coroutine, and frees coroutines (and their
+; stacks) that are no longer reachable, suspended or not.
+.include "std/test.inc"
+
+; Keeps an object only in its registers and on its own data stack across
+; yields, allocating garbage in between.
+.func keeper(i64 n) -> i64
+    tostr R0, n                          ; only in a register
+    enter 1
+    tostr R1, n
+    mov LOC[0], R1                       ; only on this coroutine's stack
+    mov R1, null
+    coyield (0)
+    mov I0, 0
+1:  tostr R2, I0                         ; garbage
+    inc I0
+    blt I0, 1000, 1b
+    coyield (0)
+    parse.i64 I1, R0
+    mov R3, LOC[0]
+    parse.i64 I2, R3
+    add I1, I2
+    ret I1
+.endf
+
+.func gen_forever(i64 n)
+1:  coyield (n)
+    inc n
+    jmp 1b
+.endf
+
+.func main
+    closure keeper -> (R0)
+    conew R1, R0
+    coresume R1 (21) -> (I0)
+    ncall "gc.collect" ()
+    coresume R1 -> (I0)
+    ncall "gc.collect" ()
+    coresume R1 -> (I0)
+    ASSERT_EQ I0, 42
+
+    ; 5000 abandoned generators, each suspended with an 8 KiB stack: they must
+    ; be collected as the program goes (5000 x 8 KiB would be 40 MiB)
+    closure gen_forever -> (R2)
+    mov I1, 0
+1:  conew R3, R2
+    coresume R3 (I1) -> (I2)
+    ASSERT_EQ I2, I1
+    inc I1
+    blt I1, 5000, 1b
+    ncall "gc.collect" ()
+    ncall "gc.heap_bytes" () -> (I3)
+    ASSERT_LT I3, 1000000
+
+    ; coclose frees a suspended coroutine's stack at once
+    conew R4, R2, 100000                 ; 800 KB of stack
+    ncall "gc.heap_bytes" () -> (I4)
+    ASSERT_GT I4, 800000
+    coresume R4 (1) -> (I5)
+    coclose R4
+    costatus I6, R4
+    ASSERT_EQ I6, 3
+    coclose R4                           ; closing a dead one does nothing
+    ncall "gc.heap_bytes" () -> (I4)
+    ASSERT_LT I4, 100000
+    ret 0
+.endf

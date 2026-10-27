@@ -1,0 +1,13 @@
+; A running coroutine cannot be resumed, not even by itself.
+; expect-error: E_CORO
+.func body
+    cocur R0
+    coresume R0
+    ret
+.endf
+.func main
+    closure body -> (R0)
+    conew R1, R0
+    coresume R1
+    ret 0
+.endf

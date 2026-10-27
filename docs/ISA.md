@@ -145,7 +145,7 @@ which preserves the type tag of a stack or global word.
 | `0x00A0` | `new` | `?, ?` | - | Allocate a struct with every field zero (0, 0.0 or null): `new R0, Point`. Fields are then accessed as R0->Point.x. |
 | `0x00A1` | `anew` | `?, int` | int float r p | Allocate an array of n zeroed elements of the instruction type: `anew.f64 R0, 100`. Elements are accessed as R0[I1] or R0[5] and are bounds checked. |
 | `0x00A2` | `len` | `?, ?` | - | Length: bytes of a string or byte buffer, elements of an array or list, entries of a map. Traps E_TYPE for a struct and E_NULL for null. |
-| `0x00A3` | `typeof` | `?, ?` | - | Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map, 7 closure, 8 BigInt, 9 decimal, 10 foreign handle. |
+| `0x00A3` | `typeof` | `?, ?` | - | Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map, 7 closure, 8 BigInt, 9 decimal, 10 foreign handle, 11 coroutine. |
 | `0x00A4` | `isa` | `bool_dst, ?, ?` | - | dst = true if the reference is a struct of the given type: `isa I0, R1, Point`. |
 | `0x00A5` | `resize` | `?, int` | - | Set the length of a byte buffer or list. New bytes are 0. New list elements are untyped zeros, which read as 0, 0.0 or null. |
 
@@ -218,8 +218,19 @@ which preserves the type tag of a stack or global word.
 | Opcode | Mnemonic | Operands | Types | Description |
 |---|---|---|---|---|
 | `0x0110` | `closure` | `func (args...) -> (results...)` | - | Make a function value: `closure f (v1, v2, ...) -> (R0)`. The values are copied into the closure, and f reads and writes them as UP[0], UP[1], .... Each keeps its own type, as a list element does. Captures are copies: to share a mutable variable, capture a struct or list. |
-| `0x0111` | `calli` | `func (args...) -> (results...)` | - | Call through a closure: `calli R0 (args) -> (results)`. Arguments are read with the function's parameter types; the count and register banks are checked at run time (E_TYPE). |
-| `0x0112` | `tcalli` | `func (args...) -> (results...)` | - | Tail call through a closure (like tcall). |
-| `0x0113` | `spawni` | `func (args...) -> (results...)` | - | Start a new process running a closure: `spawni R0 (args) -> (pid)`. The closure and its captures are deep-copied into the new process. |
-| `0x0114` | `spawnil` | `func (args...) -> (results...)` | - | spawni, linked to the new process from the start (as spawnl). |
-| `0x0115` | `spawnim` | `func (args...) -> (results...)` | - | spawni, monitoring the new process from the start (as spawnm). |
+| `0x0111` | `calli` | `closure (args...) -> (results...)` | - | Call through a closure: `calli R0 (args) -> (results)`. Arguments are read with the function's parameter types; the count and register banks are checked at run time (E_TYPE). |
+| `0x0112` | `tcalli` | `closure (args...)` | - | Tail call through a closure (like tcall). |
+| `0x0113` | `spawni` | `closure (args...) -> (results...)` | - | Start a new process running a closure: `spawni R0 (args) -> (pid)`. The closure and its captures are deep-copied into the new process. |
+| `0x0114` | `spawnil` | `closure (args...) -> (results...)` | - | spawni, linked to the new process from the start (as spawnl). |
+| `0x0115` | `spawnim` | `closure (args...) -> (results...)` | - | spawni, monitoring the new process from the start (as spawnm). |
+
+## Coroutines
+
+| Opcode | Mnemonic | Operands | Types | Description |
+|---|---|---|---|---|
+| `0x0120` | `conew` | `?, ?, [int]` | - | Make a coroutine that will run a closure: `conew R0, R1 [, words]`. It starts suspended; the first coresume calls the closure. It has its own registers, call frames and data stack (words 8-byte words, default 1024), and shares the heap, globals and raw memory with the rest of the process. Its stack is charged to the heap quota. |
+| `0x0121` | `coresume` | `coroutine (args...) -> (results...)` | - | Run a suspended coroutine until it yields, returns or throws: `coresume R0 (args) -> (results)`. The first resume passes the arguments to the closure as a calli would; later ones deliver them to the results of the coyield it is suspended at. The results are its coyield values, or its return values once it finishes (it is then dead). An exception it does not catch kills it and is thrown again here. Resuming a coroutine that is running, normal (it resumed another) or dead traps E_CORO; resuming inside a callback from C traps E_CALLBACK. |
+| `0x0122` | `coyield` | `(values...) -> (results...)` | - | Suspend the running coroutine: `coyield (values) -> (results)`. Its resumer's coresume receives the values; the next coresume's arguments arrive in results. Values keep their natural types (as an untyped ret's), and a destination of the wrong bank traps E_TYPE, too few values E_RET_COUNT. Outside a coroutine it traps E_CORO, inside a callback from C E_CALLBACK. |
+| `0x0123` | `costatus` | `?, ?` | - | dst = a coroutine's state: 0 suspended (or not yet started), 1 running, 2 normal (it resumed another coroutine), 3 dead (it returned, threw or was closed). |
+| `0x0124` | `cocur` | `?` | - | dst = the running coroutine, or null outside one. |
+| `0x0125` | `coclose` | `?` | - | Kill a suspended coroutine and free its stack at once (its .try handlers do not run). Closing a dead one does nothing; closing a running or normal one traps E_CORO. |

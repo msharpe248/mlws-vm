@@ -1,0 +1,105 @@
+; Coroutines are stackful: coyield works at any call depth inside one, and a
+; coroutine can resume another (it is then "normal" until that one yields).
+.include "std/test.inc"
+
+; Walks a binary tree in order and yields each value from inside the
+; recursion: walk(node) yields left subtree, node, right subtree.
+.struct Node
+    left: ref
+    value: i64
+    right: ref
+.ends
+
+.func walk(ref node)
+    bz node, 1f
+    call walk (node->Node.left)
+    coyield (node->Node.value)
+    call walk (node->Node.right)
+1:  ret
+.endf
+
+.func walker(ref tree) -> i64
+    call walk (tree)
+    ret -1                               ; the end
+.endf
+
+.func leaf(i64 v) -> ref
+    new R0, Node
+    mov R0->Node.value, v
+    ret R0
+.endf
+
+; Takes values from an inner coroutine and yields each doubled; while it
+; resumes the inner one, it is "normal".
+.func doubler(ref inner) -> i64          ; UP[0] = a list: [outer coroutine]
+    mov R2, UP[0]
+1:  coresume inner -> (I0)
+    costatus I1, R2[0]
+    ASSERT_EQ I1, 1                      ; running again once inner yields
+    blt I0, 0, 2f
+    mul I0, 2
+    coyield (I0)
+    jmp 1b
+2:  ret -1
+.endf
+
+.func inner_probe -> i64                  ; UP[0] = the same list: [outer]
+    mov R0, UP[0]
+    costatus I0, R0[0]
+    coyield (I0)                         ; reports the outer's status
+    ret -1
+.endf
+
+.func main
+    ; tree:      4
+    ;          2   6
+    ;         1 3 5 7
+    mov I0, 1
+    call leaf (1) -> (R1)
+    call leaf (3) -> (R2)
+    call leaf (2) -> (R3)
+    mov R3->Node.left, R1
+    mov R3->Node.right, R2
+    call leaf (5) -> (R1)
+    call leaf (7) -> (R2)
+    call leaf (6) -> (R4)
+    mov R4->Node.left, R1
+    mov R4->Node.right, R2
+    call leaf (4) -> (R5)
+    mov R5->Node.left, R3
+    mov R5->Node.right, R4
+
+    closure walker -> (R6)
+    conew R7, R6
+    coresume R7 (R5) -> (I1)
+    mov I2, 1                            ; expected next value
+1:  ASSERT_EQ I1, I2
+    inc I2
+    coresume R7 -> (I1)
+    bge I1, 0, 1b
+    ASSERT_EQ I2, 8                      ; saw 1..7 in order
+
+    ; a coroutine resuming another
+    lnew R10
+    closure walker -> (R6)
+    conew R7, R6                         ; inner: the same tree again
+    coresume R7 (R5) -> (I1)             ; started, at 1
+    closure doubler (R10) -> (R8)
+    conew R9, R8
+    lpush R10, R9
+    coresume R9 (R7) -> (I3)             ; inner continues from 1: yields 2 -> 4
+    ASSERT_EQ I3, 4
+    coresume R9 -> (I3)
+    ASSERT_EQ I3, 6
+
+    ; the outer is "normal" while the inner runs
+    lnew R11
+    closure inner_probe (R11) -> (R12)
+    conew R13, R12
+    closure doubler (R11) -> (R14)
+    conew R15, R14
+    lpush R11, R15
+    coresume R15 (R13) -> (I4)           ; inner_probe sees 2, doubler yields 4
+    ASSERT_EQ I4, 4
+    ret 0
+.endf

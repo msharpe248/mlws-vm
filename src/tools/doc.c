@@ -4,8 +4,13 @@
 
 static void pattern_str(StrBuf *b, const OpInfo *oi) {
     if (oi->flags & OPF_CALL) {
-        if (oi == &op_info[OP_NCALL]) sb_puts(b, "\"native\" (args...) -> (results...)");
-        else if (oi == &op_info[OP_TCALL]) sb_puts(b, "func (args...)");
+        int op = (int)(oi - op_info);
+        if (op == OP_NCALL) sb_puts(b, "\"native\" (args...) -> (results...)");
+        else if (op == OP_TCALL) sb_puts(b, "func (args...)");
+        else if (op == OP_TCALLI) sb_puts(b, "closure (args...)");
+        else if (op == OP_CORESUME) sb_puts(b, "coroutine (args...) -> (results...)");
+        else if (op == OP_COYIELD) sb_puts(b, "(values...) -> (results...)");
+        else if (op_calls_closure(op)) sb_puts(b, "closure (args...) -> (results...)");
         else sb_puts(b, "func (args...) -> (results...)");
         return;
     }

@@ -70,7 +70,7 @@ status 70.
 | `E_DIV_ZERO` | Integer division or remainder by zero |
 | `E_NULL` | Dereference of a null pointer, or a null argument to a native |
 | `E_BOUNDS` | Memory access outside its block, pointer arithmetic out of range, or an object index out of range (including `lpop` of an empty list and `substr` past the end) |
-| `E_BAD_PTR` | Pointer to an unknown segment, or a stack or global pointer with the wrong generation |
+| `E_BAD_PTR` | Pointer to an unknown segment, or a stack or global pointer with the wrong generation; also a pointer into a data stack that is not running (the resumer's, from inside a coroutine, or a suspended coroutine's) |
 | `E_UAF` | Use of a pointer to a freed or reallocated block |
 | `E_DOUBLE_FREE` | `free`/`realloc` of an already freed block |
 | `E_BAD_FREE` | `free`/`realloc` of something that is not the start of a raw block |
@@ -78,14 +78,15 @@ status 70.
 | `E_TYPE` | Type violation: reading a non-reference as a reference (or the reverse); storing a value of the wrong bank in a register, array element, struct field or list slot; a field access on the wrong struct type; an object of the wrong kind for an instruction (e.g. `strcat` of a list); writing to an immutable string |
 | `E_OVERFLOW` | A BigInt or decimal does not fit the target of `cvt`, a float that is infinite or NaN was converted to one, or a result such as `math.lcm`'s does not fit an `i64` |
 | `E_RANGE` | A native's argument is out of range: a time-zone offset beyond a day, `random.int` with lo > hi, `random.bytes` of a negative count or more than 16 MiB, a SipHash key that is not 16 bytes, `math.powmod` with e < 0 or m <= 0, a time or `Date` outside the years 1678 to 2261 |
-| `E_CALLBACK` | Code called back from C (or from `list.sort` and `list.bsearch`) tried to wait (`recv`, `sleep`, waiting I/O, `proc.call`) or `halt`, or was stopped before it returned (killed, or `os.exit`), or C called a callback from another thread, or re-entered a `serial` library ([EXTENDING.md](EXTENDING.md#callbacks)) |
+| `E_CALLBACK` | Code called back from C (or from `list.sort` and `list.bsearch`) tried to wait (`recv`, `sleep`, waiting I/O, `proc.call`), `halt`, `coresume` or `coyield`, or was stopped before it returned (killed, or `os.exit`), or C called a callback from another thread, or re-entered a `serial` library ([EXTENDING.md](EXTENDING.md#callbacks)) |
 | `E_KEY` | `mget` without a default for a key that is not in the map |
 | `E_PARSE` | `parse` input is not a valid number of the requested type, or malformed text for `time.parse`, `hex.decode`, `base64.decode`, `url.decode` or `csv.parse` |
 | `E_BAD_HANDLE` | `hget`/`hfree` of an unknown or freed handle |
 | `E_STACK_OVERFLOW` | Data stack exhausted |
 | `E_STACK_UNDERFLOW` | Access above the top of the data stack (popping an empty stack) |
 | `E_CALL_DEPTH` | More than the maximum number of nested calls |
-| `E_RET_COUNT` | A caller expects more results than the callee returned |
+| `E_RET_COUNT` | A caller expects more results than the callee returned, or a `coresume` or `coyield` more values than the other side passed |
+| `E_CORO` | `coresume` of a coroutine that is running, normal (it resumed another) or dead; `coclose` of a running or normal one; `coyield` outside any coroutine |
 | `E_ASSERT` | `assert` failed, or `test.fail` was called (as the `std/test.inc` macros do) |
 | `E_UNCAUGHT` | An exception that is not an `Error` struct (e.g. `throw "text"`) was not caught |
 | `E_DEADLOCK` | `recv` (or `proc.call`) in `main` while every process is waiting, so no message can ever arrive; or `proc.call` of the calling process itself |

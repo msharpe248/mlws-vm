@@ -187,7 +187,7 @@ OP(ANEW,   0x00A1, "anew",   "Objects", "XQ", TS_ANY, 0,
 OP(LEN,    0x00A2, "len",    "Objects", "JO", 0, 0,
    "Length: bytes of a string or byte buffer, elements of an array or list, entries of a map. Traps E_TYPE for a struct and E_NULL for null.")
 OP(TYPEOF, 0x00A3, "typeof", "Objects", "JO", 0, 0,
-   "Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map, 7 closure, 8 BigInt, 9 decimal, 10 foreign handle.")
+   "Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map, 7 closure, 8 BigInt, 9 decimal, 10 foreign handle, 11 coroutine.")
 OP(ISA,    0x00A4, "isa",    "Objects", "BOT", 0, 0,
    "dst = true if the reference is a struct of the given type: `isa I0, R1, Point`.")
 OP(RESIZE, 0x00A5, "resize", "Objects", "OQ", 0, 0,
@@ -294,3 +294,17 @@ OP(SPAWNIL,0x0114, "spawnil","Closures", "OC", 0, OPF_CALL,
    "spawni, linked to the new process from the start (as spawnl).")
 OP(SPAWNIM,0x0115, "spawnim","Closures", "OC", 0, OPF_CALL,
    "spawni, monitoring the new process from the start (as spawnm).")
+
+/* ---- coroutines ---------------------------------------------------------------- */
+OP(CONEW,  0x0120, "conew",  "Coroutines", "XOQ?", 0, 0,
+   "Make a coroutine that will run a closure: `conew R0, R1 [, words]`. It starts suspended; the first coresume calls the closure. It has its own registers, call frames and data stack (words 8-byte words, default 1024), and shares the heap, globals and raw memory with the rest of the process. Its stack is charged to the heap quota.")
+OP(CORESUME,0x0121,"coresume","Coroutines", "OC", 0, OPF_CALL,
+   "Run a suspended coroutine until it yields, returns or throws: `coresume R0 (args) -> (results)`. The first resume passes the arguments to the closure as a calli would; later ones deliver them to the results of the coyield it is suspended at. The results are its coyield values, or its return values once it finishes (it is then dead). An exception it does not catch kills it and is thrown again here. Resuming a coroutine that is running, normal (it resumed another) or dead traps E_CORO; resuming inside a callback from C traps E_CALLBACK.")
+OP(COYIELD,0x0122, "coyield","Coroutines", "C", 0, OPF_CALL,
+   "Suspend the running coroutine: `coyield (values) -> (results)`. Its resumer's coresume receives the values; the next coresume's arguments arrive in results. Values keep their natural types (as an untyped ret's), and a destination of the wrong bank traps E_TYPE, too few values E_RET_COUNT. Outside a coroutine it traps E_CORO, inside a callback from C E_CALLBACK.")
+OP(COSTATUS,0x0123,"costatus","Coroutines", "JO", 0, 0,
+   "dst = a coroutine's state: 0 suspended (or not yet started), 1 running, 2 normal (it resumed another coroutine), 3 dead (it returned, threw or was closed).")
+OP(COCUR,  0x0124, "cocur",  "Coroutines", "X", 0, 0,
+   "dst = the running coroutine, or null outside one.")
+OP(COCLOSE,0x0125, "coclose","Coroutines", "O", 0, 0,
+   "Kill a suspended coroutine and free its stack at once (its .try handlers do not run). Closing a dead one does nothing; closing a running or normal one traps E_CORO.")

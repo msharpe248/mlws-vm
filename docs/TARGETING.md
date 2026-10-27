@@ -228,6 +228,41 @@ directly:
   each message with `isa` / `typeof`, and keep the ones you don't want yet in a list.
 * `examples/workers.masm` shows a supervised worker pool.
 
+### Coroutines and generators
+
+Generators, iterators written with `yield`, Lua coroutines and `async` code
+that runs within one process map onto coroutines ([ABI.md](ABI.md#8-coroutines)):
+`conew` makes one from a closure, `coresume` runs it until it yields or returns,
+and `coyield` passes values out and receives the next resume's. They share the
+process's heap, so unlike processes they suit fine-grained control flow, not
+parallelism.
+
+| Source construct | MLWSVM |
+|---|---|
+| a generator function `def g(): ... yield x` | a function whose body executes `coyield (x)`; calling `g()` is `closure g (captures) -> (R0)` + `conew R1, R0` |
+| `for x in g()` / `next(it)` | a loop around `coresume R1 -> (x)`, ending when the coroutine is dead (`costatus`) or returns a sentinel |
+| `coroutine.create(f)` | `conew R1, R0` (`R0` is the function value, a closure) |
+| `coroutine.resume(co, ...)` → `true, ...` or `false, err` | `coresume R1 (args) -> (results)` inside a `.try`; the handler's `catch` gives `err` |
+| `coroutine.yield(...)` | `coyield (values) -> (results)`: the results are the next resume's arguments |
+| `coroutine.status(co)` | `costatus I0, R1`: 0 suspended, 1 running, 2 normal, 3 dead |
+| `coroutine.running()`, `coroutine.isyieldable()` | `cocur R0`: null outside any coroutine (where Lua returns the main thread) |
+| `coroutine.wrap(f)` | a closure that holds the coroutine (`UP[0]`) and does `coresume`, letting exceptions propagate |
+| `coroutine.close(co)` | `coclose R1` (for a dead coroutine Lua also returns its error, which the compiler must keep) |
+
+* A coroutine is stackful: its function and anything it calls can `coyield`,
+  so no transformation of the source is needed, however deep the yield.
+* A `coresume` or `coyield` has a fixed number of operands. When the count is
+  only known at run time (Lua's `...`), pass one list each way.
+* A coroutine's data stack is 8 KiB unless `conew`'s third operand asks for more
+  (in words). Code that keeps locals in registers needs little; size it up for
+  generated code that spills a lot inside deep recursion.
+* Don't yield from code called back by C (`list.sort`'s comparator, an FFI
+  callback): that traps with `E_CALLBACK`, as Lua's "attempt to yield across a
+  C-call boundary" does.
+* A resume and yield together cost about as much as a few calls, and making a
+  coroutine about as much as allocating its 8 KiB stack
+  ([PERFORMANCE.md](PERFORMANCE.md#coroutines)).
+
 ### Calling C
 
 A language's "foreign function" or "native" declarations map to `.extern`:

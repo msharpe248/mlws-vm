@@ -21,6 +21,7 @@ enum {
     OBJ_BIG = 8,
     OBJ_DEC = 9,
     OBJ_FOREIGN = 10, /* a C resource owned by native code (docs/EXTENDING.md) */
+    OBJ_CORO = 11,    /* a coroutine (ObjCoro, in vm/vm.h) */
 };
 
 #define OBJF_IMMORTAL 0x01

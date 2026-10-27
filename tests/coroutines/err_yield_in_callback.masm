@@ -1,0 +1,20 @@
+; A coroutine cannot yield from code that C called back (here list.sort's
+; comparator): C is waiting on the native's stack for the callback to return.
+; expect-error: E_CALLBACK
+.func cmp(i64 a, i64 b) -> i64
+    coyield (1)
+    ret 0
+.endf
+.func body
+    lnew R0
+    lpush R0, 3, 1, 2
+    closure cmp -> (R1)
+    ncall "list.sort" (R0, R1)
+    ret
+.endf
+.func main
+    closure body -> (R0)
+    conew R1, R0
+    coresume R1
+    ret 0
+.endf

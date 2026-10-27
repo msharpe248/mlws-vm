@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M22 are complete. What remains is Windows (section 3) and the
+Milestones M0–M23 are complete. What remains is Windows (section 3) and the
 deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M22 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M23 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M22
+## Milestones M11–M23
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -44,6 +44,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M20 Bindgen** (done) | `mlwsvm bindgen header.h`: `.extern`, `.cstruct` and `.callback` declarations from clang's JSON AST (1.5) |
 | **M21 Performance** (done) | a per-process size-class allocator for small objects (`binarytrees` and `maps` 17–25% faster on Linux, `binarytrees` 9% on macOS) |
 | **M22 Performance** (done) | a faster interpreter loop: the program counter in a CPU register, threaded dispatch, calls that copy arguments straight between windows, compact operands, field and element fast paths (`fib` 26–41% and the tight loop 55–63% less time) |
+| **M23 Coroutines** (done) | stackful coroutines inside a process, for generators and Lua's `coroutine` library: `conew`, `coresume`, `coyield`, `costatus`, `cocur`, `coclose`; values in both directions, exceptions through `coresume`, collected while suspended. The interpreter's loop is left as it was, since lines added to it slowed `fib` and `loop` on every compiler (PERFORMANCE.md, item 9) |
 
 ## 1. Calling existing libraries (M10: done)
 

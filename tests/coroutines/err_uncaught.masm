@@ -1,0 +1,14 @@
+; An exception nobody catches goes out through the coroutine and its resumer,
+; and ends the process.
+; expect-error: E_DIV_ZERO
+.func body
+    mov I1, 0
+    div I0, 1, I1
+    ret
+.endf
+.func main
+    closure body -> (R0)
+    conew R1, R0
+    coresume R1
+    ret 0
+.endf

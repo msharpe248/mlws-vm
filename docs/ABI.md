@@ -10,6 +10,8 @@ A program runs as a **process**. Each process owns:
 
 * a call-frame stack and per-bank register stacks (for the register windows)
 * a **data stack** of 8-byte words (1 MiB by default; `mlwsvm run --stack-words N`)
+* any number of **coroutines**, each with frames, registers and a data stack of
+  its own (§8)
 * its own copy of every loaded module's **global segment**
 * its own **raw heap** (blocks created with `alloc`)
 * its own **garbage-collected heap** (§6) and handle table
@@ -247,6 +249,7 @@ encoding, the pointer layout or the object headers.
 | Operands per instruction | 32 (calls: target + count + 30 arguments/results) |
 | Call depth | 100,000 frames (`E_CALL_DEPTH`); *option* `--max-frames`. Frames live on the heap, not the C stack, so a deeper limit only costs memory |
 | Data stack | 131,072 words (1 MiB) per process; *option* `--stack-words` |
+| Coroutine data stack | 1,024 words (8 KiB) by default; 16 to 2^29 − 1 words, set by `conew`'s third operand (§8) |
 | Time slice | 2,000 instructions; *option* `--slice` |
 | Starting quotas | unlimited; *option* `--quota heap=…,raw=…,mailbox=…,insns=…,foreign=…,os=…` (§1.4) |
 | Raw block size | < 4 GiB |
@@ -284,7 +287,7 @@ A pointer (`p`) is a checked 64-bit value:
 | Segment | What |
 |---|---|
 | 0 | null |
-| 1 | the process's data stack |
+| 1 | the running data stack: the process's, or the running coroutine's (§8) |
 | 2 ... 4095 | module global segments (module k is segment 2 + k) |
 | 4096 ... | raw heap blocks |
 
@@ -303,6 +306,10 @@ A pointer (`p`) is a checked 64-bit value:
   pointer traps with `E_BAD_FREE`.
 * A process's raw blocks are released when it ends. `--stats` reports any bytes
   still allocated as "raw leaked".
+* Each data stack has its own generation, so a pointer into one stack is valid
+  only while that stack is running: dereferencing a pointer into a suspended
+  coroutine's stack, or into the resumer's stack from inside a coroutine, traps
+  with `E_BAD_PTR` (§8).
 
 ## 5. Memory
 
@@ -337,7 +344,8 @@ exception is constant-pool strings, which are immutable and immortal.
   instruction, including a native call, nothing moves or is freed.
 * **Roots.** These are every `R` register of every live frame, every
   reference-tagged word of the data stack and of every module's global segment,
-  and every live handle. Nothing else keeps an object alive, so a reference held
+  and every live handle. A coroutine's registers, frames and stack are reachable
+  through the coroutine object (§8); the running one and its resumers are roots. Nothing else keeps an object alive, so a reference held
   only in raw memory (which can't store references anyway) or in an integer
   doesn't count.
 * **Precision.** The VM always knows which words are references: from the register
@@ -369,7 +377,9 @@ built-in `Error` struct with `code`, `message` and `trace` string fields.
 2. Among the regions containing that instruction, the **smallest** one wins, so
    nested regions behave as expected whatever order they are declared in.
 3. If no region matches, the frame is popped, which restores `SP` and `FP` exactly
-   as a `ret` would, and the search continues in the caller.
+   as a `ret` would, and the search continues in the caller. Below a coroutine's
+   first frame, the coroutine dies and the search continues at the `coresume`
+   that ran it (§8).
 4. When a handler is found, execution continues at its first instruction, in
    that frame, with that frame's registers as they were. `SP` is as it was when
    the faulting instruction started (for an outer frame, as it was at the call).
@@ -388,3 +398,87 @@ runtime error[E_ASSERT]: ASSERT_EQ(x, 3) failed
 [ERRORS.md](ERRORS.md) lists every code. Because handlers are tables beside the
 code, a `.try` region costs nothing at run time until an exception is actually
 thrown.
+
+## 8. Coroutines
+
+A **coroutine** is a second line of execution inside a process. It has its own
+call frames, register stacks and data stack, and shares everything else with the
+rest of the process: the heap, globals, raw memory, mailbox and quotas. Only one
+runs at a time, and control passes only where the program says, so no locking is
+ever needed. Coroutines are *stackful*: `coyield` works at any call depth inside
+one, not only in its first function. Languages use them for generators,
+iterators, Lua's `coroutine` library, and asynchronous code written in a
+sequential style. For concurrency, use processes (§1).
+
+```
+.func range(i64 from, i64 to) -> i64
+1:  bge from, to, 2f
+    coyield (from)                 ; suspend, handing `from` to the resumer
+    inc from
+    jmp 1b
+2:  ret -1                         ; the end: the last coresume gets -1
+.endf
+
+    closure range -> (R0)
+    conew R1, R0                   ; suspended, not started
+    coresume R1 (3, 6) -> (I0)     ; range(3, 6) runs to its coyield: I0 = 3
+    coresume R1 -> (I0)            ; I0 = 4
+```
+
+**States.** `costatus` reports one of:
+
+| Value | State | Meaning |
+|---|---|---|
+| 0 | suspended | Made by `conew` and not yet resumed, or stopped at a `coyield` |
+| 1 | running | Running now (`cocur` returns it) |
+| 2 | normal | It resumed another coroutine and is waiting for it to yield or end |
+| 3 | dead | Its function returned, an exception left it, or `coclose` ended it |
+
+Only a suspended coroutine can be resumed (otherwise `E_CORO`).
+
+**Passing values.** `coresume` and `coyield` both use the call-block syntax, and
+values cross in both directions:
+
+* The **first** `coresume` calls the closure: its arguments are checked against
+  the function's parameters and bound to registers as a `calli`'s are (§2.4).
+* Every later `coresume`'s arguments become the results of the `coyield` the
+  coroutine is suspended at: `coyield (out...) -> (in...)`.
+* `coyield`'s values become the results of the `coresume` that is waiting.
+* When the function returns, its values (declared types, as a `ret`'s) become the
+  results of the last `coresume`, and the coroutine is dead.
+
+Values keep their natural types, as an untyped `ret`'s do. A destination of the
+wrong bank traps with `E_TYPE`, and a receiver that expects more values than were
+sent traps with `E_RET_COUNT`; extra values are dropped. A language whose
+coroutines pass any number of values (such as Lua) can pass a single list.
+
+**Exceptions.** A coroutine's `.try` handlers work as anywhere else, including
+across `coyield`: a handler around a `coyield` is still in force when the
+coroutine is resumed. An exception that leaves the coroutine's first frame kills
+the coroutine (it becomes dead) and is thrown again by the `coresume` that ran
+it, where the search for a handler continues (§7). Its `trace` shows the
+coroutine's frames, then `(in a coroutine resumed by)`, then the resumer's. To
+turn errors into values, as Lua's `coroutine.resume` does, put the `coresume`
+inside a `.try`.
+
+**Memory.** A coroutine's data stack is 1,024 words (8 KiB) unless `conew`'s
+third operand gives another size (a stack starts zeroed, so making a coroutine
+costs more the larger it is). Its frames and register windows grow as needed,
+like a process's. The stack is charged to the heap quota, and a coroutine and
+everything it holds (its registers and stack included) is collected once nothing
+refers to it, even while it is suspended. A dead coroutine's stacks are freed at
+once, and `coclose` frees a suspended one's without resuming it (its handlers do
+not run). Pointers into a data stack are valid only while that stack runs (§4).
+
+**Limits.**
+
+* Coroutines belong to their process: sending one in a message traps with
+  `E_TYPE`, as a foreign handle does.
+* Code that C called back (a native's callback, such as `list.sort`'s comparator)
+  can use coroutines that are not running, but cannot `coresume` or `coyield`
+  (`E_CALLBACK`): C is waiting for the callback to return.
+* `halt`, `recv`, `sleep` and waiting natives work inside a coroutine and affect
+  the whole process.
+* Tools see the running context: a backtrace includes the resumers, while the
+  debugger's `bt`, the profiler's stacks and the monitor show the running
+  coroutine's frames.

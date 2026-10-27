@@ -86,6 +86,7 @@ civil-date conversions.
 | `proc.call` / `proc.reply`, `proc.register`, `std.supervisor` | **Erlang/OTP**: `gen_server:call` with a timeout, registered names, supervisors with restart intensity, `gen_tcp:controlling_process` (here `fs.give`/`fs.take`) | Replies go to a reply slot instead of the mailbox, which replaces OTP's selective receive on a reference: the caller's mailbox is never searched, and late replies are dropped by id. The supervisor is ordinary MLWSVM assembly. |
 | Stop the world only for tools | Safepoints in the JVM and BEAM | The program itself never stops the world; only the monitor does, and only at time-slice boundaries. |
 | `link` / `monitor` / `Down` messages / unobserved crash reports | **BEAM**: links, monitors, `DOWN` messages, OTP supervision | `Down` is an ordinary struct, inspected with the same field operands as any other. |
+| Stackful coroutines inside a process (`conew`, `coresume`, `coyield`): their own frames, registers and data stack; values passed both ways; an uncaught exception kills the coroutine and is rethrown at the resume (M23) | **Lua** coroutines (asymmetric, stackful; `resume`/`yield` passing values both ways; `status` with the same four states); Wren fibers; Ruby `Fiber`; Python generators; Moura and Ierusalimschy on asymmetric coroutines; the WebAssembly stack-switching proposal | A switch exchanges about fifteen fields between the process and the coroutine object, so the rest of the VM always finds the running context in the process. Each data stack has its own pointer generation, so a pointer into a stack that is not running traps instead of reading the wrong stack. Lua instead reports errors as `false, err` from `resume`; here they are exceptions, which a compiler turns into values with a `.try`. |
 | The program ends when `main` ends; deadlock detection | **Go** (main returning ends the program; "all goroutines are asleep") | The deadlock is a *catchable* exception in `main`. |
 | Quotas that can only be lowered, inherited by children | Unix `setrlimit` (soft and hard limits); BEAM's `max_heap_size` | Covers heap, raw memory, mailbox size, instruction count, native code and OS access. A sandbox is just a wrapper that lowers its own limits before calling untrusted code. |
 
@@ -209,6 +210,7 @@ of the instructions in call-heavy code.
 | M20 | Rust's bindgen, ctypesgen, Zig's `@cImport`; clang's `-ast-dump=json` |
 | M21 | BEAM's `erts_alloc`, tcmalloc/jemalloc size classes, Go's `mcache` |
 | M22 | Threaded code (Bell; Ertl and Gregg), Lua's and CPython's computed-goto dispatch, Lua's register window for calls (as the measure to beat) |
+| M23 | Lua's asymmetric stackful coroutines (and Moura and Ierusalimschy's account of them), Wren fibers, Ruby `Fiber`, Python generators, WebAssembly stack switching |
 
 ## References
 
@@ -238,4 +240,5 @@ of the instructions in call-heavy code.
 - FIPS 180-4, *Secure Hash Standard* (SHA-256).
 - Jean-Philippe Aumasson and Daniel J. Bernstein, *SipHash: a Fast Short-Input PRF*, INDOCRYPT 2012.
 - David Blackman and Sebastiano Vigna, *Scrambled Linear Pseudorandom Number Generators*, ACM TOMS, 2021 (xoshiro256\*\*).
+- Ana Lúcia de Moura and Roberto Ierusalimschy, *Revisiting Coroutines*, ACM TOPLAS 31(2), 2009; the Lua 5.4 Reference Manual, §2.6 (coroutines).
 - Howard Hinnant, *chrono-Compatible Low-Level Date Algorithms* (`days_from_civil`).

@@ -46,7 +46,8 @@ char op_pattern_at(const OpInfo *oi, int k);
 
 /* Calls whose target is a closure register rather than a function name. */
 static inline bool op_calls_closure(int op) {
-    return op == OP_CALLI || op == OP_TCALLI || op == OP_SPAWNI || op == OP_SPAWNIL || op == OP_SPAWNIM;
+    return op == OP_CALLI || op == OP_TCALLI || op == OP_SPAWNI || op == OP_SPAWNIL || op == OP_SPAWNIM ||
+           op == OP_CORESUME;
 }
 static inline bool op_is_spawn(int op) { return op == OP_SPAWN || op == OP_SPAWNL || op == OP_SPAWNM; }
 static inline bool op_is_spawni(int op) { return op == OP_SPAWNI || op == OP_SPAWNIL || op == OP_SPAWNIM; }
