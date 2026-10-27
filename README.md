@@ -168,7 +168,8 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 
 ## Status
 
-Everything described in `docs/` is implemented and tested on macOS and Linux
+The current release is 0.1.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
+on GitHub. Everything described in `docs/` is implemented and tested on macOS and Linux
 (GitHub Actions: Linux GCC and Clang, macOS Clang), in every test mode: the
 plain suite, GC stress, AddressSanitizer, ThreadSanitizer, the tools, and builds
 without libffi or computed goto. Windows support is written but untested.

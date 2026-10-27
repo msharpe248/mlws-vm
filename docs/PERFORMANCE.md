@@ -86,16 +86,18 @@ against the reference interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | Lua 5.5, M5 | MLWSVM, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|
-| loop | 300 | 220 | 484 | 289 |
-| iterate | 165 | 58 | 275 | 78 |
-| fib | 193 | 52 | 325 | 101 |
-| methods | 2,183 | 353 | 3,941 | 564 |
-| strings | 2,302 | 136 | 3,865 | 213 |
+| loop | 302 | 218 | 488 | 290 |
+| iterate | 163 | 57 | 274 | 79 |
+| fib | 191 | 52 | 327 | 101 |
+| methods | 2,093 | 349 | 3,818 | 566 |
+| strings | 2,108 | 135 | 3,601 | 211 |
 
 The profiler shows nearly all of these instructions on fast paths; what the
 generated code still spends is instruction count (type guards on values of
-unknown type, two-word table values, hash lookups), allocation, and, for
-`strings`, string operations, which are natives.
+unknown type, two-word table values, hash lookups) and allocation. In
+`strings`, two thirds of the instructions are in the compiler's own Lua
+pattern matcher, which is generated code too; the VM's string natives take
+little.
 
 ### Against other virtual machines
 

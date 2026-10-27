@@ -6,7 +6,7 @@
 #include "tools/tools.h"
 #include "vm/run.h"
 
-#define MLWSVM_VERSION "0.3.0"
+#define MLWSVM_VERSION "0.1.0"
 
 static void usage(FILE *f) {
     fputs("usage: mlwsvm <command> [options]\n"
