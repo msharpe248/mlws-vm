@@ -29,6 +29,10 @@ Use `.import` for dependencies and `.export` for public functions and globals.
   You never save or restore registers around calls. The simplest correct allocator
   gives each local and temporary its own register, and spills to stack locals
   (`enter n` and `LOC[k]`) only past 32 per bank.
+* **Use the lowest registers.** A function's window runs to the highest
+  register it names in each bank, and every call zeroes the whole window.
+  Scratch registers just above a function's own (rather than fixed ones at
+  28–31) keep windows small and calls cheap.
 * **Name registers with `.alias`** in generated code (`.alias count, I4`). It costs
   nothing at runtime and makes the output readable.
 * **Use explicit type suffixes for narrow types** (`add.i32`, `mov.u8`). Without
@@ -436,6 +440,9 @@ its list, ...) take the general path. To see which of a
 program's instructions do, run it with `mlwsvm run --profile`: the report lists
 the hottest instructions on the general path, with their lines
 ([TOOLING.md](TOOLING.md#profiler---profile)).
+
+Calls cost less with smaller windows, since each call zeroes its callee's
+whole window (section 2).
 
 Where it matters, prefer one instruction to several (`blt a, b, L` over `slt` +
 `bnz`), and keep hot values in registers rather than in `SP[...]` or globals. See

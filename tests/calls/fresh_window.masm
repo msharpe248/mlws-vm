@@ -1,0 +1,132 @@
+; Every register of a new call's window reads as zero until it is written,
+; however the function reaches the read: on a path that skips the write, in a
+; loop before the write comes round, through an instruction that reads its
+; destination (`add I4, 1`, `neg`, `inc`, `swap`), in the half of ldv's pair
+; it leaves alone, in an exception handler, and as an address register. Each
+; check first calls `dirty`, which leaves garbage in every register of the
+; window the next call reuses, so a register a call failed to clear shows.
+.include "std/test.inc"
+
+; Writes every register it has, then returns: its window, now garbage, is
+; where the next call's window goes.
+.func dirty
+    mov I0, -1
+    mov I1, -1
+    mov I2, -1
+    mov I3, -1
+    mov I4, -1
+    mov I5, -1
+    mov I6, -1
+    mov I7, -1
+    mov F0, 9.5
+    mov F1, 9.5
+    mov F2, 9.5
+    mov F3, 9.5
+    mov F4, 9.5
+    mov.r R0, "junk"
+    mov.r R1, "junk"
+    ret
+.endf
+
+; A plain read before any write.
+.func plain -> (i64, f64)
+    ret I3, F2
+.endf
+
+; Written on one path only: the join must still see zero on the other.
+.func one_path(i64 k) -> i64
+    bz k, 1f
+    mov I5, 7
+1:  ret I5
+.endf
+
+; Written only after the read, inside a loop: the first time round, I2 is
+; read before the loop body writes it.
+.func loop_carried -> i64
+    mov I0, 0
+    mov I1, 0
+1:  add I1, I2                          ; I1 += I2: zero the first time
+    mov I2, 100
+    inc I0
+    blt I0, 3, 1b
+    ret I1                              ; 0 + 100 + 100
+.endf
+
+; Destinations that are sources too: `add I4, 1` is I4 = I4 + 1, `neg F1`
+; negates F1, and inc, dec and swap read what they change.
+.func read_modify_write -> (i64, f64, i64, i64)
+    add I4, 1
+    neg.f64 F1
+    inc I6
+    swap I0, I1                         ; I1 is never written before
+    ret I4, F1, I6, I0
+.endf
+
+; ldv writes only one of its destinations: the other keeps its zero.
+.func ldv_other(ref l) -> (i64, f64)
+    ldv I1, F3, l[0]                    ; an integer: F3 is left alone
+    ret I1, F3
+.endf
+
+; An exception handler can be reached from anywhere in its region, so it
+; sees only what was written before the region began.
+.func in_handler -> i64
+.try 1f
+    mov.r R1, null
+    mov I1, R1[0]                       ; E_NULL, before I7 is written
+    mov I7, 5
+.endtry
+    ret -1
+1:  catch R0
+    ret I7
+.endf
+
+; A memory operand's registers are read: P0 and I6 give the address.
+.func address_regs -> i64
+    alloc P0, 16
+    mov.i64 [P0], 1
+    mov.i64 P0[1], 2
+    mov I1, P0[I6]                      ; I6 is zero: P0[0]
+    free P0
+    ret I1
+.endf
+
+.func main
+    call dirty
+    call plain -> (I0, F0)
+    ASSERT_EQ I0, 0
+    ASSERT_EQ F0, 0.0
+
+    call dirty
+    call one_path (0) -> (I0)
+    ASSERT_EQ I0, 0
+    call one_path (1) -> (I0)
+    ASSERT_EQ I0, 7
+
+    call dirty
+    call loop_carried -> (I0)
+    ASSERT_EQ I0, 200
+
+    call dirty
+    call read_modify_write -> (I0, F0, I1, I2)
+    ASSERT_EQ I0, 1
+    ASSERT_EQ F0, 0.0                   ; -0.0 == 0.0
+    ASSERT_EQ I1, 1
+    ASSERT_EQ I2, 0
+
+    lnew R0
+    lpush R0, 42
+    call dirty
+    call ldv_other (R0) -> (I0, F0)
+    ASSERT_EQ I0, 42
+    ASSERT_EQ F0, 0.0
+
+    call dirty
+    call in_handler -> (I0)
+    ASSERT_EQ I0, 0
+
+    call dirty
+    call address_regs -> (I0)
+    ASSERT_EQ I0, 1
+    ret 0
+.endf

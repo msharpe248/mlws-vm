@@ -84,11 +84,15 @@ against the reference interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | Lua 5.5, M5 | MLWSVM, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|
-| loop | 242 | 214 | 458 | 289 |
-| iterate | 133 | 56 | 216 | 79 |
-| fib | 151 | 52 | 217 | 101 |
-| methods | 905 | 337 | 1,755 | 566 |
-| strings | 414 | 131 | 681 | 212 |
+| loop | 237 | 211 | 454 | 289 |
+| iterate | 125 | 57 | 207 | 78 |
+| fib | 150 | 51 | 212 | 102 |
+| methods | 831 | 332 | 1,470 | 565 |
+| strings | 400 | 129 | 654 | 213 |
+| binarytrees (15) | 774 | 377 | 1,514 | 564 |
+| nbody (500,000) | 1,657 | 401 | 2,570 | 581 |
+| spectralnorm (500) | 462 | 182 | 787 | 268 |
+| fannkuch (10) | 2,712 | 786 | 4,426 | 1,157 |
 
 The profiler shows nearly all of these instructions on fast paths; what the
 generated code still spends is instruction count (type guards on values of
@@ -276,8 +280,23 @@ Every object up to 256 bytes comes from its process's own chunks, in 16-byte
 size classes with a free list each:
 
 * **Allocation** pops the class's free list, or carves from the current chunk.
-  There is no lock and no `malloc` call. The collector's sweep frees an object
-  by pushing it on its list.
+  There is no lock and no `malloc` call.
+* **The sweep walks the chunks in address order.** A chunk holds only objects,
+  one after another, each starting with its header, which gives its size; a
+  free one keeps its header and is marked free. So the sweep reads memory in
+  order instead of following a list from object to object, and rebuilds each
+  class's free list in address order as it goes, so that the program then
+  allocates through memory in order too. Objects from `malloc` are on a list
+  of their own. This cut collection time by 31% in compiled Lua's `strings`
+  and by 21% in a program with 200,000 long-lived lists; `binarytrees`, whose
+  sweep frees most of what it visits, did not change.
+* **List storage.** A list keeps its values and their type tags in one buffer,
+  carved from separate chunks of the same kind while it is small (up to 28
+  values), so making or growing a short list calls no `malloc` either. With a
+  buffer each for values and tags from `malloc`, and the sweep following a
+  list, compiled Lua's `methods` spent two to three times as long collecting
+  and took 6–14% longer, and a program that makes 20 million short lists
+  alongside 200,000 long-lived ones took 1.8–2.4 times as long.
 * **Chunks** start at 1 KiB and double up to 64 KiB, so ten thousand small
   processes stay small.
 * **No sharing.** A process's objects never move to another heap: messages are
@@ -285,8 +304,7 @@ size classes with a free list each:
   adopted by the receiver. So a process's chunks are simply freed with it. The
   object header records which allocator an object came from.
 * **Zeroing** a new object uses one fixed-size `memset` per size class, which
-  the compiler inlines into stores. The small register windows of new call
-  frames are zeroed with inline stores too.
+  the compiler inlines into stores.
 
 `MLWSVM_NO_SLABS=1` uses `malloc` for every object instead, for comparisons:
 
@@ -303,7 +321,9 @@ are filled with a garbage pattern, so a use after a free fails loudly there too.
 ### The collector
 
 The collector is a non-moving mark-and-sweep, one per process. It takes about
-11% of `binarytrees` and 4% of `maps`, the most allocation-heavy benchmarks.
+12% of `binarytrees` and 4% of `maps`, the most allocation-heavy benchmarks,
+and 20–29% of compiled Lua's `binarytrees`, whose tables are three allocations
+each (the table, its list and the list's storage).
 
 * **Near a heap quota.** The collection threshold is capped at three-quarters
   of the process's heap quota, so the collector runs before the quota is hit.
@@ -364,6 +384,18 @@ for each request it serves.
   would need compilers to put arguments at the end of the caller's window, and
   a register model in which banks overlap too, so this waits until call-heavy
   programs show the copies.
+* **Clearing only part of a new window.** A new window must read as zero, but
+  only its `R` registers (which the collector scans) and those the function
+  may read before writing them need clearing. A dataflow pass at load time
+  found them, and calls cleared one run per bank instead of the whole window.
+  Compiled Lua's windows are 67–95 words, because its compiler keeps scratch
+  registers at 28–31 of each bank, so this took 11% off its `fib` on the M5
+  and 5–8% on x86. But every way of clearing several runs changed the code of
+  all the call handlers, into which the frame push is inlined, and made its
+  `iterate` 4–8% slower on both x86 machines (and `nbody` up to 6% on the
+  Ryzen), even where only one run was cleared. Smaller windows get the same saving with no
+  change here: compilers should put scratch registers just above the ones a
+  function uses ([TARGETING.md](TARGETING.md#2-values-and-registers)).
 * **Fewer operands per instruction.** Measured, and rejected. Storing the
   operands inside each instruction, as a fixed 3-operand format would, was no
   faster, and fixed-format calls make `fib` 13–17% slower. See
@@ -373,9 +405,17 @@ for each request it serves.
   `Operand`s for the generic path, the debugger and the tools. The benchmarks fit
   in cache, so this does not show yet. Shrinking `Operand` is the fix if large
   programs show cache misses.
-* **A generational GC.** Collection is about 11% of `binarytrees`, so halving
-  it would save about 5% at most, while a generational collector needs a write
-  barrier on every reference store.
+* **A generational GC.** Built and measured, and not kept: a non-moving
+  collector with an old generation, a write barrier on every reference store
+  into an object, and a remembered set of old objects written since the last
+  collection. On compiled Lua's `binarytrees`, where collection is 20% of the
+  time, it saved at most 27% of that, with an 8 MB young generation: the trees
+  that program builds outgrow any small one, so they are promoted and die old,
+  and most of a collection's cost is freeing the dead, which a generational
+  collector does too. With a 1 MB young generation it was 2.4 times slower on
+  a large map written now and then, which it rescanned whole at every young
+  collection; remembering written slots instead of objects (card marking)
+  would fix that at more cost again.
 * **More specialised shapes.** Arithmetic directly on elements and fields
   (`nbody`) and raw memory (`sieve`) take the generic path. Rewriting `nbody` to
   load into registers, compute there and store back takes it from 96 ms to

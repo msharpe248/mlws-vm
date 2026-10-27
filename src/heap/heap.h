@@ -15,6 +15,8 @@ Obj *gc_alloc(Process *p, uint8_t kind, size_t size); /* zeroed and linked */
 /* Linked but not yet charged: call gc_account(p, size) once temporaries are freed. */
 Obj *gc_alloc_unaccounted(Process *p, uint8_t kind, size_t size);
 void gc_account(Process *p, int64_t delta);           /* external buffer growth */
+void *gc_buf_alloc(Process *p, const Obj *o, size_t n); /* o's own buffer, zeroed */
+void gc_buf_free(Process *p, const Obj *o, void *b, size_t n); /* n: as allocated */
 void gc_collect(Process *p);
 void heap_free_all(Process *p);
 /* Messages: free a detached object list, or link one into p's heap. */

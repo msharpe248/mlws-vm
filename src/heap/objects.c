@@ -95,8 +95,8 @@ ObjList *list_new(Process *p, int64_t cap) {
     check_len(p, cap, "list");
     ObjList *l = (ObjList *)gc_alloc(p, OBJ_LIST, sizeof(ObjList));
     if (cap) {
-        l->items = xcalloc((size_t)cap, sizeof(Word));
-        l->tags = xcalloc((size_t)cap, 1);
+        l->items = gc_buf_alloc(p, &l->h, (size_t)cap * (sizeof(Word) + 1));
+        l->tags = (uint8_t *)(l->items + cap);
         l->cap = (uint32_t)cap;
         gc_account(p, cap * (int64_t)(sizeof(Word) + 1));
     }
@@ -109,10 +109,15 @@ static void list_reserve(Process *p, ObjList *l, uint64_t need) {
     uint64_t nc = l->cap ? l->cap : 8;
     while (nc < need) nc *= 2;
     if (nc >= (uint64_t)MAX_ELEMS) nc = (uint64_t)MAX_ELEMS - 1;
-    l->items = xrealloc(l->items, (size_t)nc * sizeof(Word));
-    l->tags = xrealloc(l->tags, (size_t)nc);
-    memset(l->items + l->cap, 0, (size_t)(nc - l->cap) * sizeof(Word));
-    memset(l->tags + l->cap, 0, (size_t)(nc - l->cap));
+    Word *items = gc_buf_alloc(p, &l->h, (size_t)nc * (sizeof(Word) + 1));
+    uint8_t *tags = (uint8_t *)(items + nc);
+    if (l->len) {
+        memcpy(items, l->items, (size_t)l->len * sizeof(Word));
+        memcpy(tags, l->tags, l->len);
+    }
+    gc_buf_free(p, &l->h, l->items, (size_t)l->cap * (sizeof(Word) + 1));
+    l->items = items;
+    l->tags = tags;
     uint64_t grown = nc - l->cap;
     l->cap = (uint32_t)nc; /* consistent before accounting, which may trap E_QUOTA */
     gc_account(p, (int64_t)grown * (int64_t)(sizeof(Word) + 1));

@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M30 are complete. What remains is Windows (section 3) and the
+Milestones M0–M31 are complete. What remains is Windows (section 3) and the
 deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M30 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M31 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M30
+## Milestones M11–M31
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -52,6 +52,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M28 Cheaper calls** (done) | one register stack: each frame's `I`, `F`, `R` and `P` registers one window, at offsets fixed per function, so a call moves one stack top and copies arguments and results word by word between slots computed at load time. `fib` 27–36% less time, level with Lua 5.5 |
 | **M29 Compiled Lua's shapes** (done) | fast forms for what compiled Lua still ran on the general path: calls and returns with constants copied inline, closure tail calls, `new` and `lnew`, constants stored to fields, `mget` of a register key, `jtab`, `cvt.f64.i64`, shifts, unsigned compare-and-branch, f64 arithmetic with a constant first operand. Compiled Lua's `methods` 26% less time |
 | **M30 Two-word values** (done) | `ldv I, F, src`: the number half of a dynamically typed value, into the register its tag picks, with fast forms for list and array elements. The Lua compiler's value load drops from six instructions with a branch to three without |
+| **M31 Cheaper allocation and collection** (done) | A list's values and tags in one buffer, carved from the process's chunks while small; the sweep walks the chunks in address order and rebuilds the free lists in that order. Compiled Lua's `methods` takes 6–14% less time and `binarytrees` 3–6% less; a program with 200,000 long-lived lists and 20 million short ones, half or less. A generational collector, and clearing only part of each call's register window, were built, measured and not kept (section 4) |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -177,8 +178,15 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 * ~~Calls: one window per frame~~ (M28: done). Calls without copying, through
   overlapping windows, would need an ABI change; only if call-heavy programs
   show the argument copies.
-* A generational collector, if collection grows past roughly 10% of real
-  workloads (it is 11% of `binarytrees`).
+* A generational collector. Collection is 20–29% of compiled Lua's
+  `binarytrees`, but one built in M31 saved at most a quarter of that, and with
+  a remembered set of whole objects it rescanned large containers at every young
+  collection; it would need card marking. See PERFORMANCE.md.
+* Clearing only the registers a function may read before writing them, and
+  its `R` bank, instead of its whole window at each call. Built in M31: faster
+  on the M5, but the frame push it changes is inlined into every call handler,
+  and compiled Lua's `iterate` got 4–8% slower on both x86 machines. Compilers
+  that keep their windows small get the gain without it. See PERFORMANCE.md.
 * Lock-free run queues and spinning before sleeping, for many-thread,
   message-heavy programs.
 * A bytecode optimizer: a language-independent pass over each function as it

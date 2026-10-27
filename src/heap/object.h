@@ -74,12 +74,13 @@ typedef struct {
     Word fields[];
 } ObjStruct;
 
-/* Growable list of dynamically typed values (each with a type tag). */
+/* Growable list of dynamically typed values (each with a type tag). Its
+ * storage is one buffer (gc_buf_alloc): cap items, then cap tags. */
 typedef struct {
     Obj h;
     uint32_t len, cap;
     Word *items;
-    uint8_t *tags;
+    uint8_t *tags; /* items + cap */
 } ObjList;
 
 typedef struct {

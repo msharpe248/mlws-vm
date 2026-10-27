@@ -357,7 +357,7 @@ struct Process {
     uint32_t stack_ref_lo;  /* lowest stack word ever tagged as a reference: the GC scans from here */
     uint32_t max_depth;
     /* garbage-collected heap (heap/gc.c) */
-    Obj *heap;
+    Obj *heap;                   /* the objects not in the chunks below: from malloc */
     uint64_t heap_bytes, heap_peak, next_gc;
     uint64_t gc_count, gc_ns, gc_freed_objects, objects_allocated;
     bool gc_pending;
@@ -419,6 +419,9 @@ struct Process {
     void *slab_free[16];         /* a free list per 16-byte size class */
     struct Chunk *chunks;
     uint32_t chunk_next;         /* the size of the next chunk */
+    void *buf_free[16];          /* the same for objects' own buffers (a list's storage) */
+    struct Chunk *bchunks;
+    uint32_t bchunk_next;
     uint64_t rng[4];             /* std.random's generator (util.c) */
     bool rng_seeded;
     /* what the entry function returned (for embedding: mlws_call), a callback or a coroutine */

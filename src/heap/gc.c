@@ -60,17 +60,29 @@ void gc_account(Process *p, int64_t delta) {
 /* ---- the small-object allocator ------------------------------------------------------
  *
  * Objects up to SLAB_MAX bytes are carved from the process's own chunks, in
- * 16-byte size classes with a free list each: no malloc call, no malloc lock,
- * and a sweep that frees an object just pushes it on a list. Chunks start small
- * (a process may hold only a few objects) and double up to 64 KiB.
+ * 16-byte size classes with a free list each: no malloc call and no malloc
+ * lock. Chunks start small (a process may hold only a few objects) and double
+ * up to 64 KiB.
+ *
+ * A chunk holds nothing but objects, one after another up to `used`, each
+ * starting with its header, whose `slab` gives its size. A free one keeps its
+ * header, with kind OBJK_FREE and its free list's link in `next`. So a sweep
+ * walks the chunks in address order instead of following a list through
+ * memory, and rebuilds the free lists in address order as it goes, so that the
+ * program then allocates through memory in order too. Objects from malloc (too
+ * big for a class, or allocated without the chunks) are on the list
+ * Process.heap instead. Objects' own small buffers (a list's storage) come
+ * from chunks of their own, which have no headers to walk.
  *
  * A process's objects never move to another heap (messages are copied), so its
  * chunks are freed with it. Objects that do move are those built in a
  * fragment heap for a message, which uses malloc (Process.slabs is false). */
 #define SLAB_GRAIN 16
 #define SLAB_MAX 256
+#define SLAB_CLASSES (SLAB_MAX / SLAB_GRAIN)
 #define CHUNK_MIN 1024
 #define CHUNK_MAX 65536
+#define OBJK_FREE 0xFF /* the kind of a free slot in a chunk */
 
 typedef struct Chunk {
     struct Chunk *next;
@@ -91,16 +103,16 @@ typedef struct Chunk {
 
 bool gc_slabs_enabled(void) { return SLABS_DEFAULT; }
 
-static void *chunk_carve(Process *p, size_t n) {
-    Chunk *c = p->chunks;
+static void *chunk_carve(Chunk **chunks, uint32_t *next_size, size_t n) {
+    Chunk *c = *chunks;
     if (!c || c->used + n > c->size) {
-        size_t size = p->chunk_next ? p->chunk_next : CHUNK_MIN;
-        p->chunk_next = (uint32_t)(size < CHUNK_MAX ? size * 2 : size);
+        size_t size = *next_size ? *next_size : CHUNK_MIN;
+        *next_size = (uint32_t)(size < CHUNK_MAX ? size * 2 : size);
         c = xmalloc(sizeof(Chunk) + size);
         c->size = size;
         c->used = 0;
-        c->next = p->chunks;
-        p->chunks = c;
+        c->next = *chunks;
+        *chunks = c;
     }
     void *b = c->data + c->used;
     c->used += n;
@@ -112,8 +124,8 @@ Obj *gc_alloc_unaccounted(Process *p, uint8_t kind, size_t size) {
     if (p->slabs && size <= SLAB_MAX) {
         unsigned cls = (unsigned)((size - 1) / SLAB_GRAIN);
         void *b = p->slab_free[cls];
-        if (b) p->slab_free[cls] = *(void **)b;
-        else b = chunk_carve(p, (size_t)(cls + 1) * SLAB_GRAIN);
+        if (b) p->slab_free[cls] = ((Obj *)b)->next;
+        else b = chunk_carve(&p->chunks, &p->chunk_next, (size_t)(cls + 1) * SLAB_GRAIN);
         switch (cls) { /* a constant size for each class: the compiler inlines the stores */
 #define ZERO(k) case k: memset(b, 0, (k + 1) * SLAB_GRAIN); break;
             ZERO(0) ZERO(1) ZERO(2) ZERO(3) ZERO(4) ZERO(5) ZERO(6) ZERO(7)
@@ -124,10 +136,10 @@ Obj *gc_alloc_unaccounted(Process *p, uint8_t kind, size_t size) {
         o->slab = (uint16_t)(cls + 1);
     } else {
         o = xcalloc(1, size);
+        o->next = p->heap;
+        p->heap = o;
     }
     o->kind = kind;
-    o->next = p->heap;
-    p->heap = o;
     p->objects_allocated++;
     if (!p->next_gc) p->next_gc = gc_threshold(p, 0);
     return o;
@@ -139,37 +151,57 @@ Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
     return o;
 }
 
-/* Free an object: its own buffers, then the object (to p's free list, if it
- * came from p's chunks; with p NULL, its chunk is about to be freed). */
-static void obj_release(Process *p, Obj *o) {
+/* An object's own buffer of n zeroed bytes (a list's storage): from p's buffer
+ * chunks if the object came from the object chunks and the buffer is small,
+ * else from malloc. The same test in gc_buf_free tells which. */
+void *gc_buf_alloc(Process *p, const Obj *o, size_t n) {
+    if (!o->slab || n > SLAB_MAX) return xcalloc(1, n);
+    unsigned cls = (unsigned)((n - 1) / SLAB_GRAIN);
+    void *b = p->buf_free[cls];
+    if (b) p->buf_free[cls] = *(void **)b;
+    else b = chunk_carve(&p->bchunks, &p->bchunk_next, (size_t)(cls + 1) * SLAB_GRAIN);
+    memset(b, 0, (size_t)(cls + 1) * SLAB_GRAIN);
+    return b;
+}
+
+/* With p NULL, the object's chunks are about to be freed with it. */
+void gc_buf_free(Process *p, const Obj *o, void *b, size_t n) {
+    if (!b) return;
+    if (!o->slab || n > SLAB_MAX) {
+        free(b);
+        return;
+    }
+    if (!p) return;
+    unsigned cls = (unsigned)((n - 1) / SLAB_GRAIN);
+    if (p->vm->gc_stress) memset(b, 0xDB, (size_t)(cls + 1) * SLAB_GRAIN);
+    *(void **)b = p->buf_free[cls];
+    p->buf_free[cls] = b;
+}
+
+/* Free what an object owns besides itself (with p NULL, its process's
+ * chunks are about to be freed). */
+static void obj_release_buffers(Process *p, Obj *o) {
     switch (o->kind) {
     case OBJ_FOREIGN: foreign_finalize(o); break;
     case OBJ_CORO: coro_release((ObjCoro *)o); break;
     case OBJ_BYTES: free(((ObjBytes *)o)->data); break;
-    case OBJ_LIST:
-        free(((ObjList *)o)->items);
-        free(((ObjList *)o)->tags);
+    case OBJ_LIST: {
+        ObjList *l = (ObjList *)o;
+        gc_buf_free(p, o, l->items, (size_t)l->cap * (sizeof(Word) + 1));
         break;
+    }
     case OBJ_MAP:
         free(((ObjMap *)o)->entries);
         free(((ObjMap *)o)->index);
         break;
     default: break;
     }
-    unsigned cls = o->slab;
-    if (!cls) free(o);
-    else if (p) {
-        /* Under GC stress, garbage-fill freed objects, so that a use after a
-         * free goes wrong loudly (ASan cannot see inside the chunks). */
-        if (p->vm->gc_stress) memset(o, 0xDB, cls * SLAB_GRAIN);
-        *(void **)o = p->slab_free[cls - 1];
-        p->slab_free[cls - 1] = o;
-    }
 }
 
-static void obj_free(Process *p, Obj *o) {
-    p->heap_bytes -= obj_footprint(o);
-    obj_release(p, o);
+/* An object from malloc (on a list, not in a chunk). */
+static void obj_release(Process *p, Obj *o) {
+    obj_release_buffers(p, o);
+    free(o);
 }
 
 void gc_free_list(Obj *list) { /* objects of a fragment heap: never from chunks */
@@ -275,6 +307,39 @@ static void mark_segment(Process *p, const Segment *s, uint32_t from_word) {
     }
 }
 
+/* Sweep the chunks in address order: unmark the marked objects, free the
+ * rest, and rebuild each class's free list from the free slots, in order. */
+static void sweep_chunks(Process *p) {
+    Obj **tail[SLAB_CLASSES];
+    for (int k = 0; k < SLAB_CLASSES; k++) tail[k] = (Obj **)&p->slab_free[k];
+    for (Chunk *c = p->chunks; c; c = c->next) {
+        for (size_t off = 0; off < c->used;) {
+            Obj *o = (Obj *)(c->data + off);
+            unsigned cls = o->slab - 1u;
+            off += (size_t)o->slab * SLAB_GRAIN;
+            if (o->kind != OBJK_FREE) {
+                if (o->flags & OBJF_MARK) {
+                    o->flags &= (uint8_t)~OBJF_MARK;
+                    continue;
+                }
+                p->heap_bytes -= obj_footprint(o);
+                obj_release_buffers(p, o);
+                /* Under GC stress, garbage-fill freed objects, so that a use
+                 * after a free goes wrong loudly (ASan cannot see inside the
+                 * chunks). */
+                if (p->vm->gc_stress) memset(o, 0xDB, (size_t)o->slab * SLAB_GRAIN);
+                o->kind = OBJK_FREE;
+                o->flags = 0;
+                o->slab = (uint16_t)(cls + 1);
+                p->gc_freed_objects++;
+            }
+            *tail[cls] = o;
+            tail[cls] = &o->next;
+        }
+    }
+    for (int k = 0; k < SLAB_CLASSES; k++) *tail[k] = NULL;
+}
+
 void gc_collect(Process *p) {
     uint64_t t0 = plat_now_ns();
     mark_frames(p, p->regs, p->frames, p->nframes);
@@ -298,6 +363,7 @@ void gc_collect(Process *p) {
     for (size_t i = p->mbox_head; i < p->mbox.n; i++)
         if (p->mbox.v[i].tag == T_R) mark(p, p->mbox.v[i].v.r);
     while (p->markstack.n) scan(p, p->markstack.v[--p->markstack.n]);
+    sweep_chunks(p);
     Obj **pp = &p->heap;
     while (*pp) {
         Obj *o = *pp;
@@ -306,7 +372,8 @@ void gc_collect(Process *p) {
             pp = &o->next;
         } else {
             *pp = o->next;
-            obj_free(p, o);
+            p->heap_bytes -= obj_footprint(o);
+            obj_release(p, o);
             p->gc_freed_objects++;
         }
     }
@@ -316,9 +383,25 @@ void gc_collect(Process *p) {
     p->gc_ns += plat_now_ns() - t0;
 }
 
+/* Each object in p's chunks that is not free. */
+#define FOR_CHUNK_OBJECTS(p, o)                                                \
+    for (Chunk *c_ = (p)->chunks; c_; c_ = c_->next)                           \
+        for (size_t off_ = 0; off_ < c_->used; off_ += (size_t)((Obj *)(c_->data + off_))->slab * SLAB_GRAIN) \
+            for (Obj *o = (Obj *)(c_->data + off_); o && o->kind != OBJK_FREE; o = NULL)
+
 void heap_release_foreign(Process *p) {
     for (Obj *o = p->heap; o; o = o->next)
         if (o->kind == OBJ_FOREIGN) foreign_finalize(o); /* idempotent: the handle forgets its pointer */
+    FOR_CHUNK_OBJECTS(p, o)
+        if (o->kind == OBJ_FOREIGN) foreign_finalize(o);
+}
+
+static void free_chunks(Chunk **chunks) {
+    while (*chunks) {
+        Chunk *c = *chunks;
+        *chunks = c->next;
+        free(c);
+    }
 }
 
 void heap_free_all(Process *p) {
@@ -326,15 +409,17 @@ void heap_free_all(Process *p) {
         Obj *o = p->heap;
         p->heap = o->next;
         p->heap_bytes -= obj_footprint(o);
-        obj_release(NULL, o); /* the chunks go below, all at once */
+        obj_release(NULL, o); /* the buffer chunks go below, all at once */
     }
-    while (p->chunks) {
-        Chunk *c = p->chunks;
-        p->chunks = c->next;
-        free(c);
+    FOR_CHUNK_OBJECTS(p, o) {
+        p->heap_bytes -= obj_footprint(o);
+        obj_release_buffers(NULL, o);
     }
+    free_chunks(&p->chunks);
+    free_chunks(&p->bchunks);
     memset(p->slab_free, 0, sizeof p->slab_free);
-    p->chunk_next = 0;
+    memset(p->buf_free, 0, sizeof p->buf_free);
+    p->chunk_next = p->bchunk_next = 0;
     VEC_FREE(p->handles);
     VEC_FREE(p->handle_free);
     VEC_FREE(p->markstack);
