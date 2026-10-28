@@ -553,6 +553,7 @@ static void end_program(Sched *s, const Program *prog) {
  * it is main (freed by its runner, after collecting statistics). */
 static void finish(Sched *s, Process *p, bool failed) {
     VM *vm = p->vm;
+    proc_write_line_out(p); /* (it is not running: this thread may) */
     plat_lock(p->lock);
     p->state = failed ? PROC_FAILED : PROC_DONE;
     PidVec links = p->links, mons = p->monitors;
@@ -1126,6 +1127,10 @@ void sched_request_exit(VM *vm, int64_t code) {
  * tool hook stopped the scheduler. */
 static bool after_slice(Worker *w, Process *p, int r) {
     Sched *s = w->vm->sched;
+    /* An unfinished line waits while p runs on, so that another process's
+     * lines cannot cut it; once p stops running, it goes out (a prompt
+     * before a read, the dots of a progress line before a sleep). */
+    if (r != SLICE_YIELD) proc_write_line_out(p);
     if (r == SLICE_DONE || r == SLICE_FAILED) {
         finish(s, p, r == SLICE_FAILED);
         return false;

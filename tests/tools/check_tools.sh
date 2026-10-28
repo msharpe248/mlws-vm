@@ -169,8 +169,8 @@ cat > "$PDIR/x/main.masm" <<'MASM'
 .func main
     call util.who () -> (R0)
     call tools.fmt.tag () -> (R1)
-    strcat R0, "x: ", R0, ", ", R1, "\n"
-    PRINT_S R0                           ; one write: lines of programs running at once do not mix
+    strcat R0, "x: ", R0, ", ", R1
+    PRINTLN_S R0
     ret 0
 .endf
 MASM
@@ -180,8 +180,8 @@ cat > "$PDIR/x/other.masm" <<'MASM'
 .import util
 .func main
     call util.who () -> (R0)
-    strcat R0, "x/other: ", R0, "\n"
-    PRINT_S R0
+    strcat R0, "x/other: ", R0
+    PRINTLN_S R0
     ret 0
 .endf
 MASM
@@ -191,8 +191,8 @@ cat > "$PDIR/y/late.masm" <<'MASM'
     ncall "module.load" ("util")
     ncall "module.function" ("util", "who") -> (R0)
     calli R0 () -> (R1)
-    strcat R1, "y/late: ", R1, "\n"
-    PRINT_S R1
+    strcat R1, "y/late: ", R1
+    PRINTLN_S R1
     ret 0
 .endf
 MASM
@@ -222,7 +222,7 @@ for v in 1.0 1.2; do
 done
 for c in '^1' '<1.2'; do
     n=$(printf '%s' "$c" | tr -dc '0-9')
-    printf '.include "std/io.inc"\n.requires ver, "%s"\n.import ver\n.func main\n    call ver.get () -> (R0)\n    strcat R0, R0, "\\n"\n    PRINT_S R0\n    ret 0\n.endf\n' \
+    printf '.include "std/io.inc"\n.requires ver, "%s"\n.import ver\n.func main\n    call ver.get () -> (R0)\n    PRINTLN_S R0\n    ret 0\n.endf\n' \
         "$c" > "$PDIR/v$n.masm"
 done
 for order in "v1 v12" "v12 v1"; do

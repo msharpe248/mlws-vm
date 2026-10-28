@@ -419,6 +419,7 @@ struct Process {
     uint64_t sp, fp;
     ProcError err;
     StrBuf backtrace;
+    StrBuf outline;              /* program output after its last newline, not yet written (proc_write) */
     struct Program *prog;        /* the program it belongs to (inherited at spawn), or NULL */
     jmp_buf *jb;
     /* statistics */
@@ -511,6 +512,16 @@ void vm_add_libpath(VM *vm, const char *dir);
 void vm_register_native(VM *vm, const NativeDef *nd);
 void vm_write(VM *vm, const char *s, size_t n);
 void vm_flush(VM *vm); /* flush buffered program output (when the VM is idle, and at exit) */
+/* A process's program output (io.print*, fs.write to stdout). Whole lines are
+ * written at once, so lines of processes running at the same time never mix:
+ * the start of a line waits in p->outline until its newline is written, or
+ * until proc_write_line_out: when p stops running other than by using up its
+ * time slice (it waits, sleeps, makes a blocking call, stops at a breakpoint
+ * or ends), calls io.flush, or writes to stderr. A line longer than
+ * OUTLINE_MAX goes out in pieces. */
+#define OUTLINE_MAX 65536
+void proc_write(Process *p, const char *s, size_t n);
+void proc_write_line_out(Process *p); /* write out p's unfinished line, if any */
 
 /* options.c: settings by command-line name, without the "--": stack-words,
  * threads, max-frames, slice, gc-min, quota. vm_new applies MLWSVM_<NAME>. */

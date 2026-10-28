@@ -1,0 +1,72 @@
+; Each line a process prints comes out whole, even when other processes print
+; at the same time. A process's output is kept until its newline, then the
+; line is written at once. Here two processes build their lines from several
+; prints, with a one-instruction time slice, so the other process runs
+; between any two of them; still neither cuts the other's lines. (Without
+; this, the output began "[a] line 0 of a", "[b] line 0 of b", "[b] line 1
+; of b", "[[a] line 1b of a".)
+; One thread makes the order of the lines fixed (round robin).
+;
+; The start of a line waits only while the process runs on: when it stops
+; running, here by waiting in recv, what it has printed goes out (as a
+; prompt must, before the program waits for an answer). io.flush writes it
+; out at once too.
+; option: --slice 1
+; threads: 1
+; expect-stdout: [a] line 0 of a
+; expect-stdout: [b] line 0 of b
+; expect-stdout: [a] line 1 of a
+; expect-stdout: [b] line 1 of b
+; expect-stdout: [a] line 2 of a
+; expect-stdout: [b] line 2 of b
+; expect-stdout: question? answer
+; expect-stdout: flushed, then the rest
+.include "std/io.inc"
+
+; Prints one piece of a line. A call is where a time slice can end, so the
+; other process runs between any two pieces.
+.func put(ref s)
+    PRINT_S s
+    ret
+.endf
+
+; Three lines, each from several prints: "[", tag, "] line ", n, " of ", tag, newline.
+.func lines(i64 parent, ref tag)
+    mov I1, 0
+1:  call put ("[")
+    call put (tag)
+    call put ("] line ")
+    PRINT_I I1
+    call put (" of ")
+    call put (tag)
+    NL
+    add I1, I1, 1
+    blt I1, 3, 1b
+    send parent, 0
+    ret
+.endf
+
+; Answers the question main asks: its line follows main's unfinished one.
+.func answer(i64 parent)
+    recv I1
+    PRINTLN_S "answer"
+    send parent, 0
+    ret
+.endf
+
+.func main
+    spawn lines (PID, "a")
+    spawn lines (PID, "b")
+    recv I0
+    recv I0
+
+    spawn answer (PID) -> (I2)
+    PRINT_S "question? "             ; no newline yet
+    send I2, 0
+    recv I0                          ; main waits: "question? " goes out first
+
+    PRINT_S "flushed, "
+    ncall "io.flush" ()              ; out now, though the line is not finished
+    PRINTLN_S "then the rest"
+    ret 0
+.endf

@@ -157,3 +157,26 @@ void vm_write(VM *vm, const char *s, size_t n) {
     vm->out(vm->out_ctx, s, n);
     plat_unlock(vm->out_lock);
 }
+
+void proc_write(Process *p, const char *s, size_t n) {
+    size_t head = n; /* through the last newline */
+    while (head && s[head - 1] != '\n') head--;
+    if (!head) { /* no newline: the line goes on */
+        sb_putn(&p->outline, s, n);
+        if (p->outline.n >= OUTLINE_MAX) proc_write_line_out(p);
+        return;
+    }
+    VM *vm = p->vm;
+    plat_lock(vm->out_lock);
+    if (p->outline.n) vm->out(vm->out_ctx, p->outline.s, p->outline.n);
+    vm->out(vm->out_ctx, s, head);
+    plat_unlock(vm->out_lock);
+    p->outline.n = 0;
+    if (head < n) sb_putn(&p->outline, s + head, n - head);
+}
+
+void proc_write_line_out(Process *p) {
+    if (!p->outline.n) return;
+    vm_write(p->vm, p->outline.s, p->outline.n);
+    p->outline.n = 0;
+}

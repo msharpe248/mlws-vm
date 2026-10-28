@@ -7,7 +7,7 @@
 #include "../heap/heap.h"
 #include "../vm/vm.h"
 
-static void out_str(Process *p, const char *s) { vm_write(p->vm, s, strlen(s)); }
+static void out_str(Process *p, const char *s) { proc_write(p, s, strlen(s)); }
 
 static void n_print_i(Process *p, Word *a, Word *r) {
     (void)r;
@@ -60,7 +60,7 @@ static void n_print_s(Process *p, Word *a, Word *r) {
     }
     uint32_t n;
     const char *s = text_arg(p, a[0], "io.print_s", &n);
-    vm_write(p->vm, s, n);
+    proc_write(p, s, n);
 }
 
 static void n_print_c(Process *p, Word *a, Word *r) {
@@ -76,7 +76,7 @@ static void n_print_c(Process *p, Word *a, Word *r) {
     else
         buf[0] = (char)(0xF0 | (cp >> 18)), buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F)),
         buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F)), buf[3] = (char)(0x80 | (cp & 0x3F)), n = 4;
-    vm_write(p->vm, buf, (size_t)n);
+    proc_write(p, buf, (size_t)n);
 }
 
 static void n_print_b(Process *p, Word *a, Word *r) {
@@ -102,6 +102,7 @@ static void n_nl(Process *p, Word *a, Word *r) {
 static void n_flush(Process *p, Word *a, Word *r) {
     (void)a;
     (void)r;
+    proc_write_line_out(p);
     vm_flush(p->vm);
 }
 
@@ -200,7 +201,7 @@ static const NativeDef BUILTINS[] = {
     {"io.print_b", 1, {T_B}, 0, {0}, n_print_b, "Print `true` or `false`."},
     {"io.print_p", 1, {T_P}, 0, {0}, n_print_p, "Print a pointer for debugging."},
     {"io.nl", 0, {0}, 0, {0}, n_nl, "Print a newline."},
-    {"io.flush", 0, {0}, 0, {0}, n_flush, "Write out the program's buffered standard output now. Output is also flushed when the VM is idle, at exit, and before anything is written to standard error."},
+    {"io.flush", 0, {0}, 0, {0}, n_flush, "Write out the program's buffered standard output now, with the calling process's unfinished line (output otherwise goes out a whole line at a time). Output is also flushed when the VM is idle, at exit, and before anything is written to standard error."},
     {"time.now_ns", 0, {0}, 1, {T_I64}, n_now_ns, "Monotonic clock in nanoseconds (the same as time.monotonic)."},
     {"str.len", 1, {T_R}, 1, {T_I64}, n_str_len, "Length of a string or byte buffer in bytes (same as the len instruction)."},
     {"str.byte", 2, {T_R, T_I64}, 1, {T_U8}, n_str_byte, "Byte at an index of a string (bounds checked)."},

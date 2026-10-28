@@ -86,6 +86,7 @@ void proc_start(Process *p, Function *fn, Obj *closure, const Word *args, int na
 void proc_free(Process *p) {
     if (!p) return;
     VM *vm = p->vm;
+    proc_write_line_out(p); /* stopped by os.exit, say, in the middle of a line */
     if (p->published) sched_unpublish(p);
     if (p->state != PROC_DONE && p->state != PROC_FAILED) vm->live--;
     vm->insns_retired += p->insns;
@@ -114,6 +115,7 @@ void proc_free(Process *p) {
     free(p->regs);
     free(p->frames);
     sb_free(&p->backtrace);
+    sb_free(&p->outline);
     free(p);
 }
 

@@ -258,11 +258,12 @@ static void fs_write(Process *p, Word *a, Word *r) {
     size_t n;
     if (!h || !get_data(p, a[1], &data, &n)) return;
     if (h->kind == H_STDOUT) {
-        vm_write(p->vm, (const char *)data, n);
+        proc_write(p, (const char *)data, n);
         return;
     }
     if (h->kind == H_STDERR) {
-        vm_flush(p->vm); /* what the program printed before this comes first */
+        proc_write_line_out(p); /* what the process printed before this comes first */
+        vm_flush(p->vm);
         plat_lock(p->vm->out_lock);
         if (p->vm->err_out) p->vm->err_out(p->vm->err_ctx, (const char *)data, n);
         else fwrite(data, 1, n, stderr);

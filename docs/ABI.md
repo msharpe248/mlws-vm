@@ -41,8 +41,17 @@ immutable and shared. Everything else belongs to exactly one process.
   more, the only ordering is what messages impose: messages from one process to
   another arrive in the order they were sent, and a process's messages arrive
   before the `Down` sent when it ends. Anything else (which of two processes runs
-  first, how output from different processes interleaves) can vary from run to
-  run. Each native call such as `io.print` writes its output in one piece.
+  first, the order in which their lines of output appear) can vary from run to
+  run.
+* **Output comes out a whole line at a time.** What a process prints
+  (`io.print*`, `fs.write` to `fs.stdout`) is kept until it prints a newline;
+  then the whole line is written at once. So lines of processes (or programs)
+  running at the same time never mix, however many prints make up each line.
+  An unfinished line goes out when the process stops running other than by
+  using up its time slice (it waits in `recv`, sleeps, waits for I/O or a
+  blocking call, stops in the debugger, or ends), when it calls `io.flush`, and
+  before it writes to `fs.stderr`. So a prompt appears before the program waits
+  for its answer. A line longer than 64 KiB goes out in pieces.
 * A process waiting for I/O (a pipe or socket, [STDLIB.md](STDLIB.md)) waits in
   the poller, like `recv`, holding no thread; the monitor shows it as `io`.
 * **The program ends when `main` ends**, or when any process calls `os.exit`.
