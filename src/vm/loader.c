@@ -52,7 +52,7 @@ static Module *read_module_file(VM *vm, const char *path, const char *default_na
         }
         return m;
     }
-    return assemble_file(path, default_name, (const char *const *)vm->libpaths.v, vm->libpaths.n, err);
+    return modcache_assemble(vm, path, default_name, err);
 }
 
 static bool resolve_operand(LModule *lm, Function *f, Operand *o, MlwsError *err) {

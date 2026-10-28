@@ -9,6 +9,11 @@
  * file's directory and then in libpaths. */
 Module *assemble_file(const char *path, const char *default_name, const char *const *libpaths, size_t nlib,
                       MlwsError *err);
+/* The same, also returning every file read (the source first, then each
+ * .include as the preprocessor resolved it): malloc'd strings, for the
+ * module cache (src/vm/modcache.c). */
+Module *assemble_file_deps(const char *path, const char *default_name, const char *const *libpaths, size_t nlib,
+                           char ***files, size_t *nfiles, MlwsError *err);
 /* Assemble source held in memory; `name` stands for the file in messages. */
 Module *assemble_text(const char *name, const char *text, const char *default_name, const char *const *libpaths,
                       size_t nlib, MlwsError *err);

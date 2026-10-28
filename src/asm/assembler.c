@@ -2284,8 +2284,8 @@ static void asm_free(Asm *A) {
     pp_free(&A->pp);
 }
 
-Module *assemble_file(const char *path, const char *default_name, const char *const *libpaths, size_t nlib,
-                      MlwsError *err) {
+Module *assemble_file_deps(const char *path, const char *default_name, const char *const *libpaths, size_t nlib,
+                           char ***files, size_t *nfiles, MlwsError *err) {
     Asm A;
     memset(&A, 0, sizeof A);
     A.err = err;
@@ -2297,8 +2297,18 @@ Module *assemble_file(const char *path, const char *default_name, const char *co
         for (size_t i = 0; ok && i < A.pp.out.n; i++) ok = statement(&A, &A.pp.out.v[i]);
         if (ok) m = finish(&A);
     }
+    if (m && files) {
+        *nfiles = A.pp.files.n;
+        *files = xcalloc(A.pp.files.n + 1, sizeof(char *));
+        for (size_t i = 0; i < A.pp.files.n; i++) (*files)[i] = xstrdup(A.pp.files.v[i]);
+    }
     asm_free(&A);
     return m;
+}
+
+Module *assemble_file(const char *path, const char *default_name, const char *const *libpaths, size_t nlib,
+                      MlwsError *err) {
+    return assemble_file_deps(path, default_name, libpaths, nlib, NULL, NULL, err);
 }
 
 Module *assemble_text(const char *name, const char *text, const char *default_name, const char *const *libpaths,

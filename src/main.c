@@ -19,6 +19,7 @@ static void usage(FILE *f) {
           "        --monitor [HOST:]PORT [--hold]  serve the web dashboard and /api while running\n"
           "        --gc-stress                     collect garbage at every allocation (VM testing)\n"
           "        --unsafe-native                 load native code without the trust checks (development)\n"
+          "        --no-cache                      assemble .masm files afresh (or MLWSVM_NO_CACHE=1)\n"
           "      VM options (also for test; or MLWSVM_<NAME>, e.g. MLWSVM_MAX_FRAMES=500000):\n"
           "        --threads N                     worker threads (default: one per core)\n"
           "        --stack-words N                 data stack per process, in 8-byte words (131072)\n"
@@ -104,7 +105,7 @@ static void print_error(const MlwsError *e) {
 
 static int cmd_run(int argc, char **argv) {
     const char *file = NULL;
-    bool stats = false, gc_stress = false, profile = false, hold = false, unsafe_native = false;
+    bool stats = false, gc_stress = false, profile = false, hold = false, unsafe_native = false, no_cache = false;
     const char *trace = NULL, *flame = NULL, *monitor = NULL;
     uint64_t trace_limit = 0;
     VEC(const char *) opts = {0}; /* VM options: name, value pairs */
@@ -120,6 +121,7 @@ static int cmd_run(int argc, char **argv) {
         else if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor = argv[++i];
         else if (!strcmp(argv[i], "--gc-stress")) gc_stress = true;
         else if (!strcmp(argv[i], "--unsafe-native")) unsafe_native = true;
+        else if (!strcmp(argv[i], "--no-cache")) no_cache = true;
         else if (!strncmp(argv[i], "--", 2) && vm_option_known(argv[i] + 2)) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "mlwsvm run: %s needs a value\n", argv[i]);
@@ -158,6 +160,7 @@ static int cmd_run(int argc, char **argv) {
     for (int i = 0; i < prog_argc; i++) VEC_PUSH(vm->prog_args, xstrdup(prog_argv[i]));
     if (gc_stress) vm->gc_stress = true;
     if (unsafe_native) vm->unsafe_native = true;
+    if (no_cache) vm->no_cache = true;
     if (trace && !tools_trace(vm, trace, trace_limit)) {
         fprintf(stderr, "mlwsvm run: cannot write trace file %s\n", trace);
         vm_free(vm);

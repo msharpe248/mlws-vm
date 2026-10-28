@@ -328,6 +328,8 @@ bool plat_path_trusted(const char *path, char *why, size_t whylen) {
 
 bool plat_mkdir(const char *path) { return mkdir(path, 0755) == 0 || errno == EEXIST; }
 
+bool plat_mkdir_private(const char *path) { return mkdir(path, 0700) == 0 || errno == EEXIST; }
+
 bool plat_restrict_writes(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) return false;

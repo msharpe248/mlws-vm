@@ -96,6 +96,7 @@ void vm_free(VM *vm) {
     for (size_t i = 0; i < vm->mods.n; i++) lmodule_free(vm->mods.v[i]);
     VEC_FREE(vm->mods);
     smap_free(&vm->modmap);
+    free(vm->cache_dir);
     for (size_t i = 0; i < vm->libpaths.n; i++) free(vm->libpaths.v[i]);
     VEC_FREE(vm->libpaths);
     for (size_t i = 0; i < vm->loading.n; i++) free(vm->loading.v[i]);

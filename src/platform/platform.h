@@ -65,6 +65,7 @@ const char *plat_dl_suffix(void);              /* ".dylib", ".so" or ".dll" */
  * and owned by the current user or the administrator? If not, says why. */
 bool plat_path_trusted(const char *path, char *why, size_t whylen);
 bool plat_mkdir(const char *path);            /* one level; true if it now exists */
+bool plat_mkdir_private(const char *path);    /* the same, usable by its owner only (0700) */
 bool plat_restrict_writes(const char *path);  /* writable only by its owner (0644 / 0755) */
 
 /* ---- I/O for std.fs, std.os and std.net (posix_io.c) ------------------------

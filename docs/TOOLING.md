@@ -27,6 +27,32 @@ the world"), so the numbers it reports are a consistent snapshot.
 
 ---
 
+## Module cache
+
+`mlwsvm run`, `test` and `debug` assemble a `.masm` file once and keep the result,
+so that later runs load it without assembling: a 940 KB program compiled from Lua
+starts in 10 ms instead of 38 on the M5. An entry is found by a SHA-256 of the
+source text, the default module name (from the file name) and the running
+`mlwsvm` executable, so the same program written to a fresh temporary file
+each time still finds it, and a rebuilt VM never uses another build's entries.
+An entry also lists every file the source included, with a hash of its
+contents, and what their names were resolved against (the working directory,
+the source's directory and the library path): if any of them differs, the source
+is assembled again and the entry replaced. Backtraces name the file that was
+run, wherever the entry was made.
+
+| Setting | Effect |
+|---|---|
+| `MLWSVM_CACHE=DIR` | where the entries go (default: `$XDG_CACHE_HOME/mlwsvm`, else `~/.cache/mlwsvm`) |
+| `MLWSVM_NO_CACHE=1`, `mlwsvm run --no-cache` | assemble every time, and keep nothing |
+
+The directory is created usable by its owner only, and is not used at all if it
+is writable by anyone else or owned by another user (the checks native code
+gets: a module can declare foreign functions). Entries are written to a
+temporary file and renamed into place, so runs at the same time never see half
+of one; past 512 entries, the oldest are removed. `mlwsvm asm` and `dis` never
+use the cache.
+
 ## VM options
 
 Settings for the VM itself. Each can be given on the command line (`mlwsvm run`

@@ -478,10 +478,13 @@ Where it matters, prefer one instruction to several (`blt a, b, L` over `slt` +
 
 The remaining planned work is performance, done when measurements call for it
 ([ROADMAP.md](ROADMAP.md#4-performance-when-measurements-call-for-it)): more
-specialised forms for arithmetic on fields, elements and raw memory, cheaper
-calls, a smaller decoded form, and possibly a generational collector. These need
-no changes to generated code, but which forms get specialised should follow what
-compilers actually emit, so the scripting-language compiler's output will decide
-them. Ship `.masm`, or assemble `.mlwso` files with the VM that will run them:
-the loader accepts only its own format version
-([BINARY_FORMAT.md](BINARY_FORMAT.md)).
+specialised forms for arithmetic on fields, elements and raw memory, a smaller
+decoded form, and possibly a generational collector. These need no changes to
+generated code, but which forms get specialised should follow what compilers
+actually emit, so the compilers' output will decide them.
+
+Ship `.masm`: the VM assembles it once and keeps the result in its module cache
+([TOOLING.md](TOOLING.md#module-cache)), so a large generated program costs the
+assembler only on its first run, even when it is written to a new temporary
+file each time. Or assemble `.mlwso` files with the VM that will run them: the
+loader accepts only its own format version ([BINARY_FORMAT.md](BINARY_FORMAT.md)).

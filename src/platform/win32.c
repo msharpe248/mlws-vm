@@ -253,6 +253,8 @@ bool plat_path_trusted(const char *path, char *why, size_t whylen) {
 
 bool plat_mkdir(const char *path) { return CreateDirectoryA(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS; }
 
+bool plat_mkdir_private(const char *path) { return plat_mkdir(path); } /* (ACLs: see ROADMAP 1.5) */
+
 bool plat_restrict_writes(const char *path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
 
 /* ---- I/O: not yet implemented on Windows (an IOCP poller is on the roadmap) ---- */
