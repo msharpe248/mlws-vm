@@ -1,0 +1,8 @@
+; A library-path module that imports _local.who: it gets the library path's
+; _local.who, never a program's module of that name (see ../program_local.masm).
+.import _local.who
+.export which
+.func which -> i64
+    call _local.who.which () -> (I0)
+    ret I0
+.endf

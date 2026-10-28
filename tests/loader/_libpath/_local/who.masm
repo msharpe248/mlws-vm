@@ -1,0 +1,6 @@
+; The library path's _local.who: the same name as a module of the program
+; (see ../../program_local.masm). Library-path modules import this one.
+.export which
+.func which -> i64
+    ret 2
+.endf

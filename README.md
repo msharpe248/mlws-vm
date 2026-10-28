@@ -49,7 +49,9 @@ base:
   Libraries ship as one versioned archive (`mlwsvm lib build`), state which
   versions of each other they need (`.requires json5, "^1.2"`), and keep
   their internal modules private. A running program can load more modules by
-  name (`module.load`) and call them through closures.
+  name (`module.load`) and call them through closures. Each program's own
+  modules come from its own directory, so programs run together in one VM may
+  both have a `main` or a `util`.
 * **Rich heap types with a garbage collector**: strings, byte buffers, typed
   arrays, structs declared in assembly (`R0->Point.x`), dynamically typed lists,
   insertion-ordered maps, closures, BigInts (`123n`) and exact decimals (`19.99d`).
@@ -98,7 +100,7 @@ base:
   large generated program starts in milliseconds on later runs.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 260 test programs, also run under
+* **Tested in its own assembly**: 274 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, and with a
   garbage collection at every allocation.
 

@@ -126,9 +126,25 @@ typedef struct LibWant {
     char *lib, *constraint, *who; /* who: the module or library that asked */
 } LibWant;
 
+/* A program's own directory (that of its root module's file). Its modules
+ * belong to the programs started from it: they are found there first, and
+ * are told apart from same-named modules of other directories by `real`. */
+typedef struct Home {
+    char *dir;  /* as the program's path gave it */
+    char *real; /* resolved: the same directory spelled two ways is one */
+} Home;
+
 typedef struct LModule {
     Module *m;
     char *path;
+    /* Where it was found: in a program's directory (home), or on the library
+     * path (NULL). key is what modmap knows it by: a library-path module's
+     * name, or its home and name. shared_name: another loaded module has the
+     * same name (one of them is program-local), so tools add its file. */
+    const Home *home;
+    char *key;
+    atomic_bool shared_name;
+    struct LModule **deps;    /* m->nimports: the module each import resolved to */
     int index;
     int state;
     Function *funcs;          /* m->nfuncs */
@@ -179,9 +195,11 @@ typedef struct {
 
 typedef struct VM {
     VEC(LModule *) mods;
-    StrMap modmap;
+    StrMap modmap;       /* LModule.key -> LModule (NULL: a run-time load of it failed) */
     VEC(char *) libpaths;
-    VEC(char *) loading; /* import chain for cycle reporting */
+    VEC(Home *) homes;   /* the directories of the programs loaded */
+    size_t homes_scanned; /* how many have been searched for library archives */
+    VEC(LModule *) loading; /* import chain for cycle reporting */
     /* libraries (loader.c): the archives on the library path, found on first
      * need; the one chosen for each library name; and the version constraints
      * stated so far, which a library chosen later must meet */
@@ -502,15 +520,23 @@ void vm_options_from_env(VM *vm);
 
 /* loader.c */
 LModule *vm_load_root(VM *vm, const char *path, MlwsError *err);
+/* Load several programs' root modules (paths[i] -> out[i]; errs[i] says why
+ * one failed). Every program's .requires is stated before any library
+ * version is chosen, so the order of the programs does not matter. */
+bool vm_load_roots(VM *vm, const char *const *paths, int n, LModule **out, MlwsError *errs);
 LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err); /* source in memory */
-LModule *vm_require(VM *vm, const char *name, MlwsError *err);
 /* Load a module while the program runs (module.load), as an import of `from`
- * (for privacy; NULL: the program), under mods_lock. A load that fails
- * leaves the modules it had not linked unusable and their names free. */
+ * (which directory it is looked for in first, and privacy; NULL: the
+ * library path only), under mods_lock. A load that fails leaves the modules
+ * it had not linked unusable and their names free. */
 LModule *vm_load_dynamic(VM *vm, const char *name, const LModule *from, MlwsError *err);
-LModule *vm_module_named(VM *vm, const char *name); /* a loaded, linked module, or NULL */
-/* modcache.c: a .masm file assembled, or its module from the cache */
-Module *modcache_assemble(VM *vm, const char *path, const char *default_name, MlwsError *err);
+/* The loaded, linked module that `name` means to `from` (as its import
+ * would), or NULL. With from NULL: the library-path module of that name, or
+ * else the only program-local one. */
+LModule *vm_module_named(VM *vm, const char *name, const LModule *from);
+/* modcache.c: a .masm file assembled, or its module from the cache; home:
+ * the program directory it was found in (searched first for .include), or NULL */
+Module *modcache_assemble(VM *vm, const char *path, const char *default_name, const Home *home, MlwsError *err);
 /* verify.c */
 bool vm_verify_module(VM *vm, LModule *lm, MlwsError *err);
 /* Clear every call's whole window from now on (the debugger shows them). */
@@ -527,6 +553,8 @@ void proc_grow_globals(Process *p);
  * says what program line it came from, else "fib.masm:120" (base: file
  * names without their directories). */
 void fn_where(StrBuf *b, const Function *f, uint32_t pc, bool base);
+/* "util.who", or "util.who [b/util.masm]" when two loaded modules are named util. */
+void fn_qualname(StrBuf *b, const Function *f);
 void proc_free(Process *p);
 /* Raise a runtime fault as a catchable Error exception. */
 MLWS_NORETURN void vm_trap(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);

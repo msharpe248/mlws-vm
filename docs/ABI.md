@@ -56,8 +56,13 @@ immutable and shared. Everything else belongs to exactly one process.
   program's `main` ends, that program's other processes are stopped (their
   monitors see `E_KILLED`), and the others run on; the run ends when the last
   program's `main` ends, or at once when any process calls `os.exit`.
-  Programs share the scheduler, the loaded modules (one version of each
-  library) and the name registry, so they can find each other with
+  Each program's imports look in its own directory first, and a module found
+  there is that program's (programs from one directory share it), so two
+  programs may both have a `main` or a `util`
+  ([ASSEMBLY.md §8](ASSEMBLY.md#8-modules-and-libraries)). Programs share
+  the scheduler, the modules on the library path, one version of each
+  library (chosen against every program's `.requires`) and the name
+  registry, so they can find each other with
   `proc.whereis` and send messages. The exit status is that of the first
   program on the command line that did not succeed (a load error 65, an
   uncaught error 70, else its return value), or 0. When every process is
@@ -512,8 +517,9 @@ A running program can load a module it did not import, and call it:
 ```
 
 * `module.load` loads the module as if the calling function's module had
-  imported it: found on the library path (a plain module file or a library
-  archive), its imports loaded too, every library chosen against the version
+  imported it: found in the program's directory if the caller is one of the
+  program's own modules, else on the library path (a plain module file or a
+  library archive), its imports loaded too, every library chosen against the version
   constraints already stated ([ASSEMBLY.md §8.1](ASSEMBLY.md#81-libraries)),
   privacy checked, and everything verified before it can run. Loading a
   loaded module does nothing. Errors are the loader's (`E_LOAD_NOT_FOUND`,
@@ -524,7 +530,10 @@ A running program can load a module it did not import, and call it:
 * `module.function` returns a closure for a function the module exports
   (`E_LINK_UNDEF` if it exports none of that name); `calli` checks its
   signature at each call. `module.loaded` and `module.exports` ask what is
-  loaded and exported. A module is named by its string.
+  loaded and exported. A module is named by its string, which all four
+  natives look up as an import from the calling module would: from one of
+  the program's own modules, `"util"` means the program's `util` if its
+  directory has one.
 * **A loaded module stays loaded** until the VM ends, so a closure can never
   outlive its code. Loading another version of a module that is already
   loaded is not possible.

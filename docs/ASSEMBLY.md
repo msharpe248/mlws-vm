@@ -481,17 +481,65 @@ every instruction.
 .export length, origin        ; functions or data symbols visible to importers
 ```
 
-* A module named `a.b.c` lives in `a/b/c.masm` (or `a/b/c.mlwso`) under some library
-  directory. A library must declare (or default to) exactly the name it is imported
-  as.
-* **Library path**, searched in order: the program's own directory, each `-L dir`,
-  each entry of `$MLWSVM_PATH`, and the `lib/` directory next to the `mlwsvm` executable
-  (which holds `std`). If both a `.masm` and a `.mlwso` exist, the newer one is used.
 * Imported functions are called by qualified name, `call math.gcd (a, b) -> (g)`.
   Exported data is accessed as `@math.some_table[3]`.
 * The **loader** assembles `.masm` sources in memory, or reads `.mlwso` binaries. It
   then loads imports recursively, rejects import cycles (`E_LINK_CYCLE`), resolves
   every symbol (`E_LINK_UNDEF`) and runs the verifier before any code runs.
+
+**Names.** A module's name is what code calls it by: `.import geometry.vec`,
+`call geometry.vec.length`. `.module` sets it; without `.module`, a module is
+named after its file, without the directory or extension (`src/main.masm` is
+`main`). The name never says where the file is on disk, so a program and its
+compiled modules can be moved without changing any source. Imports find files
+by name: `geometry.vec` is `geometry/vec.masm` (or `geometry/vec.mlwso`) under
+one of the directories below, and the file must declare that name, or default
+to it (`E_LOAD_NAME`).
+
+**Where modules are found.** An import is looked for in:
+
+1. **The program's own directory**, the directory of the file `mlwsvm run`
+   (or `test`, `debug`, `mlws_load_file`) was given. Only the program's own
+   modules look here: those found in this directory, starting with the file
+   that was run.
+2. **The library path**: each `-L dir` or `--lib-path dir`, each entry of
+   `$MLWSVM_PATH`, and the `lib/` directory next to the `mlwsvm` executable
+   (which holds `std`).
+3. **Library archives** (`.mlwsl`) in any of those directories ([§8.1](#81-libraries)).
+
+The first match wins. Within one directory, if both a `.masm` and a `.mlwso`
+exist, the newer one is used.
+
+**A program's own modules and shared modules.** The VM knows a module by its
+name and, if it was found in a program's directory, that directory too. That
+matters when several programs run in one VM
+([TOOLING.md](TOOLING.md#several-programs---also)): each program's directory
+holds its own modules, which other programs cannot see, so two programs can
+both have a `main` and a `util` without renaming anything. Programs started
+from the same directory share its modules. A module found on the library path
+or in a library archive is known by its name alone and shared by every
+program, which is how they share one version of each library.
+
+```
+mlwsvm run a/main.masm --also b/main.masm
+
+  a/main.masm       .import util      ->  a/util.masm
+  b/main.masm       .import util      ->  b/util.masm     (another module, also named util)
+  both              .import json5     ->  the one json5 on the library path
+  json5's modules   .import util      ->  util on the library path, never a/util.masm
+```
+
+A module from the library path looks for its imports only on the library
+path, so a program's files can never take the place of a library's modules.
+`module.load` and the other `module.*` natives look a name up as an import
+from the calling module would ([ABI.md §9](ABI.md#9-loading-modules-at-run-time)).
+
+Two modules with the same name in one directory, or two on the library path,
+cannot both be loaded: `E_LOAD_NAME` names both files. This happens, for
+example, when two programs from one directory both declare `.module main`; to
+fix it, rename one, or give it a `.module` line. Where two loaded modules share
+a name, the profiler, `--flame`, the monitor and `top` add the module's file
+(`util.who [b/util.masm]`); backtraces always show each frame's file.
 
 ### 8.1 Libraries
 
@@ -512,7 +560,9 @@ directory (`json5/parse.masm` is the module `json5.parse`; directories whose
 names start with `_` hold include files) into `json5-1.2.0.mlwsl`
 ([TOOLING.md](TOOLING.md#libraries-mlwsvm-lib)).
 
-* **Finding a library.** Archives go in any directory of the library path. An
+* **Finding a library.** Archives go in any directory of the library path, or
+  in a program's directory. Either way a library belongs to the whole VM, not
+  to one program. An
   import that is not a plain module file is looked for in the archives of its
   library, the longest prefix of its name that some archive provides
   (`json5.parse` comes from library `json5`). Plain module files, unversioned,
@@ -524,9 +574,12 @@ names start with `_` hold include files) into `json5-1.2.0.mlwsl`
 * **One version per run.** A library is chosen the first time one of its
   modules is needed: the newest version that meets every constraint stated so
   far, by the program (any module may say `.requires`) and by the libraries
-  already chosen. Its own requirements are then stated in turn. A constraint
-  that the chosen version does not meet, or one that no version meets, is
-  `E_LINK_VERSION`, naming who needs which versions.
+  already chosen. Its own requirements are then stated in turn. When several
+  programs run in one VM, the `.requires` of every program's first file are
+  all stated before any library is chosen, so the order of the programs on the
+  command line does not matter. A constraint that the chosen version does not
+  meet, or one that no version meets, is `E_LINK_VERSION`, naming who needs
+  which versions (a program's modules by their files).
 * **Private modules.** A module that the manifest does not list as `.public`
   can be imported only by the library's own modules; from anywhere else it is
   `E_LINK_PRIVATE`.
@@ -647,7 +700,9 @@ Lines in an inactive branch are not even parsed.
 .include "std/test.inc"
 ```
 
-The path is searched relative to the including file, then along the library path.
+The path is searched relative to the including file, then in the program's
+directory (for the program's own modules, [§8](#8-modules-and-libraries)), then along
+the library path.
 Each file is included at most once, so include files need no guards. By convention,
 macro-only files use the `.inc` extension and are not modules.
 

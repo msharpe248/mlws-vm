@@ -73,8 +73,10 @@ void mlws_set_args(MlwsVM *vm, int argc, const char *const *argv);
 bool mlws_define(MlwsVM *vm, const MlwsNativeDesc *desc);
 const MlwsApi *mlws_api(void);
 
-/* Load a module and what it imports: from a .masm or .mlwso file, or from
- * assembly source in memory (`module` is its name, as .import would use). */
+/* Load a module and what it imports: from a .masm or .mlwso file (whose
+ * imports are looked for in its own directory first, then on the library
+ * path), or from assembly source in memory (`module` is its name, as .import
+ * would use; its imports come from the library path). */
 bool mlws_load_file(MlwsVM *vm, const char *path);
 bool mlws_load_source(MlwsVM *vm, const char *module, const char *source);
 

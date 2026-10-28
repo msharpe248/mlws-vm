@@ -153,6 +153,84 @@ cat > "$PDIR/echo.masm" <<'MASM'
 MASM
 OUT=$(MLWSVM_NO_CACHE=1 $BIN run "$PDIR/echo.masm" one --also "$PDIR/echo.masm" two)
 echo "$OUT" | grep -q '\[one\]' && echo "$OUT" | grep -q '\[two\]' || fail "--also: the same program twice ($OUT)"
+
+# Each program's own modules: x/main.masm and y/main.masm (both module main)
+# each import util and tools.fmt from their own directory, and get their own;
+# a third program in x shares x's. module.load from y looks in y first.
+mkdir -p "$PDIR/x/tools" "$PDIR/y/tools"
+for d in x y; do
+    printf '.export who\n.func who -> ref\n    ret "util of %s"\n.endf\n' $d > "$PDIR/$d/util.masm"
+    printf '.export tag\n.func tag -> ref\n    ret "fmt of %s"\n.endf\n' $d > "$PDIR/$d/tools/fmt.masm"
+done
+cat > "$PDIR/x/main.masm" <<'MASM'
+.include "std/io.inc"
+.import util
+.import tools.fmt
+.func main
+    call util.who () -> (R0)
+    call tools.fmt.tag () -> (R1)
+    strcat R0, "x: ", R0, ", ", R1, "\n"
+    PRINT_S R0                           ; one write: lines of programs running at once do not mix
+    ret 0
+.endf
+MASM
+sed 's/"x: "/"y: "/' "$PDIR/x/main.masm" > "$PDIR/y/main.masm"
+cat > "$PDIR/x/other.masm" <<'MASM'
+.include "std/io.inc"
+.import util
+.func main
+    call util.who () -> (R0)
+    strcat R0, "x/other: ", R0, "\n"
+    PRINT_S R0
+    ret 0
+.endf
+MASM
+cat > "$PDIR/y/late.masm" <<'MASM'
+.include "std/io.inc"
+.func main
+    ncall "module.load" ("util")
+    ncall "module.function" ("util", "who") -> (R0)
+    calli R0 () -> (R1)
+    strcat R1, "y/late: ", R1, "\n"
+    PRINT_S R1
+    ret 0
+.endf
+MASM
+OUT=$(MLWSVM_NO_CACHE=1 $BIN run "$PDIR/x/main.masm" --also "$PDIR/y/main.masm" --also "$PDIR/x/other.masm" \
+      --also "$PDIR/y/late.masm" 2>&1) || fail "--also: programs with same-named modules ($OUT)"
+for want in "x: util of x, fmt of x" "y: util of y, fmt of y" "x/other: util of x" "y/late: util of y"; do
+    echo "$OUT" | grep -q "^$want\$" || fail "--also: no '$want' in: $OUT"
+done
+# Tools tell same-named modules apart by their files.
+OUT=$(MLWSVM_NO_CACHE=1 $BIN run --profile "$PDIR/x/main.masm" --also "$PDIR/y/main.masm" 2>&1)
+echo "$OUT" | grep -q "util.who \[$PDIR/y/util.masm\]" || fail "--also: profile without util's file ($OUT)"
+# Two programs of one directory naming the same module: an error that says how to fix it.
+printf '.module main\n.func main\n    ret 0\n.endf\n' > "$PDIR/x/alt.masm"
+set +e
+OUT=$(MLWSVM_NO_CACHE=1 $BIN run "$PDIR/x/main.masm" --also "$PDIR/x/alt.masm" 2>&1); rc=$?
+set -e
+[ $rc = 65 ] && echo "$OUT" | grep -q "E_LOAD_NAME.*two modules named 'main'.*\.module names a module" ||
+    fail "--also: same-named roots in one directory ($rc: $OUT)"
+
+# Library versions are chosen for every program at once: one program allows
+# ^1 (newest 1.2.0), the other <1.2; 1.0.0 suits both, in either order.
+mkdir -p "$PDIR/libs" "$PDIR/src/v10" "$PDIR/src/v12"
+for v in 1.0 1.2; do
+    printf '.library ver, "%s.0"\n.public ver\n' $v > "$PDIR/src/v${v%.*}${v#*.}/library.masm"
+    printf '.export get\n.func get -> ref\n    ret "%s.0"\n.endf\n' $v > "$PDIR/src/v${v%.*}${v#*.}/ver.masm"
+    $BIN lib build "$PDIR/src/v${v%.*}${v#*.}" -o "$PDIR/libs/ver-$v.0.mlwsl" >/dev/null || fail "lib build ver $v"
+done
+for c in '^1' '<1.2'; do
+    n=$(printf '%s' "$c" | tr -dc '0-9')
+    printf '.include "std/io.inc"\n.requires ver, "%s"\n.import ver\n.func main\n    call ver.get () -> (R0)\n    strcat R0, R0, "\\n"\n    PRINT_S R0\n    ret 0\n.endf\n' \
+        "$c" > "$PDIR/v$n.masm"
+done
+for order in "v1 v12" "v12 v1"; do
+    set -- $order
+    OUT=$(MLWSVM_NO_CACHE=1 $BIN run --lib-path "$PDIR/libs" "$PDIR/$1.masm" --also "$PDIR/$2.masm" 2>&1) ||
+        fail "--also: versions in the order $order ($OUT)"
+    [ "$(echo "$OUT" | grep -c '^1\.0\.0$')" = 2 ] || fail "--also: not 1.0.0 for both, order $order ($OUT)"
+done
 rm -rf "${PDIR:?}"
 
 # --trace with a limit

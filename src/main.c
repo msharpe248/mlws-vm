@@ -199,12 +199,7 @@ static int cmd_run(int argc, char **argv) {
                 tools_monitor_addr(vm));
         vm->hold = hold;
     }
-    for (size_t i = 0; i < progs.n; i++) {
-        char *dir = path_dirname(progs.v[i].path);
-        vm_add_libpath(vm, dir);
-        free(dir);
-    }
-    tool_env_libpaths(&g_env, vm);
+    tool_env_libpaths(&g_env, vm); /* (each program's own directory is searched first for its modules) */
     RunResult *rs = xcalloc(progs.n, sizeof *rs);
     vm_run_files(vm, progs.v, (int)progs.n, rs);
     fflush(stdout);
@@ -281,9 +276,6 @@ static int cmd_debug(int argc, char **argv) {
         return 2;
     }
     VM *vm = vm_new();
-    char *dir = path_dirname(argv[0]);
-    vm_add_libpath(vm, dir);
-    free(dir);
     tool_env_libpaths(&g_env, vm);
     MlwsError err = {{0}, {0}};
     LModule *root = vm_load_root(vm, argv[0], &err);

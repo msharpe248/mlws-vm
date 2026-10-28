@@ -132,7 +132,7 @@ bool mlws_load_source(MlwsVM *e, const char *module, const char *source) {
 /* ---- running --------------------------------------------------------------- */
 
 static Function *find_function(MlwsVM *e, const char *module, const char *name) {
-    LModule *lm = vm_module_named(e->vm, module);
+    LModule *lm = vm_module_named(e->vm, module, NULL);
     if (!lm) {
         fail(e, "E_LOAD_NOT_FOUND", "module %s is not loaded", module);
         return NULL;
@@ -213,7 +213,7 @@ bool mlws_call(MlwsVM *e, const char *module, const char *function, const MlwsAr
 bool mlws_run_main(MlwsVM *e, const char *module, int64_t *exit_code) {
     clear(e);
     if (!busy(e)) return false;
-    LModule *lm = vm_module_named(e->vm, module);
+    LModule *lm = vm_module_named(e->vm, module, NULL);
     if (!lm) return fail(e, "E_LOAD_NOT_FOUND", "module %s is not loaded", module);
     Function *fn = vm_find_main(lm, &e->err);
     if (!fn) return false;

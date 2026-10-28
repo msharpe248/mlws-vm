@@ -46,7 +46,7 @@ static void proc_json(StrBuf *b, const Process *p, bool detail) {
     sb_puts(b, ",\"function\":");
     if (fr) {
         StrBuf f = {0};
-        sb_printf(&f, "%s.%s", fr->fn->mod->m->name, fr->fn->name);
+        fn_qualname(&f, fr->fn);
         json_str(b, f.s);
         sb_free(&f);
         sb_printf(b, ",\"line\":%u", fr->fn->mf->lines && pc < fr->fn->mf->ninsns ? fr->fn->mf->lines[pc] : 0);
@@ -182,7 +182,8 @@ static void top_text(StrBuf *b, Monitor *mon, VM *vm) {
         const Frame *fr = p->nframes ? &p->frames[p->nframes - 1] : NULL;
         StrBuf loc = {0};
         if (fr) { /* compact: module.function+pc (file:line), file without its directory */
-            sb_printf(&loc, "%s.%s+%u (", fr->fn->mod->m->name, fr->fn->name, fr->pc);
+            fn_qualname(&loc, fr->fn);
+            sb_printf(&loc, "+%u (", fr->pc);
             fn_where(&loc, fr->fn, fr->pc, true);
             sb_putc(&loc, ')');
         }

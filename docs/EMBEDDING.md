@@ -44,8 +44,13 @@ int main(void) {
 ## The model
 
 * **Load** modules from files (`mlws_load_file`, `.masm` or `.mlwso`) or from
-  source held in memory (`mlws_load_source`). Imports load from the library
-  path (`mlws_add_path`). A loaded module stays loaded for later calls.
+  source held in memory (`mlws_load_source`). A file's imports are looked for
+  in its own directory first, then on the library path (`mlws_add_path`);
+  source in memory has only the library path
+  ([ASSEMBLY.md §8](ASSEMBLY.md#8-modules-and-libraries)). A loaded module
+  stays loaded for later calls. `mlws_call` and `mlws_run_main` name a module
+  as `.import` would; if files from two directories have the same module name,
+  give them different names with `.module`.
 * **Call** an exported function with `mlws_call`. It runs as the program's main
   process: it may spawn processes, use files and the network, and call the
   host. The call returns when the function does, and any processes it left

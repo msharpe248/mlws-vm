@@ -1,0 +1,5 @@
+; Loaded at run time from the program's directory (see ../program_local.masm).
+.export which
+.func which -> i64
+    ret 3
+.endf

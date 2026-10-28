@@ -39,7 +39,7 @@ source text, the default module name (from the file name) and the running
 each time still finds it, and a rebuilt VM never uses another build's entries.
 An entry also lists every file the source included, with a hash of its
 contents, and what their names were resolved against (the working directory,
-the source's directory and the library path): if any of them differs, the source
+the source's directory, the program's directory and the library path): if any of them differs, the source
 is assembled again and the entry replaced. Backtraces name the file that was
 run, wherever the entry was made.
 
@@ -70,6 +70,15 @@ program is reported with its file name, and the others run on. `--stats` and
 `--profile` count every process, and `--stats`'s figures for `main` are the
 first program's.
 
+Each program finds its own modules in its own directory first, so programs
+from different directories can have modules with the same names: with
+`mlwsvm run a/main.masm --also b/main.masm`, both programs are `main` and an
+`.import util` in each gets that program's `util`. Modules on the library
+path, and library versions, are shared by all programs. Every program's
+`.requires` are taken into account before any library version is chosen, so
+the order of the files does not matter. [ASSEMBLY.md §8](ASSEMBLY.md#8-modules-and-libraries)
+has the rules.
+
 ## Libraries: `mlwsvm lib`
 
 ```
@@ -86,8 +95,8 @@ with `_` or `.` are skipped, for include files). Each module must belong to the
 library (its name is the library's or starts with it and a dot), each `.public`
 module must exist, and the archive goes to `name-version.mlwsl` unless `-o`
 says otherwise. To use it, put it in a directory of the library path (`-L`,
-`--lib-path`, `$MLWSVM_PATH`, or `lib/` next to `mlwsvm`); several versions
-can sit side by side. A damaged archive on the path is reported and ignored.
+`--lib-path`, `$MLWSVM_PATH`, or `lib/` next to `mlwsvm`) or in the
+program's directory; several versions can sit side by side. A damaged archive on the path is reported and ignored.
 
 ## VM options
 

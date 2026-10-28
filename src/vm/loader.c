@@ -1,6 +1,13 @@
-/* loader.c - finds modules on the library path, assembles or reads them,
- * loads imports recursively (rejecting cycles), links symbols, pre-decodes
- * code and runs the verifier. See docs/ASSEMBLY.md ("Modules and libraries"). */
+/* loader.c - finds modules in the program's directory or on the library
+ * path, assembles or reads them, loads imports recursively (rejecting
+ * cycles), links symbols, pre-decodes code and runs the verifier. See
+ * docs/ASSEMBLY.md ("Modules and libraries", "Where modules are found").
+ *
+ * A module found in a program's directory belongs to that directory: the VM
+ * knows it by its directory and name (LModule.key), so programs started from
+ * different directories each have their own `util`. A module found on the
+ * library path, or in a library archive, is known by its name alone and is
+ * shared by every program. */
 #include "../asm/asm.h"
 #include "../platform/platform.h"
 #include "../heap/numeric.h"
@@ -15,28 +22,63 @@ static char *module_rel_path(const char *name) {
     return rel;
 }
 
-/* Search the library path for name -> dir/a/b.masm or dir/a/b.mlwso. When both
- * exist in the same directory, the newer one wins. */
-static char *find_module_file(VM *vm, const char *name) {
+/* Module a.b in dir: dir/a/b.masm or dir/a/b.mlwso. When both exist, the
+ * newer one wins. */
+static char *find_in_dir(const char *dir, const char *name) {
     char *rel = module_rel_path(name);
+    char *base = path_join(dir, rel);
     char *found = NULL;
-    for (size_t i = 0; i < vm->libpaths.n && !found; i++) {
-        char *base = path_join(vm->libpaths.v[i], rel);
-        StrBuf a = {0}, b = {0};
-        sb_printf(&a, "%s.masm", base);
-        sb_printf(&b, "%s.mlwso", base);
-        int64_t ta = plat_mtime(a.s), tb = plat_mtime(b.s);
-        if (ta >= 0 && ta >= tb) found = xstrdup(a.s);
-        else if (tb >= 0) found = xstrdup(b.s);
-        sb_free(&a);
-        sb_free(&b);
-        free(base);
-    }
+    StrBuf a = {0}, b = {0};
+    sb_printf(&a, "%s.masm", base);
+    sb_printf(&b, "%s.mlwso", base);
+    int64_t ta = plat_mtime(a.s), tb = plat_mtime(b.s);
+    if (ta >= 0 && ta >= tb) found = xstrdup(a.s);
+    else if (tb >= 0) found = xstrdup(b.s);
+    sb_free(&a);
+    sb_free(&b);
+    free(base);
     free(rel);
     return found;
 }
 
-static Module *read_module_file(VM *vm, const char *path, const char *default_name, MlwsError *err) {
+/* Search the library path for a module's file. */
+static char *find_module_file(VM *vm, const char *name) {
+    char *found = NULL;
+    for (size_t i = 0; i < vm->libpaths.n && !found; i++) found = find_in_dir(vm->libpaths.v[i], name);
+    return found;
+}
+
+/* What modmap knows a module by: a library-path module (home NULL) by its
+ * name; a program-local one by its directory and name. (A name cannot
+ * contain the \1 that starts the second kind.) */
+static char *module_key(const Home *home, const char *name) {
+    if (!home) return xstrdup(name);
+    StrBuf b = {0};
+    sb_printf(&b, "\1%s\1%s", home->real, name);
+    return b.s;
+}
+
+/* The directory of a program whose root module is the file at path: one
+ * Home per directory, however its path spells it. Under mods_lock. */
+static const Home *home_of(VM *vm, const char *path) {
+    char *dir = path_dirname(path), *real = plat_realpath(dir);
+    if (!real) real = xstrdup(dir);
+    for (size_t i = 0; i < vm->homes.n; i++) {
+        if (!strcmp(vm->homes.v[i]->real, real)) {
+            free(dir);
+            free(real);
+            return vm->homes.v[i];
+        }
+    }
+    Home *h = xcalloc(1, sizeof *h);
+    h->dir = dir;
+    h->real = real;
+    VEC_PUSH(vm->homes, h);
+    return h;
+}
+
+static Module *read_module_file(VM *vm, const char *path, const char *default_name, const Home *home,
+                                MlwsError *err) {
     if (str_ends_with(path, ".mlwso")) {
         size_t len;
         char *data = read_file(path, &len);
@@ -54,7 +96,7 @@ static Module *read_module_file(VM *vm, const char *path, const char *default_na
         }
         return m;
     }
-    return modcache_assemble(vm, path, default_name, err);
+    return modcache_assemble(vm, path, default_name, home, err);
 }
 
 static bool resolve_operand(LModule *lm, Function *f, Operand *o, MlwsError *err) {
@@ -186,9 +228,7 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
             lm->grefs[i] = PTR_MAKE(SEG_GLOBAL0 + (uint32_t)lm->index, 1, g->offset);
             continue;
         }
-        void *v;
-        smap_get(&vm->modmap, m->imports[g->import_idx], &v);
-        LModule *dep = v;
+        LModule *dep = lm->deps[g->import_idx];
         int si = module_find_export_sym(dep->m, g->sym);
         if (si < 0)
             return mlws_err(err, "E_LINK_UNDEF", "module %s does not export data symbol '%s' (used by %s)", dep->m->name,
@@ -216,9 +256,7 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
             lm->structs[i] = d;
             continue;
         }
-        void *v;
-        smap_get(&vm->modmap, m->imports[st->import_idx], &v);
-        LModule *dep = v;
+        LModule *dep = lm->deps[st->import_idx];
         int si = module_find_export_struct(dep->m, st->name);
         if (si < 0)
             return mlws_err(err, "E_LINK_UNDEF", "module %s does not export struct '%s' (used by %s)", dep->m->name,
@@ -265,9 +303,7 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
             f->target = f;
             continue;
         }
-        void *v;
-        smap_get(&vm->modmap, m->imports[f->mf->import_idx], &v);
-        LModule *dep = v;
+        LModule *dep = lm->deps[f->mf->import_idx];
         int fi = module_find_export_func(dep->m, f->name);
         if (fi < 0)
             return mlws_err(err, "E_LINK_UNDEF", "module %s does not export function '%s' (called from %s)", dep->m->name,
@@ -288,27 +324,32 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
 
 /* ---- libraries ------------------------------------------------------------------------ */
 
-/* Every library archive (*.mlwsl) in the library path's directories, read once. */
+static void scan_dir_archives(VM *vm, const char *dir) {
+    char **names;
+    size_t n;
+    if (!plat_list_dir(dir, &names, &n)) return;
+    for (size_t k = 0; k < n; k++) {
+        if (str_ends_with(names[k], ".mlwsl")) {
+            char *p = path_join(dir, names[k]);
+            MlwsError e;
+            LibArchive *a = lib_read(p, &e);
+            if (a) VEC_PUSH(vm->archives, a);
+            else fprintf(stderr, "mlwsvm: ignoring %s\n", e.msg);
+            free(p);
+        }
+        free(names[k]);
+    }
+    free(names);
+}
+
+/* Every library archive (*.mlwsl) in the programs' directories and the
+ * library path's, each directory read once. Libraries are the VM's, not a
+ * program's: an archive beside one program serves them all. */
 static void scan_archives(VM *vm) {
+    while (vm->homes_scanned < vm->homes.n) scan_dir_archives(vm, vm->homes.v[vm->homes_scanned++]->dir);
     if (vm->archives_scanned) return;
     vm->archives_scanned = true;
-    for (size_t i = 0; i < vm->libpaths.n; i++) {
-        char **names;
-        size_t n;
-        if (!plat_list_dir(vm->libpaths.v[i], &names, &n)) continue;
-        for (size_t k = 0; k < n; k++) {
-            if (str_ends_with(names[k], ".mlwsl")) {
-                char *p = path_join(vm->libpaths.v[i], names[k]);
-                MlwsError e;
-                LibArchive *a = lib_read(p, &e);
-                if (a) VEC_PUSH(vm->archives, a);
-                else fprintf(stderr, "mlwsvm: ignoring %s\n", e.msg);
-                free(p);
-            }
-            free(names[k]);
-        }
-        free(names);
-    }
+    for (size_t i = 0; i < vm->libpaths.n; i++) scan_dir_archives(vm, vm->libpaths.v[i]);
 }
 
 /* What is known about a library's versions, for a message: who asked for which. */
@@ -387,7 +428,9 @@ static LibArchive *choose_library(VM *vm, const char *lib, MlwsError *err) {
     return best;
 }
 
-static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive *lib, MlwsError *err);
+static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive *lib, const Home *home,
+                                bool requires_stated, MlwsError *err);
+static LModule *require(VM *vm, const char *name, const Home *home, MlwsError *err);
 
 /* Whether `who` (a module of library lib, or of none) may import dep: only
  * a library's own modules may import its private ones. */
@@ -427,7 +470,7 @@ static int require_from_library(VM *vm, const char *name, LModule **out, MlwsErr
             }
             StrBuf p = {0};
             sb_printf(&p, "%s(%s)", a->path, name);
-            *out = register_module(vm, m, p.s, a, err);
+            *out = register_module(vm, m, p.s, a, NULL, false, err);
             sb_free(&p);
             free(lib);
             return *out ? 1 : -1;
@@ -444,15 +487,24 @@ static int require_from_library(VM *vm, const char *name, LModule **out, MlwsErr
     return 0;
 }
 
-static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive *lib, MlwsError *err) {
+/* Register module m, found at path (in library archive lib, or in program
+ * directory home, or neither), then load what it imports and link it. Its
+ * .requires are stated first, unless the caller has (requires_stated). */
+static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive *lib, const Home *home,
+                                bool requires_stated, MlwsError *err) {
+    char *key = module_key(home, m->name);
     void *had;
-    if (smap_get(&vm->modmap, m->name, &had) && had) { /* (NULL: a run-time load of it failed) */
-        mlws_err(err, "E_LOAD_NAME", "a module named '%s' is already loaded (%s)", m->name, path);
+    if (smap_get(&vm->modmap, key, &had) && had) { /* (NULL: a run-time load of it failed) */
+        mlws_err(err, "E_LOAD_NAME",
+                 "two modules named '%s': %s and %s (.module names a module; by default it is named after its file)",
+                 m->name, ((LModule *)had)->path, path);
+        free(key);
         module_free(m);
         return NULL;
     }
     if (vm->mods.n >= SEG_RAW0 - SEG_GLOBAL0) {
         mlws_err(err, "E_LOAD_LIMIT", "too many modules");
+        free(key);
         module_free(m);
         return NULL;
     }
@@ -460,52 +512,86 @@ static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive 
     lm->m = m;
     lm->lib = lib;
     lm->path = xstrdup(path);
+    lm->home = home;
+    lm->key = key;
     lm->index = (int)vm->mods.n;
     lm->state = LM_LOADING;
+    lm->deps = xcalloc(m->nimports + 1, sizeof *lm->deps);
+    for (size_t i = 0; i < vm->mods.n; i++) { /* another program's util, or the library path's */
+        LModule *o = vm->mods.v[i];
+        if (o->state != LM_FAILED && !strcmp(o->m->name, m->name)) {
+            atomic_store(&o->shared_name, true);
+            atomic_store(&lm->shared_name, true);
+        }
+    }
     VEC_PUSH(vm->mods, lm);
-    smap_put(&vm->modmap, m->name, lm);
-    VEC_PUSH(vm->loading, xstrdup(m->name));
-    for (uint32_t i = 0; i < m->nrequires; i++) /* before its imports choose their versions */
-        if (!want(vm, m->requires[i].lib, m->requires[i].constraint, m->name, err)) return NULL;
+    smap_put(&vm->modmap, key, lm);
+    VEC_PUSH(vm->loading, lm);
+    /* who asked, in messages: a program's module by its file (two programs
+     * may both have a main), a library-path one by its name */
+    const char *who = home ? path : m->name;
+    for (uint32_t i = 0; i < m->nrequires && !requires_stated; i++) /* before its imports choose versions */
+        if (!want(vm, m->requires[i].lib, m->requires[i].constraint, who, err)) return NULL;
     for (uint32_t i = 0; i < m->nimports; i++) {
-        LModule *dep = vm_require(vm, m->imports[i], err);
+        LModule *dep = require(vm, m->imports[i], home, err);
         if (!dep) return NULL;
         if (!may_import(m->name, lib, dep, err)) return NULL;
+        lm->deps[i] = dep;
     }
     if (!link_module(vm, lm, err)) return NULL;
-    free(vm->loading.v[--vm->loading.n]);
+    vm->loading.n--;
     lm->state = LM_READY;
     return lm;
 }
 
-LModule *vm_require(VM *vm, const char *name, MlwsError *err) {
-    void *v;
-    if (smap_get(&vm->modmap, name, &v) && v) { /* (NULL: a run-time load that failed) */
-        LModule *lm = v;
-        if (lm->state == LM_READY) return lm;
-        StrBuf chain = {0};
-        bool on = false;
-        for (size_t i = 0; i < vm->loading.n; i++) {
-            if (!strcmp(vm->loading.v[i], name)) on = true;
-            if (on) sb_printf(&chain, "%s -> ", vm->loading.v[i]);
-        }
-        sb_puts(&chain, name);
-        mlws_err(err, "E_LINK_CYCLE", "import cycle: %s", chain.s);
-        sb_free(&chain);
-        return NULL;
+/* A module that is being loaded or is loaded: it, if it is ready; if it is
+ * still loading, it imports (indirectly) the module that imports it. */
+static LModule *loaded_or_cycle(VM *vm, LModule *lm, MlwsError *err) {
+    if (lm->state == LM_READY) return lm;
+    StrBuf chain = {0};
+    bool on = false;
+    for (size_t i = 0; i < vm->loading.n; i++) {
+        if (vm->loading.v[i] == lm) on = true;
+        if (on) sb_printf(&chain, "%s -> ", vm->loading.v[i]->m->name);
     }
-    char *path = find_module_file(vm, name);
+    sb_puts(&chain, lm->m->name);
+    mlws_err(err, "E_LINK_CYCLE", "import cycle: %s", chain.s);
+    sb_free(&chain);
+    return NULL;
+}
+
+/* The module `name`, imported by a module of program directory home (NULL:
+ * a library-path module, or none): found first in home, where it is that
+ * directory's own, then on the library path and in library archives. */
+static LModule *require(VM *vm, const char *name, const Home *home, MlwsError *err) {
+    void *v;
+    char *path = NULL;
+    const Home *searched = home;
+    if (home) {
+        char *key = module_key(home, name);
+        bool had = smap_get(&vm->modmap, key, &v) && v;
+        free(key);
+        if (had) return loaded_or_cycle(vm, v, err);
+        path = find_in_dir(home->dir, name);
+    }
+    if (!path) { /* not the program's own: the library path's */
+        home = NULL;
+        if (smap_get(&vm->modmap, name, &v) && v) return loaded_or_cycle(vm, v, err);
+        path = find_module_file(vm, name);
+    }
     if (!path) {
         LModule *lm = NULL;
         int r = require_from_library(vm, name, &lm, err);
         if (r) return r > 0 ? lm : NULL;
         StrBuf dirs = {0};
         for (size_t i = 0; i < vm->libpaths.n; i++) sb_printf(&dirs, "%s%s", i ? ", " : "", vm->libpaths.v[i]);
-        mlws_err(err, "E_LOAD_NOT_FOUND", "module '%s' not found in library path [%s]", name, dirs.s ? dirs.s : "");
+        mlws_err(err, "E_LOAD_NOT_FOUND", "module '%s' not found in %s%s%slibrary path [%s]", name,
+                 searched ? "the program's directory " : "", searched ? searched->dir : "",
+                 searched ? " or the " : "", dirs.s ? dirs.s : "");
         sb_free(&dirs);
         return NULL;
     }
-    Module *m = read_module_file(vm, path, name, err);
+    Module *m = read_module_file(vm, path, name, home, err);
     if (!m) {
         free(path);
         return NULL;
@@ -516,7 +602,7 @@ LModule *vm_require(VM *vm, const char *name, MlwsError *err) {
         free(path);
         return NULL;
     }
-    LModule *lm = register_module(vm, m, path, NULL, err);
+    LModule *lm = register_module(vm, m, path, NULL, home, false, err);
     free(path);
     return lm;
 }
@@ -525,7 +611,7 @@ LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err
     Module *m = assemble_text(name, text, name, (const char *const *)vm->libpaths.v, vm->libpaths.n, err);
     if (!m) return NULL;
     plat_lock(vm->mods_lock); /* an embedding host may load while services run */
-    LModule *lm = register_module(vm, m, name, NULL, err);
+    LModule *lm = register_module(vm, m, name, NULL, NULL, false, err);
     plat_unlock(vm->mods_lock);
     return lm;
 }
@@ -533,44 +619,87 @@ LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err
 LModule *vm_load_dynamic(VM *vm, const char *name, const LModule *from, MlwsError *err) {
     plat_lock(vm->mods_lock);
     size_t start = vm->mods.n, chain = vm->loading.n;
-    LModule *lm = vm_require(vm, name, err);
+    LModule *lm = require(vm, name, from ? from->home : NULL, err);
     if (lm && !may_import(from ? from->m->name : "the program", from ? from->lib : NULL, lm, err)) lm = NULL;
     if (!lm) { /* what this load registered but did not link is dropped; the rest stays loaded */
         for (size_t i = start; i < vm->mods.n; i++) {
             LModule *x = vm->mods.v[i];
             if (x->state == LM_READY) continue;
             x->state = LM_FAILED;
-            smap_put(&vm->modmap, x->m->name, NULL);
+            smap_put(&vm->modmap, x->key, NULL);
         }
-        while (vm->loading.n > chain) free(vm->loading.v[--vm->loading.n]);
+        vm->loading.n = chain;
     }
     plat_unlock(vm->mods_lock);
     return lm;
 }
 
-LModule *vm_module_named(VM *vm, const char *name) {
+LModule *vm_module_named(VM *vm, const char *name, const LModule *from) {
     void *v = NULL;
     plat_lock(vm->mods_lock);
-    smap_get(&vm->modmap, name, &v);
+    bool decided = false; /* name means a module of from's directory */
+    if (from && from->home) {
+        char *key = module_key(from->home, name);
+        decided = smap_get(&vm->modmap, key, &v);
+        free(key);
+        if (!decided) { /* not loaded, but there to be: the library path's does not count */
+            char *path = find_in_dir(from->home->dir, name);
+            decided = path != NULL;
+            free(path);
+        }
+    }
+    if (!decided && !smap_get(&vm->modmap, name, &v) && !from) {
+        int n = 0; /* asked from outside any program: the only program-local module of that name */
+        for (size_t i = 0; i < vm->mods.n; i++) {
+            LModule *x = vm->mods.v[i];
+            if (x->home && x->state == LM_READY && !strcmp(x->m->name, name)) v = x, n++;
+        }
+        if (n != 1) v = NULL;
+    }
     LModule *lm = v && ((LModule *)v)->state == LM_READY ? v : NULL;
     plat_unlock(vm->mods_lock);
     return lm;
 }
 
-LModule *vm_load_root(VM *vm, const char *path, MlwsError *err) {
-    const char *base = path_basename(path);
-    const char *dot = strrchr(base, '.');
-    char *defname = dot ? xstrndup(base, (size_t)(dot - base)) : xstrdup(base);
-    if (!file_exists(path)) {
-        mlws_err(err, "E_LOAD_NOT_FOUND", "cannot open '%s'", path);
+bool vm_load_roots(VM *vm, const char *const *paths, int n, LModule **out, MlwsError *errs) {
+    Module **ms = xcalloc((size_t)n + 1, sizeof *ms);
+    const Home **homes = xcalloc((size_t)n + 1, sizeof *homes);
+    bool ok = true;
+    for (int i = 0; i < n; i++) out[i] = NULL;
+    for (int i = 0; i < n && ok; i++) {
+        if (!file_exists(paths[i])) {
+            mlws_err(&errs[i], "E_LOAD_NOT_FOUND", "cannot open '%s'", paths[i]);
+            ok = false;
+            break;
+        }
+        plat_lock(vm->mods_lock);
+        homes[i] = home_of(vm, paths[i]);
+        plat_unlock(vm->mods_lock);
+        const char *base = path_basename(paths[i]);
+        const char *dot = strrchr(base, '.');
+        char *defname = dot ? xstrndup(base, (size_t)(dot - base)) : xstrdup(base);
+        ms[i] = read_module_file(vm, paths[i], defname, homes[i], &errs[i]);
         free(defname);
-        return NULL;
+        ok = ms[i] != NULL;
     }
-    Module *m = read_module_file(vm, path, defname, err);
-    free(defname);
-    if (!m) return NULL;
     plat_lock(vm->mods_lock);
-    LModule *lm = register_module(vm, m, path, NULL, err);
+    /* Every program's requirements, before any library version is chosen. */
+    for (int i = 0; i < n && ok; i++)
+        for (uint32_t k = 0; k < ms[i]->nrequires && ok; k++)
+            ok = want(vm, ms[i]->requires[k].lib, ms[i]->requires[k].constraint, paths[i], &errs[i]);
+    for (int i = 0; i < n && ok; i++) {
+        out[i] = register_module(vm, ms[i], paths[i], NULL, homes[i], true, &errs[i]);
+        ms[i] = NULL; /* the VM's now (or freed) */
+        ok = out[i] != NULL;
+    }
     plat_unlock(vm->mods_lock);
-    return lm;
+    for (int i = 0; i < n; i++) module_free(ms[i]);
+    free(ms);
+    free(homes);
+    return ok;
+}
+
+LModule *vm_load_root(VM *vm, const char *path, MlwsError *err) {
+    LModule *lm;
+    return vm_load_roots(vm, &path, 1, &lm, err) ? lm : NULL;
 }

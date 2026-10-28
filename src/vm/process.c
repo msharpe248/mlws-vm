@@ -126,6 +126,11 @@ void fn_where(StrBuf *b, const Function *f, uint32_t pc, bool base) {
     sb_printf(b, "%s:%u", base ? path_basename(src) : src, line);
 }
 
+void fn_qualname(StrBuf *b, const Function *f) {
+    sb_printf(b, "%s.%s", f->mod->m->name, f->name);
+    if (atomic_load_explicit(&f->mod->shared_name, memory_order_relaxed)) sb_printf(b, " [%s]", f->mod->path);
+}
+
 static void frame_line(StrBuf *b, const Frame *fr) {
     const Function *f = fr->fn;
     sb_printf(b, "  at %s.%s (", f->mod->m->name, f->name);

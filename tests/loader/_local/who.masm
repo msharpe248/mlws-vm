@@ -1,0 +1,5 @@
+; The program's own _local.who (see ../program_local.masm).
+.export which
+.func which -> i64
+    ret 1
+.endf

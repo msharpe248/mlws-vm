@@ -1,0 +1,5 @@
+; Only on the library path: module.load finds it there (see ../../program_local.masm).
+.export which
+.func which -> i64
+    ret 4
+.endf

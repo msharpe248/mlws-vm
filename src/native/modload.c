@@ -1,7 +1,8 @@
 /* modload.c - module.*: loading modules while the program runs (docs/ABI.md,
- * "Loading modules at run time"). A module is named by its string; once
- * loaded it stays loaded until the VM ends, so a closure for one of its
- * functions never outlives its code. */
+ * "Loading modules at run time"). A module is named by its string, looked up
+ * as an import from the calling module would be (a program's own module
+ * looks in its directory first); once loaded it stays loaded until the VM
+ * ends, so a closure for one of its functions never outlives its code. */
 #include "../heap/heap.h"
 
 static const char *name_arg(Process *p, Word a, const char *fn) {
@@ -16,7 +17,7 @@ static const LModule *caller_module(Process *p) { return p->nframes ? p->frames[
 
 static LModule *loaded(Process *p, Word a, const char *fn) {
     const char *name = name_arg(p, a, fn);
-    LModule *lm = vm_module_named(p->vm, name);
+    LModule *lm = vm_module_named(p->vm, name, caller_module(p));
     if (!lm) vm_trap(p, "E_LOAD_NOT_FOUND", "%s: module %s is not loaded (module.load loads it)", fn, name);
     return lm;
 }
@@ -35,7 +36,7 @@ static void n_load(Process *p, Word *a, Word *r) {
 }
 
 static void n_loaded(Process *p, Word *a, Word *r) {
-    r[0].i = vm_module_named(p->vm, name_arg(p, a[0], "module.loaded")) != NULL;
+    r[0].i = vm_module_named(p->vm, name_arg(p, a[0], "module.loaded"), caller_module(p)) != NULL;
 }
 
 static void n_function(Process *p, Word *a, Word *r) {
@@ -63,9 +64,11 @@ static void n_exports(Process *p, Word *a, Word *r) {
 
 static const NativeDef MODULE_NATIVES[] = {
     N("module.load", 1, T(T_R), 0, T(0), n_load,
-      "Load a module (and what it imports) while the program runs: as if the calling module imported it, with "
-      "the same library versions, privacy and verification. Loading a loaded module does nothing."),
-    N("module.loaded", 1, T(T_R), 1, T(T_B), n_loaded, "Whether a module is loaded."),
+      "Load a module (and what it imports) while the program runs: as if the calling module imported it, so "
+      "found in the program's directory first if the caller is one of the program's own modules, with the same "
+      "library versions, privacy and verification. Loading a loaded module does nothing."),
+    N("module.loaded", 1, T(T_R), 1, T(T_B), n_loaded,
+      "Whether a module is loaded: the module that name means to the caller, as for module.load."),
     N("module.function", 2, T(T_R, T_R), 1, T(T_R), n_function,
       "A closure for a function a loaded module exports, to call with calli (its signature is checked then)."),
     N("module.exports", 1, T(T_R), 1, T(T_R), n_exports, "The names of the functions a loaded module exports."),

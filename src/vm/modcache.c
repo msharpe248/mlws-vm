@@ -73,14 +73,17 @@ static bool file_hash(const char *path, uint8_t out[32]) {
     return true;
 }
 
+typedef VEC(const char *) Dirs;
+
 /* What the resolution of .include depended on: the working directory, the
- * source's directory and the library path. */
-static void resolution_context(VM *vm, const char *path, ByteBuf *b) {
+ * source's directory and the directories searched (the program's, if it is
+ * one of its modules, then the library path). */
+static void resolution_context(const Dirs *lp, const char *path, ByteBuf *b) {
     char *cwd = plat_getcwd(), *dir = path_dirname(path), *rdir = plat_realpath(dir);
     bb_str(b, cwd ? cwd : "");
     bb_str(b, rdir ? rdir : dir);
-    bb_uleb(b, vm->libpaths.n);
-    for (size_t i = 0; i < vm->libpaths.n; i++) bb_str(b, vm->libpaths.v[i]);
+    bb_uleb(b, lp->n);
+    for (size_t i = 0; i < lp->n; i++) bb_str(b, lp->v[i]);
     free(cwd);
     free(dir);
     free(rdir);
@@ -88,7 +91,7 @@ static void resolution_context(VM *vm, const char *path, ByteBuf *b) {
 
 /* The entry for this source, if every file it included is unchanged and was
  * resolved the same way. */
-static Module *cache_read(VM *vm, const char *entry, const char *path) {
+static Module *cache_read(const Dirs *lp, const char *entry, const char *path) {
     size_t len;
     char *data = read_file(entry, &len);
     if (!data) return NULL;
@@ -99,7 +102,7 @@ static Module *cache_read(VM *vm, const char *entry, const char *path) {
     uint64_t ndeps = ok ? br_uleb(&r) : 0;
     if (ok && ndeps) {
         ByteBuf want = {0}; /* the context, as written: compared byte for byte */
-        resolution_context(vm, path, &want);
+        resolution_context(lp, path, &want);
         ok = r.n - r.pos >= want.n && !memcmp(r.b + r.pos, want.b, want.n);
         r.pos += ok ? want.n : 0;
         bb_free(&want);
@@ -164,13 +167,13 @@ static void cache_trim(const char *dir) {
     free(names);
 }
 
-static void cache_write(VM *vm, const char *dir, const char *entry, const char *path, Module *m, char **files,
+static void cache_write(const Dirs *lp, const char *dir, const char *entry, const char *path, Module *m, char **files,
                         size_t nfiles) {
     ByteBuf b = {0};
     bb_bytes(&b, MODCACHE_MAGIC, 4);
     bb_u16(&b, MODCACHE_VERSION);
     bb_uleb(&b, nfiles ? nfiles - 1 : 0); /* files[0] is the source itself */
-    if (nfiles > 1) resolution_context(vm, path, &b);
+    if (nfiles > 1) resolution_context(lp, path, &b);
     for (size_t i = 1; i < nfiles; i++) {
         uint8_t h[32];
         if (!file_hash(files[i], h)) {
@@ -197,8 +200,10 @@ static void cache_write(VM *vm, const char *dir, const char *entry, const char *
     if (ok) cache_trim(dir);
 }
 
-Module *modcache_assemble(VM *vm, const char *path, const char *default_name, MlwsError *err) {
-    const char *const *lp = (const char *const *)vm->libpaths.v;
+Module *modcache_assemble(VM *vm, const char *path, const char *default_name, const Home *home, MlwsError *err) {
+    Dirs lp = {0}; /* where .include looks after the source's own directory */
+    if (home) VEC_PUSH(lp, home->dir);
+    for (size_t i = 0; i < vm->libpaths.n; i++) VEC_PUSH(lp, vm->libpaths.v[i]);
     const char *dir = cache_dir(vm);
     char *exe = dir ? plat_exe_path(NULL) : NULL;
     PlatStat st;
@@ -207,7 +212,9 @@ Module *modcache_assemble(VM *vm, const char *path, const char *default_name, Ml
     char *text = exe && plat_stat(exe, true, &st, &e) ? read_file(path, &len) : NULL;
     if (!text) {
         free(exe);
-        return assemble_file(path, default_name, lp, vm->libpaths.n, err);
+        Module *m = assemble_file(path, default_name, lp.v, lp.n, err);
+        VEC_FREE(lp);
+        return m;
     }
     Sha256 h;
     sha256_init(&h);
@@ -225,15 +232,16 @@ Module *modcache_assemble(VM *vm, const char *path, const char *default_name, Ml
     for (int i = 0; i < 32; i++) snprintf(name + 2 * i, 3, "%02x", key[i]);
     strcat(name, ".mlwsc");
     char *entry = path_join(dir, name);
-    Module *m = cache_read(vm, entry, path);
+    Module *m = cache_read(&lp, entry, path);
     if (!m) {
         char **files = NULL;
         size_t nfiles = 0;
-        m = assemble_file_deps(path, default_name, lp, vm->libpaths.n, &files, &nfiles, err);
-        if (m) cache_write(vm, dir, entry, path, m, files, nfiles);
+        m = assemble_file_deps(path, default_name, lp.v, lp.n, &files, &nfiles, err);
+        if (m) cache_write(&lp, dir, entry, path, m, files, nfiles);
         for (size_t i = 0; i < nfiles; i++) free(files[i]);
         free(files);
     }
     free(entry);
+    VEC_FREE(lp);
     return m;
 }

@@ -168,7 +168,8 @@ static void profile_insn(Tools *t, Process *p, Function *f, uint32_t pc) {
     StrBuf b = {0};
     for (uint32_t i = 0; i < p->nframes; i++) {
         const Function *fi = p->frames[i].fn;
-        sb_printf(&b, "%s%s.%s", i ? ";" : "", fi->mod->m->name, fi->name);
+        if (i) sb_putc(&b, ';');
+        fn_qualname(&b, fi);
     }
     void *v;
     uintptr_t n = smap_get(&t->stacks, b.s, &v) ? (uintptr_t)v : 0;
@@ -289,8 +290,11 @@ void tools_profile_report(VM *vm, FILE *out, const char *flame_path) {
         const Function *f = fn.v[i].f;
         char cl[24];
         snprintf(cl, sizeof cl, "%u/%u", (unsigned)f->zlen, (unsigned)f->rsize);
-        fprintf(out, "  %5.1f%% %12llu %10llu %9s  %s.%s\n", 100.0 * (double)fn.v[i].n / (double)total,
-                (unsigned long long)fn.v[i].n, (unsigned long long)f->prof[0], cl, f->mod->m->name, f->name);
+        StrBuf q = {0};
+        fn_qualname(&q, f);
+        fprintf(out, "  %5.1f%% %12llu %10llu %9s  %s\n", 100.0 * (double)fn.v[i].n / (double)total,
+                (unsigned long long)fn.v[i].n, (unsigned long long)f->prof[0], cl, q.s);
+        sb_free(&q);
         for (int b = 0; b < NBANKS; b++) any_first = any_first || f->read_first[b];
     }
     if (any_first) { /* what makes a call clear more than the R registers */
@@ -300,7 +304,10 @@ void tools_profile_report(VM *vm, FILE *out, const char *flame_path) {
             bool some = false;
             for (int b = 0; b < NBANKS; b++) some = some || f->read_first[b];
             if (!some) continue;
-            fprintf(out, "  %s.%s:", f->mod->m->name, f->name);
+            StrBuf q = {0};
+            fn_qualname(&q, f);
+            fprintf(out, "  %s:", q.s);
+            sb_free(&q);
             for (int b = 0; b < NBANKS; b++)
                 for (int k = 0; k < 32; k++)
                     if (f->read_first[b] >> k & 1) fprintf(out, " %c%d", "IFRP"[b], k);
@@ -383,8 +390,11 @@ void tools_profile_report(VM *vm, FILE *out, const char *flame_path) {
         uint32_t sline;
         char src[300] = "";
         if (module_srcpos(f->mod->m, f->mf, pc, &file, &sline)) snprintf(src, sizeof src, " (%s:%u)", file, sline);
-        fprintf(out, "  %5.1f%% %12llu  %-40s ; %s.%s line %u%s\n", 100.0 * (double)slow.v[i].n / (double)total,
-                (unsigned long long)slow.v[i].n, d.s ? d.s : "", f->mod->m->name, f->name, line, src);
+        StrBuf q = {0};
+        fn_qualname(&q, f);
+        fprintf(out, "  %5.1f%% %12llu  %-40s ; %s line %u%s\n", 100.0 * (double)slow.v[i].n / (double)total,
+                (unsigned long long)slow.v[i].n, d.s ? d.s : "", q.s, line, src);
+        sb_free(&q);
     }
     sb_free(&d);
     VEC_FREE(slow);

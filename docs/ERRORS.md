@@ -31,7 +31,7 @@ the message also names the macro and where it was expanded.
 | `E_LOAD_NOT_FOUND` | Program file or imported module not found on the library path |
 | `E_LOAD_IO` | File could not be read |
 | `E_LOAD_FORMAT` | Malformed or truncated `.mlwso` file, or unknown opcode/mode |
-| `E_LOAD_NAME` | A module declares a different name than it was imported as, or the name is already loaded |
+| `E_LOAD_NAME` | A module declares a different name than it was imported as, or two modules of one directory (or two on the library path) have the same name |
 | `E_LOAD_LIMIT` | Too many modules |
 | `E_LINK_CYCLE` | Import cycle (the message shows the chain) |
 | `E_LINK_VERSION` | No version of a library meets every `.requires` constraint, a library already chosen does not meet a later one, or the VM's version does not meet `.requires mlwsvm, …` (the message says who needs which versions) |

@@ -81,6 +81,8 @@ static void lmodule_free(LModule *lm) {
     free(lm->structs);
     free(lm->frefs);
     free(lm->path);
+    free(lm->key);
+    free(lm->deps);
     module_free(m);
     free(lm);
 }
@@ -114,8 +116,13 @@ void vm_free(VM *vm) {
     free(vm->cache_dir);
     for (size_t i = 0; i < vm->libpaths.n; i++) free(vm->libpaths.v[i]);
     VEC_FREE(vm->libpaths);
-    for (size_t i = 0; i < vm->loading.n; i++) free(vm->loading.v[i]);
     VEC_FREE(vm->loading);
+    for (size_t i = 0; i < vm->homes.n; i++) {
+        free(vm->homes.v[i]->dir);
+        free(vm->homes.v[i]->real);
+        free(vm->homes.v[i]);
+    }
+    VEC_FREE(vm->homes);
     VEC_FREE(vm->exits);
     for (size_t i = 0; i < vm->prog_args.n; i++) free(vm->prog_args.v[i]);
     VEC_FREE(vm->prog_args);

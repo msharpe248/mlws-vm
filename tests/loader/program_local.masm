@@ -1,0 +1,45 @@
+; A program's own modules and the library path's: a module found in the
+; program's directory belongs to the program, and is looked for there first;
+; a module on the library path is looked for only on the library path, even
+; when the program has a module of the same name.
+;
+; Two files here are both module _local.who:
+;   tests/loader/_local/who.masm          the program's own (its directory)
+;   tests/loader/_libpath/_local/who.masm  the library path's
+; and tests/loader/_libpath/bridge.masm, a library-path module, imports
+; _local.who too. Both _local.who modules are loaded side by side: the
+; program's imports get its own, bridge's import gets the library path's.
+; module.loaded, module.load and module.function resolve a name the way an
+; import from the calling module would.
+; option: --lib-path tests/loader/_libpath
+.include "std/test.inc"
+.import _local.who                       ; the program's own: found in its directory first
+.import bridge                           ; on the library path only
+
+.func main
+    call _local.who.which () -> (I0)
+    ASSERT_EQ I0, 1                      ; 1: the program's _local.who
+    call bridge.which () -> (I1)
+    ASSERT_EQ I1, 2                      ; 2: bridge's import is the library path's
+
+    ; Run-time loading looks where an import from main would: the program's.
+    ncall "module.loaded" ("_local.who") -> (I2)
+    ASSERT_TRUE I2
+    ncall "module.function" ("_local.who", "which") -> (R0)
+    calli R0 () -> (I3)
+    ASSERT_EQ I3, 1
+
+    ; A module only the program has is loaded from its directory, ...
+    ncall "module.loaded" ("_local.late") -> (I4)
+    ASSERT_FALSE I4                      ; there to be loaded, but not yet
+    ncall "module.load" ("_local.late")
+    ncall "module.function" ("_local.late", "which") -> (R1)
+    calli R1 () -> (I5)
+    ASSERT_EQ I5, 3
+    ; ... and one only the library path has, from there.
+    ncall "module.load" ("_local.libonly")
+    ncall "module.function" ("_local.libonly", "which") -> (R2)
+    calli R2 () -> (I6)
+    ASSERT_EQ I6, 4
+    ret 0
+.endf

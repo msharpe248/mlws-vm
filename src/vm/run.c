@@ -143,17 +143,37 @@ bool vm_run_function(VM *vm, Function *fn, Word *args, int nargs, RunResult *res
 bool vm_run_files(VM *vm, const ProgSpec *specs, int n, RunResult *res) {
     memset(res, 0, (size_t)n * sizeof *res);
     vm->exit_requested = false;
-    /* Load every program first: a load error in any is reported before anything runs. */
-    Function **fns = xcalloc((size_t)n + 1, sizeof *fns);
-    bool loaded = true;
-    for (int i = 0; i < n && loaded; i++) {
-        for (int j = 0; j < i && !fns[i]; j++) /* the same program again: another main of the same module */
-            if (!strcmp(specs[j].path, specs[i].path)) fns[i] = fns[j];
-        if (fns[i]) continue;
-        LModule *root = vm_load_root(vm, specs[i].path, &res[i].err);
-        fns[i] = root ? vm_find_main(root, &res[i].err) : NULL;
-        if (!fns[i]) res[i].status = RUN_LOAD_ERROR, loaded = false;
+    /* Load every program first, together (so that library versions are
+     * chosen for all of them): a load error in any is reported before
+     * anything runs. The same file again is another main of the same module. */
+    const char **paths = xcalloc((size_t)n + 1, sizeof *paths);
+    int *first = xcalloc((size_t)n + 1, sizeof *first); /* the spec that first named each file */
+    int *which = xcalloc((size_t)n + 1, sizeof *which); /* each spec's file */
+    int nfiles = 0;
+    for (int i = 0; i < n; i++) {
+        int j = 0;
+        while (j < nfiles && strcmp(paths[j], specs[i].path)) j++;
+        if (j == nfiles) paths[nfiles] = specs[i].path, first[nfiles++] = i;
+        which[i] = j;
     }
+    LModule **roots = xcalloc((size_t)nfiles + 1, sizeof *roots);
+    MlwsError *errs = xcalloc((size_t)nfiles + 1, sizeof *errs);
+    Function **mains_of = xcalloc((size_t)nfiles + 1, sizeof *mains_of);
+    bool loaded = vm_load_roots(vm, paths, nfiles, roots, errs);
+    for (int j = 0; j < nfiles && loaded; j++) loaded = (mains_of[j] = vm_find_main(roots[j], &errs[j])) != NULL;
+    Function **fns = xcalloc((size_t)n + 1, sizeof *fns);
+    for (int i = 0; i < n; i++) fns[i] = mains_of[which[i]];
+    for (int j = 0; j < nfiles && !loaded; j++) {
+        if (!errs[j].code[0]) continue;
+        res[first[j]].status = RUN_LOAD_ERROR;
+        res[first[j]].err = errs[j];
+    }
+    free(paths);
+    free(first);
+    free(which);
+    free(roots);
+    free(errs);
+    free(mains_of);
     if (!loaded) {
         free(fns);
         return false;

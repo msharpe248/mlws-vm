@@ -220,9 +220,6 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         StrBuf errs = {0}; /* crash reports of unobserved child processes */
         vm->err_out = capture;
         vm->err_ctx = &errs;
-        char *dir = path_dirname(path);
-        vm_add_libpath(vm, dir);
-        free(dir);
         tool_env_libpaths(env, vm);
         RunResult r;
         memset(&r, 0, sizeof r);
