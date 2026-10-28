@@ -2,25 +2,32 @@
 ; returns (foreign code is never interrupted): its monitor then sees E_KILLED,
 ; and `alive` reports it dead at once. The program may also end while a
 ; blocking call is still running: the VM waits for it to return.
+;
+; The sleeper says when it is about to make the call, and main kills it only
+; then; the call is long (500 ms), so the kill lands inside it even when main
+; is scheduled late (a busy CI runner). A kill just before the call starts
+; ends the process at once, which the monitor sees as E_KILLED too.
 ; option: --ext-path build/test-ext
 ; expect-stdout: E_KILLED
 .include "std/test.inc"
 .include "std/io.inc"
 .extension "demo"
-.func sleeper(i64 ms)
+.func sleeper(i64 ms, i64 parent)
+    send parent, 1                       ; about to block
     ncall "demo.sleep" (ms) -> (I1)
     FAIL "a killed process continued after its blocking call"
     ret
 .endf
 .func main
-    spawnm sleeper (150) -> (I0)
-    sleep 20                           ; let it get into the call
+    spawnm sleeper (500, PID) -> (I0)
+    recv I2                              ; it is making the call
+    sleep 20                             ; let it get into the call
     kill I0
     alive I1, I0
     ASSERT_FALSE I1
     recv R0
     PRINTLN_S R0->Down.code              ; checked as output, so a failure shows the code
-    spawn sleeper (100)                ; still in its call when main returns
+    spawn sleeper (100, PID)             ; still in its call when main returns
     sleep 10
     ret 0
 .endf
