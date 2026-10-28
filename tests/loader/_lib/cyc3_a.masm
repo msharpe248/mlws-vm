@@ -1,0 +1,7 @@
+; Part of an import cycle of three modules, a -> b -> c -> a, which
+; err_import_cycle3.masm enters from outside: none of the three can load.
+.module _lib.cyc3_a
+.import _lib.cyc3_b
+.func f
+    ret
+.endf

@@ -1,0 +1,10 @@
+; An import cycle of three modules, entered from a module that is not part of
+; it: this program -> _lib.cyc3_entry -> _lib.cyc3_a -> _lib.cyc3_b ->
+; _lib.cyc3_c -> _lib.cyc3_a. The loader finds the cycle however long it is
+; and wherever it starts, and nothing runs. (err_import_cycle.masm has the
+; two-module cycle; module_graph.masm a diamond, which is not a cycle.)
+; expect-error: E_LINK_CYCLE
+.import _lib.cyc3_entry
+.func main
+    ret 0
+.endf

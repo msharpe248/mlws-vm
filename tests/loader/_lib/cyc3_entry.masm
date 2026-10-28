@@ -1,0 +1,7 @@
+; Not part of the cycle: it imports _lib.cyc3_a, leading into it, so the
+; cycle starts one module below the program.
+.module _lib.cyc3_entry
+.import _lib.cyc3_a
+.func f
+    ret
+.endf

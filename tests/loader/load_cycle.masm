@@ -1,0 +1,39 @@
+; The three-module import cycle of err_import_cycle3.masm, met at run time:
+; module.load of a module that leads into it fails with E_LINK_CYCLE, which
+; the program can catch. The load leaves nothing behind, neither the module
+; asked for nor any module of the cycle; trying again fails the same way;
+; and loading still works for modules that are not in a cycle.
+.include "std/test.inc"
+
+.macro EXPECT_CYCLE name
+.try .Lh\@
+    ncall "module.load" (\name)
+.endtry
+    FAIL "an import cycle was loaded"
+.Lh\@:
+    catch R31
+    strcmp I31, R31->Error.code, "E_LINK_CYCLE"
+    ASSERT_EQ I31, 0
+.endm
+
+.macro ASSERT_NOT_LOADED name
+    ncall "module.loaded" (\name) -> (I30)
+    ASSERT_FALSE I30
+.endm
+
+.func main
+    EXPECT_CYCLE "_lib.cyc3_entry"           ; entry -> a -> b -> c -> a
+    ASSERT_NOT_LOADED "_lib.cyc3_entry"
+    ASSERT_NOT_LOADED "_lib.cyc3_a"
+    ASSERT_NOT_LOADED "_lib.cyc3_b"
+    ASSERT_NOT_LOADED "_lib.cyc3_c"
+    EXPECT_CYCLE "_lib.cyc3_entry"           ; the same again: nothing was half loaded
+    EXPECT_CYCLE "_lib.cyc3_b"               ; or entering the cycle in the middle
+    ASSERT_NOT_LOADED "_lib.cyc3_b"
+
+    ncall "module.load" ("_lib.chain_a")     ; a chain with no cycle still loads
+    ncall "module.function" ("_lib.chain_a", "plus2") -> (R0)
+    calli R0 () -> (I0)
+    ASSERT_EQ I0, 42
+    ret 0
+.endf

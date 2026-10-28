@@ -1,0 +1,6 @@
+; Part of the cycle _lib.cyc3_a -> _lib.cyc3_b -> _lib.cyc3_c -> _lib.cyc3_a.
+.module _lib.cyc3_b
+.import _lib.cyc3_c
+.func f
+    ret
+.endf

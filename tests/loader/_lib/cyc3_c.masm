@@ -1,0 +1,6 @@
+; Closes the cycle: _lib.cyc3_c imports _lib.cyc3_a, which is still loading.
+.module _lib.cyc3_c
+.import _lib.cyc3_a
+.func f
+    ret
+.endf
