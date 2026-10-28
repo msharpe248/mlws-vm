@@ -54,7 +54,7 @@ OP(CVT,    0x0017, "cvt",    "Data movement", "DS", TS_NUM | TS_BIGDEC, OPF_TYPE
 OP(BITCAST,0x0018, "bitcast","Data movement", "DS", TS_NUM, OPF_TYPE2,
    "Reinterpret the bits of src as dst's type: `bitcast.<to>.<from>`. Both types must have the same size, e.g. bitcast.i64.f64 or bitcast.f32.u32.")
 OP(LDV,    0x0019, "ldv",    "Data movement", "JHV", 0, 0,
-   "Load a number into the destination its type tag picks: `ldv I0, F0, R1[I2]` sets I0 (as i64) if the slot holds an integer (b, c, i8 ... u64) and F0 (as f64) if it holds a float, and leaves the other unchanged. A slot never written reads as the integer 0; any other type traps E_TYPE. This reads the number half of a dynamically typed value without a branch on its type.")
+   "Load a number into the destination its type tag picks: `ldv I0, F0, R1[I2]` sets I0 (as i64) if the slot holds an integer (b, c, i8 ... u64) and F0 (as f64) if it holds a float, and sets the other to zero. A slot never written reads as the integer 0; any other type traps E_TYPE. This reads the number half of a dynamically typed value without a branch on its type.")
 
 /* ---- arithmetic --------------------------------------------------------- */
 OP(ADD,    0x0020, "add",    "Arithmetic", "DS+", TS_NUM | TS_PTR | TS_BIGDEC, 0,

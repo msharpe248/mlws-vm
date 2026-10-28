@@ -2,7 +2,8 @@
 ; however the function reaches the read: on a path that skips the write, in a
 ; loop before the write comes round, through an instruction that reads its
 ; destination (`add I4, 1`, `neg`, `inc`, `swap`), in the half of ldv's pair
-; it leaves alone, in an exception handler, and as an address register. Each
+; the value does not pick (ldv zeroes it), in an exception handler, and as an
+; address register. Each
 ; check first calls `dirty`, which leaves garbage in every register of the
 ; window the next call reuses, so a register a call failed to clear shows.
 .include "std/test.inc"
@@ -62,9 +63,9 @@
     ret I4, F1, I6, I0
 .endf
 
-; ldv writes only one of its destinations: the other keeps its zero.
+; ldv loads one of its destinations and zeroes the other.
 .func ldv_other(ref l) -> (i64, f64)
-    ldv I1, F3, l[0]                    ; an integer: F3 is left alone
+    ldv I1, F3, l[0]                    ; an integer: F3 is zeroed
     ret I1, F3
 .endf
 

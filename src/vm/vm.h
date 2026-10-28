@@ -86,6 +86,12 @@ typedef struct Function {
      * is 0); rsize is the whole window, in 8-byte words. */
     uint16_t roff[NBANKS];
     uint16_t rsize;
+    /* What a call clears of the window: the zlen words from word zoff (one
+     * run, maybe empty; verify.c, plan_window). The rest is written before it
+     * is read on every path. 16 bits, as rsize: with a byte, GCC knows the
+     * clear is under 2 KiB and expands it inline as `rep stos`, whose start-up
+     * made calls on x86 up to a third slower than a call to memset. */
+    uint16_t zoff, zlen;
 } Function;
 
 enum { LM_LOADING = 1, LM_READY = 2 };
@@ -166,6 +172,7 @@ typedef struct VM {
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
     bool slabs;              /* processes use the small-object allocator (gc.c); MLWSVM_NO_SLABS=1: malloc */
     uint64_t gc_min_threshold;
+    bool whole_windows;      /* every call clears its whole register window (the debugger) */
     /* processes and scheduling (sched.c) */
     struct Sched *sched;         /* process table, run queues, timers, worker threads */
     int threads;                 /* worker threads; 0 = one per core (MLWSVM_THREADS) */
@@ -453,6 +460,8 @@ LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err
 LModule *vm_require(VM *vm, const char *name, MlwsError *err);
 /* verify.c */
 bool vm_verify_module(VM *vm, LModule *lm, MlwsError *err);
+/* Clear every call's whole window from now on (the debugger shows them). */
+void vm_whole_windows(VM *vm);
 
 /* process.c */
 Process *proc_new(VM *vm);

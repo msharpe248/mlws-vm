@@ -78,25 +78,33 @@ mostly field maps and allocation.
 
 The Lua 5.5 compiler in `mlws-compilers`, still in development, keeps each Lua
 value in three registers (an integer, a float and a reference whose value says
-which is live) and gives tables shapes and per-site caches. Its benchmarks, as
-whole runs (start-up and assembling included), in milliseconds, best of three,
-against the reference interpreter running the same source:
+which is live), gives tables shapes and per-site caches, and makes typed
+copies of local functions for the argument types they are called with. Its
+benchmarks, as whole runs (start-up and assembling its runtime, about 40 ms on
+the M5, included), in milliseconds, best of three, against the reference
+interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | Lua 5.5, M5 | MLWSVM, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|
-| loop | 237 | 211 | 454 | 289 |
-| iterate | 125 | 57 | 207 | 78 |
-| fib | 150 | 51 | 212 | 102 |
-| methods | 831 | 332 | 1,470 | 565 |
-| strings | 400 | 129 | 654 | 213 |
-| binarytrees (15) | 774 | 377 | 1,514 | 564 |
-| nbody (500,000) | 1,657 | 401 | 2,570 | 581 |
-| spectralnorm (500) | 462 | 182 | 787 | 268 |
-| fannkuch (10) | 2,712 | 786 | 4,426 | 1,157 |
+| loop | 225 | 221 | 382 | 289 |
+| iterate | 125 | 57 | 193 | 79 |
+| fib | 91 | 54 | 150 | 102 |
+| methods | 615 | 353 | 1,086 | 563 |
+| strings | 406 | 144 | 648 | 211 |
+| binarytrees (15) | 623 | 388 | 1,243 | 579 |
+| nbody (500,000) | 1,044 | 432 | 1,741 | 585 |
+| spectralnorm (500) | 263 | 181 | 416 | 269 |
+| fannkuch (10) | 2,026 | 814 | 3,063 | 1,160 |
 
-The profiler shows nearly all of these instructions on fast paths; what the
+Without start-up, `fib` runs in 50 ms on the M5, as fast as Lua: its typed
+copy executes fewer instructions than Lua's bytecode does. Counted with Lua's
+own instruction hook, the others execute 1.7 to 5.2 times as many, and each
+costs less: 0.5–0.9 ns on the M5 in the loop-heavy benchmarks, against Lua's
+1.0–1.5 ns. What the
 generated code still spends is instruction count (type guards on values of
-unknown type, two-word table values, hash lookups) and allocation.
+unknown type, two-word table values, inline-cache guards), allocation, and,
+in `strings` and `iterate`, library functions that run as VM code where
+Lua's are in C.
 
 ### Against other virtual machines
 
@@ -165,7 +173,10 @@ it measured faster.
    array element. A fifth, also asked for by the Lua compiler: elements at a
    register index plus a constant (`R1[I2+1]`, in forms of their own, so that
    a plain index costs nothing more) and `bisa`/`bnisa`, a struct-type test
-   and branch in one. The profiler lists the
+   and branch in one. A sixth: `lpush` with constants among its values, the
+   shape of a table constructor's keys and values (each constant's word and
+   type worked out at load time), which took 16% off compiled Lua's
+   `methods`. The profiler lists the
    instructions that still run generically, which is how these were chosen. A
    shape qualifies only when its generic semantics are trivially the same: no
    width canonicalisation, and no trap that cannot be checked cheaply. The disassembler, tracer, profiler and debugger see the real opcode.
@@ -214,15 +225,32 @@ it measured faster.
 5. **One register stack, and direct calls.** A frame's registers are one window
    on a single register stack: its `I`, `F`, `R` and `P` registers one after
    another, at offsets fixed for each function when it is loaded. Pushing a
-   frame checks one limit, moves one stack top and zeroes one window; popping
-   restores one top. The loader records every register operand's slot in its
-   function's window, and each argument of a quickened `call` its slot in the
-   callee's, so arguments are copied word by word straight across, with no
-   test of their bank; a frame pushed this way is marked, and its quickened
-   `ret` copies the results back the same way. Closure calls (`calli`) work
-   alike, with the closure's type and banks checked per call. Measured with a
-   window per bank instead, every call and return does its bookkeeping four
-   times, and `fib` takes 37% longer.
+   frame checks one limit, moves one stack top and clears one run of words;
+   popping restores one top. Each quickened `call` and `ret` gets a plan when it
+   is loaded: the callee, and as bytes each argument's slot in the caller's
+   window and in the callee's, and each result's, kept just after the
+   instruction's operands. Arguments are copied word by word straight across,
+   with no test of their bank and with one cache line read instead of a
+   72-byte operand per value; a frame pushed this way is marked, and its
+   quickened `ret` copies the results back the same way. Closure calls
+   (`calli`) work alike, with the closure's type and banks checked per call.
+   Measured with a window per bank instead, every call and return does its
+   bookkeeping four times, and `fib` takes 37% longer.
+
+   A new window must read as zero, but only its `R` registers (which the
+   collector scans) and those the function may read before writing them need
+   clearing. A dataflow pass at load time (`plan_window` in
+   `src/vm/verify.c`) finds the second kind, from the registers definitely
+   written before each instruction, and a call clears one run, from the first
+   register that needs it to the last. `ldv` zeroes the destination its value
+   does not pick, so that both count as written. Compiled Lua's typed copy of
+   `fib` (6 words, no references) clears nothing at all. `make check-poison`
+   fills every new window with garbage before the run is cleared, so that a
+   register read before it is written, but not cleared, makes a test fail.
+   The run's length is a 16-bit field like the window's size: with a byte,
+   GCC knew the clear was under 2 KiB and expanded it inline as `rep stos`,
+   whose start-up made calls on x86 up to a third slower than a call to
+   `memset`.
 6. **Fields and elements.** `mov` between a register and a struct field, or an
    array or list element indexed by a register, for 64-bit types, has its own
    handlers. Each checks the object at run time and hands anything unexpected
@@ -391,18 +419,6 @@ for each request it serves.
   would need compilers to put arguments at the end of the caller's window, and
   a register model in which banks overlap too, so this waits until call-heavy
   programs show the copies.
-* **Clearing only part of a new window.** A new window must read as zero, but
-  only its `R` registers (which the collector scans) and those the function
-  may read before writing them need clearing. A dataflow pass at load time
-  found them, and calls cleared one run per bank instead of the whole window.
-  Compiled Lua's windows are 67–95 words, because its compiler keeps scratch
-  registers at 28–31 of each bank, so this took 11% off its `fib` on the M5
-  and 5–8% on x86. But every way of clearing several runs changed the code of
-  all the call handlers, into which the frame push is inlined, and made its
-  `iterate` 4–8% slower on both x86 machines (and `nbody` up to 6% on the
-  Ryzen), even where only one run was cleared. Smaller windows get the same saving with no
-  change here: compilers should put scratch registers just above the ones a
-  function uses ([TARGETING.md](TARGETING.md#2-values-and-registers)).
 * **Fewer operands per instruction.** Measured, and rejected. Storing the
   operands inside each instruction, as a fixed 3-operand format would, was no
   faster, and fixed-format calls make `fib` 13–17% slower. See

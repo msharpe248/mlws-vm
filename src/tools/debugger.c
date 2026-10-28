@@ -470,6 +470,7 @@ int debugger_run(VM *vm, LModule *root, Function *main_fn, DebugIO *io) {
     d.out_ctx = io->out_ctx;
     d.hit = -1;
     tools_enable_hook(vm);
+    vm_whole_windows(vm); /* `regs` shows registers not yet written as zero */
     Tools *t = tools_of(vm);
     t->dbg = &d;
     d.main = proc_new(vm);

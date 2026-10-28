@@ -66,6 +66,9 @@ jobs:
       - name: Dispatch loop (no tail calls)
         run: make CC=$CC check-loop
 
+      - name: Register windows filled with garbage before a call clears them
+        run: make CC=$CC check-poison
+
       - name: Without libffi
         run: |
           make CC=$CC BUILD=build-noffi BIN=mlwsvm-noffi FFI=0 -j4

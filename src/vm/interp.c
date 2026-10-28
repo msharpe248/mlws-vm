@@ -1211,6 +1211,9 @@ enum {
      * so that the plain index's pay nothing for it. */
     Q_LDED_I, Q_LDED_F, Q_LDED_R, Q_STED_I, Q_STED_F, Q_STED_R, Q_LDV_ED,
     Q_BISA, Q_BNISA,
+    /* M33: lpush with constants among the values (a constructor's keys and
+     * values): each constant's word in its kw and its type in its pad. */
+    Q_LPUSH_RK,
 #define X(N, o) Q_##N##_UU, Q_##N##_UK, /* u64 compare-and-branch */
     QUBRANCH_OPS(X)
 #undef X
@@ -1301,6 +1304,42 @@ static bool quicken_call(const Insn *in) {
 static const MFunc *quicken_fn; /* function being quickened (for ret) */
 static uint32_t quicken_idx;      /* the instruction's index in it */
 
+typedef struct {
+    Function *fn; /* a direct call's callee */
+    uint8_t argc, nres;
+    uint8_t slot[];
+} QPlan;
+#define QPLAN_K 0xFF
+
+/* A quickened call's or ret's operands as its handler reads them: bytes, in
+ * one cache line, instead of a 72-byte Operand each. It lives just after the
+ * instruction's operands, in the same allocation (so insn_free frees it), and
+ * Insn.k points to it. A call's slots are each argument's slot in the caller
+ * (QPLAN_K: a constant, whose word is the operand's kw), then, for a direct
+ * call, each parameter's slot in the callee, then each result's slot in the
+ * caller; a ret's are its values' slots (or QPLAN_K). */
+static void quicken_plan(Insn *in) {
+    bool call = in->xop == Q_CALL_R || in->xop == Q_CALL_RK || in->xop == Q_CALLI_R || in->xop == Q_CALLI_RK;
+    bool ret = in->xop == Q_RET_R || in->xop == Q_RET_RK;
+    if (!call && !ret) return;
+    int n = in->nops, argc = call ? (int)in->ops[1].imm : 0, nres = call ? n - 2 - argc : n;
+    size_t at = (size_t)(n ? n : 1) * sizeof(Operand);
+    in->ops = xrealloc(in->ops, at + sizeof(QPlan) + (size_t)(2 * argc + nres));
+    const Operand *o = in->ops;
+    QPlan *pl = (QPlan *)((char *)in->ops + at);
+    bool direct = in->xop == Q_CALL_R || in->xop == Q_CALL_RK;
+    pl->fn = direct ? o[0].rv.ptr : NULL;
+    pl->argc = (uint8_t)argc;
+    pl->nres = (uint8_t)nres;
+    const Operand *v = call ? o + 2 : o;
+    for (int k = 0; k < argc; k++) {
+        pl->slot[k] = v[k].mode == OM_REG ? v[k].pad : QPLAN_K;
+        pl->slot[argc + k] = direct ? v[k].ireg : 0;
+    }
+    for (int k = 0; k < nres; k++) pl->slot[2 * argc + k] = v[argc + k].mode == OM_REG ? v[argc + k].pad : QPLAN_K;
+    in->k.p = pl;
+}
+
 void interp_quicken_function(Function *f) {
     quicken_fn = f->mf;
     /* Every register operand's slot in f's register window (Function.roff), in
@@ -1314,6 +1353,7 @@ void interp_quicken_function(Function *f) {
     for (uint32_t k = 0; k < f->ncode; k++) {
         quicken_idx = k;
         interp_quicken(&f->code[k]);
+        quicken_plan(&f->code[k]);
     }
     quicken_fn = NULL;
 }
@@ -1615,10 +1655,26 @@ void interp_quicken(Insn *in) {
     case OP_LEN:
         if (IREG(0) && RREG(1)) in->xop = Q_LEN;
         break;
-    case OP_LPUSH: { /* untyped: each value its register's natural type */
-        bool regs = t == T_NONE && RREG(0);
-        for (int k = 1; k < n; k++) regs = regs && (IREG(k) || FREG(k) || RREG(k));
-        if (regs) in->xop = Q_LPUSH_R;
+    case OP_LPUSH: { /* untyped: each value its register's or constant's natural type */
+        bool regs = t == T_NONE && RREG(0), rk = regs;
+        for (int k = 1; k < n; k++) {
+            bool reg = IREG(k) || FREG(k) || RREG(k);
+            regs = regs && reg;
+            rk = rk && (reg || o[k].mode == OM_IMM || o[k].mode == OM_FIMM || o[k].mode == OM_CONST);
+        }
+        if (regs) {
+            in->xop = Q_LPUSH_R;
+        } else if (rk) {
+            in->xop = Q_LPUSH_RK;
+            for (int k = 1; k < n; k++) { /* as rdn reads them untyped */
+                Word w = {0};
+                if (o[k].mode == OM_IMM) w.i = o[k].imm, o[k].pad = T_I64;
+                else if (o[k].mode == OM_FIMM) w.f = o[k].f, o[k].pad = T_F64;
+                else if (o[k].mode == OM_CONST) w.r = o[k].rv.ptr, o[k].pad = T_R;
+                else continue;
+                memcpy(&o[k].kw, &w, 8);
+            }
+        }
         break;
     }
 #define X(N, f)                                                                \

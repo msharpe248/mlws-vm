@@ -30,9 +30,16 @@ Use `.import` for dependencies and `.export` for public functions and globals.
   gives each local and temporary its own register, and spills to stack locals
   (`enter n` and `LOC[k]`) only past 32 per bank.
 * **Use the lowest registers.** A function's window runs to the highest
-  register it names in each bank, and every call zeroes the whole window.
-  Scratch registers just above a function's own (rather than fixed ones at
-  28–31) keep windows small and calls cheap.
+  register it names in each bank. Scratch registers just above a function's
+  own (rather than fixed ones at 28–31) keep windows small and calls cheap.
+* **Write a register before reading it.** A new window reads as zero, but a
+  call clears only the function's `R` registers and the `I`, `F` and `P`
+  registers it may read before writing them (on any path, found when it is
+  loaded). A function whose every path writes those first clears just its `R`
+  registers, or nothing. The usual way to read one first is to pass on the
+  half of a value that its type leaves unused: pass a constant instead
+  (`call f (I2, 0.0, null)`, not `call f (I2, F2, R2)` where `F2` was never
+  written).
 * **Name registers with `.alias`** in generated code (`.alias count, I4`). It costs
   nothing at runtime and makes the output readable.
 * **Use explicit type suffixes for narrow types** (`add.i32`, `mov.u8`). Without
@@ -179,7 +186,8 @@ The heap object types map directly onto scripting-language values
   as a reference (saying what the value is) plus an integer or a float can
   store it in a list as two words, the reference and then the number. `ldv`
   reads the number word into whichever register its tag picks, without a
-  branch; a word never written reads as the integer 0:
+  branch, and sets the other to zero; a word never written reads as the
+  integer 0:
 
   ```asm
       mov   R3, R1[I2]               ; what the value is
@@ -424,10 +432,11 @@ them by emitting these shapes; nothing else changes.
   into registers, computing there and storing back is much faster in a loop:
   `bench/nbody.masm` runs in 96 ms with element operands and in 24 ms rewritten
   that way, although it executes more instructions.
-* **Lists:** `lpush R0, I1, F2, R3` of untyped register values, while the list
-  has room: each value is tagged with its register's type. Growing the list
-  takes the general path, so create lists with their final capacity
-  (`lnew R0, n`) when it is known.
+* **Lists:** `lpush R0, I1, F2, R3` of untyped register values and constants
+  (`lpush R0, "x", 0.0, R1, I1`), while the list has room: each value is
+  tagged with its register's or constant's type. Growing the list takes the
+  general path, so create lists with their final capacity (`lnew R0, n`) when
+  it is known.
 * **Objects:** `new R0, Point`; `lnew R0` and `lnew R0, 8`; `isa I0, R0, Point`,
   and `bisa`/`bnisa R0, Point, L`, which branch on it in one instruction;
   `len I0, R0`; `tagof I0, R1[I2]`; null tests `bz R0, L` and `bnz R0, L`;
@@ -442,8 +451,8 @@ program's instructions do, run it with `mlwsvm run --profile`: the report lists
 the hottest instructions on the general path, with their lines
 ([TOOLING.md](TOOLING.md#profiler---profile)).
 
-Calls cost less with smaller windows, since each call zeroes its callee's
-whole window (section 2).
+Calls cost less with smaller windows, and with fewer registers read before
+they are written, since each call clears those of its callee (section 2).
 
 Where it matters, prefer one instruction to several (`blt a, b, L` over `slt` +
 `bnz`), and keep hot values in registers rather than in `SP[...]` or globals. See

@@ -6,9 +6,9 @@
 
 void proc_frame_slow(Process *p, uint32_t words);
 
-/* Zero a register window of n words. Windows are usually a few registers,
- * where a call to memset costs more than the stores (and compilers turn a
- * plain loop back into that call). */
+/* Zero n words of a register window. That is usually a few registers, where
+ * a call to memset costs more than the stores (and compilers turn a plain
+ * loop back into that call). */
 #define ZERO_REGS(regs, n)                                                     \
     do {                                                                       \
         uint64_t *w_ = (regs);                                                 \
@@ -38,8 +38,10 @@ PROC_INLINE bool proc_frame_fits(const Process *p, uint32_t words) {
     return p->nframes < p->flimit && p->rtop + words <= p->rcap;
 }
 
-/* Push a call frame with a fresh, zeroed register window (inline: every
- * call), when proc_frame_fits is known to hold. */
+/* Push a call frame with a fresh register window (inline: every call), when
+ * proc_frame_fits is known to hold. Every register reads as zero until
+ * written, though only the run the function might read first, and its R
+ * registers, are cleared (verify.c, plan_window). */
 PROC_INLINE void proc_push_frame_fitting(Process *p, Function *fn, const Insn *ret_insn) {
     Frame *fr = &p->frames[p->nframes++];
     fr->fn = fn;
@@ -52,7 +54,11 @@ PROC_INLINE void proc_push_frame_fitting(Process *p, Function *fn, const Insn *r
     p->fp = p->sp;
     fr->base = p->rtop;
     p->rtop += fn->rsize;
-    ZERO_REGS(p->regs + fr->base, fn->rsize);
+    uint64_t *w = p->regs + fr->base;
+#ifdef MLWS_POISON_WINDOWS /* make check-poison: a register read before it is written, but not cleared, shows */
+    memset(w, 0xA5, (size_t)fn->rsize * sizeof *w);
+#endif
+    ZERO_REGS(w + fn->zoff, fn->zlen);
     if (p->nframes > p->max_depth) p->max_depth = p->nframes;
 }
 

@@ -116,6 +116,8 @@ static bool decode_function(LModule *lm, Function *f, MlwsError *err) {
         words += mf->nregs[b];
     }
     f->rsize = (uint16_t)words;
+    f->zoff = 0; /* the whole window, until verify.c plans less */
+    f->zlen = (uint16_t)words;
     ByteReader r = {m->code + mf->code_off, mf->code_len, 0, false};
     VEC(Insn) code = {0};
     while (r.pos < r.n) {

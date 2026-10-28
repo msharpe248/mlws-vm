@@ -1,0 +1,78 @@
+; An untyped lpush may mix constants with registers: `lpush R0, "x", 0.5,
+; R1, I1` appends each value with its natural type, an integer literal (or
+; null) as i64, a float literal as f64 and a string as a reference, exactly
+; as the same values from registers. That is how a compiler builds a table
+; constructor's keys and values in one instruction. With room in the list it
+; is a quickened form (Q_LPUSH_RK in src/vm/interp.c, each constant's word
+; and type worked out at load time); a list that must grow, or a typed lpush,
+; takes the generic instruction.
+.include "std/test.inc"
+
+; 0 if the elements a[i] and b[i] hold the same type and the same word.
+.func same(ref a, ref b, i64 i) -> i64
+    tagof I1, a[i]
+    tagof I2, b[i]
+    bne I1, I2, 1f
+    beq I1, 6, 2f                        ; i64
+    beq I1, 12, 3f                       ; f64
+    mov R0, a[i]                         ; a reference: by identity
+    mov R1, b[i]
+    bne.r R0, R1, 1f
+    ret 0
+2:  mov I3, a[i]
+    mov I4, b[i]
+    bne I3, I4, 1f
+    ret 0
+3:  mov.f64 F0, a[i]
+    mov.f64 F1, b[i]
+    bne.f64 F0, F1, 1f
+    ret 0
+1:  ret 1
+.endf
+
+.func main
+    ; ---- constants of each kind among registers, into spare capacity ----
+    lnew R0, 8                           ; room for every value: the fast form
+    mov.r R1, "key"
+    mov I1, 7
+    lpush R0, "x", 0.5, R1, I1, -3, null, 2.0, "x"
+    len I0, R0
+    ASSERT_EQ I0, 8
+    ; the same values, each from a register (the existing fast form)
+    lnew R2, 8
+    mov.r R3, "x"
+    mov.f64 F3, 0.5
+    mov I3, -3
+    mov I4, 0                            ; null, untyped: the integer 0
+    mov.f64 F4, 2.0
+    lpush R2, R3, F3, R1, I1, I3, I4, F4, R3
+    mov I5, 0
+1:  call same (R0, R2, I5) -> (I6)
+    ASSERT_EQ I6, 0
+    inc I5
+    blt I5, 8, 1b
+    tagof I6, R0[1]
+    ASSERT_EQ I6, 12                     ; f64
+    tagof I6, R0[4]
+    ASSERT_EQ I6, 6                      ; i64
+    tagof I6, R0[0]
+    ASSERT_EQ I6, 13                     ; r
+
+    ; ---- no room: the generic instruction grows the list, with the same result ----
+    lnew R4, 1
+    lpush R4, "x", 0.5, R1, I1, -3, null, 2.0, "x"
+    mov I5, 0
+2:  call same (R4, R2, I5) -> (I6)
+    ASSERT_EQ I6, 0
+    inc I5
+    blt I5, 8, 2b
+
+    ; ---- typed: the instruction type, not the constants' ----
+    lnew R5, 4
+    lpush.f64 R5, 1, F3
+    tagof I6, R5[0]
+    ASSERT_EQ I6, 12
+    mov.f64 F5, R5[0]
+    ASSERT_EQ F5, 1.0
+    ret 0
+.endf

@@ -151,12 +151,169 @@ static bool verify_function(LModule *lm, Function *f, MlwsError *err) {
     return true;
 }
 
+/* ---- what a call clears ----------------------------------------------------------------
+ *
+ * A call's new window reads as zero until written (docs/ABI.md), but only two
+ * kinds of register need clearing for that: the R registers, which the
+ * collector scans at any instruction boundary, and the I, F and P registers
+ * the function may read before it writes them. Every other register is
+ * written before it is read on every path, so what it held before never
+ * shows. plan_window finds the second kind by a forward analysis of the
+ * registers definitely written before each instruction (sets that only grow
+ * along a path, met by intersection where paths join), from the parameters at
+ * entry (every call binds them all); an exception handler starts from the
+ * entry set, which every path includes. A call then clears one run of words,
+ * from the first register that needs it to the last (the banks lie I, F, R, P
+ * in the window). */
+
+typedef struct {
+    uint32_t b[NBANKS];
+} RegSet;
+
+static void rs_add(RegSet *s, uint8_t reg) {
+    if (REG_BANK(reg) < NBANKS) s->b[REG_BANK(reg)] |= 1u << REG_IDX(reg);
+}
+
+/* The registers an operand reads: a source's register; and for any operand,
+ * those that give its address (a register destination is only written). */
+static void operand_reads(const Operand *o, bool dst, RegSet *r) {
+    switch (o->mode) {
+    case OM_REG:
+        if (!dst) rs_add(r, o->reg);
+        break;
+    case OM_IND: case OM_DISP: case OM_DISPB: case OM_POSTINC: case OM_PREDEC: case OM_POSTINCB: case OM_PREDECB:
+    case OM_ELEMI: case OM_FIELD:
+        rs_add(r, o->reg);
+        break;
+    case OM_IDX: case OM_IDXB: case OM_ELEM:
+        rs_add(r, o->reg);
+        rs_add(r, o->ireg);
+        break;
+    case OM_GLOBALIDX: case OM_GLOBALIDXB: rs_add(r, o->ireg); break;
+    case OM_MIND: case OM_MINDB: operand_reads(o->inner, false, r); break;
+    default: break;
+    }
+}
+
+/* The registers an instruction reads, and those it always writes when it
+ * completes. */
+static void insn_effect(const Insn *in, RegSet *rd, RegSet *wr) {
+    const OpInfo *oi = &op_info[in->op];
+    memset(rd, 0, sizeof *rd);
+    memset(wr, 0, sizeof *wr);
+    if (oi->flags & OPF_CALL) { /* target, argc, arguments, results (written by the return) */
+        int argc = (int)in->ops[1].imm;
+        operand_reads(&in->ops[0], false, rd);
+        for (int k = 2; k < in->nops; k++) {
+            bool res = k >= 2 + argc;
+            operand_reads(&in->ops[k], res, rd);
+            if (res && in->ops[k].mode == OM_REG) rs_add(wr, in->ops[k].reg);
+        }
+        return;
+    }
+    /* `add I0, I1` is I0 = I0 + I1, `neg I0` negates I0 and `shl I0, 3`
+     * shifts it: the destination is a source too when the last source is left
+     * out. So it is for inc, dec and swap. */
+    bool rmw = oi->nelems && oi->elems[0] == 'D' &&
+               ((oi->last_mod == '?' && in->nops == oi->nelems - 1) || (oi->last_mod == '+' && in->nops == oi->nelems));
+    if (in->op == OP_INC || in->op == OP_DEC || in->op == OP_SWAP) rmw = true;
+    for (int k = 0; k < in->nops; k++) {
+        const Operand *o = &in->ops[k];
+        bool dst = strchr("DWBEXJH", op_pattern_at(oi, k)) != NULL;
+        operand_reads(o, dst, rd);
+        if (!dst || o->mode != OM_REG) continue;
+        if (rmw && (k == 0 || in->op == OP_SWAP)) rs_add(rd, o->reg);
+        /* recvt writes nothing when it times out */
+        if (in->op != OP_RECVT) rs_add(wr, o->reg);
+    }
+}
+
+static void whole_window(Function *f) {
+    f->zoff = 0;
+    f->zlen = f->rsize;
+}
+
+static void plan_window(Function *f) {
+    const MFunc *mf = f->mf;
+    uint32_t n = f->ncode;
+    if (!n) return;
+    RegSet *in = xcalloc(n, sizeof *in);
+    uint8_t *seen = xcalloc(n, 2); /* reached; queued (at seen + n) */
+    uint32_t *work = xmalloc(n * sizeof *work), nwork = 0;
+    RegSet entry = {{0}};
+    int cnt[NBANKS] = {0};
+    for (int k = 0; k < mf->nparams; k++) {
+        Bank b = type_bank((MlwsType)mf->params[k]);
+        entry.b[b] |= 1u << cnt[b]++;
+    }
+#define FLOW(pc_, set_)                                                        \
+    do {                                                                       \
+        uint32_t s_ = (pc_);                                                   \
+        bool ch_ = !seen[s_];                                                  \
+        for (int b_ = 0; b_ < NBANKS; b_++) {                                  \
+            uint32_t m_ = seen[s_] ? in[s_].b[b_] & (set_).b[b_] : (set_).b[b_]; \
+            ch_ |= m_ != in[s_].b[b_];                                         \
+            in[s_].b[b_] = m_;                                                 \
+        }                                                                      \
+        seen[s_] = 1;                                                          \
+        if (ch_ && !seen[n + s_]) seen[n + s_] = 1, work[nwork++] = s_;       \
+    } while (0)
+    FLOW(0, entry);
+    for (uint32_t i = 0; i < mf->nhandlers; i++) FLOW(mf->handlers[i].target, entry);
+    while (nwork) {
+        uint32_t pc = work[--nwork];
+        seen[n + pc] = 0;
+        const Insn *ins = &f->code[pc];
+        RegSet rd, out;
+        insn_effect(ins, &rd, &out);
+        for (int b = 0; b < NBANKS; b++) out.b[b] |= in[pc].b[b];
+        if (!(op_info[ins->op].flags & OPF_TERM) && pc + 1 < n) FLOW(pc + 1, out);
+        for (int k = 0; k < ins->nops; k++)
+            if (ins->ops[k].mode == OM_LABEL) FLOW(ins->ops[k].rv.target, out);
+    }
+#undef FLOW
+    RegSet need = {{0}}; /* read where not yet written */
+    for (uint32_t pc = 0; pc < n; pc++) {
+        if (!seen[pc]) continue;
+        RegSet rd, wr;
+        insn_effect(&f->code[pc], &rd, &wr);
+        for (int b = 0; b < NBANKS; b++) need.b[b] |= rd.b[b] & ~in[pc].b[b];
+    }
+    free(in);
+    free(seen);
+    free(work);
+    need.b[BANK_R] = 0xFFFFFFFFu; /* the collector scans them all */
+    uint32_t lo = f->rsize, hi = 0;
+    for (int b = 0; b < NBANKS; b++) {
+        uint32_t m = need.b[b];
+        if (mf->nregs[b] < 32) m &= (1u << mf->nregs[b]) - 1;
+        if (!m) continue;
+        uint32_t first = 0, last = 32;
+        while (!(m >> first & 1)) first++;
+        while (!(m >> (last - 1) & 1)) last--;
+        if (f->roff[b] + first < lo) lo = f->roff[b] + first;
+        if (f->roff[b] + last > hi) hi = f->roff[b] + last;
+    }
+    f->zoff = (uint16_t)(lo < hi ? lo : 0);
+    f->zlen = (uint16_t)(lo < hi ? hi - lo : 0);
+}
+
 bool vm_verify_module(VM *vm, LModule *lm, MlwsError *err) {
-    (void)vm;
     for (uint32_t i = 0; i < lm->m->nfuncs; i++) {
         Function *f = &lm->funcs[i];
         if (f->target != f) continue;
         if (!verify_function(lm, f, err)) return false;
+        if (vm->whole_windows) whole_window(f);
+        else plan_window(f);
     }
     return true;
+}
+
+void vm_whole_windows(VM *vm) {
+    vm->whole_windows = true;
+    for (size_t i = 0; i < vm->mods.n; i++) {
+        LModule *lm = vm->mods.v[i];
+        for (uint32_t k = 0; k < lm->m->nfuncs; k++)
+            if (lm->funcs[k].target == &lm->funcs[k]) whole_window(&lm->funcs[k]);
+    }
 }

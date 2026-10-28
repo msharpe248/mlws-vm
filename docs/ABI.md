@@ -121,7 +121,8 @@ of live processes.
 
 ## 2. Registers and frames
 
-Every **call** creates a frame with a fresh, zeroed window of registers:
+Every **call** creates a frame with a fresh window of registers, each of which
+reads as zero until it is written:
 
 ```
 caller frame:   I0..I(n-1)   F0..   R0..   P0..       (window sized for caller)

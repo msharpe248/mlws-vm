@@ -1,10 +1,12 @@
 ; ldv loads a number into one of two destinations, picked by the slot's type
 ; tag: an integer (any of b, c, i8 ... u64) into the first, as i64, and a float
-; into the second, as f64, leaving the other unchanged. A slot never written
+; into the second, as f64, setting the other to zero. A slot never written
 ; reads as the integer 0; a reference traps E_TYPE. This is the number half of
 ; a dynamically typed value kept as two words (a tag word, then the number), as
 ; the Lua compiler stores table values: one instruction instead of a branch on
-; the tag and a load into each bank.
+; the tag and a load into each bank. Setting the other to zero means both are
+; written, so a function that reads them later need not have them cleared at
+; each call (verify.c, plan_window).
 ;
 ; The list and array element forms indexed by a register or a constant are
 ; quickened (Q_LDV_E, Q_LDV_EK in src/vm/interp.c); every other operand, and any
@@ -31,16 +33,15 @@ g_raw:  .zero 8                          ; never written
     ASSERT_EQ I31, 0
 .endm
 
-; Reset the two destinations to markers, so each check also shows which one
-; ldv left alone.
+; Reset the two destinations to markers, so each check also shows that ldv
+; zeroed the other one.
 .macro MARK
     mov I0, -1
     mov.f64 F0, -1.0
 .endm
 
 ; The number half of value k of a two-word list (tag word, number word), the
-; way LOADV in the Lua compiler reads it: the destination not chosen keeps its
-; marker.
+; way LOADV in the Lua compiler reads it: the destination not chosen is zeroed.
 .func number_of(ref list, i64 k) -> (i64, f64)
     mov I2, -1
     mov.f64 F0, -1.0
@@ -50,7 +51,7 @@ g_raw:  .zero 8                          ; never written
     ret I2, F0
 .endf
 
-; A closure capture: the generic path.
+; A closure capture: the generic path. I0 holds 7 before, and is zeroed.
 .func capture -> (i64, f64)              ; UP[0] = 2.5
     mov I0, 7
     mov.f64 F0, 0.0
@@ -67,25 +68,25 @@ g_raw:  .zero 8                          ; never written
     lpush R0, R1, 2.5                    ; value 1: a float
     call number_of (R0, 0) -> (I3, F3)
     ASSERT_EQ I3, 42
-    ASSERT_EQ F3, -1.0                   ; untouched
+    ASSERT_EQ F3, 0.0                    ; zeroed
     call number_of (R0, 1) -> (I3, F3)
-    ASSERT_EQ I3, -1                     ; untouched
+    ASSERT_EQ I3, 0                      ; zeroed
     ASSERT_EQ F3, 2.5
     MARK
     ldv I0, F0, R0[3]                    ; Q_LDV_EK
     ASSERT_EQ F0, 2.5
-    ASSERT_EQ I0, -1
+    ASSERT_EQ I0, 0
     MARK
     ldv I0, F0, R0[1]
     ASSERT_EQ I0, 42
-    ASSERT_EQ F0, -1.0
+    ASSERT_EQ F0, 0.0
 
     ; ---- never written: the integer 0 ----
     resize R0, 6
     MARK
     ldv I0, F0, R0[5]
     ASSERT_EQ I0, 0
-    ASSERT_EQ F0, -1.0
+    ASSERT_EQ F0, 0.0
     mov I4, 4
     MARK
     ldv I0, F0, R0[I4]
@@ -130,9 +131,13 @@ g_raw:  .zero 8                          ; never written
     ldv I0, F0, 0.75
     ASSERT_EQ F0, 0.75
     MARK
-    ldv I0, F0, 12
+    ldv I0, F0, 12                       ; the generic path
     ASSERT_EQ I0, 12
-    ASSERT_EQ F0, -1.0
+    ASSERT_EQ F0, 0.0
+    MARK
+    ldv I0, F0, 0.25
+    ASSERT_EQ I0, 0
+    ASSERT_EQ F0, 0.25
     ldv I0, F0, @g_int
     ASSERT_EQ I0, -9
     MARK
@@ -147,7 +152,7 @@ g_raw:  .zero 8                          ; never written
     ASSERT_EQ F0, 1.5
     closure capture (2.5) -> (R6)
     calli R6 -> (I6, F6)
-    ASSERT_EQ I6, 7
+    ASSERT_EQ I6, 0                      ; zeroed
     ASSERT_EQ F6, 2.5
 
     ; ---- any other value, a bad index, not a list ----

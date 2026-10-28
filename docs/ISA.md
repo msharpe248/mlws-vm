@@ -52,7 +52,7 @@ Type codes, as `tagof` reports them: 0 for a slot never written, 1 `b`, 2 `c`, 3
 | `0x0016` | `enter` | `n` | - | Reserve n zeroed words of locals: SP -= n words. Locals are then addressed as LOC[0]..LOC[n-1] (FP[-1]..FP[-n]). |
 | `0x0017` | `cvt` | `dst, src` | int float (to.from) | Value conversion `cvt.<to>.<from> dst, src`. int->int wraps or extends, int->float rounds, float->int truncates toward zero and saturates (NaN becomes 0), to-bool tests for non-zero. |
 | `0x0018` | `bitcast` | `dst, src` | int float (to.from) | Reinterpret the bits of src as dst's type: `bitcast.<to>.<from>`. Both types must have the same size, e.g. bitcast.i64.f64 or bitcast.f32.u32. |
-| `0x0019` | `ldv` | `int_dst, float_dst, val` | - | Load a number into the destination its type tag picks: `ldv I0, F0, R1[I2]` sets I0 (as i64) if the slot holds an integer (b, c, i8 ... u64) and F0 (as f64) if it holds a float, and leaves the other unchanged. A slot never written reads as the integer 0; any other type traps E_TYPE. This reads the number half of a dynamically typed value without a branch on its type. |
+| `0x0019` | `ldv` | `int_dst, float_dst, val` | - | Load a number into the destination its type tag picks: `ldv I0, F0, R1[I2]` sets I0 (as i64) if the slot holds an integer (b, c, i8 ... u64) and F0 (as f64) if it holds a float, and sets the other to zero. A slot never written reads as the integer 0; any other type traps E_TYPE. This reads the number half of a dynamically typed value without a branch on its type. |
 
 ## Arithmetic
 
