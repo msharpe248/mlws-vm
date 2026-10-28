@@ -50,6 +50,18 @@ immutable and shared. Everything else belongs to exactly one process.
   `os.exit`'s). If `main` waits in `recv` while every other process
   is also waiting, so no message can ever arrive, `main` gets a catchable
   `E_DEADLOCK`.
+* **Several programs** can run in one VM: `mlwsvm run a.masm x --also b.masm y`
+  starts each program's `main` as a process of its own, with its own `os.args`.
+  Every process belongs to the program whose process spawned it. When a
+  program's `main` ends, that program's other processes are stopped (their
+  monitors see `E_KILLED`), and the others run on; the run ends when the last
+  program's `main` ends, or at once when any process calls `os.exit`.
+  Programs share the scheduler, the loaded modules (one version of each
+  library) and the name registry, so they can find each other with
+  `proc.whereis` and send messages. The exit status is that of the first
+  program on the command line that did not succeed (a load error 65, an
+  uncaught error 70, else its return value), or 0. When every process is
+  waiting, each waiting `main` gets `E_DEADLOCK`.
 * The debugger, tracer and profiler see every instruction, so a program run under
   them uses one thread.
 

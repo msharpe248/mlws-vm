@@ -532,6 +532,22 @@ static void record_exit(VM *vm, Process *p, bool failed) {
 
 static void unregister_all(VM *vm, Process *p); /* std.proc, below */
 
+static void finish(Sched *s, Process *p, bool failed);
+
+/* Stop every process of a program whose main has ended (as a run stops its
+ * processes when it ends): their monitors in other programs see E_KILLED. */
+static void end_program(Sched *s, const Program *prog) {
+    uint64_t end = vm_pid_end(prog->main->vm);
+    for (uint64_t pid = 1; pid < end; pid++) {
+        Process *t = pin(s, pid);
+        if (!t) continue;
+        bool claimed = t->prog == prog && t != prog->main && is_live(t) &&
+                       kill_locked(t, "E_KILLED", "its program's main process ended");
+        plat_unlock(t->lock);
+        if (claimed) finish(s, t, true);
+    }
+}
+
 /* A process has ended (on this thread, or claimed by kill_locked): notify its
  * monitors, take linked processes down with a failing one, and free it unless
  * it is main (freed by its runner, after collecting statistics). */
@@ -569,8 +585,11 @@ static void finish(Sched *s, Process *p, bool failed) {
     }
     VEC_FREE(links);
     VEC_FREE(mons);
-    if (failed && !observed && p->pid != vm->main_pid) report_unobserved(vm, p);
-    if (p->pid == vm->main_pid) { /* the program ends with main */
+    bool is_main = p->prog && p->prog->main == p;
+    if (failed && !observed && !is_main) report_unobserved(vm, p);
+    if (!is_main) {
+        proc_free(p);
+    } else if (atomic_fetch_sub(&vm->progs_live, 1) == 1) { /* the last program has ended: so does the run */
         plat_mutex_lock(s->lock);
         s->done = true;
         plat_cond_broadcast(s->work_cv);
@@ -578,7 +597,7 @@ static void finish(Sched *s, Process *p, bool failed) {
         plat_cond_broadcast(s->stw_cv);
         plat_mutex_unlock(s->lock);
     } else {
-        proc_free(p);
+        end_program(s, p->prog); /* a program ends with its main; the others run on */
     }
 }
 
@@ -932,9 +951,10 @@ static void idle(Worker *w) {
     }
     s->nidle--;
     plat_mutex_unlock(s->lock);
-    if (deadlock) { /* main is waiting with no possible sender: its recv raises E_DEADLOCK */
-        Process *m = pin(s, vm->main_pid);
-        if (m) {
+    if (deadlock) { /* each main waiting with no possible sender: its recv raises E_DEADLOCK */
+        for (size_t i = 0; i < vm->progs.n; i++) {
+            Process *m = pin(s, vm->progs.v[i]->main->pid);
+            if (!m) continue;
             if (m->state == PROC_WAITING) {
                 m->deadlock = true;
                 ready_locked(s, m);
@@ -1255,7 +1275,8 @@ bool sched_run(VM *vm, Process *main) {
 
 /* ---- teardown -------------------------------------------------------------------- */
 
-/* Free every process except `keep` (the main process). Single-threaded. */
+/* Free every process except `keep` and the programs' main processes (their
+ * runner frees them). Single-threaded. */
 void sched_shutdown(VM *vm, Process *keep) {
     Sched *s = vm->sched;
     if (!s) return;
@@ -1266,7 +1287,8 @@ void sched_shutdown(VM *vm, Process *keep) {
         Process **chunk = atomic_load(&s->chunks[c]);
         if (!chunk) continue;
         for (uint32_t i = 0; i < PT_CHUNK; i++)
-            if (chunk[i] && chunk[i] != keep) proc_free(chunk[i]);
+            if (chunk[i] && chunk[i] != keep && !(chunk[i]->prog && chunk[i]->prog->main == chunk[i]))
+                proc_free(chunk[i]);
     }
     for (int i = 0; i < s->nworkers; i++) s->workers[i]->qlen = 0;
     s->timers.n = 0;

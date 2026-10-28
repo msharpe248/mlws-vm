@@ -112,6 +112,16 @@ typedef struct FieldRef {
     uint32_t index;
 } FieldRef;
 
+/* One of the programs a run started (`mlwsvm run a.masm --also b.masm`): its
+ * main process, and the arguments os.args gives its processes. Every process
+ * belongs to the program that spawned it; when a program's main ends, its
+ * other processes are stopped, and the run ends with the last program. */
+typedef struct Program {
+    char *path;
+    StrVec args;
+    struct Process *main; /* kept, not freed, when it ends: its runner reads its results */
+} Program;
+
 typedef struct LibWant {
     char *lib, *constraint, *who; /* who: the module or library that asked */
 } LibWant;
@@ -199,7 +209,9 @@ typedef struct VM {
     struct PlatLock *lock;       /* pid allocation, counters, exit records */
     struct PlatLock *mods_lock;  /* mods and the loader's state, once processes run (module.load) */
     struct PlatLock *out_lock;   /* program output and crash reports */
-    uint64_t main_pid;           /* finishing it ends the program; freed by its runner */
+    uint64_t main_pid;           /* the first program's main process (tools show it) */
+    VEC(Program *) progs;        /* the programs of the current run (run.c) */
+    _Atomic int progs_live;      /* those whose main has not ended */
     _Atomic uint64_t insns_retired; /* instructions of processes already freed */
     _Atomic uint64_t live, spawned, max_live, slices;
     uint32_t slice_insns;        /* time slice length in instructions */
@@ -389,6 +401,7 @@ struct Process {
     uint64_t sp, fp;
     ProcError err;
     StrBuf backtrace;
+    struct Program *prog;        /* the program it belongs to (inherited at spawn), or NULL */
     jmp_buf *jb;
     /* statistics */
     uint64_t insns;
@@ -505,6 +518,9 @@ void vm_whole_windows(VM *vm);
 
 /* process.c */
 Process *proc_new(VM *vm);
+/* Make main the main process of a new program of the current run (run.c). */
+Program *vm_program_add(VM *vm, Process *main, const char *path, const StrVec *args);
+void vm_programs_free(VM *vm); /* when the run is over */
 /* Give p the global segments of modules loaded since it started (module.load). */
 void proc_grow_globals(Process *p);
 /* Where instruction pc of f is: "fib.lua:4; fib.masm:120" when a `.loc`

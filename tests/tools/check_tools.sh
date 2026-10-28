@@ -72,6 +72,89 @@ MLWSVM_NO_CACHE=1 $BIN run --lib-path "$LDIR/out" "$LDIR/use.masm" 2>&1 >/dev/nu
     fail "a damaged archive is not reported"
 rm -rf "${LDIR:?}"
 
+# mlwsvm run a.masm --also b.masm ...: several programs in one VM, to the end of the last
+PDIR=$(mktemp -d)
+cat > "$PDIR/a.masm" <<'MASM'
+.include "std/io.inc"
+.func main
+    ncall "os.args" () -> (R0)
+    ncall "text.join" (R0, ",") -> (R1)
+    strcat R1, "a args: ", R1
+    PRINTLN_S R1
+    ncall "proc.register" ("prog_a", PID)
+    recv R2                              ; from program b
+    PRINTLN_S R2
+    ret 0
+.endf
+MASM
+cat > "$PDIR/b.masm" <<'MASM'
+.include "std/io.inc"
+.func main
+    ncall "os.args" () -> (R0)
+    ncall "text.join" (R0, ",") -> (R1)
+    strcat R1, "b args: ", R1
+    PRINTLN_S R1
+1:  ncall "proc.whereis" ("prog_a") -> (I0)
+    bnz I0, 2f
+    sleep 1
+    jmp 1b
+2:  send I0, "a got b's message"
+    sleep 100                            ; the run waits for the last program
+    PRINTLN_S "b done"
+    ret 0
+.endf
+MASM
+cat > "$PDIR/c.masm" <<'MASM'
+.func main
+    ret 3
+.endf
+MASM
+cat > "$PDIR/d.masm" <<'MASM'
+.func child
+    ncall "proc.register" ("d_child", PID)
+    recv I0                              ; forever: stopped when d's main ends
+    ret
+.endf
+.func main
+    spawn child ()
+    sleep 20
+    ret 0
+.endf
+MASM
+cat > "$PDIR/e.masm" <<'MASM'
+.include "std/io.inc"
+.func main
+    sleep 60                             ; d has ended by now
+    ncall "proc.whereis" ("d_child") -> (I0)
+    bz I0, 1f
+    PRINTLN_S "d's child still runs"
+    ret 1
+1:  PRINTLN_S "d's child was stopped"
+    ret 0
+.endf
+MASM
+set +e
+OUT=$(MLWSVM_NO_CACHE=1 $BIN run "$PDIR/a.masm" x y --also "$PDIR/b.masm" z --also "$PDIR/c.masm" \
+      --also "$PDIR/d.masm" --also "$PDIR/e.masm" 2>&1); rc=$?
+set -e
+[ $rc = 3 ] || fail "--also: exit status $rc, not c's 3 ($OUT)"
+for want in "a args: x,y" "b args: z" "a got b's message" "b done" "d's child was stopped"; do
+    echo "$OUT" | grep -q "$want" || fail "--also: no '$want' in: $OUT"
+done
+cat > "$PDIR/echo.masm" <<'MASM'
+.include "std/io.inc"
+.func main
+    ncall "os.args" () -> (R0)
+    ncall "text.join" (R0, "") -> (R1)
+    strcat R1, "[", R1, "]"
+    PRINTLN_S R1
+    ret 0
+.endf
+MASM
+OUT=$(MLWSVM_NO_CACHE=1 $BIN run "$PDIR/echo.masm" one --also "$PDIR/echo.masm" two)
+echo "$OUT" | grep -q '\[one\]' && echo "$OUT" | grep -q '\[two\]' || fail "--also: the same program twice ($OUT)"
+rm -rf "${PDIR:?}"
+
 # --trace with a limit
 N=$($BIN run --trace - --trace-limit 5 examples/hello.masm 2>&1 >/dev/null | grep -c '^\[1\]')
 [ "$N" = 5 ] || fail "trace limit (got $N lines)"
@@ -94,4 +177,4 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
 fi
-echo "check-tools: profile, .loc, cache, lib, trace, monitor, top OK"
+echo "check-tools: profile, .loc, cache, lib, --also, trace, monitor, top OK"

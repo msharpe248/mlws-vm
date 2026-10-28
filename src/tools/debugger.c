@@ -496,6 +496,7 @@ int debugger_run(VM *vm, LModule *root, Function *main_fn, DebugIO *io) {
     t->dbg = &d;
     d.main = proc_new(vm);
     vm->main_pid = d.main->pid;
+    vm_program_add(vm, d.main, root->path, &vm->prog_args); /* a run of one program */
     d.sel = d.main->pid;
     say(&d, "MLWSVM debugger. Type 'help' for commands.\n");
     char line[1024];
@@ -542,6 +543,7 @@ int debugger_run(VM *vm, LModule *root, Function *main_fn, DebugIO *io) {
     int rc = d.ended && d.main->state == PROC_DONE ? (int)(d.main->exit_code & 0xFF) : 0;
     sched_shutdown(vm, d.main);
     proc_free(d.main);
+    vm_programs_free(vm);
     for (size_t i = 0; i < d.bps.n; i++) free(d.bps.v[i].spec);
     VEC_FREE(d.bps);
     t->dbg = NULL;

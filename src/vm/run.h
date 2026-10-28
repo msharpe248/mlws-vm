@@ -28,6 +28,16 @@ typedef struct {
 } RunResult;
 
 bool vm_run_file(VM *vm, const char *path, RunResult *res);
+/* Several programs in one VM (`mlwsvm run a.masm --also b.masm`): each one's
+ * main runs as its own process, with its own os.args; a program ends with its
+ * main (its other processes are stopped), and the run with the last one.
+ * res[i] is program i's result. False if any did not finish normally. */
+typedef struct {
+    const char *path;
+    int argc;
+    char *const *argv;
+} ProgSpec;
+bool vm_run_files(VM *vm, const ProgSpec *specs, int n, RunResult *res);
 /* Optional steps around vm_run_function: `prepare` runs once the process
  * exists, before it starts (to make reference arguments in its heap);
  * `started` is told its pid once it is in the process table. */

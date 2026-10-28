@@ -728,6 +728,7 @@
                 args[k] = rd_param(CX, &ops[2 + k], (MlwsType)mf->params[k]);
             }
             Process *child = proc_new(vm);
+            child->prog = p->prog; /* the same program */
             memcpy(child->quota, p->quota, sizeof child->quota);
             p->pending_spawn = child;
             Word clw = msg_copy(p, child, (Word){.r = cl}, T_R);
@@ -759,6 +760,7 @@
             Word args[MAX_OPERANDS];
             for (int k = 0; k < argc; k++) args[k] = rd(CX, &ops[2 + k], (MlwsType)fn->mf->params[k]);
             Process *child = proc_new(vm);
+            child->prog = p->prog; /* the same program */
             memcpy(child->quota, p->quota, sizeof child->quota);
             p->pending_spawn = child; /* freed by proc_run_slice if a copy traps */
             for (int k = 0; k < argc; k++) args[k] = msg_copy(p, child, args[k], fn->mf->params[k]);

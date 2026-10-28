@@ -121,6 +121,7 @@ make check-bindgen           # generate, compare and call bindings for a test he
 ./mlwsvm run examples/hello.masm
 ./mlwsvm run --stats examples/fib.masm
 ./mlwsvm run --threads 1 examples/workers.masm   # one worker thread: deterministic order
+./mlwsvm run server.masm 8080 --also client.masm  # two programs in one VM, until both end
 ./mlwsvm run examples/http_server.masm 8080     # a supervised HTTP server: a process per connection
 ./mlwsvm run --max-frames 1000000 --quota heap=256M prog.masm   # VM options (docs/TOOLING.md)
 ./mlwsvm run --profile examples/fib.masm

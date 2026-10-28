@@ -505,7 +505,7 @@ static void fs_cwd(Process *p, Word *a, Word *r) {
 
 static void os_args(Process *p, Word *a, Word *r) {
     (void)a;
-    const StrVec *args = &p->vm->prog_args;
+    const StrVec *args = p->prog ? &p->prog->args : &p->vm->prog_args; /* its program's */
     ObjList *l = list_new(p, (int64_t)args->n);
     for (size_t i = 0; i < args->n; i++) {
         Word w = {.r = str_new(p, args->v[i], strlen(args->v[i]))};

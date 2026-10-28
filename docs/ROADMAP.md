@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M39 are complete. What remains is Windows (section 3) and the
+Milestones M0–M40 are complete. What remains is Windows (section 3) and the
 deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M39 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M40 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M39
+## Milestones M11–M40
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -61,6 +61,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M37 Unicode** (done) | Unicode 17.0 in `std.text`: full case mapping (upper, lower with final sigma, title by word) and case folding, canonical caseless matching, NFC/NFD/NFKC/NFKD, grapheme clusters and words (UAX #29), display width (UAX #11), character properties and identifier classes (UAX #31), and White_Space for trimming and splitting. Tables generated from the UCD (`make unicode`) | The Unicode Consortium's NormalizationTest (3,631 cases), GraphemeBreakTest and WordBreakTest (2,710) pass |
 | **M38 Libraries** (done) | A library is a named, versioned archive (`.mlwsl`) of its manifest (`.library`, `.requires`, `.public`) and modules, built by `mlwsvm lib build` and inspected with `lib info` and `lib list`; any module can state `.requires lib, "^1.2"` (or `mlwsvm`); the loader finds archives on the library path and chooses one version of each library per run, the newest that meets every constraint stated; modules a library does not make public cannot be imported from outside it; `--lib-path` | `E_LINK_VERSION` and `E_LINK_PRIVATE` tests, with libraries in three versions and two that need incompatible ones |
 | **M39 Loading modules at run time** (done) | `module.load` loads a module and its imports while the program runs, as an import of the calling module would (library versions, privacy, verification), and `module.function` gives closures for its exported functions; `module.loaded`, `module.exports`. Loaded modules stay until the VM ends. Processes started before a load get the new module's globals when they first use them; loads from many threads are serialized; a failed load leaves nothing half loaded; loading is an OS call for quotas | Loading from 16 processes on several threads at once, under ThreadSanitizer; a failed load retried; a process started before the load counting in its own copy of the module's global |
+| **M40 Several programs in one VM** (done) | `mlwsvm run a.masm args --also b.masm args`: each program's `main` is a process of its own, with its own `os.args`; every process belongs to its spawner's program; a program's processes stop when its `main` ends, and the run ends with the last program; programs share modules and the name registry, so they can message each other; each waiting `main` gets `E_DEADLOCK` | `make check-tools` runs five programs at once: messages between them, arguments, the exit status, a program's processes stopped when it ends |
 
 ## 1. Calling existing libraries (M10: done)
 

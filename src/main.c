@@ -11,7 +11,9 @@ static void usage(FILE *f) {
     fputs("usage: mlwsvm <command> [options]\n"
           "\n"
           "commands:\n"
-          "  run   [options] file.(masm|mlwso) [args...]  run a program's main (args: os.args)\n"
+          "  run   [options] file.(masm|mlwso) [args...] [--also file [args...]]...\n"
+          "                                        run a program's main (args: os.args); each --also starts\n"
+          "                                        another program in the same VM, and the run ends with the last\n"
           "        --stats                         resource summary on exit\n"
           "        --profile [--flame FILE]        hot functions, lines and opcodes; collapsed stacks\n"
           "        --trace FILE|- [--trace-limit N] log every instruction\n"
@@ -157,7 +159,26 @@ static int cmd_run(int argc, char **argv) {
         }
     }
     VEC_FREE(opts);
-    for (int i = 0; i < prog_argc; i++) VEC_PUSH(vm->prog_args, xstrdup(prog_argv[i]));
+    /* `--also b.masm args...` starts another program in the same run (vm_run_files). */
+    VEC(ProgSpec) progs = {0};
+    ProgSpec first = {file, 0, prog_argv};
+    VEC_PUSH(progs, first);
+    for (int i = 0; i < prog_argc; i++) {
+        if (strcmp(prog_argv[i], "--also")) {
+            progs.v[progs.n - 1].argc++;
+            continue;
+        }
+        if (i + 1 >= prog_argc) {
+            fprintf(stderr, "mlwsvm run: --also needs a program file\n");
+            VEC_FREE(progs);
+            vm_free(vm);
+            return 2;
+        }
+        ProgSpec next = {prog_argv[i + 1], 0, prog_argv + i + 2};
+        VEC_PUSH(progs, next);
+        i++;
+    }
+    for (int k = 0; k < progs.v[0].argc; k++) VEC_PUSH(vm->prog_args, xstrdup(prog_argv[k]));
     if (gc_stress) vm->gc_stress = true;
     if (unsafe_native) vm->unsafe_native = true;
     if (no_cache) vm->no_cache = true;
@@ -178,23 +199,39 @@ static int cmd_run(int argc, char **argv) {
                 tools_monitor_addr(vm));
         vm->hold = hold;
     }
-    char *dir = path_dirname(file);
-    vm_add_libpath(vm, dir);
-    free(dir);
-    tool_env_libpaths(&g_env, vm);
-    RunResult r;
-    vm_run_file(vm, file, &r);
-    fflush(stdout);
-    int rc;
-    if (r.status == RUN_LOAD_ERROR) {
-        print_error(&r.err);
-        rc = 65;
-    } else if (r.status == RUN_TRAP) {
-        fprintf(stderr, "runtime error[%s]: %s\n%s", r.err.code, r.err.msg, r.backtrace ? r.backtrace : "");
-        rc = 70;
-    } else {
-        rc = (int)(r.exit_code & 0xFF);
+    for (size_t i = 0; i < progs.n; i++) {
+        char *dir = path_dirname(progs.v[i].path);
+        vm_add_libpath(vm, dir);
+        free(dir);
     }
+    tool_env_libpaths(&g_env, vm);
+    RunResult *rs = xcalloc(progs.n, sizeof *rs);
+    vm_run_files(vm, progs.v, (int)progs.n, rs);
+    fflush(stdout);
+    /* Each program's failure is reported; the exit status is the first
+     * program's (in command-line order) that did not succeed, else 0. */
+    int rc = 0;
+    bool stop = false;
+    for (size_t i = 0; i < progs.n && !stop; i++) {
+        RunResult *x = &rs[i];
+        int prc = 0;
+        if (x->status == RUN_LOAD_ERROR) {
+            print_error(&x->err);
+            prc = 65;
+            stop = true; /* nothing ran */
+        } else if (x->status == RUN_TRAP) {
+            if (progs.n > 1) fprintf(stderr, "%s: ", progs.v[i].path);
+            fprintf(stderr, "runtime error[%s]: %s\n%s", x->err.code, x->err.msg, x->backtrace ? x->backtrace : "");
+            prc = 70;
+        } else {
+            prc = (int)(x->exit_code & 0xFF);
+        }
+        if (!rc) rc = prc;
+    }
+    RunResult r = rs[0]; /* --stats and --profile describe the first program's main, and every process */
+    for (size_t i = 1; i < progs.n; i++) run_result_free(&rs[i]);
+    free(rs);
+    VEC_FREE(progs);
     if (stats && r.status != RUN_LOAD_ERROR) {
         fprintf(stderr,
                 "--- mlwsvm stats ---\n"

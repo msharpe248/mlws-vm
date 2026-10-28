@@ -13,6 +13,7 @@ dashboard and a `top`-style terminal view.
 | Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] prog.masm` | none |
 | Terminal view | `mlwsvm top [HOST:PORT] [--once] [--interval MS]` | — |
 | VM options | `mlwsvm run --max-frames N --quota heap=64M ... prog.masm` | — |
+| Several programs | `mlwsvm run a.masm args --also b.masm args ...` | — |
 | Native code | `mlwsvm ext list\|install\|remove\|allow-ffi\|deny-ffi` ([EXTENDING.md](EXTENDING.md)) | — |
 | Bindings generator | `mlwsvm bindgen [-l LIB] [-p PREFIX] [-o OUT] header.h` | — |
 | Libraries | `mlwsvm lib build DIR \| info FILE \| list` | — |
@@ -53,6 +54,21 @@ gets: a module can declare foreign functions). Entries are written to a
 temporary file and renamed into place, so runs at the same time never see half
 of one; past 512 entries, the oldest are removed. `mlwsvm asm` and `dis` never
 use the cache.
+
+## Several programs: `--also`
+
+```
+$ mlwsvm run server.masm 8080 --also client.masm localhost 8080 --also client.masm localhost 8080
+```
+
+Each `--also` starts another program in the same VM, with the arguments after
+it as its `os.args` (so `--also` cannot itself be one of a program's
+arguments); the same file may appear more than once. Every program is loaded
+before any starts, and the run ends when the last program's `main` ends
+([ABI.md §1](ABI.md#1-processes) has the rules). An uncaught error in one
+program is reported with its file name, and the others run on. `--stats` and
+`--profile` count every process, and `--stats`'s figures for `main` are the
+first program's.
 
 ## Libraries: `mlwsvm lib`
 
