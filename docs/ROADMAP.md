@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M34 are complete. What remains is Windows (section 3) and the
+Milestones M0–M35 are complete. What remains is Windows (section 3) and the
 deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M34 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M35 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M34
+## Milestones M11–M35
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -56,6 +56,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M32 Shapes from the instruction-pair counts** (done) | Elements at a register index plus a constant (`R1[I2+1]`), so a two-word value's number is read without an `inc`, with quickened forms of their own; `bisa` and `bnisa`, which test a struct's type and branch in one. Rewriting compiled Lua's existing output this way runs 3–10% fewer instructions and takes up to 8% less time (fannkuch 5–8%, nbody 1–5%) on the M5, i7 and Ryzen |
 | **M33 Cheaper calls** (done) | Each quickened call and return reads a plan of byte slots made at load time, not a 72-byte operand per value; a call clears only its callee's `R` registers and those it may read before writing them (found by a dataflow pass at load time, checked by `make check-poison`); `ldv` zeroes the destination its value does not pick; `lpush` with constants among its values has a fast form. With the Lua compiler's typed copies and constant halves, compiled Lua's `methods` takes 16–21% less time on the M5, i7 and Ryzen, `iterate` 4–8% less, `spectralnorm` up to 5% and `fib` up to 12% |
 | **M34 Source positions of translated programs** (done) | `.loc "file", line` gives the instructions that follow a position in the program a compiler translated; modules keep the runs (format version 7), and backtraces, `Error.trace`, the tracer, debugger (`break file.lua:12`), monitor and profiler (hot program lines) show it; `dis` prints it back | A trap in compiled code is reported at its source line |
+| **M35 Cheaper processes** (done) | A process's frame and register stacks start small and grow, and its data stack (and a coroutine's) is allocated at first use; its error record is its own, smaller than an `MlwsError`. Idle worker threads are woken one at a time, each waking the next when it finds more than it can run | A process waiting in `recv` takes 4.3 KB instead of 23 KB; a million spawned and woken take 0.9 s on one thread instead of 2.9, and 1.7 s on 18 instead of 6.5 |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -188,7 +189,7 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 * ~~Clearing only the registers a function may read before writing them, and
   its `R` bank~~ (M33: done).
 * Lock-free run queues and spinning before sleeping, for many-thread,
-  message-heavy programs.
+  message-heavy programs (M35 wakes idle threads one at a time instead).
 * A bytecode optimizer: a language-independent pass over each function as it
   is loaded or assembled. Dead moves, copy and constant propagation, branch
   threading, and rewriting general-path shapes into fast ones (a compare and

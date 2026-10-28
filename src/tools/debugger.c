@@ -346,7 +346,7 @@ static void cmd_stack(Debugger *d, const char *arg) {
         return;
     }
     uint32_t n = *arg ? (uint32_t)atoi(arg) : 8, off = PTR_OFF(p->sp);
-    if (off >= p->stack.size) {
+    if (off >= p->stack.size || !p->stack.data) { /* (it is allocated when first used) */
         say(d, "The data stack is empty.\n");
         return;
     }

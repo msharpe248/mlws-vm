@@ -1,0 +1,62 @@
+; Twenty thousand processes, all waiting in recv at once, are woken one
+; message each and answer. A process is small until it needs more: its frame
+; and register stacks start with room for a few calls and grow, and its data
+; stack is allocated the first time something uses it (here, every hundredth
+; process, by `enter` and LOC[0]). Waking many processes in a burst wakes
+; idle worker threads one at a time (src/vm/sched.c, Sched.waking), and none
+; of the messages may be lost on the way.
+.include "std/test.inc"
+
+; Waits for one number and answers with twice it; every hundredth process
+; keeps it on its data stack meanwhile, and recurses a little, so that both
+; its stacks grow.
+.func waiter(i64 parent, i64 k)
+    rem I1, k, 100
+    bnz I1, 1f
+    enter 1                              ; the first use of this process's data stack
+    mov LOC[0], k
+    call depth (20) -> (I2)              ; 20 frames deep: past the first 8
+    ASSERT_EQ I2, 20
+    recv I3
+    mov I4, LOC[0]
+    ASSERT_EQ I4, k
+    jmp 2f
+1:  recv I3
+2:  add I3, I3
+    send parent, I3
+    ret
+.endf
+
+.func depth(i64 n) -> i64
+    bz n, 1f
+    sub I1, n, 1
+    call depth (I1) -> (I2)
+    inc I2
+    ret I2
+1:  ret 0
+.endf
+
+.func main
+    .alias count, I10
+    mov count, 20000
+    lnew R0, count
+    mov I0, 0
+1:  spawn waiter (PID, I0) -> (I1)
+    lpush R0, I1
+    inc I0
+    blt I0, count, 1b
+    sleep 50                             ; let them all reach recv
+    mov I0, 0
+2:  mov I1, R0[I0]
+    send I1, I0
+    inc I0
+    blt I0, count, 2b
+    mov I5, 0                            ; the sum of the answers: 2 * (0 + ... + 19999)
+    mov I0, 0
+3:  recv I2
+    add I5, I2
+    inc I0
+    blt I0, count, 3b
+    ASSERT_EQ I5, 399980000
+    ret 0
+.endf

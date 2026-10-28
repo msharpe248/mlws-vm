@@ -250,7 +250,7 @@ encoding, the pointer layout or the object headers.
 | Registers per bank | 32 |
 | Operands per instruction | 32 (calls: target + count + 30 arguments/results) |
 | Call depth | 100,000 frames (`E_CALL_DEPTH`); *option* `--max-frames`. Frames live on the heap, not the C stack, so a deeper limit only costs memory |
-| Data stack | 131,072 words (1 MiB) per process; *option* `--stack-words` |
+| Data stack | 131,072 words (1 MiB) per process, allocated when first used; *option* `--stack-words` |
 | Coroutine data stack | 1,024 words (8 KiB) by default; 16 to 2^29 − 1 words, set by `conew`'s third operand (§8) |
 | Time slice | 2,000 instructions; *option* `--slice` |
 | Starting quotas | unlimited; *option* `--quota heap=…,raw=…,mailbox=…,insns=…,foreign=…,os=…` (§1.4) |

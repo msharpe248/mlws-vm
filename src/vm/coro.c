@@ -52,16 +52,13 @@ ObjCoro *coro_new(Process *p, ObjClosure *fn, int64_t words) {
     co->status = CO_SUSPENDED;
     uint32_t bytes = (uint32_t)words * 8;
     Segment *s = &co->ctx.stack;
-    s->data = xcalloc((size_t)bytes + (size_t)words, 1); /* the words, then a tag per word (as a process's) */
-    s->tags = s->data + bytes;
-    s->size = bytes;
+    s->size = bytes; /* allocated at its first use, as a process's (proc_segment) */
     /* Each stack has its own generation, so a pointer into one stack traps
      * (E_BAD_PTR) while another runs. Generations are 12 bits and wrap. */
     p->stack_gen = (uint16_t)(p->stack_gen % 0xFFF + 1);
     if (p->stack_gen == 1) p->stack_gen = 2; /* 1 is the process's own stack */
     s->gen = p->stack_gen;
     s->kind = SEGK_STACK;
-    s->live = 1;
     co->ctx.sp = co->ctx.fp = PTR_MAKE(SEG_STACK, s->gen, bytes);
     co->ctx.stack_low_off = bytes;
     co->ctx.stack_ref_lo = (uint32_t)words;

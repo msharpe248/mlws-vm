@@ -12,12 +12,9 @@ Process *proc_new(VM *vm) {
     p->lock = plat_lock_new();
     p->slabs = vm->slabs;
     uint32_t bytes = vm->stack_words * 8;
-    p->stack.data = xcalloc((size_t)bytes + vm->stack_words, 1); /* the words, then a tag per word */
-    p->stack.tags = p->stack.data + bytes;
-    p->stack.size = bytes;
+    p->stack.size = bytes; /* allocated on first use (proc_segment): most processes never touch it */
     p->stack.gen = 1;
     p->stack.kind = SEGK_STACK;
-    p->stack.live = 1;
     p->sp = p->fp = PTR_MAKE(SEG_STACK, 1, bytes);
     p->stack_low_off = bytes;
     p->stack_ref_lo = vm->stack_words;
@@ -235,7 +232,7 @@ static void describe_uncaught(Process *p) {
     }
     snprintf(p->err.code, sizeof p->err.code, "E_UNCAUGHT");
     if (ex && ex->kind == OBJ_STRING)
-        snprintf(p->err.msg, sizeof p->err.msg, "uncaught exception: \"%.1000s\"", ((ObjString *)ex)->data);
+        snprintf(p->err.msg, sizeof p->err.msg, "uncaught exception: \"%.400s\"", ((ObjString *)ex)->data);
     else if (ex && ex->kind == OBJ_STRUCT)
         snprintf(p->err.msg, sizeof p->err.msg, "uncaught exception: a %s struct", ((ObjStruct *)ex)->def->name);
     else
@@ -244,17 +241,19 @@ static void describe_uncaught(Process *p) {
 
 /* ---- frames ------------------------------------------------------------------ */
 
-/* Out-of-line slow path of proc_push_frame: limits and growth. */
+/* Out-of-line slow path of proc_push_frame: limits and growth. Both stacks
+ * start small (8 frames, 64 register words) and double, so that a process
+ * that never calls deeply stays small. */
 void proc_frame_slow(Process *p, uint32_t words) {
     if (p->nframes >= p->vm->max_frames)
         vm_trap(p, "E_CALL_DEPTH", "call depth limit of %u frames exceeded (unbounded recursion?)", p->vm->max_frames);
     if (p->nframes == p->fcap) {
-        p->fcap = p->fcap ? p->fcap * 2 : 64;
+        p->fcap = p->fcap ? p->fcap * 2 : 8;
         p->frames = xrealloc(p->frames, p->fcap * sizeof *p->frames);
     }
     p->flimit = p->fcap < p->vm->max_frames ? p->fcap : p->vm->max_frames;
     if (p->rtop + words > p->rcap) {
-        uint32_t nc = p->rcap ? p->rcap * 2 : 1024;
+        uint32_t nc = p->rcap ? p->rcap * 2 : 64;
         while (nc < p->rtop + words) nc *= 2;
         p->regs = xrealloc(p->regs, nc * sizeof *p->regs);
         p->rcap = nc;
@@ -371,12 +370,21 @@ bool proc_callback(Process *p, ObjClosure *cl, const Word *args) {
 
 /* ---- memory ------------------------------------------------------------------ */
 
+/* A data stack's memory, at its first use: the words, then a tag per word.
+ * Until then it is not live, so every access takes proc_segment's slow path. */
+static void stack_alloc(Segment *s) {
+    s->data = xcalloc((size_t)s->size + s->size / 8, 1);
+    s->tags = s->data + s->size;
+    s->live = 1;
+}
+
 Segment *proc_segment(Process *p, uint64_t ptr) {
     uint32_t seg = PTR_SEG(ptr), gen = PTR_GEN(ptr);
     Segment *s;
     if (seg == 0) vm_trap(p, "E_NULL", "null pointer dereference");
     if (seg == SEG_STACK) {
         s = &p->stack;
+        if (!s->data && s->gen == gen) stack_alloc(s);
     } else if (seg < SEG_RAW0) {
         if (seg - SEG_GLOBAL0 >= p->nglobals) vm_trap(p, "E_BAD_PTR", "invalid pointer (unknown global segment %u)", seg);
         s = &p->globals[seg - SEG_GLOBAL0];

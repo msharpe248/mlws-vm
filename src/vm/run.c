@@ -83,7 +83,8 @@ bool vm_run_function(VM *vm, Function *fn, Word *args, int nargs, RunResult *res
         for (int k = 0; k < p->nresults; k++) keep_result(p, res, k);
     } else {
         res->status = RUN_TRAP;
-        res->err = p->err;
+        snprintf(res->err.code, sizeof res->err.code, "%s", p->err.code);
+        snprintf(res->err.msg, sizeof res->err.msg, "%s", p->err.msg);
         res->backtrace = xstrdup(p->backtrace.s ? p->backtrace.s : "");
     }
     if (vm->hold && vm->poll) { /* keep serving the monitor's final picture until interrupted */

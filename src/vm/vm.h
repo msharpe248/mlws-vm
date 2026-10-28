@@ -202,6 +202,9 @@ typedef struct VM {
     /* native code (extensions.c, docs/EXTENDING.md) */
     VEC(char *) ext_paths;       /* trusted extension directories, in search order */
     bool unsafe_native;          /* --unsafe-native: skip the trust checks */
+    bool no_cache;               /* --no-cache: assemble every .masm afresh (modcache.c) */
+    int cache_state;             /* 0 not looked at yet, 1 cache_dir in use, -1 off */
+    char *cache_dir;
     bool warned_unsafe;
     VEC(ExtLib *) extlibs;
     VEC(NativeDef *) foreign_natives; /* owned NativeDefs of extensions and the FFI */
@@ -339,6 +342,14 @@ typedef struct {
 
 typedef VEC(uint64_t) PidVec;
 
+/* Why a process stopped: a runtime trap's or an uncaught exception's code
+ * and message (longer messages are cut). Smaller than an MlwsError, whose
+ * message carries the assembler's source excerpts: every process has one. */
+typedef struct {
+    char code[32];
+    char msg[512];
+} ProcError;
+
 struct Process {
     VM *vm;
     uint64_t pid;
@@ -358,7 +369,7 @@ struct Process {
     VEC(Segment) raw;
     VEC(uint32_t) rawfree;
     uint64_t sp, fp;
-    MlwsError err;
+    ProcError err;
     StrBuf backtrace;
     jmp_buf *jb;
     /* statistics */
@@ -462,6 +473,8 @@ void vm_options_from_env(VM *vm);
 LModule *vm_load_root(VM *vm, const char *path, MlwsError *err);
 LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err); /* source in memory */
 LModule *vm_require(VM *vm, const char *name, MlwsError *err);
+/* modcache.c: a .masm file assembled, or its module from the cache */
+Module *modcache_assemble(VM *vm, const char *path, const char *default_name, MlwsError *err);
 /* verify.c */
 bool vm_verify_module(VM *vm, LModule *lm, MlwsError *err);
 /* Clear every call's whole window from now on (the debugger shows them). */

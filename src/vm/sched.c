@@ -63,6 +63,8 @@ typedef struct Sched {
     VEC(Timer) timers; /* min-heap by wake time */
     _Atomic uint64_t next_timer; /* earliest timer, 0 = none (a hint read without the lock) */
     _Atomic int nidle;           /* workers that found no work */
+    _Atomic bool waking;         /* an idle worker has been signalled and is not yet back */
+    int nwaiting;                /* workers waiting on work_cv (under lock) */
     int nparked, nexited;
     _Atomic bool done; /* main has finished */
     _Atomic bool stw;  /* stop the world requested */
@@ -240,6 +242,14 @@ static size_t q_len(Worker *w) {
     return n;
 }
 
+static void wake_one(Sched *s);
+
+/* Wake an idle worker, unless one is already on its way (Sched.waking). */
+static void wake_next(Sched *s) {
+    bool no = false;
+    if (atomic_load(&s->nidle) > 0 && atomic_compare_exchange_strong(&s->waking, &no, true)) wake_one(s);
+}
+
 /* Steal half of the first non-empty queue after w's; returns one pid to run
  * (the rest go on w's queue) or 0. */
 static uint64_t steal(Worker *w) {
@@ -253,6 +263,7 @@ static uint64_t steal(Worker *w) {
         size_t m = q_take(v, got, want < STEAL_MAX ? want : STEAL_MAX);
         if (!m) continue;
         for (size_t i = 1; i < m; i++) q_push(w, got[i]);
+        if (m > 1 || n > m) wake_next(s); /* more than this worker can run now: pass it on */
         return got[0];
     }
     return 0;
@@ -260,7 +271,8 @@ static uint64_t steal(Worker *w) {
 
 static void wake_one(Sched *s) {
     plat_mutex_lock(s->lock);
-    plat_cond_signal(s->work_cv);
+    if (s->nwaiting) plat_cond_signal(s->work_cv);
+    else atomic_store(&s->waking, false); /* nobody to wake (an idle worker polling): no one is on the way */
     plat_mutex_unlock(s->lock);
 }
 
@@ -273,7 +285,12 @@ static void ready_locked(Sched *s, Process *p) {
     p->in_runq = true;
     Worker *w = my_worker(s);
     size_t n = q_push(w, p->pid);
-    if (atomic_load(&s->nidle) > 0 && (n >= 2 || w != tls_worker)) wake_one(s);
+    /* At most one worker is woken at a time: while it is on its way, more
+     * ready processes wake no one else; it takes them, and wakes the next
+     * worker itself if it finds more than it can run (steal). Signalling one
+     * per process made a million spawns 8 times slower on 18 threads than on
+     * one. */
+    if (n >= 2 || w != tls_worker) wake_next(s);
 }
 
 void sched_start(VM *vm, Process *p) {
@@ -908,7 +925,10 @@ static void idle(Worker *w) {
             if (s->nrun > 1 && poll_wait > 1000000) poll_wait = 1000000;
             break;
         }
+        s->nwaiting++;
         park_locked(s, s->work_cv, nt ? nt - now : 0);
+        s->nwaiting--;
+        atomic_store(&s->waking, false); /* back: the next ready process may wake another */
     }
     s->nidle--;
     plat_mutex_unlock(s->lock);

@@ -334,6 +334,12 @@ size classes with a free list each:
   alongside 200,000 long-lived ones took 1.8–2.4 times as long.
 * **Chunks** start at 1 KiB and double up to 64 KiB, so ten thousand small
   processes stay small.
+* **Small processes.** A process that is waiting in `recv` takes about 4.3 KB
+  (100,000 of them, measured on the M5): its `Process` record (3 KB), room for
+  8 frames and 64 register words, which double when a call needs more, and no
+  data stack until something uses one, when its 1 MiB (by default) is
+  allocated. Coroutines' data stacks are allocated the same way, at first use.
+  With the stacks allocated up front, the same process took 23 KB.
 * **No sharing.** A process's objects never move to another heap: messages are
   copied, and only the copies (built in a scratch heap that uses `malloc`) are
   adopted by the receiver. So a process's chunks are simply freed with it. The
@@ -387,6 +393,12 @@ design is in [ABI.md](ABI.md) §1.1 and at the top of `src/vm/sched.c`. In short
   has a backlog. Waking a sleeping thread costs microseconds, far more than a
   message, so a ping-pong pair stays on one thread instead of bouncing between
   two.
+* **One thread woken at a time.** While a woken thread is on its way, more
+  ready processes wake no one else; that thread takes them, and if it steals
+  more than it can run it wakes the next (as Go's scheduler limits its
+  spinning threads). A process spawning a million processes that each wait
+  for a message, then waking them all, takes 0.9 s on one thread and 1.7 s on
+  18; with a signal for every ready process it took 6.5 s on 18.
 * **Heaps are never shared.** A sender copies a message into a detached block of
   objects; the receiver links the block into its own heap on its own thread. The
   collector needs no locks.
@@ -448,8 +460,10 @@ for each request it serves.
   added for compiled Lox. What remains there for Lox is allocation (`new`,
   `mnew`, `mset`), which a fast form must not do.
 * **Lock-free run queues** (Chase–Lev deques). Each queue's lock is almost
-  always uncontended, because a thread mostly uses its own queue. Revisit if
-  profiles of many-thread, message-heavy programs show queue locks.
+  always uncontended, because a thread mostly uses its own queue. Spawning a
+  million processes from one is still twice as slow on 18 threads as on one,
+  partly from threads stealing from the spawner's queue while it pushes;
+  revisit if real programs show queue locks.
 * **Spinning before sleeping.** Go's scheduler spins briefly before parking a
   thread, to cut wake-up latency. Here a thread is woken only when there is a
   backlog, which avoided the problem in every benchmark so far.
