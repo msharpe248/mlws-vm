@@ -1,0 +1,32 @@
+; The bottom of the module graph used by module_graph.masm and
+; module_processes.masm:
+;
+;              app
+;             /   \
+;          left   right      left and right both import base: a diamond
+;             \   /  |
+;              base  |       base and right both import leaf
+;                \   |
+;                 leaf
+;
+; (late imports base, and is loaded only by module.load.)
+;
+; leaf is reached from base, from right and directly from the tests, and
+; every path must reach the same module: one count of ticks per process.
+.module _graph.leaf
+.export tick, ticks, divide
+
+ticks:  .i64 0                           ; this process's ticks (data, exported)
+
+; Count one tick; return this process's total.
+.func tick -> i64
+    add @ticks, 1
+    ret @ticks
+.endf
+
+; a / b, faulting with E_DIV_ZERO when b is 0: an error raised at the
+; bottom of the graph, for the tests to catch several modules up.
+.func divide(i64 a, i64 b) -> i64
+    div I2, a, b
+    ret I2
+.endf

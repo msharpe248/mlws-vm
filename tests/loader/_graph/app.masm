@@ -1,0 +1,22 @@
+; The top of the module graph (drawn in leaf.masm): imports both sides of
+; the diamond, so base is four modules below the tests along some paths.
+.module _graph.app
+.import _graph.left as l
+.import _graph.right as r
+.export via_app_left, via_app_right, divide
+
+.func via_app_left -> i64
+    call l.via_left () -> (I0)
+    ret I0
+.endf
+
+.func via_app_right -> i64
+    call r.via_right () -> (I0)
+    ret I0
+.endf
+
+; app -> right -> base -> leaf, where the fault is raised.
+.func divide(i64 a, i64 b) -> i64
+    call r.deep_divide (a, b) -> (I2)
+    ret I2
+.endf

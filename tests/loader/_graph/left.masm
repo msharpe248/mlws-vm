@@ -1,0 +1,30 @@
+; One side of the diamond (drawn in leaf.masm): reaches leaf only through
+; base. work is the entry of a process that the tests spawn by its
+; qualified name, _graph.left.work.
+.module _graph.left
+.import _graph.base as b
+.export via_left, make_point, work
+
+.func via_left -> i64
+    call b.bump () -> (I0)
+    ret I0
+.endf
+
+; A base.Point made here, read by the tests and by right.
+.func make_point(i64 x, i64 y) -> ref
+    call b.make (x, y) -> (R0)
+    ret R0
+.endf
+
+; A process: bump n times, tick leaf once (through base), and send the
+; parent a base.Point holding this process's count and ticks.
+.func work(i64 parent, i64 n)
+    mov I2, 0
+1:  call via_left () -> (I3)
+    inc I2
+    blt I2, n, 1b
+    call b.tick_leaf () -> (I4)
+    call b.make (I3, I4) -> (R0)
+    send parent, R0
+    ret
+.endf

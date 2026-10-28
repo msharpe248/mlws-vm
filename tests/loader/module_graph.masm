@@ -1,0 +1,81 @@
+; A graph of modules that import each other (drawn in _graph/leaf.masm):
+; app imports left and right, which both import base (a diamond), and base
+; and right both import leaf. However many modules import one, and however
+; long the path to it, it is loaded once: every path reaches the same code,
+; the same globals and the same struct type. A diamond is not a cycle.
+.include "std/test.inc"
+.import _graph.app as app
+.import _graph.left as left
+.import _graph.right as right
+.import _graph.base as base
+.import _graph.leaf as leaf
+
+.func main
+    ; ---- one counter in base, whichever way it is reached ----
+    call base.bump () -> (I0)                ; directly
+    ASSERT_EQ I0, 1
+    call left.via_left () -> (I0)            ; main -> left -> base
+    ASSERT_EQ I0, 2
+    call right.via_right () -> (I0)          ; main -> right -> base
+    ASSERT_EQ I0, 3
+    call app.via_app_left () -> (I0)         ; main -> app -> left -> base
+    ASSERT_EQ I0, 4
+    call app.via_app_right () -> (I0)        ; main -> app -> right -> base
+    ASSERT_EQ I0, 5
+    call base.value () -> (I0)
+    ASSERT_EQ I0, 5
+    ASSERT_EQ @base.count, 5                 ; and as exported data
+
+    ; ---- one counter in leaf, reached from three modules ----
+    call leaf.tick () -> (I0)                ; directly
+    ASSERT_EQ I0, 1
+    call right.tick () -> (I0)               ; right imports leaf itself
+    ASSERT_EQ I0, 2
+    call base.tick_leaf () -> (I0)           ; base imports it too
+    ASSERT_EQ I0, 3
+    ASSERT_EQ @leaf.ticks, 3
+
+    ; ---- exported data is one word, for base and every importer ----
+    ASSERT_EQ @base.scale, 3
+    mov @base.scale, 5                       ; written here...
+    call base.scaled (2) -> (I0)             ; ...seen by base's own code
+    ASSERT_EQ I0, 10
+    call right.read_scale () -> (I0)         ; ...and by another importer
+    ASSERT_EQ I0, 5
+
+    ; ---- one struct type, base.Point, made and read anywhere ----
+    call left.make_point (3, 4) -> (R0)      ; made by base, for left
+    ASSERT_EQ R0->base.Point.x, 3            ; read here
+    call right.norm (R0) -> (I0)             ; and by right
+    ASSERT_EQ I0, 7
+    new R1, base.Point                       ; made here, read by right
+    mov R1->base.Point.x, 10
+    mov R1->base.Point.y, 20
+    call right.norm (R1) -> (I0)
+    ASSERT_EQ I0, 30
+
+    ; ---- an error raised at the bottom reaches the top ----
+    call app.divide (84, 2) -> (I0)          ; app -> right -> base -> leaf
+    ASSERT_EQ I0, 42
+.try .Lcaught
+    call app.divide (1, 0) -> (I0)
+.endtry
+    FAIL "leaf.divide by zero did not fault"
+.Lcaught:
+    catch R2
+    strcmp I1, R2->Error.code, "E_DIV_ZERO"
+    ASSERT_EQ I1, 0
+    call right.safe_divide (1, 0) -> (I0)    ; caught in the middle instead
+    ASSERT_EQ I0, -1
+
+    ; ---- module.* sees the same modules ----
+    ncall "module.loaded" ("_graph.leaf") -> (I0)
+    ASSERT_TRUE I0
+    ncall "module.loaded" ("_graph.late") -> (I0)
+    ASSERT_FALSE I0                          ; nothing imports it
+    ncall "module.load" ("_graph.base")      ; already loaded: nothing to do
+    ncall "module.function" ("_graph.base", "bump") -> (R3)
+    calli R3 () -> (I0)                      ; the same count as above
+    ASSERT_EQ I0, 6
+    ret 0
+.endf

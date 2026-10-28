@@ -1,0 +1,51 @@
+; The other side of the diamond (drawn in leaf.masm): imports base, and
+; leaf directly as well, so leaf is reached both ways.
+.module _graph.right
+.import _graph.base as base
+.import _graph.leaf
+.export via_right, tick, norm, read_scale, deep_divide, safe_divide, report
+
+.func via_right -> i64
+    call base.bump () -> (I0)
+    ret I0
+.endf
+
+.func tick -> i64
+    call _graph.leaf.tick () -> (I0)
+    ret I0
+.endf
+
+; x + y of a base.Point, whichever module or process made it.
+.func norm(ref p) -> i64
+    add I0, p->base.Point.x, p->base.Point.y
+    ret I0
+.endf
+
+; base's exported data, read from here: the same word base itself uses.
+.func read_scale -> i64
+    ret @base.scale
+.endf
+
+; leaf.divide, two modules down.
+.func deep_divide(i64 a, i64 b) -> i64
+    call base.divide (a, b) -> (I2)
+    ret I2
+.endf
+
+; The same, but catching leaf's fault here, in the middle: -1 for a / 0.
+.func safe_divide(i64 a, i64 b) -> i64
+.try .Lcaught
+    call base.divide (a, b) -> (I2)
+.endtry
+    ret I2
+.Lcaught:
+    catch R0
+    ret -1
+.endf
+
+; A process body: send the parent this process's first tick of leaf.
+.func report(i64 parent)
+    call tick () -> (I1)
+    send parent, I1
+    ret
+.endf

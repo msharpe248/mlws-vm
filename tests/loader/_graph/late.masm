@@ -1,0 +1,12 @@
+; Loaded only at run time, by module.load in module_processes.masm. It
+; imports base, which the tests imported statically, so loading it must
+; reuse that base, and its bumps land in the same count as the caller's.
+.module _graph.late
+.import _graph.base
+.export bump_twice
+
+.func bump_twice -> i64
+    call _graph.base.bump () -> (I0)
+    call _graph.base.bump () -> (I0)
+    ret I0
+.endf

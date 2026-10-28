@@ -1,0 +1,146 @@
+; Processes using the module graph drawn in _graph/leaf.masm, directly and
+; through other modules. A module is loaded once for the whole VM, but each
+; process has its own copy of every module's globals, made from the module's
+; image when the process starts: a child never sees what its parent (or any
+; other process) changed, and within one process every path to a module
+; reaches the same copy. A process may start in a function of another module,
+; or in a closure over one; structs of one module's type keep that type when
+; sent between processes; an error raised modules down ends just the process
+; it happened in; and a module loaded at run time by one process reuses the
+; modules that were imported statically.
+;
+; Four worker threads and a 100-instruction time slice, so the 32 hammer
+; processes below run at the same time and are preempted partway through
+; their loops: their counts must still come out exact.
+; threads: 4
+; option: --slice 100
+.include "std/test.inc"
+.import _graph.app as app
+.import _graph.left as left
+.import _graph.right as right
+.import _graph.base as base
+.import _graph.leaf as leaf
+
+.equ HAMMERS = 32
+.equ ROUNDS = 200
+
+; A fresh process: every module's globals start from their images, whatever
+; main did to its own copies. Count four ways and report.
+.func fresh(i64 parent)
+    send parent, @base.count             ; 0: not main's 2
+    send parent, @base.scale             ; 3: not main's 5
+    send parent, @leaf.ticks             ; 0
+    call base.bump () -> (I1)
+    call left.via_left () -> (I1)
+    call right.via_right () -> (I1)
+    call app.via_app_left () -> (I1)
+    send parent, I1                      ; 4: one count, four paths to it
+    ret
+.endf
+
+; ROUNDS times: bump base by each of four paths in turn, and tick leaf by
+; each of three, then report this process's totals in one message (two
+; would interleave with the other hammers' in main's mailbox).
+.func hammer(i64 parent)
+    mov I1, 0
+1:  call base.bump () -> (I2)
+    call left.via_left () -> (I2)
+    call right.via_right () -> (I2)
+    call app.via_app_right () -> (I2)
+    call leaf.tick () -> (I3)
+    call right.tick () -> (I3)
+    call base.tick_leaf () -> (I3)
+    inc I1
+    blt I1, ROUNDS, 1b
+    call base.make (I2, I3) -> (R0)      ; 4 * ROUNDS bumps, 3 * ROUNDS ticks
+    send parent, R0
+    ret
+.endf
+
+; Load a module nothing has imported yet; it imports base, which this
+; process has used already, so its bumps add to the same count.
+.func loader(i64 parent)
+    call base.bump () -> (I1)            ; 1
+    ncall "module.load" ("_graph.late")
+    ncall "module.function" ("_graph.late", "bump_twice") -> (R0)
+    calli R0 () -> (I1)                  ; 3
+    call base.value () -> (I2)           ; 3: the same copy of base
+    add I1, I1, I2
+    send parent, I1                      ; 6
+    ret
+.endf
+
+.func main
+    ; ---- main changes its own copies first ----
+    call base.bump () -> (I0)
+    call app.via_app_left () -> (I0)
+    ASSERT_EQ I0, 2
+    mov @base.scale, 5
+    call leaf.tick () -> (I0)
+
+    ; ---- a child starts from the images ----
+    spawn fresh (PID)
+    recv I0
+    ASSERT_EQ I0, 0
+    recv I0
+    ASSERT_EQ I0, 3
+    recv I0
+    ASSERT_EQ I0, 0
+    recv I0
+    ASSERT_EQ I0, 4
+
+    ; ---- a process that starts in another module ----
+    spawn left.work (PID, 10)            ; _graph.left.work
+    recv R0                              ; a base.Point, made in that process
+    ASSERT_EQ R0->base.Point.x, 10       ; its 10 bumps
+    ASSERT_EQ R0->base.Point.y, 1        ; its one tick
+    call right.norm (R0) -> (I0)         ; still a base.Point to right
+    ASSERT_EQ I0, 11
+    send PID, R0                         ; and copied once more
+    recv R1
+    ASSERT_EQ R1->base.Point.x, 10
+
+    ; ---- a process that starts in a closure over a module's function ----
+    ncall "module.function" ("_graph.right", "report") -> (R2)
+    spawni R2 (PID)
+    recv I0
+    ASSERT_EQ I0, 1                      ; its first tick, not main's second
+
+    ; ---- many processes at once ----
+    mov I0, 0
+1:  spawn hammer (PID)
+    inc I0
+    blt I0, HAMMERS, 1b
+    mov I0, 0
+2:  recv R0
+    ASSERT_EQ R0->base.Point.x, 4 * ROUNDS
+    ASSERT_EQ R0->base.Point.y, 3 * ROUNDS
+    inc I0
+    blt I0, HAMMERS, 2b
+
+    ; ---- an error several modules down ends only that process ----
+    spawnm app.divide (1, 0) -> (I3)     ; app -> right -> base -> leaf
+    recv R3
+    ASSERT_EQ R3->Down.pid, I3
+    strcmp I0, R3->Down.code, "E_DIV_ZERO"
+    ASSERT_EQ I0, 0
+
+    ; ---- a module loaded at run time, by a child ----
+    ncall "module.loaded" ("_graph.late") -> (I0)
+    ASSERT_FALSE I0
+    spawn loader (PID)
+    recv I0
+    ASSERT_EQ I0, 6
+    ncall "module.loaded" ("_graph.late") -> (I0)
+    ASSERT_TRUE I0                       ; loaded for the whole VM...
+    ncall "module.function" ("_graph.late", "bump_twice") -> (R4)
+    calli R4 () -> (I0)                  ; ...with main's own copy of base
+    ASSERT_EQ I0, 4
+
+    ; ---- after all that, main's copies are as main left them ----
+    call base.value () -> (I0)
+    ASSERT_EQ I0, 4
+    ASSERT_EQ @base.scale, 5
+    ASSERT_EQ @leaf.ticks, 1
+    ret 0
+.endf

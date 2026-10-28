@@ -1,0 +1,49 @@
+; The middle of the module graph (drawn in leaf.masm): imported by left,
+; right, late and the tests, so it must be loaded once and every importer
+; must reach the same globals. It owns a counter, an exported data word and
+; a struct type that other modules create, read and send between processes.
+.module _graph.base
+.import _graph.leaf as leaf
+.export Point, count, scale, bump, value, tick_leaf, make, scaled, divide
+
+.struct Point
+    x: i64
+    y: i64
+.ends
+
+count:  .i64 0                           ; bumps in this process
+scale:  .i64 3                           ; read by scaled, and by right through @
+
+; Count one bump; return this process's total.
+.func bump -> i64
+    add @count, 1
+    ret @count
+.endf
+
+.func value -> i64
+    ret @count
+.endf
+
+; leaf.tick, one module down.
+.func tick_leaf -> i64
+    call leaf.tick () -> (I0)
+    ret I0
+.endf
+
+.func make(i64 x, i64 y) -> ref
+    new R0, Point
+    mov R0->Point.x, x
+    mov R0->Point.y, y
+    ret R0
+.endf
+
+.func scaled(i64 v) -> i64
+    mul I1, v, @scale
+    ret I1
+.endf
+
+; leaf.divide, so its fault passes through this module.
+.func divide(i64 a, i64 b) -> i64
+    call leaf.divide (a, b) -> (I2)
+    ret I2
+.endf
