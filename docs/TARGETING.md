@@ -39,7 +39,8 @@ Use `.import` for dependencies and `.export` for public functions and globals.
   registers, or nothing. The usual way to read one first is to pass on the
   half of a value that its type leaves unused: pass a constant instead
   (`call f (I2, 0.0, null)`, not `call f (I2, F2, R2)` where `F2` was never
-  written).
+  written). `mlwsvm run --profile` shows how much of each hot function's
+  window a call clears, and which registers it reads first.
 * **Name registers with `.alias`** in generated code (`.alias count, I4`). It costs
   nothing at runtime and makes the output readable.
 * **Use explicit type suffixes for narrow types** (`add.i32`, `mov.u8`). Without

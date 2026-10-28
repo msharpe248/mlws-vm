@@ -80,8 +80,8 @@ $ mlwsvm run --profile examples/fib.masm
 --- mlwsvm profile: 2860297 instructions ---
 
 functions (instructions executed in the function itself; ...):
-       %        insns    entries  function
-  100.0%      2860292     635621  fib.fib
+       %        insns    entries   cleared  function
+  100.0%      2860292     635621       0/4  fib.fib
 ...
 hot lines:
    22.2%       635621  examples/fib.masm:9 (fib.fib)
@@ -98,7 +98,12 @@ hottest instructions on the general path:
 
 * **functions**: instructions executed in each function itself (exclusive).
   `entries` counts how often the function's first instruction ran: calls, plus any
-  loop that jumps back to it.
+  loop that jumps back to it. `cleared` is how many words of its register window
+  each call clears, of the window's size: its `R` registers and any `I`, `F` or
+  `P` register it may read before writing it ([TARGETING.md](TARGETING.md#2-values-and-registers)).
+  For the functions listed that read some register first, a further list
+  names those registers: writing them first, or passing a constant instead of
+  an unused one, shortens every call's clear.
 * **hot lines**: instructions per source line.
 * **opcodes**: the instruction mix, and for each opcode the share of executions
   that used a specialised handler ([PERFORMANCE.md](PERFORMANCE.md#how-the-interpreter-is-made-fast)).

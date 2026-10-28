@@ -92,6 +92,10 @@ typedef struct Function {
      * clear is under 2 KiB and expands it inline as `rep stos`, whose start-up
      * made calls on x86 up to a third slower than a call to memset. */
     uint16_t zoff, zlen;
+    /* The I, F and P registers it may read before writing them (bit k:
+     * register k of that bank; R is always cleared): what makes the run
+     * longer, shown by the profiler. */
+    uint32_t read_first[NBANKS];
 } Function;
 
 enum { LM_LOADING = 1, LM_READY = 2 };

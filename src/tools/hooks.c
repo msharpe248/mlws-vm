@@ -270,12 +270,31 @@ void tools_profile_report(VM *vm, FILE *out, const char *flame_path) {
     qsort(fn.v, fn.n, sizeof *fn.v, hot_cmp);
     qsort(lines.v, lines.n, sizeof *lines.v, hot_cmp);
     fprintf(out, "\nfunctions (instructions executed in the function itself; entries = runs of its first\n"
-                 "instruction, i.e. calls plus any loop back to it):\n");
-    fprintf(out, "  %6s %12s %10s  %s\n", "%", "insns", "entries", "function");
+                 "instruction, i.e. calls plus any loop back to it; cleared = words of its register\n"
+                 "window each call clears, of the window's size):\n");
+    fprintf(out, "  %6s %12s %10s %9s  %s\n", "%", "insns", "entries", "cleared", "function");
+    bool any_first = false;
     for (size_t i = 0; i < fn.n && i < 20; i++) {
         const Function *f = fn.v[i].f;
-        fprintf(out, "  %5.1f%% %12llu %10llu  %s.%s\n", 100.0 * (double)fn.v[i].n / (double)total,
-                (unsigned long long)fn.v[i].n, (unsigned long long)f->prof[0], f->mod->m->name, f->name);
+        char cl[24];
+        snprintf(cl, sizeof cl, "%u/%u", (unsigned)f->zlen, (unsigned)f->rsize);
+        fprintf(out, "  %5.1f%% %12llu %10llu %9s  %s.%s\n", 100.0 * (double)fn.v[i].n / (double)total,
+                (unsigned long long)fn.v[i].n, (unsigned long long)f->prof[0], cl, f->mod->m->name, f->name);
+        for (int b = 0; b < NBANKS; b++) any_first = any_first || f->read_first[b];
+    }
+    if (any_first) { /* what makes a call clear more than the R registers */
+        fprintf(out, "\nregisters read before they are written (each call clears them):\n");
+        for (size_t i = 0; i < fn.n && i < 20; i++) {
+            const Function *f = fn.v[i].f;
+            bool some = false;
+            for (int b = 0; b < NBANKS; b++) some = some || f->read_first[b];
+            if (!some) continue;
+            fprintf(out, "  %s.%s:", f->mod->m->name, f->name);
+            for (int b = 0; b < NBANKS; b++)
+                for (int k = 0; k < 32; k++)
+                    if (f->read_first[b] >> k & 1) fprintf(out, " %c%d", "IFRP"[b], k);
+            fprintf(out, "\n");
+        }
     }
     fprintf(out, "\nhot lines:\n");
     fprintf(out, "  %6s %12s  %s\n", "%", "insns", "location");

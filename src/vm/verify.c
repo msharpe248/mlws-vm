@@ -282,6 +282,7 @@ static void plan_window(Function *f) {
     free(in);
     free(seen);
     free(work);
+    for (int b = 0; b < NBANKS; b++) f->read_first[b] = b == BANK_R ? 0 : need.b[b];
     need.b[BANK_R] = 0xFFFFFFFFu; /* the collector scans them all */
     uint32_t lo = f->rsize, hi = 0;
     for (int b = 0; b < NBANKS; b++) {
