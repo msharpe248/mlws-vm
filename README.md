@@ -124,6 +124,9 @@ make check-bindgen           # generate, compare and call bindings for a test he
 ./mlwsvm run --stats examples/fib.masm
 ./mlwsvm run --threads 1 examples/workers.masm   # one worker thread: deterministic order
 ./mlwsvm run server.masm 8080 --also client.masm  # two programs in one VM, until both end
+./mlwsvm run -L ~/mlws-libs prog.masm   # find imports there too (or --lib-path, $MLWSVM_PATH)
+./mlwsvm lib build json5/                # a versioned library archive, json5-1.2.0.mlwsl
+./mlwsvm lib list -L ~/mlws-libs         # the archives on the library path
 ./mlwsvm run examples/http_server.masm 8080     # a supervised HTTP server: a process per connection
 ./mlwsvm run --max-frames 1000000 --quota heap=256M prog.masm   # VM options (docs/TOOLING.md)
 ./mlwsvm run --profile examples/fib.masm
@@ -142,7 +145,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 
 | | |
 |---|---|
-| [docs/ASSEMBLY.md](docs/ASSEMBLY.md) | The assembly language: syntax, directives, functions, data, macros, modules |
+| [docs/ASSEMBLY.md](docs/ASSEMBLY.md) | The assembly language: syntax, directives, functions, data, macros, modules and libraries |
 | [docs/ADDRESSING.md](docs/ADDRESSING.md) | Every addressing mode |
 | [docs/ISA.md](docs/ISA.md) | Instruction reference (generated from `src/core/opcodes.def`) |
 | [docs/ABI.md](docs/ABI.md) | Execution model: registers, calling convention, stack, memory, traps |
@@ -150,27 +153,27 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/NATIVES.md](docs/NATIVES.md) | Host functions (generated) |
 | [docs/ERRORS.md](docs/ERRORS.md) | Error codes |
 | [docs/BINARY_FORMAT.md](docs/BINARY_FORMAT.md) | The `.mlwso` file and instruction encoding |
-| [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard, `top`, and the bindings generator |
+| [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard, `top`, several programs in one VM, library archives (`mlwsvm lib`), the module cache, VM options, and the bindings generator |
 | [docs/STDLIB.md](docs/STDLIB.md) | The standard library: files, commands, networking, text and JSON, time, hashes, random numbers, encodings, sorting, and how I/O waits |
 | [docs/EMBEDDING.md](docs/EMBEDDING.md) | Running MLWSVM inside a C or C++ program (`libmlwsvm`) |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks and results, how the interpreter and scheduler are made fast, and what is left alone (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M23 and what remains: Windows and the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M40 and what remains: Windows and the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
 
 ```
 src/main.c      the mlwsvm command line
-src/core/       types, opcode table (opcodes.def), instruction codec, shared checker, disassembler
+src/core/       types, opcode table (opcodes.def), instruction codec, shared checker, disassembler, Unicode, version constraints
 src/asm/        lexer, constant expressions, preprocessor (macros etc.), assembler
-src/loader/     .mlwso reader/writer
-src/vm/         loader/linker, verifier, processes and memory, coroutines, scheduler, interpreter, VM options, run helper
+src/loader/     .mlwso module and .mlwsl library archive reader/writer
+src/vm/         loader/linker, verifier, module cache, processes and memory, coroutines, scheduler, interpreter, extensions, VM options, run helper
 src/heap/       garbage collector, heap objects (strings, bytes, arrays, structs, lists, maps), BigInt and decimal, message copying
-src/native/     built-in and standard-library natives, the extension API and the FFI
+src/native/     built-in and standard-library natives (text, files, the OS and network, module.*), the extension API and the FFI
 src/embed/      the embedding API (libmlwsvm)
-src/tools/      test runner, doc generator, debugger, profiler/tracer, monitor, top, ext, bindgen
+src/tools/      test runner, doc generator, debugger, profiler/tracer, monitor, top, ext, lib, bindgen
 src/platform/   the only OS-specific code (POSIX and Windows)
 include/mlwsvm/ public C headers: the extension API (mlwsvm.h) and the embedding API (embed.h)
 web/            the monitor's dashboard (compiled into the binary)
