@@ -80,24 +80,25 @@ The Lua 5.5 compiler in `mlws-compilers`, still in development, keeps each Lua
 value in three registers (an integer, a float and a reference whose value says
 which is live), gives tables shapes and per-site caches, and makes typed
 copies of local functions for the argument types they are called with. Its
-benchmarks, as whole runs (start-up and assembling its runtime, about 40 ms on
-the M5, included), in milliseconds, best of three, against the reference
-interpreter running the same source:
+benchmarks, as whole runs (start-up included, with the module cache holding the
+assembled program: [TOOLING.md](TOOLING.md#module-cache)), in milliseconds, best
+of three, against the reference interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | Lua 5.5, M5 | MLWSVM, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|
-| loop | 225 | 221 | 382 | 289 |
-| iterate | 125 | 57 | 193 | 79 |
-| fib | 91 | 54 | 150 | 102 |
-| methods | 615 | 353 | 1,086 | 563 |
-| strings | 406 | 144 | 648 | 211 |
-| binarytrees (15) | 623 | 388 | 1,243 | 579 |
-| nbody (500,000) | 1,044 | 432 | 1,741 | 585 |
-| spectralnorm (500) | 263 | 181 | 416 | 269 |
-| fannkuch (10) | 2,026 | 814 | 3,063 | 1,160 |
+| loop | 195 | 218 | 337 | 289 |
+| iterate | 96 | 58 | 153 | 79 |
+| fib | 62 | 54 | 109 | 101 |
+| methods | 583 | 344 | 1,035 | 563 |
+| strings | 377 | 132 | 604 | 210 |
+| binarytrees (15) | 574 | 378 | 1,201 | 566 |
+| nbody (500,000) | 1,003 | 398 | 1,661 | 584 |
+| spectralnorm (500) | 227 | 179 | 383 | 268 |
+| fannkuch (10) | 1,983 | 790 | 3,039 | 1,158 |
 
-Without start-up, `fib` runs in 50 ms on the M5, as fast as Lua: its typed
-copy executes fewer instructions than Lua's bytecode does. Counted with Lua's
+On the M5 `loop` takes less time than in Lua, and without start-up `fib` runs
+in 50 ms, as fast as Lua: its typed copy executes fewer instructions than
+Lua's bytecode does. Counted with Lua's
 own instruction hook, the others execute 1.7 to 5.2 times as many, and each
 costs less: 0.5–0.9 ns on the M5 in the loop-heavy benchmarks, against Lua's
 1.0–1.5 ns. What the

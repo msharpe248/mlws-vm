@@ -53,7 +53,9 @@ base:
 * **Many isolated processes, in parallel**: preemptive scheduling on one worker
   thread per core with work stealing, `spawn`/`send`/`recv` with deep-copied
   messages, timeouts, Erlang-style `link`/`monitor` supervision, and per-process
-  quotas on heap, raw memory, mailbox size and CPU.
+  quotas on heap, raw memory, mailbox size and CPU. A waiting process takes
+  about 4 KB, and spawning, waking and ending one takes one to two
+  microseconds.
 * **Files, commands, the OS and the network** (`std.fs`, `std.os`, `std.net`): a
   process waiting on a pipe or socket waits in the poller (kqueue/epoll) like it
   waits in `recv`, holding no thread, so 10,000 open connections are 10,000 small
@@ -81,10 +83,14 @@ base:
   `coroutine` libraries.
 * **Tooling**: a gdb-style debugger (`mlwsvm debug`), an exact profiler with
   flame-graph output, an instruction tracer, and a live monitor with a web
-  dashboard, JSON API and `mlwsvm top`.
+  dashboard, JSON API and `mlwsvm top`. A compiler marks which line of its
+  source each stretch of code came from (`.loc "fib.lua", 3`), and backtraces,
+  the debugger and the profiler show that line.
+* **A module cache**: a `.masm` file is assembled once and its module kept, so a
+  large generated program starts in milliseconds on later runs.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 245 test programs, also run under
+* **Tested in its own assembly**: 257 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, and with a
   garbage collection at every allocation.
 
@@ -94,7 +100,7 @@ base:
 make                         # builds ./mlwsvm (a C11 compiler; libffi is used for .extern if found)
 make test                    # runs tests/ and examples/
 make check-gc                # the same, collecting garbage at every allocation
-make check-tools             # smoke-test the monitor, top, profiler and tracer
+make check-tools             # smoke-test the monitor, top, profiler, tracer, .loc and the module cache
 make bench                   # benchmarks, with output checks (docs/PERFORMANCE.md)
 make check-asan              # test and check-gc, under AddressSanitizer + UBSan
 make check-tsan              # the tests on several threads, under ThreadSanitizer
