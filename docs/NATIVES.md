@@ -105,9 +105,9 @@ wrappers in `lib/std/*.masm` instead of directly.
 | Name | Parameters | Results | Description |
 |---|---|---|---|
 | `text.format` | r, r | r | Format with {} placeholders: text.format("{} is {:>5.1f}", [name, x]). Spec: [[fill]align][+][0][width][.precision][type]; types d x X o b f e g s q (quoted). |
-| `text.split` | r, r | r | Split on a separator, as a list of strings; an empty separator splits on runs of whitespace. |
+| `text.split` | r, r | r | Split on a separator, as a list of strings; an empty separator splits on runs of whitespace (White_Space). |
 | `text.join` | r, r | r | Join a list's elements (any values) with a separator. |
-| `text.trim` | r | r | Remove whitespace from both ends. |
+| `text.trim` | r | r | Remove whitespace (White_Space) from both ends. |
 | `text.trim_start` | r | r | Remove whitespace from the start. |
 | `text.trim_end` | r | r | Remove whitespace from the end. |
 | `text.find` | r, r, i64 | i64 | The byte offset of the first occurrence at or after an offset, or -1. |
@@ -115,8 +115,35 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `text.starts_with` | r, r | b | Whether a string starts with a prefix. |
 | `text.ends_with` | r, r | b | Whether a string ends with a suffix. |
 | `text.slice` | r, i64, i64 | r | The bytes [start, end) as a string; negative offsets count from the end; clamped to the string. |
-| `text.upper` | r | r | ASCII letters to upper case. |
-| `text.lower` | r | r | ASCII letters to lower case. |
+| `text.upper` | r | r | Upper case, by Unicode's full mappings (ß becomes SS). |
+| `text.lower` | r | r | Lower case, by Unicode's full mappings (a final Σ becomes ς). |
+| `text.ascii_upper` | r | r | ASCII letters to upper case; every other byte unchanged. |
+| `text.ascii_lower` | r | r | ASCII letters to lower case; every other byte unchanged. |
+| `text.title` | r | r | Title case: in each word, the first cased character to title case and the rest to lower case. |
+| `text.fold` | r | r | Unicode case folding (full), for caseless comparison. |
+| `text.equal_fold` | r, r | b | Whether two strings are equal ignoring case and canonical equivalence (canonical caseless match). |
+| `text.normalize` | r, r | r | Unicode normalization: the form is "NFC", "NFD", "NFKC" or "NFKD". |
+| `text.is_normalized` | r, r | b | Whether a string is already in a normalization form ("NFC", "NFD", "NFKC", "NFKD"). |
+| `text.graphemes` | r | r | The user-perceived characters (extended grapheme clusters), as a list of strings. |
+| `text.next_grapheme` | r, i64 | i64 | The end of the grapheme cluster that starts at a byte offset (-1 at the end), for iterating. |
+| `text.words` | r | r | The words, as a list of strings: the segments between word boundaries that hold a letter, digit or ideograph. |
+| `text.word_segments` | r | r | Every segment between word boundaries (words, spaces, punctuation), as a list of strings. |
+| `text.width` | r | i64 | Columns on a terminal: 2 for wide (East Asian) characters and emoji, 0 for marks and controls. |
+| `text.category` | c | r | A character's general category: "Lu", "Nd", ... |
+| `text.is_letter` | c | b | Whether a character is a letter (category L*). |
+| `text.is_alpha` | c | b | Whether a character is Alphabetic. |
+| `text.is_digit` | c | b | Whether a character is a decimal digit (category Nd). |
+| `text.is_number` | c | b | Whether a character is a number (category N*). |
+| `text.is_space` | c | b | Whether a character is White_Space. |
+| `text.is_upper` | c | b | Whether a character is Uppercase. |
+| `text.is_lower` | c | b | Whether a character is Lowercase. |
+| `text.is_punct` | c | b | Whether a character is punctuation (category P*). |
+| `text.is_id_start` | c | b | Whether a character can start an identifier (XID_Start, UAX #31). |
+| `text.is_id_continue` | c | b | Whether a character can continue an identifier (XID_Continue, UAX #31). |
+| `text.is_emoji` | c | b | Whether a character is Extended_Pictographic. |
+| `text.digit_value` | c | i64 | A decimal digit's value, or -1. |
+| `text.char_width` | c | i64 | A character's columns on a terminal: 0, 1 or 2. |
+| `text.unicode_version` | - | r | The version of Unicode the tables come from, e.g. "17.0.0". |
 | `text.repeat` | r, i64 | r | A string repeated n times. |
 | `text.lines` | r | r | Split into lines (\n or \r\n), as a list of strings. |
 | `text.valid` | r | b | Whether a string or byte buffer is valid UTF-8. |

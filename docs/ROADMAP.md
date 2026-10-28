@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M36 are complete. What remains is Windows (section 3) and the
+Milestones M0–M37 are complete. What remains is Windows (section 3) and the
 deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M36 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M37 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M36
+## Milestones M11–M37
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -58,6 +58,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M34 Source positions of translated programs** (done) | `.loc "file", line` gives the instructions that follow a position in the program a compiler translated; modules keep the runs (format version 7), and backtraces, `Error.trace`, the tracer, debugger (`break file.lua:12`), monitor and profiler (hot program lines) show it; `dis` prints it back | A trap in compiled code is reported at its source line |
 | **M35 Cheaper processes** (done) | A process's frame and register stacks start small and grow, and its data stack (and a coroutine's) is allocated at first use; its error record is its own, smaller than an `MlwsError`. Idle worker threads are woken one at a time, each waking the next when it finds more than it can run | A process waiting in `recv` takes 4.3 KB instead of 23 KB; a million spawned and woken take 0.9 s on one thread instead of 2.9, and 1.7 s on 18 instead of 6.5 |
 | **M36 A module cache** (done) | `run`, `test` and `debug` keep each assembled `.masm`, found by a hash of its text, its default name and the executable, and checked against the files it included; private, trust-checked, written atomically, the oldest removed past 512 entries; `MLWSVM_CACHE`, `MLWSVM_NO_CACHE` and `--no-cache` | A 940 KB program compiled from Lua starts in 10 ms instead of 38 |
+| **M37 Unicode** (done) | Unicode 17.0 in `std.text`: full case mapping (upper, lower with final sigma, title by word) and case folding, canonical caseless matching, NFC/NFD/NFKC/NFKD, grapheme clusters and words (UAX #29), display width (UAX #11), character properties and identifier classes (UAX #31), and White_Space for trimming and splitting. Tables generated from the UCD (`make unicode`) | The Unicode Consortium's NormalizationTest (3,631 cases), GraphemeBreakTest and WordBreakTest (2,710) pass |
 
 ## 1. Calling existing libraries (M10: done)
 

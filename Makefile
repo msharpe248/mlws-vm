@@ -18,6 +18,8 @@
 #   make check-bindgen  generate bindings for tests/_bindgen/libc.h, compare and call them (needs clang)
 #   make bench        run the benchmarks in bench/
 #   make docs         regenerate docs/ISA.md and docs/NATIVES.md from the code
+#   make unicode UCD=DIR  regenerate the Unicode tables and conformance test data from an
+#                     unpacked UCD.zip (https://www.unicode.org/Public/<version>/ucd/)
 
 CC      ?= cc
 CFLAGS  ?= -O2 -g
@@ -58,7 +60,7 @@ DL_LIBS := -ldl -lpthread
 endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: all test test-ext check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs clean lib embed-example check-embed
+.PHONY: all test test-ext check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
 
 all: $(BIN)
 
@@ -194,6 +196,12 @@ bench: $(BIN)
 docs: $(BIN)
 	./$(BIN) doc isa -o docs/ISA.md
 	./$(BIN) doc natives -o docs/NATIVES.md
+
+# The Unicode Character Database's tables (src/core/unicode_tables.inc) and test
+# data (tests/text/_unicode/), generated and committed, so a build needs neither.
+unicode:
+	@if [ -z "$(UCD)" ]; then echo "usage: make unicode UCD=dir (an unpacked UCD.zip)"; exit 2; fi
+	python3 -I build-tools/gen_unicode.py "$(UCD)"
 
 clean:
 	rm -rf build build-asan build-tsan build-noffi build-switch build-loop build-poison mlwsvm mlwsvm-asan mlwsvm-tsan mlwsvm-noffi mlwsvm-switch mlwsvm-loop mlwsvm-poison

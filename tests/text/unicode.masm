@@ -1,0 +1,149 @@
+; Unicode in std.text (src/core/unicode.c): full case mapping, case folding
+; and caseless matching, character properties, display width, words, and
+; whitespace by Unicode's White_Space. Normalization and the grapheme and
+; word boundary rules have conformance tests of their own
+; (unicode_normalization.masm, unicode_breaks.masm).
+.include "std/test.inc"
+
+; Fails unless the native `fn` maps s to want.
+.macro MAPS fn, s, want
+    ncall \fn (\s) -> (R30)
+    strcmp I30, R30, \want
+    ASSERT_EQ I30, 0
+.endm
+
+; Fails unless the predicate `fn` gives `want` for the character c.
+.macro IS fn, c, want
+    ncall \fn (\c) -> (I30)
+    ASSERT_EQ I30, \want
+.endm
+
+.func main
+    ; ---- case: full mappings, which may change the length ----
+    MAPS "text.upper", "stra\u{DF}e", "STRASSE"          ; ß has no capital of one letter
+    MAPS "text.upper", "\u{1F0}", "J\u{30C}"             ; ǰ: J and a combining caron
+    MAPS "text.lower", "\u{130}", "i\u{307}"             ; İ: i and a combining dot
+    MAPS "text.upper", "\u{3B1}\u{3B2}\u{3B3}", "\u{391}\u{392}\u{393}" ; Greek
+    MAPS "text.lower", "\u{41F}\u{420}\u{418}", "\u{43F}\u{440}\u{438}" ; Cyrillic
+    MAPS "text.ascii_upper", "stra\u{DF}e \u{E9}", "STRA\u{DF}E \u{E9}" ; ASCII only
+    MAPS "text.ascii_lower", "\u{C9}COLE", "\u{C9}cole"
+    MAPS "text.upper", "abc", "ABC"
+    MAPS "text.lower", "ABC 123", "abc 123"
+    ; a capital sigma that ends a word lower-cases to the final form ς
+    MAPS "text.lower", "\u{39F}\u{394}\u{3A5}\u{3A3}\u{3A3}\u{395}\u{3A5}\u{3A3}", "\u{3BF}\u{3B4}\u{3C5}\u{3C3}\u{3C3}\u{3B5}\u{3C5}\u{3C2}"
+    MAPS "text.lower", "\u{3A3}", "\u{3C3}"              ; alone: not final
+    ; title case: the first cased character of each word
+    MAPS "text.title", "hello wORLD, \u{1C6}emal", "Hello World, \u{1C5}emal" ; ǆ to its title form ǅ
+    MAPS "text.title", "o'neil 3rd", "O'neil 3Rd"         ; one word each; 3rd's first cased letter is r
+    MAPS "text.title", "\u{FB01}sh", "Fish"              ; the ligature ﬁ to F and i
+
+    ; ---- folding and caseless matching ----
+    MAPS "text.fold", "Stra\u{DF}e", "strasse"
+    MAPS "text.fold", "\u{3A3}\u{3C3}\u{3C2}", "\u{3C3}\u{3C3}\u{3C3}" ; every sigma folds to σ
+    ncall "text.equal_fold" ("STRASSE", "stra\u{DF}e") -> (I0)
+    ASSERT_TRUE I0
+    ncall "text.equal_fold" ("\u{C5}ngstr\u{F6}m", "a\u{30A}NGSTRO\u{308}M") -> (I0) ; also canonically equivalent
+    ASSERT_TRUE I0
+    ncall "text.equal_fold" ("abc", "abd") -> (I0)
+    ASSERT_FALSE I0
+
+    ; ---- normalization: a few by hand, and a bad form ----
+    ncall "text.normalize" ("e\u{301}", "NFC") -> (R0)
+    strcmp I0, R0, "\u{E9}"
+    ASSERT_EQ I0, 0
+    ncall "text.normalize" ("\u{FB01}", "NFKC") -> (R0)  ; compatibility: the ligature becomes f i
+    strcmp I0, R0, "fi"
+    ASSERT_EQ I0, 0
+    ncall "text.normalize" ("\u{AC00}", "NFD") -> (R0)   ; a Hangul syllable to its jamo
+    strcmp I0, R0, "\u{1100}\u{1161}"
+    ASSERT_EQ I0, 0
+.try 1f
+    ncall "text.normalize" ("x", "NFX") -> (R0)
+.endtry
+    FAIL "a bad form should trap"
+1:  catch R31
+    strcmp I0, R31->Error.code, "E_RANGE"
+    ASSERT_EQ I0, 0
+
+    ; ---- character properties ----
+    ncall "text.category" ('A') -> (R0)
+    strcmp I0, R0, "Lu"
+    ASSERT_EQ I0, 0
+    ncall "text.category" ('\u{663}') -> (R0)            ; ARABIC-INDIC DIGIT THREE
+    strcmp I0, R0, "Nd"
+    ASSERT_EQ I0, 0
+    ncall "text.category" ('\u{E000}') -> (R0)           ; private use
+    strcmp I0, R0, "Co"
+    ASSERT_EQ I0, 0
+    ncall "text.category" (0x10FFFF + 7) -> (R0)         ; not a code point: unassigned
+    strcmp I0, R0, "Cn"
+    ASSERT_EQ I0, 0
+    IS "text.digit_value", '\u{663}', 3
+    IS "text.digit_value", '7', 7
+    IS "text.digit_value", 'x', -1
+    IS "text.is_digit", '\u{FF19}', 1                    ; FULLWIDTH DIGIT NINE
+    IS "text.is_number", '\u{2167}', 1                   ; ROMAN NUMERAL EIGHT (Nl)
+    IS "text.is_digit", '\u{2167}', 0
+    IS "text.is_letter", '\u{4E2D}', 1                   ; 中
+    IS "text.is_alpha", '\u{345}', 1                     ; a combining mark that is Alphabetic
+    IS "text.is_letter", '\u{345}', 0
+    IS "text.is_upper", '\u{3A9}', 1
+    IS "text.is_lower", '\u{3C9}', 1
+    IS "text.is_upper", '1', 0
+    IS "text.is_space", '\u{3000}', 1                    ; IDEOGRAPHIC SPACE
+    IS "text.is_space", '\u{200B}', 0                    ; ZERO WIDTH SPACE is not White_Space
+    IS "text.is_punct", '\u{BF}', 1                      ; ¿
+    IS "text.is_id_start", '\u{3B1}', 1
+    IS "text.is_id_start", '1', 0
+    IS "text.is_id_continue", '1', 1
+    IS "text.is_id_continue", '\u{301}', 1
+    IS "text.is_id_continue", '-', 0
+    IS "text.is_emoji", '\u{1F600}', 1
+    IS "text.is_emoji", 'A', 0
+    IS "text.char_width", 'A', 1
+    IS "text.char_width", '\u{4E2D}', 2
+    IS "text.char_width", '\u{301}', 0
+
+    ; ---- display width ----
+    ncall "text.width" ("abc") -> (I0)
+    ASSERT_EQ I0, 3
+    ncall "text.width" ("\u{4E2D}\u{6587}") -> (I0)      ; 中文
+    ASSERT_EQ I0, 4
+    ncall "text.width" ("e\u{301}") -> (I0)              ; a combining mark adds nothing
+    ASSERT_EQ I0, 1
+    ncall "text.width" ("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}") -> (I0) ; one family emoji
+    ASSERT_EQ I0, 2
+    ncall "text.width" ("\u{2764}\u{FE0F}") -> (I0)      ; ❤ shown as an emoji
+    ASSERT_EQ I0, 2
+    ncall "text.width" ("\u{2764}") -> (I0)              ; ❤ shown as text
+    ASSERT_EQ I0, 1
+
+    ; ---- words ----
+    ncall "text.words" ("The quick (\u{201C}brown\u{201D}) fox can't jump 32.3 feet, right?") -> (R0)
+    ncall "text.join" (R0, "|") -> (R1)
+    strcmp I0, R1, "The|quick|brown|fox|can't|jump|32.3|feet|right"
+    ASSERT_EQ I0, 0
+    ncall "text.word_segments" ("a, b") -> (R0)
+    ncall "text.join" (R0, "|") -> (R1)
+    strcmp I0, R1, "a|,| |b"
+    ASSERT_EQ I0, 0
+
+    ; ---- whitespace is Unicode's White_Space ----
+    ncall "text.trim" ("\u{3000}\u{A0} hi\u{2003}\n") -> (R0)
+    strcmp I0, R0, "hi"
+    ASSERT_EQ I0, 0
+    ncall "text.split" ("a\u{2009}b\u{3000}\u{3000}c", "") -> (R0)
+    len I0, R0
+    ASSERT_EQ I0, 3
+    ncall "text.trim_end" ("x\xFF") -> (R0)             ; an invalid byte is not a space
+    len I0, R0
+    ASSERT_EQ I0, 2
+
+    ; ---- invalid UTF-8 reads as U+FFFD, and maps to itself ----
+    MAPS "text.upper", "a\xFFb", "A\u{FFFD}B"
+
+    ncall "text.unicode_version" () -> (R0)
+    strcmp I0, R0, "17.0.0"
+    ASSERT_EQ I0, 0
+    ret 0
+.endf

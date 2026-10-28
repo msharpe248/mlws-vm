@@ -149,10 +149,31 @@ Strings are bytes, by convention UTF-8. `text.find` and `text.slice` use byte
 offsets, so they are fast and never split anything unexpectedly. Work on
 characters goes through `text.next` (iterate without allocating),
 `text.chars`, `text.length` and `text.from_chars`; these read an invalid byte
-as one U+FFFD. `text.valid` checks a whole string. `text.upper` and `text.lower`
-change ASCII letters only (full Unicode case mapping needs tables, and is
-planned). `text.split` with an empty separator splits on whitespace;
-`text.join` accepts lists of any values.
+as one U+FFFD. `text.valid` checks a whole string. `text.split` with an empty
+separator splits on whitespace; `text.join` accepts lists of any values.
+
+### Unicode
+
+The text natives follow Unicode 17.0 (`text.unicode_version`), from tables
+generated from the Unicode Character Database (`build-tools/gen_unicode.py`,
+`make unicode UCD=dir`), and pass the Unicode Consortium's own tests for
+normalization and for grapheme and word boundaries
+(`tests/text/unicode_normalization.masm`, `unicode_breaks.masm`).
+
+| What | Natives |
+|---|---|
+| Case | `text.upper`, `text.lower`: the full mappings (`ß` to `SS`, a final `Σ` to `ς`). `text.title`: in each word, the first cased character to title case and the rest to lower case. `text.fold`: full case folding. `text.ascii_upper` and `ascii_lower` change ASCII letters only, byte for byte, as C's `toupper` does in the `C` locale |
+| Comparison | `text.equal_fold`: equal ignoring case and canonical equivalence (Unicode's canonical caseless match) |
+| Normalization | `text.normalize(s, form)` and `text.is_normalized(s, form)`, for `"NFC"`, `"NFD"`, `"NFKC"` and `"NFKD"` |
+| Segmentation | `text.graphemes` and `text.next_grapheme`: user-perceived characters (extended grapheme clusters, UAX #29). `text.words`: the words; `text.word_segments`: every segment between word boundaries, spaces and punctuation included |
+| Width | `text.width`: columns on a terminal (UAX #11): 2 for wide characters and emoji, 0 for marks and controls, per grapheme cluster; `text.char_width` for one character |
+| Properties | `text.category` (`"Lu"`, `"Nd"`, ...); `text.is_letter`, `is_alpha`, `is_digit`, `is_number`, `is_space`, `is_upper`, `is_lower`, `is_punct`, `is_emoji`; `text.is_id_start` and `is_id_continue` (XID_Start and XID_Continue, UAX #31, for a lexer's identifiers); `text.digit_value` |
+| Whitespace | `text.trim`, `trim_start`, `trim_end` and `text.split` with an empty separator use White_Space, so `U+3000` and `U+00A0` count |
+
+What is not provided: collation (sorting by language), bidirectional text,
+line breaking, and mappings that depend on a language (Turkish and
+Lithuanian casing): these need locale data, and belong to a library above.
+A character outside the code space reads as an unassigned one.
 
 ### JSON
 

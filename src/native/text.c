@@ -4,9 +4,11 @@
  *
  * Strings are UTF-8 by convention. Offsets (find, slice) are in bytes;
  * character-based work goes through text.next, text.chars and text.length,
- * which treat each invalid byte as one U+FFFD. Case mapping is ASCII-only. */
+ * which treat each invalid byte as one U+FFFD. Case mapping, normalization,
+ * segmentation and character properties are Unicode's (src/core/unicode.c). */
 #include "../heap/heap.h"
 #include "../heap/numeric.h"
+#include "../core/unicode.h"
 
 #include <math.h>
 
@@ -42,31 +44,7 @@ static Word sb_string(Process *p, StrBuf *b) {
 }
 
 /* Decode one UTF-8 character at s[i]; invalid input gives U+FFFD for one byte. */
-static uint32_t utf8_next(const unsigned char *s, size_t n, size_t *i) {
-    unsigned char c = s[*i];
-    uint32_t cp;
-    int len;
-    if (c < 0x80) {
-        (*i)++;
-        return c;
-    } else if ((c & 0xE0) == 0xC0) cp = c & 0x1F, len = 2;
-    else if ((c & 0xF0) == 0xE0) cp = c & 0x0F, len = 3;
-    else if ((c & 0xF8) == 0xF0) cp = c & 0x07, len = 4;
-    else goto bad;
-    if (*i + (size_t)len > n) goto bad;
-    for (int k = 1; k < len; k++) {
-        if ((s[*i + (size_t)k] & 0xC0) != 0x80) goto bad;
-        cp = cp << 6 | (s[*i + (size_t)k] & 0x3F);
-    }
-    if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) || (len == 4 && cp < 0x10000) || cp > 0x10FFFF ||
-        (cp >= 0xD800 && cp <= 0xDFFF))
-        goto bad; /* overlong, out of range, or a surrogate */
-    *i += (size_t)len;
-    return cp;
-bad:
-    (*i)++;
-    return 0xFFFD;
-}
+static uint32_t utf8_next(const unsigned char *s, size_t n, size_t *i) { return uni_utf8_next(s, n, i); }
 
 static bool utf8_valid(const unsigned char *s, size_t n) {
     for (size_t i = 0; i < n;) {
@@ -77,20 +55,7 @@ static bool utf8_valid(const unsigned char *s, size_t n) {
     return true;
 }
 
-static void utf8_put(StrBuf *b, uint32_t cp) {
-    if (cp < 0x80) sb_putc(b, (char)cp);
-    else if (cp < 0x800) sb_putc(b, (char)(0xC0 | cp >> 6)), sb_putc(b, (char)(0x80 | (cp & 0x3F)));
-    else if (cp < 0x10000) {
-        sb_putc(b, (char)(0xE0 | cp >> 12));
-        sb_putc(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
-        sb_putc(b, (char)(0x80 | (cp & 0x3F)));
-    } else {
-        sb_putc(b, (char)(0xF0 | cp >> 18));
-        sb_putc(b, (char)(0x80 | ((cp >> 12) & 0x3F)));
-        sb_putc(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
-        sb_putc(b, (char)(0x80 | (cp & 0x3F)));
-    }
-}
+static void utf8_put(StrBuf *b, uint32_t cp) { uni_utf8_put(b, cp); }
 
 static size_t utf8_count(const char *s, size_t n) {
     size_t c = 0;
@@ -98,7 +63,21 @@ static size_t utf8_count(const char *s, size_t n) {
     return c;
 }
 
-static bool is_space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'; }
+/* The length of the White_Space character at s[i], or 0 if it is not one. */
+static size_t space_at(const char *s, size_t n, size_t i) {
+    if ((unsigned char)s[i] < 0x80) return s[i] == ' ' || (s[i] >= '\t' && s[i] <= '\r');
+    size_t j = i;
+    uint32_t cp = utf8_next((const unsigned char *)s, n, &j);
+    return cp != 0xFFFD && uni_has(cp, UNI_P_WHITE) ? j - i : 0;
+}
+
+/* The length of the White_Space character that ends s[0, n), or 0. */
+static size_t space_before(const char *s, size_t n) {
+    size_t st = n;
+    while (st > 0 && n - st < 4 && ((unsigned char)s[st - 1] & 0xC0) == 0x80) st--; /* the start of the last character */
+    if (st > 0) st--;
+    return space_at(s, n, st) == n - st ? n - st : 0;
+}
 
 /* The default text of a typed value (as tostr gives it, but strings unquoted). */
 static void put_value(Process *p, StrBuf *b, Word v, uint8_t tag) {
@@ -299,9 +278,10 @@ static void n_split(Process *p, Word *a, Word *r) {
     r[0].r = l;
     if (!sn) { /* on runs of whitespace, ignoring it at the ends */
         for (uint32_t i = 0; i < n;) {
-            while (i < n && is_space(s[i])) i++;
+            size_t k;
+            while (i < n && (k = space_at(s, n, i))) i += (uint32_t)k;
             uint32_t st = i;
-            while (i < n && !is_space(s[i])) i++;
+            while (i < n && !space_at(s, n, i)) i++;
             if (i > st) list_push(p, l, wstr(p, s + st, i - st), T_R);
         }
         return;
@@ -334,11 +314,12 @@ static void n_join(Process *p, Word *a, Word *r) {
 #define TRIM(NAME, FRONT, BACK)                                                \
     static void NAME(Process *p, Word *a, Word *r) {                           \
         uint32_t n, st = 0;                                                    \
+        size_t k;                                                              \
         const char *s = str_arg(p, a[0], &n);                                  \
         if (FRONT)                                                             \
-            while (st < n && is_space(s[st])) st++;                            \
+            while (st < n && (k = space_at(s, n, st))) st += (uint32_t)k;      \
         if (BACK)                                                              \
-            while (n > st && is_space(s[n - 1])) n--;                          \
+            while (n > st && (k = space_before(s + st, n - st))) n -= (uint32_t)k; \
         r[0] = wstr(p, s + st, n - st);                                        \
     }
 TRIM(n_trim, 1, 1)
@@ -396,7 +377,18 @@ static void n_slice(Process *p, Word *a, Word *r) {
     r[0] = wstr(p, s + st, en > st ? (size_t)(en - st) : 0);
 }
 
-#define CASE(NAME, LO, HI, DELTA)                                              \
+/* ---- Unicode (src/core/unicode.c) ----------------------------------------------------- */
+
+#define CASE(NAME, KIND)                                                       \
+    static void NAME(Process *p, Word *a, Word *r) {                           \
+        uint32_t n;                                                            \
+        const char *s = str_arg(p, a[0], &n);                                  \
+        StrBuf b = {0};                                                        \
+        uni_case(s, n, KIND, &b);                                              \
+        r[0] = sb_string(p, &b);                                               \
+    }
+/* ASCII letters only, byte for byte (protocols, keywords, C's toupper in the "C" locale). */
+#define ASCII_CASE(NAME, LO, HI, DELTA)                                        \
     static void NAME(Process *p, Word *a, Word *r) {                           \
         uint32_t n;                                                            \
         const char *s = str_arg(p, a[0], &n);                                  \
@@ -406,8 +398,120 @@ static void n_slice(Process *p, Word *a, Word *r) {
         o->hash = hash_bytes(o->data, o->len);                                 \
         r[0].r = o;                                                            \
     }
-CASE(n_upper, 'a', 'z', 'A' - 'a')
-CASE(n_lower, 'A', 'Z', 'a' - 'A')
+ASCII_CASE(n_ascii_upper, 'a', 'z', 'A' - 'a')
+ASCII_CASE(n_ascii_lower, 'A', 'Z', 'a' - 'A')
+
+CASE(n_upper, UNI_UPPER)
+CASE(n_lower, UNI_LOWER)
+CASE(n_title, UNI_TITLE)
+CASE(n_fold, UNI_FOLD)
+
+static int form_arg(Process *p, Word a) {
+    uint32_t n;
+    const char *s = str_arg(p, a, &n);
+    static const char *const NAMES[] = {"NFC", "NFD", "NFKC", "NFKD"};
+    for (int k = 0; k < 4; k++)
+        if (n == strlen(NAMES[k]) && !memcmp(s, NAMES[k], n)) return k;
+    vm_trap(p, "E_RANGE", "%s: the form is \"NFC\", \"NFD\", \"NFKC\" or \"NFKD\", not \"%.*s\"",
+            p->cur_native ? p->cur_native->name : "text.normalize", (int)(n < 40 ? n : 40), s);
+}
+
+static void n_normalize(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const char *s = str_arg(p, a[0], &n);
+    int form = form_arg(p, a[1]);
+    StrBuf b = {0};
+    uni_normalize(s, n, form, &b);
+    r[0] = sb_string(p, &b);
+}
+
+static void n_is_normalized(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const char *s = str_arg(p, a[0], &n);
+    r[0].i = uni_is_normalized(s, n, form_arg(p, a[1]));
+}
+
+static void n_equal_fold(Process *p, Word *a, Word *r) {
+    uint32_t an, bn;
+    const char *x = str_arg(p, a[0], &an), *y = str_arg(p, a[1], &bn);
+    r[0].i = uni_equal_fold(x, an, y, bn);
+}
+
+static void n_graphemes(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const char *s = str_arg(p, a[0], &n);
+    ObjList *l = list_new(p, 0);
+    r[0].r = l;
+    for (size_t off = 0; off < n;) {
+        size_t end = uni_next_grapheme(s, n, off);
+        list_push(p, l, wstr(p, s + off, end - off), T_R);
+        off = end;
+    }
+}
+
+static void n_next_grapheme(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const char *s = str_arg(p, a[0], &n);
+    int64_t off = a[1].i;
+    if (off < 0 || off > (int64_t)n) vm_trap(p, "E_BOUNDS", "text.next_grapheme: offset %lld is outside the string", (long long)off);
+    r[0].i = off == (int64_t)n ? -1 : (int64_t)uni_next_grapheme(s, n, (size_t)off);
+}
+
+/* The word-boundary segments of a string: all of them, or only the words. */
+static void segments(Process *p, Word *a, Word *r, bool words_only) {
+    uint32_t n;
+    const char *s = str_arg(p, a[0], &n);
+    size_t nb;
+    size_t *bounds = uni_word_bounds(s, n, &nb);
+    ObjList *l = list_new(p, 0);
+    r[0].r = l;
+    for (size_t k = 0; k + 1 < nb; k++) {
+        if (words_only && !uni_is_word(s, bounds[k], bounds[k + 1])) continue;
+        list_push(p, l, wstr(p, s + bounds[k], bounds[k + 1] - bounds[k]), T_R);
+    }
+    free(bounds);
+}
+
+static void n_words(Process *p, Word *a, Word *r) { segments(p, a, r, true); }
+static void n_word_segments(Process *p, Word *a, Word *r) { segments(p, a, r, false); }
+
+static void n_width(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const char *s = str_arg(p, a[0], &n);
+    r[0].i = uni_width(s, n);
+}
+
+static uint32_t char_arg(Word a) { return a.i < 0 || a.i > 0x10FFFF ? 0x10FFFF : (uint32_t)a.i; }
+
+#define CHAR_PRED(NAME, EXPR)                                                  \
+    static void NAME(Process *p, Word *a, Word *r) {                           \
+        (void)p;                                                               \
+        uint32_t c = char_arg(a[0]);                                           \
+        r[0].i = (EXPR);                                                       \
+    }
+CHAR_PRED(n_is_letter, uni_is_letter(c))
+CHAR_PRED(n_is_alpha, uni_has(c, UNI_P_ALPHA))
+CHAR_PRED(n_is_digit, uni_digit(c) >= 0)
+CHAR_PRED(n_is_number, uni_is_number(c))
+CHAR_PRED(n_is_space, uni_has(c, UNI_P_WHITE))
+CHAR_PRED(n_is_upper, uni_has(c, UNI_P_UPPER))
+CHAR_PRED(n_is_lower, uni_has(c, UNI_P_LOWER))
+CHAR_PRED(n_is_punct, uni_is_punct(c))
+CHAR_PRED(n_is_id_start, uni_has(c, UNI_P_XID_START))
+CHAR_PRED(n_is_id_continue, uni_has(c, UNI_P_XID_CONTINUE))
+CHAR_PRED(n_is_emoji, uni_has(c, UNI_P_EXTPICT))
+CHAR_PRED(n_digit_value, uni_digit(c))
+CHAR_PRED(n_char_width, uni_char_width(c))
+
+static void n_category(Process *p, Word *a, Word *r) {
+    const char *gc = uni_category(char_arg(a[0]));
+    r[0] = wstr(p, gc, strlen(gc));
+}
+
+static void n_unicode_version(Process *p, Word *a, Word *r) {
+    (void)a;
+    r[0] = wstr(p, uni_version(), strlen(uni_version()));
+}
 
 static void n_repeat(Process *p, Word *a, Word *r) {
     uint32_t n;
@@ -907,9 +1011,10 @@ static const NativeDef TEXT_NATIVES[] = {
       "Format with {} placeholders: text.format(\"{} is {:>5.1f}\", [name, x]). Spec: "
       "[[fill]align][+][0][width][.precision][type]; types d x X o b f e g s q (quoted)."),
     N("text.split", 2, T(T_R, T_R), 1, T(T_R), n_split,
-      "Split on a separator, as a list of strings; an empty separator splits on runs of whitespace."),
+      "Split on a separator, as a list of strings; an empty separator splits on runs of whitespace "
+      "(White_Space)."),
     N("text.join", 2, T(T_R, T_R), 1, T(T_R), n_join, "Join a list's elements (any values) with a separator."),
-    N("text.trim", 1, T(T_R), 1, T(T_R), n_trim, "Remove whitespace from both ends."),
+    N("text.trim", 1, T(T_R), 1, T(T_R), n_trim, "Remove whitespace (White_Space) from both ends."),
     N("text.trim_start", 1, T(T_R), 1, T(T_R), n_trim_start, "Remove whitespace from the start."),
     N("text.trim_end", 1, T(T_R), 1, T(T_R), n_trim_end, "Remove whitespace from the end."),
     N("text.find", 3, T(T_R, T_R, T_I64), 1, T(T_I64), n_find,
@@ -919,8 +1024,49 @@ static const NativeDef TEXT_NATIVES[] = {
     N("text.ends_with", 2, T(T_R, T_R), 1, T(T_B), n_ends_with, "Whether a string ends with a suffix."),
     N("text.slice", 3, T(T_R, T_I64, T_I64), 1, T(T_R), n_slice,
       "The bytes [start, end) as a string; negative offsets count from the end; clamped to the string."),
-    N("text.upper", 1, T(T_R), 1, T(T_R), n_upper, "ASCII letters to upper case."),
-    N("text.lower", 1, T(T_R), 1, T(T_R), n_lower, "ASCII letters to lower case."),
+    N("text.upper", 1, T(T_R), 1, T(T_R), n_upper, "Upper case, by Unicode's full mappings (ß becomes SS)."),
+    N("text.lower", 1, T(T_R), 1, T(T_R), n_lower,
+      "Lower case, by Unicode's full mappings (a final Σ becomes ς)."),
+    N("text.ascii_upper", 1, T(T_R), 1, T(T_R), n_ascii_upper, "ASCII letters to upper case; every other byte unchanged."),
+    N("text.ascii_lower", 1, T(T_R), 1, T(T_R), n_ascii_lower, "ASCII letters to lower case; every other byte unchanged."),
+    N("text.title", 1, T(T_R), 1, T(T_R), n_title,
+      "Title case: in each word, the first cased character to title case and the rest to lower case."),
+    N("text.fold", 1, T(T_R), 1, T(T_R), n_fold, "Unicode case folding (full), for caseless comparison."),
+    N("text.equal_fold", 2, T(T_R, T_R), 1, T(T_B), n_equal_fold,
+      "Whether two strings are equal ignoring case and canonical equivalence (canonical caseless match)."),
+    N("text.normalize", 2, T(T_R, T_R), 1, T(T_R), n_normalize,
+      "Unicode normalization: the form is \"NFC\", \"NFD\", \"NFKC\" or \"NFKD\"."),
+    N("text.is_normalized", 2, T(T_R, T_R), 1, T(T_B), n_is_normalized,
+      "Whether a string is already in a normalization form (\"NFC\", \"NFD\", \"NFKC\", \"NFKD\")."),
+    N("text.graphemes", 1, T(T_R), 1, T(T_R), n_graphemes,
+      "The user-perceived characters (extended grapheme clusters), as a list of strings."),
+    N("text.next_grapheme", 2, T(T_R, T_I64), 1, T(T_I64), n_next_grapheme,
+      "The end of the grapheme cluster that starts at a byte offset (-1 at the end), for iterating."),
+    N("text.words", 1, T(T_R), 1, T(T_R), n_words,
+      "The words, as a list of strings: the segments between word boundaries that hold a letter, digit or "
+      "ideograph."),
+    N("text.word_segments", 1, T(T_R), 1, T(T_R), n_word_segments,
+      "Every segment between word boundaries (words, spaces, punctuation), as a list of strings."),
+    N("text.width", 1, T(T_R), 1, T(T_I64), n_width,
+      "Columns on a terminal: 2 for wide (East Asian) characters and emoji, 0 for marks and controls."),
+    N("text.category", 1, T(T_C), 1, T(T_R), n_category, "A character's general category: \"Lu\", \"Nd\", ..."),
+    N("text.is_letter", 1, T(T_C), 1, T(T_B), n_is_letter, "Whether a character is a letter (category L*)."),
+    N("text.is_alpha", 1, T(T_C), 1, T(T_B), n_is_alpha, "Whether a character is Alphabetic."),
+    N("text.is_digit", 1, T(T_C), 1, T(T_B), n_is_digit, "Whether a character is a decimal digit (category Nd)."),
+    N("text.is_number", 1, T(T_C), 1, T(T_B), n_is_number, "Whether a character is a number (category N*)."),
+    N("text.is_space", 1, T(T_C), 1, T(T_B), n_is_space, "Whether a character is White_Space."),
+    N("text.is_upper", 1, T(T_C), 1, T(T_B), n_is_upper, "Whether a character is Uppercase."),
+    N("text.is_lower", 1, T(T_C), 1, T(T_B), n_is_lower, "Whether a character is Lowercase."),
+    N("text.is_punct", 1, T(T_C), 1, T(T_B), n_is_punct, "Whether a character is punctuation (category P*)."),
+    N("text.is_id_start", 1, T(T_C), 1, T(T_B), n_is_id_start,
+      "Whether a character can start an identifier (XID_Start, UAX #31)."),
+    N("text.is_id_continue", 1, T(T_C), 1, T(T_B), n_is_id_continue,
+      "Whether a character can continue an identifier (XID_Continue, UAX #31)."),
+    N("text.is_emoji", 1, T(T_C), 1, T(T_B), n_is_emoji, "Whether a character is Extended_Pictographic."),
+    N("text.digit_value", 1, T(T_C), 1, T(T_I64), n_digit_value, "A decimal digit's value, or -1."),
+    N("text.char_width", 1, T(T_C), 1, T(T_I64), n_char_width, "A character's columns on a terminal: 0, 1 or 2."),
+    N("text.unicode_version", 0, T(0), 1, T(T_R), n_unicode_version,
+      "The version of Unicode the tables come from, e.g. \"17.0.0\"."),
     N("text.repeat", 2, T(T_R, T_I64), 1, T(T_R), n_repeat, "A string repeated n times."),
     N("text.lines", 1, T(T_R), 1, T(T_R), n_lines, "Split into lines (\\n or \\r\\n), as a list of strings."),
     N("text.valid", 1, T(T_R), 1, T(T_B), n_valid, "Whether a string or byte buffer is valid UTF-8."),

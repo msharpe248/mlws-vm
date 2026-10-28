@@ -151,6 +151,7 @@ The heap object types map directly onto scripting-language values
 | `str(x)`, string interpolation | `tostr R0, x`, then `strcat` |
 | `int("42")`, `float(s)` | `parse.i64 I0, R1` / `parse.f64 F0, R1` (`E_PARSE` on failure) |
 | `s[i]`, `len(s)`, slices | `R1[I2]` (a byte), `len I0, R1`, `substr R0, R1, start, n` |
+| Characters, case, Unicode | `text.chars`/`text.next` (code points), `text.graphemes` (what a reader calls characters), `text.upper`/`lower`/`fold`, `text.normalize`, `text.equal_fold`; `text.is_id_start`/`is_id_continue` for a lexer's identifiers ([STDLIB.md](STDLIB.md#unicode)) |
 | A class or record type | `.struct Name` with typed fields; `new R0, Name`; `R0->Name.field` |
 | A field or method dispatch check | `bnisa R0, Name, L` (branch unless R0 is a `Name` struct), `isa I0, R0, Name`, or `typeof I0, R0` for the kind |
 | The type of a dynamically typed slot | `tagof I0, R1[I2]` (also `UP[n]`, stack and global words) |

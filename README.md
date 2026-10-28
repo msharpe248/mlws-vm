@@ -63,6 +63,10 @@ base:
   quota.
 * **Text and JSON**: a typed, safe `text.format` (`{:>8.2f}`), string utilities,
   UTF-8 iteration, and JSON that maps onto maps and lists with exact integers.
+* **Unicode 17**: full case mapping and folding, NFC/NFD/NFKC/NFKD
+  normalization, grapheme clusters and words, display width, and character
+  properties (categories, identifiers), passing the Unicode Consortium's own
+  normalization and segmentation tests.
 * **Standard library**: dates and ISO 8601 times, CRC-32 / SHA-256 / SipHash,
   random numbers, hex / base64 / URL / CSV, and sorting and searching with
   comparator closures.
@@ -90,7 +94,7 @@ base:
   large generated program starts in milliseconds on later runs.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 257 test programs, also run under
+* **Tested in its own assembly**: 260 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, and with a
   garbage collection at every allocation.
 
@@ -163,7 +167,7 @@ src/tools/      test runner, doc generator, debugger, profiler/tracer, monitor, 
 src/platform/   the only OS-specific code (POSIX and Windows)
 include/mlwsvm/ public C headers: the extension API (mlwsvm.h) and the embedding API (embed.h)
 web/            the monitor's dashboard (compiled into the binary)
-build-tools/    build helper that compiles the dashboard into C
+build-tools/    build helpers: the dashboard compiled into C, the Unicode tables generated from the UCD
 extensions/     an example native extension (also a test fixture)
 lib/std/        standard library and macro files, written in MLWSVM assembly
 tests/          the test suite, in MLWSVM assembly
