@@ -109,6 +109,8 @@ void vm_free(VM *vm) {
         free(vm->wants.v[i].who);
     }
     VEC_FREE(vm->wants);
+    vm_programs_free(vm); /* (a run frees its programs; this frees the list) */
+    VEC_FREE(vm->progs);
     free(vm->cache_dir);
     for (size_t i = 0; i < vm->libpaths.n; i++) free(vm->libpaths.v[i]);
     VEC_FREE(vm->libpaths);
