@@ -55,7 +55,10 @@ int main(void) {
   process: it may spawn processes, use files and the network, and call the
   host. The call returns when the function does, and any processes it left
   running are stopped. Each call starts with fresh module globals, so calls
-  don't interfere with each other. `mlws_run_main` runs a module's `main`, as
+  don't interfere with each other. So a module whose globals need setting up
+  must be set up within each call: the function the host calls first calls
+  the module's `init`, or uses the lazy form
+  ([TARGETING.md §6.1](TARGETING.md#61-setting-up-a-module-init)). `mlws_run_main` runs a module's `main`, as
   `mlwsvm run` would.
 * **Values** crossing the boundary are numbers (`MLWS_INT`, `MLWS_FLOAT`,
   `MLWS_BOOL`, and any `MLWS_T_*` type) and strings (`MLWS_STR`). Arguments are

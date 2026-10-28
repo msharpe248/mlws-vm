@@ -1,0 +1,26 @@
+; One side of the diamond (see core.masm): its init calls core's init first,
+; then sets up its own map.
+.module _init.text
+.import _init.core as core
+.export init, lookup
+
+inited: .i64 0
+words:  .zero 8         ; this module's own map, made by init
+
+.func init
+    bnz @inited, 1f
+    call core.init ()   ; the imports first
+    mnew R0
+    mset R0, "three", 3
+    mov @words, R0
+    mov @inited, 1
+1:  ret
+.endf
+
+; A word's number, from this module's map or else from core's.
+.func lookup(ref key) -> i64
+    mget I0, @words, key, 0
+    bnz I0, 1f
+    call core.lookup (key) -> (I0)
+1:  ret I0
+.endf

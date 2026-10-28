@@ -1,0 +1,30 @@
+; The bottom of the modules used by init_convention.masm, which follow the
+; set-up convention of docs/TARGETING.md §6.1: text and nums both import
+; core (a diamond), and late imports it and is loaded only by module.load.
+;
+; core's names map cannot be written as data (a global's starting value is
+; a number or bytes; a reference starts null), so init builds it, in every
+; process that uses core. init may be called any number of times: the flag
+; makes every call after the first return at once.
+.module _init.core
+.export init, inited, setups, names, lookup
+
+inited: .i64 0          ; 1 once init has run in this process
+setups: .i64 0          ; how many times init did its work here (the test checks 1)
+names:  .zero 8         ; a map, made by init: null until then
+
+.func init
+    bnz @inited, 1f     ; already set up in this process
+    add @setups, 1
+    mnew R0
+    mset R0, "one", 1
+    mset R0, "two", 2
+    mov @names, R0
+    mov @inited, 1      ; last: imports cannot form a cycle, so nothing re-enters init
+1:  ret
+.endf
+
+.func lookup(ref key) -> i64
+    mget I0, @names, key, 0
+    ret I0
+.endf

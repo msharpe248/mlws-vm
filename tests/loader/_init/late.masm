@@ -1,0 +1,26 @@
+; Loaded only by module.load (see core.masm). Besides init, its exported
+; function report checks the flag itself and calls init if needed, the lazy
+; form: so it works even in a process that never called init, such as one
+; started straight on a closure over report.
+.module _init.late
+.import _init.core as core
+.export init, report
+
+inited: .i64 0
+
+.func init
+    bnz @inited, 1f
+    call core.init ()
+    mov @inited, 1
+1:  ret
+.endf
+
+; Send the parent core's set-up count and the number of "one" in this process.
+.func report(i64 parent)
+    bnz @inited, 1f     ; the lazy form: set up on first use
+    call init ()
+1:  send parent, @core.setups
+    call core.lookup ("one") -> (I1)
+    send parent, I1
+    ret
+.endf

@@ -1,0 +1,22 @@
+; The other side of the diamond (see core.masm). Its global is computed from
+; core's map, so it needs core set up first: its init calls core's init
+; before anything else.
+.module _init.nums
+.import _init.core as core
+.export init, base
+
+inited: .i64 0
+tens:   .i64 0          ; core's "two" times 10, set by init
+
+.func init
+    bnz @inited, 1f
+    call core.init ()
+    call core.lookup ("two") -> (I0)
+    mul @tens, I0, 10
+    mov @inited, 1
+1:  ret
+.endf
+
+.func base -> i64
+    ret @tens
+.endf

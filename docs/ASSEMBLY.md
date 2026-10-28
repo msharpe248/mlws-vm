@@ -312,7 +312,9 @@ finish before `spawn` returns: use `spawnm` (spawn and monitor) or `spawnl`
 
 Data directives outside functions append to the module's **global segment**. Each
 process gets its own copy, initialised from the module image. A preceding label
-names the data, and operands refer to it as `@name`.
+names the data, and operands refer to it as `@name`. Loading a module runs none
+of its code, so a global that must hold an object starts null and is set by
+code: by convention, the module's `init` ([TARGETING.md §6.1](TARGETING.md#61-setting-up-a-module-init)).
 
 ```asm
 counter:  .i64 0

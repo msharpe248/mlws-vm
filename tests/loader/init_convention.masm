@@ -1,0 +1,106 @@
+; The convention of docs/TARGETING.md §6.1 for setting up module globals,
+; which loading never does: a module that needs set-up exports init, which
+; returns at once if it has already run in this process, calls the init of
+; each module it imports first, then sets its own globals. The modules are
+; in _init/: text and nums both import core (a diamond), and late is loaded
+; at run time.
+;
+; Checked here: core is set up once although two inits call its init; a
+; second round of inits does nothing; a process started through the
+; program's entry wrapper is set up like main, while one started straight on
+; a function is not (its globals start from the images: flags 0, maps null);
+; a module loaded with module.load is set up by calling the init that
+; module.exports lists; and a function in the lazy form (it calls init
+; itself) works in a process that never ran any init.
+.include "std/test.inc"
+.import _init.text as text
+.import _init.nums as nums
+.import _init.core as core
+
+; The program's init: the inits of its imports, in any order (each calls
+; its own imports' inits first).
+.func p$init
+    call text.init ()
+    call nums.init ()
+    ret
+.endf
+
+; Every process the program starts begins here: set up, then run the body.
+.func p$start(ref body)
+    call p$init ()
+    calli body ()
+    ret
+.endf
+
+; Started through p$start, as a closure: UP[0] is the parent's pid.
+; Set up as main is.
+.func worker
+    send UP[0], @core.setups             ; 1
+    call nums.base () -> (I1)
+    send UP[0], I1                       ; 20
+    ret
+.endf
+
+; Started straight on the function: no init has run here.
+.func bare(i64 parent)
+    send parent, @core.inited            ; 0
+    typeof I1, @core.names
+    send parent, I1                      ; 0: null, no map
+    ret
+.endf
+
+.func main
+    call p$init ()                       ; what a compiler's main does first
+
+    ; ---- core set up once, though text and nums both called its init ----
+    ASSERT_EQ @core.setups, 1
+    call p$init ()                       ; again: every init returns at once
+    ASSERT_EQ @core.setups, 1
+    call text.lookup ("three") -> (I0)   ; text's own map
+    ASSERT_EQ I0, 3
+    call text.lookup ("one") -> (I0)     ; core's, through text
+    ASSERT_EQ I0, 1
+    call nums.base () -> (I0)            ; computed from core's map
+    ASSERT_EQ I0, 20
+
+    ; ---- a process started through the entry wrapper ----
+    closure worker (PID) -> (R0)
+    spawn p$start (R0)
+    recv I0
+    ASSERT_EQ I0, 1
+    recv I0
+    ASSERT_EQ I0, 20
+
+    ; ---- a process started without it: nothing set up ----
+    spawn bare (PID)
+    recv I0
+    ASSERT_EQ I0, 0
+    recv I0
+    ASSERT_EQ I0, 0
+
+    ; ---- a module loaded at run time: call its init if it has one ----
+    ncall "module.load" ("_init.late")
+    ncall "module.exports" ("_init.late") -> (R1)
+    len I1, R1
+    mov I2, 0
+1:  bge I2, I1, 3f                       ; look for "init" among the exports
+    mov R2, R1[I2]                       ; element I2 of the list
+    strcmp I3, R2, "init"
+    bz I3, 2f
+    inc I2
+    jmp 1b
+2:  ncall "module.function" ("_init.late", "init") -> (R3)
+    calli R3 ()
+    jmp 4f
+3:  FAIL "late does not export init"
+4:  ASSERT_EQ @core.setups, 1            ; core was set up already: not again
+
+    ; ---- the lazy form, in a process that ran no init ----
+    ncall "module.function" ("_init.late", "report") -> (R4)
+    spawni R4 (PID)
+    recv I0
+    ASSERT_EQ I0, 1                      ; report set up late, and late core
+    recv I0
+    ASSERT_EQ I0, 1                      ; core's map works there
+    ret 0
+.endf

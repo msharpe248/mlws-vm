@@ -143,6 +143,74 @@ switch x { 0: .. 1: .. }       jtab x, .Lcase0, .Lcase1, .Lcase2
 * Lookup tables become data directives with indexed operands:
   `table: .i32 ...` and then `mov.i32 I0, @table{I1*4}`.
 
+### 6.1 Setting up a module: `init`
+
+Loading a module runs none of its code. Its globals start as its data
+directives say, so a starting value can only be a number or bytes: a
+reference global (`names: .zero 8`) starts null. A global that must hold an
+object (a table, a map, a runtime's state) has to be set by code, and in every
+process, since each process gets its own copy of every module's globals,
+starting from the module's image. Nothing in the VM does this: it is the
+compiler's job, and the convention below lets modules from different compilers,
+and C hosts, set each other up.
+
+A module that needs setting up exports a function `init`, with no arguments
+and no results, that:
+
+1. returns at once if it has already run in this process (a flag global), so
+   it may be called any number of times;
+2. calls the `init` of each module it imports that has one, first;
+3. then sets its own globals, and its flag last.
+
+```asm
+.module json5
+.import json5.tables as tables
+.export init, parse
+
+inited: .i64 0              ; 1 once init has run in this process
+names:  .zero 8             ; a map, made by init
+
+.func init
+    bnz @inited, 1f         ; already set up here
+    call tables.init ()     ; imports first
+    mnew R0
+    mset R0, "null", 0
+    mov @names, R0
+    mov @inited, 1
+1:  ret
+.endf
+```
+
+A module imported along several paths (a diamond) is set up once: its second
+caller finds the flag set. Imports cannot form a cycle, so an `init` never
+re-enters itself and never sees a module half set up.
+
+Every way into the module's code must have called `init` in that process:
+
+* **`main`** calls the `init` of the program's own imports first.
+* **Spawned processes** start from the module images too, flags 0 and
+  references null. Start every process through an entry function of the
+  program's that sets up and then runs the body, and spawn that instead of the
+  body: `closure body (args) -> (R0)`, then `spawn start (R0)`, where `start`
+  calls the inits and then `calli`s the closure.
+* **`module.load`**: after loading a module, call its `init` if
+  `module.exports` lists one (`module.function` gives a closure for it).
+* **C hosts**: each `mlws_call` starts with fresh module globals
+  ([EMBEDDING.md](EMBEDDING.md)), so a function that a host calls must set up
+  in the same call.
+
+For a function that may be reached without any of these, such as one handed
+to other code as a closure, or called by a host, use the **lazy form**: the
+function itself starts with `bnz @inited, 1f; call init (); 1:`. It costs a
+test and branch per call, where the entry function costs every `init` once
+per process. Keep `init` cheap either way, since processes are meant to be
+started freely; a library with costly set-up that most processes never use is
+better set up lazily.
+
+`tests/loader/init_convention.masm` shows all of this: a diamond set up once,
+a spawned process with and without the entry function, a module loaded at run
+time, and the lazy form.
+
 ## 7. Objects, records and collections
 
 The heap object types map directly onto scripting-language values
