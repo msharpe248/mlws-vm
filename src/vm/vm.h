@@ -469,6 +469,10 @@ void vm_whole_windows(VM *vm);
 
 /* process.c */
 Process *proc_new(VM *vm);
+/* Where instruction pc of f is: "fib.lua:4; fib.masm:120" when a `.loc`
+ * says what program line it came from, else "fib.masm:120" (base: file
+ * names without their directories). */
+void fn_where(StrBuf *b, const Function *f, uint32_t pc, bool base);
 void proc_free(Process *p);
 /* Raise a runtime fault as a catchable Error exception. */
 MLWS_NORETURN void vm_trap(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);

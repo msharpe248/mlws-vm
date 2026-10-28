@@ -1,0 +1,83 @@
+; `.loc "file", line` says which line of the program a compiler translated
+; the following instructions came from, until the next `.loc`, a bare `.loc`
+; (no position) or the end of the function. Backtraces, and so an exception's
+; Error.trace, then name that line as well as the assembly line:
+; `at loc.area (shapes.lua:12; tests/asm/loc.masm:15)`. The profiler,
+; tracer, debugger and monitor show it too (docs/TOOLING.md). Here a trap and
+; a throw are caught and their traces searched for the program lines.
+.include "std/test.inc"
+
+; The position of a trap in a function with .loc runs.
+.func area(ref shape) -> i64
+    .loc "shapes.lua", 10
+    mov I0, 2
+    .loc "shapes.lua", 12                ; a new run: the next line of the program
+    mov I1, shape[I0]                    ; E_BOUNDS for a short list: at shapes.lua:12
+    ret I1
+.endf
+
+; A bare .loc: what follows has no program position, only its assembly line.
+.func untracked(ref shape) -> i64
+    .loc "shapes.lua", 20
+    mov I0, 5
+    .loc
+    mov I1, shape[I0]                    ; E_BOUNDS, with no shapes.lua line
+    ret I1
+.endf
+
+; Another file, and a frame further out: each frame shows its own position.
+.func outer(ref shape) -> i64
+    .loc "main.lua", 3
+    call area (shape) -> (I0)            ; this frame is at main.lua:3
+    ret I0
+.endf
+
+; 0 if the trace of the exception in R0 contains the string in R1.
+.func trace_has(ref err, ref text) -> i64
+    mov R2, err->Error.trace
+    strfind I0, R2, text
+    blt I0, 0, 1f
+    ret 0
+1:  ret 1
+.endf
+
+.macro TRACE_HAS text
+    mov.r R1, \text
+    call trace_has (R31, R1) -> (I31)
+    ASSERT_EQ I31, 0
+.endm
+
+.macro TRACE_LACKS text
+    mov.r R1, \text
+    call trace_has (R31, R1) -> (I31)
+    ASSERT_EQ I31, 1
+.endm
+
+.func main
+    lnew R0
+    lpush R0, 1
+.try 1f
+    call area (R0) -> (I0)
+.endtry
+    FAIL "area should have trapped"
+1:  catch R31
+    TRACE_HAS "at loc.area (shapes.lua:12; "
+    TRACE_LACKS "shapes.lua:10"
+
+.try 2f
+    call untracked (R0) -> (I0)
+.endtry
+    FAIL "untracked should have trapped"
+2:  catch R31
+    TRACE_LACKS "shapes.lua"
+
+.try 3f
+    call outer (R0) -> (I0)
+.endtry
+    FAIL "outer should have trapped"
+3:  catch R31
+    TRACE_HAS "at loc.area (shapes.lua:12; "
+    TRACE_HAS "at loc.outer (main.lua:3; "
+    TRACE_LACKS "at loc.main (main.lua"   ; main has no .loc of its own
+    ret 0
+.endf

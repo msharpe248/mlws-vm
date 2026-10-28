@@ -50,6 +50,13 @@ static void proc_json(StrBuf *b, const Process *p, bool detail) {
         json_str(b, f.s);
         sb_free(&f);
         sb_printf(b, ",\"line\":%u", fr->fn->mf->lines && pc < fr->fn->mf->ninsns ? fr->fn->mf->lines[pc] : 0);
+        const char *file;
+        uint32_t sline;
+        if (module_srcpos(fr->fn->mod->m, fr->fn->mf, pc, &file, &sline)) { /* `.loc`: the program's own line */
+            sb_puts(b, ",\"source\":");
+            json_str(b, file);
+            sb_printf(b, ",\"source_line\":%u", sline);
+        }
     } else {
         sb_puts(b, "null,\"line\":0");
     }
@@ -175,9 +182,9 @@ static void top_text(StrBuf *b, Monitor *mon, VM *vm) {
         const Frame *fr = p->nframes ? &p->frames[p->nframes - 1] : NULL;
         StrBuf loc = {0};
         if (fr) { /* compact: module.function+pc (file:line), file without its directory */
-            const char *src = fr->fn->mod->m->source && *fr->fn->mod->m->source ? fr->fn->mod->m->source : fr->fn->mod->path;
-            uint32_t line = fr->fn->mf->lines && fr->pc < fr->fn->mf->ninsns ? fr->fn->mf->lines[fr->pc] : 0;
-            sb_printf(&loc, "%s.%s+%u (%s:%u)", fr->fn->mod->m->name, fr->fn->name, fr->pc, path_basename(src), line);
+            sb_printf(&loc, "%s.%s+%u (", fr->fn->mod->m->name, fr->fn->name, fr->pc);
+            fn_where(&loc, fr->fn, fr->pc, true);
+            sb_putc(&loc, ')');
         }
         sb_printf(b, "%6llu %-8s %5.1f %8s %8s %8s %7u %5zu %11s %4llu  %s\n", (unsigned long long)p->pid,
                   STATE_NAMES[p->state], cpu, in, h, r, stack_bytes(p), (size_t)p->mcount, msgs,

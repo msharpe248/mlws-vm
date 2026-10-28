@@ -253,7 +253,33 @@ bad:
 * Handlers are tables beside the code, so a `.try` costs nothing until something
   is thrown. Unwinding rules are in [ABI.md §7](ABI.md#7-exceptions-and-traps).
 
-### 5.4 Processes
+### 5.4 Source positions of a translated program
+
+A compiler says which line of its own source each stretch of code came from
+with `.loc`:
+
+```asm
+.func L4$area(ref shape) -> i64
+    .loc "shapes.lua", 12        ; the instructions below came from shapes.lua line 12
+    mov I0, 2
+    mov I1, shape[I0]
+    .loc "shapes.lua", 13
+    ret I1
+.endf
+```
+
+* `.loc "file", line` holds for the instructions that follow, up to the next
+  `.loc`, a bare `.loc` (no position for what follows) or the end of the
+  function. The line starts at 1; the file is any string, usually the path the
+  compiler was given.
+* Backtraces, and so `Error.trace`, show the program line before the assembly
+  line: `at shapes.L4$area (shapes.lua:12; shapes.masm:4)`. So do the
+  tracer, the debugger (`break shapes.lua:12`), the monitor and the profiler,
+  which also lists the hottest program lines ([TOOLING.md](TOOLING.md)).
+* Positions are kept in the binary module, and `mlwsvm dis` prints them back as
+  `.loc` directives.
+
+### 5.5 Processes
 
 ```asm
 .func worker(i64 parent, i64 n)
@@ -592,6 +618,7 @@ macro-only files use the `.inc` extension and are not modules.
 | `.func ... / .endf` | top level | Define a function |
 | `.struct Name` ... `field: type` ... `.ends` | top level | Define a struct type |
 | `.try handler` ... `.endtry`, `.try start, end, handler` | in function | Exception handler region |
+| `.loc "file", line`, `.loc` | in function | Source position (in a translated program) of the instructions that follow; bare: none |
 | `.regs I=n, F=n, R=n, P=n` | in function | Minimum register window |
 | `.alias name, REG` | anywhere | Register alias (module-wide or function-local) |
 | `.i8` ... `.f64`, `.b`, `.c`, `.ascii`, `.asciz`, `.zero`, `.space`, `.align` | top level | Global data |

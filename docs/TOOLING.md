@@ -62,6 +62,12 @@ after an allocation, and `MLWSVM_NO_SLABS=1` allocates every object with
 development, `mlwsvm run --unsafe-native` (or `MLWSVM_UNSAFE_NATIVE=1`) loads
 native code without the trust checks ([EXTENDING.md](EXTENDING.md#security)).
 
+A frame whose code has a `.loc` position shows the line of the translated program
+before the assembly line, as in `at shapes.L4$area (shapes.lua:12; shapes.masm:4)`
+([ASSEMBLY.md §5.4](ASSEMBLY.md#54-source-positions-of-a-translated-program));
+so do `Error.trace`, the tracer and the monitor (`source` and `source_line` in the
+JSON API's process entries).
+
 A backtrace from a runaway recursion stays short: runs of identical frames are
 collapsed (`... repeated 99998 more times`), and a very deep stack shows only its
 innermost 40 and outermost 10 frames.
@@ -105,6 +111,8 @@ hottest instructions on the general path:
   names those registers: writing them first, or passing a constant instead of
   an unused one, shortens every call's clear.
 * **hot lines**: instructions per source line.
+* **hot program lines**: with `.loc`, instructions per line of the translated
+  program, summed over every function whose code came from it.
 * **opcodes**: the instruction mix, and for each opcode the share of executions
   that used a specialised handler ([PERFORMANCE.md](PERFORMANCE.md#how-the-interpreter-is-made-fast)).
   The handler is chosen when the code is loaded, from the instruction's shape; one
@@ -146,7 +154,7 @@ here (outside the debugger it does nothing).
 | `step` | `s` | execute one instruction, entering calls |
 | `next` | `n` | execute one instruction, stepping over calls |
 | `finish` | `fin` | run until the current function returns |
-| `break SPEC` | `b` | breakpoint at `FUNCTION`, `module.FUNCTION`, `LINE` (main file) or `FILE:LINE` |
+| `break SPEC` | `b` | breakpoint at `FUNCTION`, `module.FUNCTION`, `LINE` (main file) or `FILE:LINE`; the file may be one `.loc` names (the first instruction of each function from that line) |
 | `delete [N]` | `d` | delete breakpoint N, or all |
 | `info break` | `i` | list breakpoints with hit counts |
 | `print REG` | `p` | a register (`I3`, `F0`, `R1`, `P2`, `SP`, `FP`, `PID`); objects are shown with their contents |

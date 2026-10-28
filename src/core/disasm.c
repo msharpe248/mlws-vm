@@ -343,8 +343,19 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
             if (mh->end <= code.n) is_target[mh->end] = true;
             if (mh->target < code.n) is_target[mh->target] = true;
         }
+        uint32_t nloc = 0; /* the next .loc run */
         for (size_t i = 0; i < code.n; i++) {
             if (is_target[i]) sb_printf(b, ".L%zu:\n", i);
+            if (nloc < f->nlocs && f->locs[nloc].start == i) { /* where the program's code came from */
+                const MLoc *l = &f->locs[nloc++];
+                if (l->file) {
+                    sb_puts(b, "    .loc ");
+                    sb_put_quoted(b, m->srcfiles[l->file - 1], strlen(m->srcfiles[l->file - 1]));
+                    sb_printf(b, ", %u\n", l->line);
+                } else {
+                    sb_puts(b, "    .loc\n");
+                }
+            }
             sb_puts(b, "    ");
             size_t start = b->n;
             disasm_insn(b, m, &code.v[i]);

@@ -103,6 +103,9 @@ static void show_insn(Debugger *d, const Function *f, uint32_t pc, bool mark) {
     uint32_t line = f->mf->lines && pc < f->mf->ninsns ? f->mf->lines[pc] : 0;
     sb_printf(&b, "%s %4u  line %-4u  ", mark ? "=>" : "  ", pc, line);
     disasm_insn(&b, f->mod->m, &f->code[pc]);
+    const char *file;
+    uint32_t sline;
+    if (module_srcpos(f->mod->m, f->mf, pc, &file, &sline)) sb_printf(&b, "    ; %s:%u", path_basename(file), sline);
     sb_putc(&b, '\n');
     say_sb(d, &b);
 }
@@ -190,6 +193,24 @@ static void cmd_break(Debugger *d, const char *arg) {
                     found = true;
                     break;
                 }
+            }
+        }
+    }
+    /* A file the code was translated from (`.loc`): the first instruction of
+     * each function that came from that line. */
+    for (size_t m = 0; m < d->vm->mods.n && !found && file; m++) {
+        LModule *lm = d->vm->mods.v[m];
+        for (uint32_t i = 0; i < lm->m->nfuncs; i++) {
+            Function *f = &lm->funcs[i];
+            if (f->target != f) continue;
+            for (uint32_t k = 0; k < f->mf->nlocs; k++) {
+                const MLoc *l = &f->mf->locs[k];
+                if (!l->file || l->line != line) continue;
+                const char *sf = lm->m->srcfiles[l->file - 1];
+                if (strcmp(sf, file) && strcmp(path_basename(sf), path_basename(file))) continue;
+                add_bp(d, arg, f, l->start);
+                found = true;
+                break;
             }
         }
     }

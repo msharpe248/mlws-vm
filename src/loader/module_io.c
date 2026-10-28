@@ -6,6 +6,8 @@ void module_free(Module *m) {
     if (!m) return;
     free(m->name);
     free(m->source);
+    for (uint32_t i = 0; i < m->nsrcfiles; i++) free(m->srcfiles[i]);
+    free(m->srcfiles);
     for (uint32_t i = 0; i < m->nimports; i++) free(m->imports[i]);
     free(m->imports);
     for (uint32_t i = 0; i < m->nconsts; i++) free(m->consts[i].data);
@@ -13,6 +15,7 @@ void module_free(Module *m) {
     for (uint32_t i = 0; i < m->nfuncs; i++) {
         free(m->funcs[i].name);
         free(m->funcs[i].lines);
+        free(m->funcs[i].locs);
         free(m->funcs[i].handlers);
     }
     free(m->funcs);
@@ -98,6 +101,8 @@ void module_write(const Module *m, ByteBuf *b) {
     bb_u16(b, 0);
     bb_str(b, m->name);
     bb_str(b, m->source);
+    bb_uleb(b, m->nsrcfiles);
+    for (uint32_t i = 0; i < m->nsrcfiles; i++) bb_str(b, m->srcfiles[i]);
     bb_uleb(b, m->nimports);
     for (uint32_t i = 0; i < m->nimports; i++) bb_str(b, m->imports[i]);
     bb_uleb(b, m->nconsts);
@@ -124,6 +129,12 @@ void module_write(const Module *m, ByteBuf *b) {
         bb_uleb(b, f->code_len);
         bb_uleb(b, f->ninsns);
         for (uint32_t k = 0; k < f->ninsns; k++) bb_uleb(b, f->lines ? f->lines[k] : 0);
+        bb_uleb(b, f->nlocs);
+        for (uint32_t k = 0; k < f->nlocs; k++) {
+            bb_uleb(b, f->locs[k].start);
+            bb_uleb(b, f->locs[k].file);
+            bb_uleb(b, f->locs[k].line);
+        }
         bb_uleb(b, f->nhandlers);
         for (uint32_t k = 0; k < f->nhandlers; k++) {
             bb_uleb(b, f->handlers[k].start);
@@ -260,6 +271,13 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
 
     uint64_t n = br_uleb(&r);
     CHECK_COUNT(n, 1);
+    m->nsrcfiles = (uint32_t)n;
+    m->srcfiles = xcalloc(n + 1, sizeof(char *));
+    for (uint32_t i = 0; i < m->nsrcfiles; i++) m->srcfiles[i] = br_str(&r);
+    CHECK();
+
+    n = br_uleb(&r);
+    CHECK_COUNT(n, 1);
     m->nimports = (uint32_t)n;
     m->imports = xcalloc(n, sizeof(char *));
     for (uint32_t i = 0; i < m->nimports; i++) m->imports[i] = br_str(&r);
@@ -315,6 +333,19 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
         f->ninsns = (uint32_t)ni;
         f->lines = xcalloc(ni, sizeof(uint32_t));
         for (uint32_t k = 0; k < f->ninsns; k++) f->lines[k] = (uint32_t)br_uleb(&r);
+        uint64_t nl = br_uleb(&r);
+        CHECK_COUNT(nl, 3);
+        f->nlocs = (uint32_t)nl;
+        f->locs = xcalloc(nl + 1, sizeof(MLoc));
+        for (uint32_t k = 0; k < f->nlocs; k++) {
+            MLoc *l = &f->locs[k];
+            l->start = (uint32_t)br_uleb(&r);
+            l->file = (uint32_t)br_uleb(&r);
+            l->line = (uint32_t)br_uleb(&r);
+            CHECK();
+            if (l->start >= f->ninsns || (k && l->start <= f->locs[k - 1].start) || l->file > m->nsrcfiles)
+                FAIL("function %s: bad source position", f->name);
+        }
         uint64_t nh = br_uleb(&r);
         CHECK_COUNT(nh, 3);
         f->nhandlers = (uint32_t)nh;
@@ -552,4 +583,17 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
         if (m->grefs[i].kind == GREF_LOCAL && m->grefs[i].offset > m->gsize) FAIL("global reference out of range");
     }
     return m;
+}
+
+bool module_srcpos(const Module *m, const MFunc *f, uint32_t pc, const char **file, uint32_t *line) {
+    uint32_t lo = 0, hi = f->nlocs; /* the last run starting at or before pc */
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (f->locs[mid].start <= pc) lo = mid + 1;
+        else hi = mid;
+    }
+    if (!lo || !f->locs[lo - 1].file) return false;
+    *file = m->srcfiles[f->locs[lo - 1].file - 1];
+    *line = f->locs[lo - 1].line;
+    return true;
 }

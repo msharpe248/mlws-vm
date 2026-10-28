@@ -97,12 +97,20 @@ void proc_free(Process *p) {
     free(p);
 }
 
-static void frame_line(StrBuf *b, const Frame *fr) {
-    const Function *f = fr->fn;
-    uint32_t pc = fr->pc ? fr->pc - 1 : 0;
+void fn_where(StrBuf *b, const Function *f, uint32_t pc, bool base) {
+    const char *file;
+    uint32_t sline;
+    if (module_srcpos(f->mod->m, f->mf, pc, &file, &sline)) sb_printf(b, "%s:%u; ", base ? path_basename(file) : file, sline);
     uint32_t line = f->mf->lines && pc < f->mf->ninsns ? f->mf->lines[pc] : 0;
     const char *src = f->mod->m->source && *f->mod->m->source ? f->mod->m->source : f->mod->path;
-    sb_printf(b, "  at %s.%s (%s:%u)\n", f->mod->m->name, f->name, src, line);
+    sb_printf(b, "%s:%u", base ? path_basename(src) : src, line);
+}
+
+static void frame_line(StrBuf *b, const Frame *fr) {
+    const Function *f = fr->fn;
+    sb_printf(b, "  at %s.%s (", f->mod->m->name, f->name);
+    fn_where(b, f, fr->pc ? fr->pc - 1 : 0, false);
+    sb_puts(b, ")\n");
 }
 
 /* Innermost frame first. Runs of identical frames (direct recursion) are

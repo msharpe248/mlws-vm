@@ -10,9 +10,9 @@
 /* ---- formatting ------------------------------------------------------------- */
 
 void fmt_location(StrBuf *b, const Function *f, uint32_t pc) {
-    uint32_t line = f->mf->lines && pc < f->mf->ninsns ? f->mf->lines[pc] : 0;
-    const char *src = f->mod->m->source && *f->mod->m->source ? f->mod->m->source : f->mod->path;
-    sb_printf(b, "%s.%s+%u (%s:%u)", f->mod->m->name, f->name, pc, src, line);
+    sb_printf(b, "%s.%s+%u (", f->mod->m->name, f->name, pc);
+    fn_where(b, f, pc, false);
+    sb_putc(b, ')');
 }
 
 static void fmt_string(StrBuf *b, const char *s, uint32_t n) {
@@ -240,6 +240,17 @@ static int hot_cmp(const void *a, const void *b) {
     return x < y ? 1 : x > y ? -1 : 0;
 }
 
+typedef struct { /* a line of the translated program (.loc) */
+    const char *file;
+    uint32_t line;
+    uint64_t n;
+} SrcHot;
+
+static int srchot_cmp(const void *a, const void *b) {
+    uint64_t x = ((const SrcHot *)a)->n, y = ((const SrcHot *)b)->n;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+
 void tools_profile_report(VM *vm, FILE *out, const char *flame_path) {
     Tools *t = vm->tools;
     if (!t || !t->profile) return;
@@ -304,6 +315,39 @@ void tools_profile_report(VM *vm, FILE *out, const char *flame_path) {
         fprintf(out, "  %5.1f%% %12llu  %s:%u (%s.%s)\n", 100.0 * (double)lines.v[i].n / (double)total,
                 (unsigned long long)lines.v[i].n, src, lines.v[i].pc, f->mod->m->name, f->name);
     }
+    /* The same per line of the program a compiler translated, where `.loc`
+     * says (across functions: a line's code may be spread over several). */
+    VEC(SrcHot) slines = {0};
+    StrMap sidx = {0};
+    char key[320];
+    for (size_t i = 0; i < t->prof_funcs.n; i++) {
+        const Function *f = t->prof_funcs.v[i];
+        if (!f->mf->nlocs) continue;
+        for (uint32_t pc = 0; pc < f->ncode; pc++) {
+            const char *file;
+            uint32_t line;
+            if (!f->prof[pc] || !module_srcpos(f->mod->m, f->mf, pc, &file, &line)) continue;
+            snprintf(key, sizeof key, "%s:%u", file, line);
+            void *v;
+            if (!smap_get(&sidx, key, &v)) {
+                SrcHot h = {file, line, 0};
+                VEC_PUSH(slines, h);
+                v = (void *)(uintptr_t)slines.n;
+                smap_put(&sidx, key, v);
+            }
+            slines.v[(uintptr_t)v - 1].n += f->prof[pc];
+        }
+    }
+    if (slines.n) {
+        qsort(slines.v, slines.n, sizeof *slines.v, srchot_cmp);
+        fprintf(out, "\nhot program lines (from .loc):\n");
+        fprintf(out, "  %6s %12s  %s\n", "%", "insns", "location");
+        for (size_t i = 0; i < slines.n && i < 15; i++)
+            fprintf(out, "  %5.1f%% %12llu  %s:%u\n", 100.0 * (double)slines.v[i].n / (double)total,
+                    (unsigned long long)slines.v[i].n, slines.v[i].file, slines.v[i].line);
+    }
+    VEC_FREE(slines);
+    smap_free(&sidx);
     Hot ops[OP__COUNT];
     int nops = 0;
     for (int i = 0; i < OP__COUNT; i++)
@@ -335,8 +379,12 @@ void tools_profile_report(VM *vm, FILE *out, const char *flame_path) {
         uint32_t pc = slow.v[i].pc, line = f->mf->lines && pc < f->mf->ninsns ? f->mf->lines[pc] : 0;
         d.n = 0;
         disasm_insn(&d, f->mod->m, &f->code[pc]);
-        fprintf(out, "  %5.1f%% %12llu  %-40s ; %s.%s line %u\n", 100.0 * (double)slow.v[i].n / (double)total,
-                (unsigned long long)slow.v[i].n, d.s ? d.s : "", f->mod->m->name, f->name, line);
+        const char *file;
+        uint32_t sline;
+        char src[300] = "";
+        if (module_srcpos(f->mod->m, f->mf, pc, &file, &sline)) snprintf(src, sizeof src, " (%s:%u)", file, sline);
+        fprintf(out, "  %5.1f%% %12llu  %-40s ; %s.%s line %u%s\n", 100.0 * (double)slow.v[i].n / (double)total,
+                (unsigned long long)slow.v[i].n, d.s ? d.s : "", f->mod->m->name, f->name, line, src);
     }
     sb_free(&d);
     VEC_FREE(slow);

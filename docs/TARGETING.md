@@ -376,6 +376,21 @@ end:
 
 ## 11. Debugging generated code
 
+Emit `.loc "file", line` before the code of each statement (or each line), so
+that backtraces, `Error.trace`, the profiler, the tracer and the debugger name
+the line of your source program as well as the assembly line
+([ASSEMBLY.md §5.4](ASSEMBLY.md#54-source-positions-of-a-translated-program)):
+
+```asm
+.func L7$fib(i64 n) -> i64
+    .loc "fib.lua", 2
+    bge n, 2, 1f
+    ret n
+1:  .loc "fib.lua", 3
+    sub I1, n, 1
+    ...
+```
+
 | Tool | Use |
 |---|---|
 | `mlwsvm asm -E out.masm` | See the source after macro expansion, with line numbers |
@@ -383,7 +398,7 @@ end:
 | `mlwsvm run --stats out.masm` | Instruction count, speed, call depth, stack peak, heap and GC use, processes |
 | `mlwsvm run --profile out.masm` | Which generated functions, lines and opcodes dominate (exact counts) |
 | `mlwsvm run --trace - --trace-limit N out.masm` | Every executed instruction, to compare against what the compiler meant |
-| `mlwsvm debug out.masm` | Breakpoints on generated functions or lines, stepping, registers, objects, processes |
+| `mlwsvm debug out.masm` | Breakpoints on generated functions or lines (or `fib.lua:3`, with `.loc`), stepping, registers, objects, processes |
 | `mlwsvm test dir/` | Golden tests: put `; expect-stdout:` lines in the generated files |
 
 Every error has a stable code ([ERRORS.md](ERRORS.md)), so compiler tests can assert

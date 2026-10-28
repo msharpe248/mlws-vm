@@ -1,0 +1,6 @@
+; .loc gives instructions a position, so it belongs inside a function.
+; expect-error: E_ASM_SYNTAX
+.loc "prog.lua", 1
+.func main
+    ret 0
+.endf

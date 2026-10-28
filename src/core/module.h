@@ -6,7 +6,7 @@
 #include "types.h"
 
 #define MLWSO_MAGIC "MLWS"
-#define MLWSO_VERSION 6
+#define MLWSO_VERSION 7
 
 /* A call has a target and an argc operand, leaving 30 for arguments/results. */
 #define MAX_PARAMS 30
@@ -31,6 +31,13 @@ typedef struct {
 #define MF_IMPORT 0x02       /* entry refers to a function in another module */
 #define MF_RETS_DECLARED 0x04
 
+/* A run of instructions from one place in the program a compiler translated
+ * (`.loc`): from instruction `start` until the next run, they came from line
+ * `line` of source file `file` (1-based, into Module.srcfiles; 0 = none). */
+typedef struct {
+    uint32_t start, file, line;
+} MLoc;
+
 typedef struct {
     char *name;            /* local name, or symbol name in the imported module */
     uint32_t flags;
@@ -42,6 +49,8 @@ typedef struct {
     uint32_t code_off, code_len; /* byte range within Module.code */
     uint32_t ninsns;
     uint32_t *lines;       /* source line per instruction (ninsns entries) */
+    uint32_t nlocs;        /* positions in the translated program, in order of start */
+    MLoc *locs;
     uint32_t nhandlers;
     MHandler *handlers;
 } MFunc;
@@ -154,6 +163,8 @@ typedef struct MFfiFree {
 typedef struct Module {
     char *name;   /* dotted module name, e.g. "std.io" */
     char *source; /* source file the module was assembled from (debug) */
+    char **srcfiles; /* the translated program's files that `.loc` names */
+    uint32_t nsrcfiles;
     char **imports;
     uint32_t nimports;
     MConst *consts;
@@ -197,5 +208,9 @@ int module_find_export_struct(const Module *m, const char *name);
 #include "bytes.h"
 void module_write(const Module *m, ByteBuf *out);
 Module *module_read(const uint8_t *data, size_t len, MlwsError *err);
+
+/* Where instruction pc of f came from in the program a compiler translated
+ * (`.loc`): false if nothing says. */
+bool module_srcpos(const Module *m, const MFunc *f, uint32_t pc, const char **file, uint32_t *line);
 
 #endif

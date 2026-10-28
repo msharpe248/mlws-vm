@@ -14,6 +14,16 @@ echo "$REPORT" | grep -q "fib.fib" || fail "profile report"
 grep -q "fib.main;fib.fib" "$FLAME" || fail "flame stacks"
 rm -f "$FLAME"
 
+# .loc: the profile's program lines, and `dis` printing the runs back
+REPORT=$($BIN run --profile tests/asm/loc.masm 2>&1)
+echo "$REPORT" | grep -q "hot program lines" || fail "profile: no program lines"
+echo "$REPORT" | grep -q "shapes.lua:12" || fail "profile: shapes.lua:12"
+TMPD=$(mktemp -d)
+$BIN asm tests/asm/loc.masm -o "$TMPD/loc.mlwso" >/dev/null 2>&1 || fail "asm loc.masm"
+$BIN dis "$TMPD/loc.mlwso" | grep -q '\.loc "shapes.lua", 12' || fail "dis: .loc"
+rm -f "$TMPD/loc.mlwso"
+rmdir "$TMPD"
+
 # --trace with a limit
 N=$($BIN run --trace - --trace-limit 5 examples/hello.masm 2>&1 >/dev/null | grep -c '^\[1\]')
 [ "$N" = 5 ] || fail "trace limit (got $N lines)"
@@ -36,4 +46,4 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
 fi
-echo "check-tools: profile, trace, monitor, top OK"
+echo "check-tools: profile, .loc, trace, monitor, top OK"

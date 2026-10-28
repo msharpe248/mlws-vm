@@ -36,6 +36,7 @@ typedef struct {
     AsmOp *ops;
     const PLine *pl;
     uint32_t seq;
+    uint32_t loc_file, loc_line; /* `.loc` in force: 1-based into Asm.srcfiles, 0 = none */
 } AsmInsn;
 
 typedef struct {
@@ -109,6 +110,9 @@ typedef struct {
     bool in_cstruct;
     VEC(MFfiFree) ffrees;   /* .ffi_free */
     VEC(MCallback) callbacks; /* .callback */
+    VEC(char *) srcfiles;   /* files `.loc` names, in first-use order */
+    StrMap srcmap;          /* file name -> index+1 */
+    uint32_t loc_file, loc_line; /* the `.loc` in force in the open function */
 } Asm;
 
 typedef struct {
@@ -869,6 +873,7 @@ static void note_operand_regs(int maxr[NBANKS], const Operand *o) {
 static bool dir_endf(Asm *A, Cur *c) {
     AsmFunc *f = A->cur;
     if (!f) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".endf without .func");
+    A->loc_file = A->loc_line = 0; /* a .loc lasts to the end of its function */
     if (!expect_eol(A, c)) return false;
     if (f->insns.n == 0) return aerr(A, f->pl, 0, "E_ASM_SYNTAX", "function %s has no instructions", f->name);
     for (size_t i = 0; i < f->labels.cap; i++)
@@ -1513,6 +1518,49 @@ static bool dir_try(Asm *A, Cur *c) {
     return true;
 }
 
+/* `.loc "file", line`: the instructions that follow, up to the next `.loc` or
+ * the end of the function, came from that line of the program a compiler
+ * translated. A bare `.loc` ends it: what follows has no such position. */
+static bool dir_loc(Asm *A, Cur *c) {
+    if (!A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".loc must be inside a .func");
+    if (cur(c)->kind == TK_EOF) {
+        A->loc_file = A->loc_line = 0;
+        return true;
+    }
+    Token *ft = cur(c);
+    if (ft->kind != TK_STRING) return aerr(A, c->pl, ft->col, "E_ASM_SYNTAX", "expected `.loc \"file\", line`");
+    char *name = xmalloc(ft->slen + 1);
+    memcpy(name, ft->sval, ft->slen);
+    name[ft->slen] = 0;
+    c->pos++;
+    if (!tok_is(cur(c), ",")) {
+        free(name);
+        return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected `.loc \"file\", line`");
+    }
+    c->pos++;
+    int64_t line;
+    int col = cur(c)->col;
+    if (!eval_int(A, c, &line)) {
+        free(name);
+        return false;
+    }
+    if (line < 1 || line > UINT32_MAX) {
+        free(name);
+        return aerr(A, c->pl, col, "E_ASM_RANGE", ".loc needs a line number from 1");
+    }
+    void *v;
+    if (smap_get(&A->srcmap, name, &v)) {
+        A->loc_file = (uint32_t)VI(v) + 1;
+        free(name);
+    } else {
+        smap_put(&A->srcmap, name, IV(A->srcfiles.n));
+        VEC_PUSH(A->srcfiles, name);
+        A->loc_file = (uint32_t)A->srcfiles.n;
+    }
+    A->loc_line = (uint32_t)line;
+    return expect_eol(A, c);
+}
+
 static bool dir_endtry(Asm *A, Cur *c) {
     AsmFunc *f = A->cur;
     if (!f) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".endtry must be inside a .func");
@@ -1544,6 +1592,7 @@ static bool directive(Asm *A, Cur *c) {
     if (IS(".struct")) return dir_struct(A, c);
     if (IS(".try")) return dir_try(A, c);
     if (IS(".endtry")) return dir_endtry(A, c);
+    if (IS(".loc")) return dir_loc(A, c);
     if (IS(".ends")) return aerr(A, c->pl, d->col, "E_ASM_SYNTAX", ".ends without .struct");
     if (IS(".endf")) return dir_endf(A, c);
     if (IS(".regs")) return dir_regs(A, c);
@@ -1812,6 +1861,8 @@ static bool instruction(Asm *A, Cur *c) {
         free(ai.ops);
         return aerr(A, c->pl, col, code, "%s", ce.msg);
     }
+    ai.loc_file = A->loc_file;
+    ai.loc_line = A->loc_line;
     VEC_PUSH(A->cur->insns, ai);
     return true;
 }
@@ -2041,6 +2092,9 @@ static Module *finish(Asm *A) {
     Module *m = xcalloc(1, sizeof *m);
     m->name = xstrdup(A->modname);
     m->source = xstrdup(A->pp.files.n ? A->pp.files.v[0] : "");
+    m->nsrcfiles = (uint32_t)A->srcfiles.n;
+    m->srcfiles = xcalloc(A->srcfiles.n + 1, sizeof(char *));
+    for (size_t i = 0; i < A->srcfiles.n; i++) m->srcfiles[i] = xstrdup(A->srcfiles.v[i]);
     ByteBuf code = {0};
     m->nfuncs = (uint32_t)(A->funcs.n + A->ifuncs.n);
     m->funcs = xcalloc(m->nfuncs ? m->nfuncs : 1, sizeof(MFunc));
@@ -2061,6 +2115,12 @@ static Module *finish(Asm *A) {
             Insn in = {.op = ai->op, .xop = ai->op, .type = ai->type, .type2 = ai->type2, .nops = (uint8_t)ai->nops, .ops = tmp};
             encode_insn(&code, &in);
             mf->lines[i] = (uint32_t)ai->pl->origin.line;
+            bool same = mf->nlocs && mf->locs[mf->nlocs - 1].file == ai->loc_file &&
+                        mf->locs[mf->nlocs - 1].line == ai->loc_line;
+            if (!same && (mf->nlocs || ai->loc_file)) { /* a new run (none before the first .loc) */
+                mf->locs = xrealloc(mf->locs, (mf->nlocs + 1) * sizeof(MLoc));
+                mf->locs[mf->nlocs++] = (MLoc){(uint32_t)i, ai->loc_file, ai->loc_line};
+            }
         }
         mf->code_len = (uint32_t)code.n - mf->code_off;
     }
@@ -2128,6 +2188,9 @@ static Module *finish(Asm *A) {
 }
 
 static void asm_free(Asm *A) {
+    for (size_t i = 0; i < A->srcfiles.n; i++) free(A->srcfiles.v[i]);
+    VEC_FREE(A->srcfiles);
+    smap_free(&A->srcmap);
     for (size_t f = 0; f < A->funcs.n; f++) {
         AsmFunc *af = A->funcs.v[f];
         for (size_t i = 0; i < af->insns.n; i++) {

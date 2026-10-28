@@ -1,0 +1,6 @@
+; A .loc line number starts at 1.
+; expect-error: E_ASM_RANGE
+.func main
+    .loc "prog.lua", 0
+    ret 0
+.endf
