@@ -1,0 +1,7 @@
+; .public lists a library's public modules, so it belongs in a manifest, with .library.
+; expect-error: E_ASM_SYNTAX
+.public main
+
+.func main
+    ret 0
+.endf

@@ -4,6 +4,8 @@
 #include "../asm/asm.h"
 #include "../platform/platform.h"
 #include "../heap/numeric.h"
+#include "../core/version.h"
+#include "../loader/library.h"
 #include "vm.h"
 
 static char *module_rel_path(const char *name) {
@@ -265,7 +267,152 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
     return true;
 }
 
-static LModule *register_module(VM *vm, Module *m, const char *path, MlwsError *err) {
+/* ---- libraries ------------------------------------------------------------------------ */
+
+/* Every library archive (*.mlwsl) in the library path's directories, read once. */
+static void scan_archives(VM *vm) {
+    if (vm->archives_scanned) return;
+    vm->archives_scanned = true;
+    for (size_t i = 0; i < vm->libpaths.n; i++) {
+        char **names;
+        size_t n;
+        if (!plat_list_dir(vm->libpaths.v[i], &names, &n)) continue;
+        for (size_t k = 0; k < n; k++) {
+            if (str_ends_with(names[k], ".mlwsl")) {
+                char *p = path_join(vm->libpaths.v[i], names[k]);
+                MlwsError e;
+                LibArchive *a = lib_read(p, &e);
+                if (a) VEC_PUSH(vm->archives, a);
+                else fprintf(stderr, "mlwsvm: ignoring %s\n", e.msg);
+                free(p);
+            }
+            free(names[k]);
+        }
+        free(names);
+    }
+}
+
+/* What is known about a library's versions, for a message: who asked for which. */
+static void wants_of(VM *vm, const char *lib, StrBuf *b) {
+    for (size_t i = 0; i < vm->wants.n; i++)
+        if (!strcmp(vm->wants.v[i].lib, lib))
+            sb_printf(b, "%s%s needs %s", b->n ? "; " : "", vm->wants.v[i].who, vm->wants.v[i].constraint);
+}
+
+/* `who` needs library lib in a version the constraint allows: checked now if
+ * lib is the VM or has been chosen, else kept for when it is. */
+static bool want(VM *vm, const char *lib, const char *constraint, const char *who, MlwsError *err) {
+    SemVer v;
+    if (!strcmp(lib, "mlwsvm")) {
+        semver_parse(MLWSVM_VERSION, &v);
+        if (!semver_satisfies(v, constraint))
+            return mlws_err(err, "E_LINK_VERSION", "%s needs mlwsvm %s, but this is mlwsvm %s", who, constraint,
+                            MLWSVM_VERSION);
+        return true;
+    }
+    void *sel;
+    if (smap_get(&vm->libsel, lib, &sel) && !semver_satisfies(((LibArchive *)sel)->version, constraint)) {
+        StrBuf b = {0};
+        wants_of(vm, lib, &b);
+        mlws_err(err, "E_LINK_VERSION", "%s needs %s %s, but %s %s is already loaded%s%s%s", who, lib, constraint, lib,
+                 ((LibArchive *)sel)->manifest->lib_version, b.n ? " (" : "", b.n ? b.s : "", b.n ? ")" : "");
+        sb_free(&b);
+        return false;
+    }
+    LibWant w = {xstrdup(lib), xstrdup(constraint), xstrdup(who)};
+    VEC_PUSH(vm->wants, w);
+    return true;
+}
+
+/* The newest archive of library lib that meets every constraint stated so
+ * far (archives of one version: the first on the library path), chosen for
+ * the rest of the run; its own requirements are then stated. NULL with err
+ * set if none fits; NULL with err clear if there is none of lib at all. */
+static LibArchive *choose_library(VM *vm, const char *lib, MlwsError *err) {
+    void *v;
+    if (smap_get(&vm->libsel, lib, &v)) return v;
+    LibArchive *best = NULL;
+    StrBuf found = {0};
+    for (size_t i = 0; i < vm->archives.n; i++) {
+        LibArchive *a = vm->archives.v[i];
+        if (strcmp(a->manifest->lib_name, lib)) continue;
+        sb_printf(&found, "%s%s", found.n ? ", " : "", a->manifest->lib_version);
+        bool ok = true;
+        for (size_t k = 0; k < vm->wants.n && ok; k++)
+            if (!strcmp(vm->wants.v[k].lib, lib)) ok = semver_satisfies(a->version, vm->wants.v[k].constraint);
+        if (ok && (!best || semver_cmp(a->version, best->version) > 0)) best = a;
+    }
+    if (!best) {
+        if (found.n) {
+            StrBuf b = {0};
+            wants_of(vm, lib, &b);
+            mlws_err(err, "E_LINK_VERSION", "no version of library %s meets every constraint (%s); found %s", lib, b.s,
+                     found.s);
+            sb_free(&b);
+        }
+        sb_free(&found);
+        return NULL;
+    }
+    sb_free(&found);
+    smap_put(&vm->libsel, lib, best);
+    StrBuf who = {0};
+    sb_printf(&who, "library %s %s", lib, best->manifest->lib_version);
+    for (uint32_t i = 0; i < best->manifest->nrequires; i++) {
+        const MRequire *r = &best->manifest->requires[i];
+        if (!want(vm, r->lib, r->constraint, who.s, err)) {
+            sb_free(&who);
+            return NULL;
+        }
+    }
+    sb_free(&who);
+    return best;
+}
+
+static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive *lib, MlwsError *err);
+
+/* Module name from a library archive: 1 loaded (*out), 0 no archive has it,
+ * -1 an error. The library is the longest prefix of the name that some
+ * archive on the path provides. */
+static int require_from_library(VM *vm, const char *name, LModule **out, MlwsError *err) {
+    scan_archives(vm);
+    if (!vm->archives.n) return 0;
+    char *lib = xstrdup(name);
+    for (;;) {
+        err->code[0] = 0;
+        LibArchive *a = choose_library(vm, lib, err);
+        if (a) {
+            int i = lib_find(a, name);
+            if (i < 0) {
+                mlws_err(err, "E_LOAD_NOT_FOUND", "library %s %s (%s) has no module '%s'", lib, a->manifest->lib_version,
+                         a->path, name);
+                free(lib);
+                return -1;
+            }
+            Module *m = lib_module(a, (uint32_t)i, err);
+            if (!m) {
+                free(lib);
+                return -1;
+            }
+            StrBuf p = {0};
+            sb_printf(&p, "%s(%s)", a->path, name);
+            *out = register_module(vm, m, p.s, a, err);
+            sb_free(&p);
+            free(lib);
+            return *out ? 1 : -1;
+        }
+        if (err->code[0]) {
+            free(lib);
+            return -1;
+        }
+        char *dot = strrchr(lib, '.');
+        if (!dot) break;
+        *dot = 0;
+    }
+    free(lib);
+    return 0;
+}
+
+static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive *lib, MlwsError *err) {
     if (smap_has(&vm->modmap, m->name)) {
         mlws_err(err, "E_LOAD_NAME", "a module named '%s' is already loaded (%s)", m->name, path);
         module_free(m);
@@ -278,14 +425,27 @@ static LModule *register_module(VM *vm, Module *m, const char *path, MlwsError *
     }
     LModule *lm = xcalloc(1, sizeof *lm);
     lm->m = m;
+    lm->lib = lib;
     lm->path = xstrdup(path);
     lm->index = (int)vm->mods.n;
     lm->state = LM_LOADING;
     VEC_PUSH(vm->mods, lm);
     smap_put(&vm->modmap, m->name, lm);
     VEC_PUSH(vm->loading, xstrdup(m->name));
+    for (uint32_t i = 0; i < m->nrequires; i++) /* before its imports choose their versions */
+        if (!want(vm, m->requires[i].lib, m->requires[i].constraint, m->name, err)) return NULL;
     for (uint32_t i = 0; i < m->nimports; i++) {
-        if (!vm_require(vm, m->imports[i], err)) return NULL;
+        LModule *dep = vm_require(vm, m->imports[i], err);
+        if (!dep) return NULL;
+        if (dep->lib && dep->lib != lib && !lib_is_public(dep->lib, dep->m->name)) {
+            StrBuf pub = {0};
+            for (uint32_t k = 0; k < dep->lib->manifest->npublics; k++)
+                sb_printf(&pub, "%s%s", k ? ", " : "", dep->lib->manifest->publics[k]);
+            mlws_err(err, "E_LINK_PRIVATE", "%s imports %s, which library %s keeps private (its public modules: %s)",
+                     m->name, dep->m->name, dep->lib->manifest->lib_name, pub.n ? pub.s : "none");
+            sb_free(&pub);
+            return NULL;
+        }
     }
     if (!link_module(vm, lm, err)) return NULL;
     free(vm->loading.v[--vm->loading.n]);
@@ -311,6 +471,9 @@ LModule *vm_require(VM *vm, const char *name, MlwsError *err) {
     }
     char *path = find_module_file(vm, name);
     if (!path) {
+        LModule *lm = NULL;
+        int r = require_from_library(vm, name, &lm, err);
+        if (r) return r > 0 ? lm : NULL;
         StrBuf dirs = {0};
         for (size_t i = 0; i < vm->libpaths.n; i++) sb_printf(&dirs, "%s%s", i ? ", " : "", vm->libpaths.v[i]);
         mlws_err(err, "E_LOAD_NOT_FOUND", "module '%s' not found in library path [%s]", name, dirs.s ? dirs.s : "");
@@ -328,7 +491,7 @@ LModule *vm_require(VM *vm, const char *name, MlwsError *err) {
         free(path);
         return NULL;
     }
-    LModule *lm = register_module(vm, m, path, err);
+    LModule *lm = register_module(vm, m, path, NULL, err);
     free(path);
     return lm;
 }
@@ -336,7 +499,7 @@ LModule *vm_require(VM *vm, const char *name, MlwsError *err) {
 LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err) {
     Module *m = assemble_text(name, text, name, (const char *const *)vm->libpaths.v, vm->libpaths.n, err);
     if (!m) return NULL;
-    return register_module(vm, m, name, err);
+    return register_module(vm, m, name, NULL, err);
 }
 
 LModule *vm_load_root(VM *vm, const char *path, MlwsError *err) {
@@ -351,5 +514,5 @@ LModule *vm_load_root(VM *vm, const char *path, MlwsError *err) {
     Module *m = read_module_file(vm, path, defname, err);
     free(defname);
     if (!m) return NULL;
-    return register_module(vm, m, path, err);
+    return register_module(vm, m, path, NULL, err);
 }

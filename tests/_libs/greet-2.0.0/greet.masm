@@ -1,0 +1,12 @@
+; greet 2.0.0: the library's public module.
+.import greet.impl                       ; a private module of the same library
+.export hello, version
+
+.func hello -> ref
+    call greet.impl.text () -> (R0)
+    ret R0
+.endf
+
+.func version -> ref
+    ret "2.0.0"
+.endf

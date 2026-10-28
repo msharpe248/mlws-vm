@@ -14,6 +14,7 @@ typedef struct {
 /* Add the library path and the default extension directory to a VM. */
 void tool_env_libpaths(const ToolEnv *env, VM *vm);
 int tool_ext(int argc, char **argv, const ToolEnv *env); /* `mlwsvm ext` */
+int tool_lib(int argc, char **argv, const ToolEnv *env); /* `mlwsvm lib` (libtool.c) */
 
 int tool_test(int argc, char **argv, const ToolEnv *env);
 int tool_doc(int argc, char **argv);

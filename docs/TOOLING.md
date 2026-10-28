@@ -15,6 +15,7 @@ dashboard and a `top`-style terminal view.
 | VM options | `mlwsvm run --max-frames N --quota heap=64M ... prog.masm` | — |
 | Native code | `mlwsvm ext list\|install\|remove\|allow-ffi\|deny-ffi` ([EXTENDING.md](EXTENDING.md)) | — |
 | Bindings generator | `mlwsvm bindgen [-l LIB] [-p PREFIX] [-o OUT] header.h` | — |
+| Libraries | `mlwsvm lib build DIR \| info FILE \| list` | — |
 
 The profiler, tracer and debugger use one per-instruction hook, which is
 installed only while one of them is active. A program run under them uses a
@@ -53,6 +54,25 @@ temporary file and renamed into place, so runs at the same time never see half
 of one; past 512 entries, the oldest are removed. `mlwsvm asm` and `dis` never
 use the cache.
 
+## Libraries: `mlwsvm lib`
+
+```
+$ mlwsvm lib build json5/                 # json5/library.masm and the modules under json5/
+json5-1.2.0.mlwsl: library json5 1.2.0, 3 modules (public: json5, json5.parse)
+$ mlwsvm lib info json5-1.2.0.mlwsl       # manifest, requirements and modules
+$ mlwsvm lib list -L ~/mlws-libs          # the archives on the library path
+```
+
+`lib build DIR [-o FILE] [-L dir]` assembles `DIR/library.masm`, the manifest
+([ASSEMBLY.md §8.1](ASSEMBLY.md#81-libraries)), and every module under `DIR`,
+named by its path (`json5/parse.masm` is `json5.parse`; directories starting
+with `_` or `.` are skipped, for include files). Each module must belong to the
+library (its name is the library's or starts with it and a dot), each `.public`
+module must exist, and the archive goes to `name-version.mlwsl` unless `-o`
+says otherwise. To use it, put it in a directory of the library path (`-L`,
+`--lib-path`, `$MLWSVM_PATH`, or `lib/` next to `mlwsvm`); several versions
+can sit side by side. A damaged archive on the path is reported and ignored.
+
 ## VM options
 
 Settings for the VM itself. Each can be given on the command line (`mlwsvm run`
@@ -70,6 +90,7 @@ a test file's own lines override both.
 | `--gc-min BYTES` | 1M | the heap size below which no collection runs |
 | `--quota LIST` | unlimited | starting limits for every process, e.g. `heap=64M,raw=1G,mailbox=1000,insns=5000000,foreign=0,os=0`; any subset, `unlimited` resets one |
 | `--ext-path DIR[:DIR]` | (none) | trusted native-extension directories, searched before `lib/ext` ([EXTENDING.md](EXTENDING.md)) |
+| `--lib-path DIR[:DIR]` | (none) | more library directories (for modules and library archives), searched after the program's own |
 
 Sizes take an optional `K`, `M` or `G` suffix (powers of 1024). A bad value is
 an error (exit code 2) on the command line, a failing test in a test file, and a

@@ -12,6 +12,7 @@
 #include "../core/builtins.h"
 #include "../core/check.h"
 #include "../core/insn.h"
+#include "../core/semver.h"
 #include "preproc.h"
 
 /* ---- data structures ------------------------------------------------------ */
@@ -110,6 +111,11 @@ typedef struct {
     bool in_cstruct;
     VEC(MFfiFree) ffrees;   /* .ffi_free */
     VEC(MCallback) callbacks; /* .callback */
+    VEC(MRequire) requires; /* .requires */
+    char *lib_name, *lib_version; /* .library: this file is a library's manifest */
+    const PLine *lib_pl;
+    VEC(char *) publics;    /* .public */
+    const PLine *public_pl;
     VEC(char *) srcfiles;   /* files `.loc` names, in first-use order */
     StrMap srcmap;          /* file name -> index+1 */
     uint32_t loc_file, loc_line; /* the `.loc` in force in the open function */
@@ -1561,6 +1567,90 @@ static bool dir_loc(Asm *A, Cur *c) {
     return expect_eol(A, c);
 }
 
+/* A string operand of a directive, malloc'd, or NULL (an error is reported). */
+static char *dir_string(Asm *A, Cur *c, const char *usage) {
+    Token *t = cur(c);
+    if (t->kind != TK_STRING) {
+        aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "expected %s", usage);
+        return NULL;
+    }
+    char *s = xmalloc(t->slen + 1);
+    memcpy(s, t->sval, t->slen);
+    s[t->slen] = 0;
+    c->pos++;
+    return s;
+}
+
+/* `name, "text"`: a dotted name and a string. */
+static bool name_and_string(Asm *A, Cur *c, const char *usage, char **name, char **str) {
+    Token *nt = cur(c);
+    if (A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", "%s must be outside a .func", usage);
+    if (nt->kind != TK_IDENT || nt->start[0] == '.') return aerr(A, c->pl, nt->col, "E_ASM_SYNTAX", "expected %s", usage);
+    *name = tokdup(nt);
+    c->pos++;
+    if (!tok_is(cur(c), ",")) {
+        free(*name);
+        return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected %s", usage);
+    }
+    c->pos++;
+    *str = dir_string(A, c, usage);
+    if (!*str) {
+        free(*name);
+        return false;
+    }
+    return true;
+}
+
+/* `.requires lib, "constraint"`: this module needs library lib (or the VM,
+ * `mlwsvm`) in a version the constraint allows. */
+static bool dir_requires(Asm *A, Cur *c) {
+    MRequire r;
+    int col = cur(c)->col;
+    if (!name_and_string(A, c, "`.requires library, \"constraint\"`", &r.lib, &r.constraint)) return false;
+    char why[512];
+    if (!semver_constraint_ok(r.constraint, why, sizeof why)) {
+        free(r.lib);
+        free(r.constraint);
+        return aerr(A, c->pl, col, "E_ASM_SYNTAX", "%s", why);
+    }
+    VEC_PUSH(A->requires, r);
+    return expect_eol(A, c);
+}
+
+/* `.library name, "version"`: this file is a library's manifest. */
+static bool dir_library(Asm *A, Cur *c) {
+    int col = cur(c)->col;
+    if (A->lib_name) return aerr(A, c->pl, col, "E_ASM_SYNTAX", "a manifest names its library once");
+    char *name, *ver;
+    if (!name_and_string(A, c, "`.library name, \"version\"`", &name, &ver)) return false;
+    SemVer v;
+    if (!semver_parse(ver, &v)) {
+        aerr(A, c->pl, col, "E_ASM_SYNTAX", "'%s' is not a version (MAJOR.MINOR.PATCH)", ver);
+        free(name);
+        free(ver);
+        return false;
+    }
+    A->lib_name = name;
+    A->lib_version = ver;
+    A->lib_pl = c->pl;
+    return expect_eol(A, c);
+}
+
+/* `.public module, ...`: modules of the library that others may import. */
+static bool dir_public(Asm *A, Cur *c) {
+    if (A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".public must be outside a .func");
+    size_t before = A->publics.n;
+    if (!A->public_pl) A->public_pl = c->pl;
+    while (cur(c)->kind == TK_IDENT && cur(c)->start[0] != '.') {
+        VEC_PUSH(A->publics, tokdup(cur(c)));
+        c->pos++;
+        if (!tok_is(cur(c), ",")) break;
+        c->pos++;
+    }
+    if (A->publics.n == before) return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected module names");
+    return expect_eol(A, c);
+}
+
 static bool dir_endtry(Asm *A, Cur *c) {
     AsmFunc *f = A->cur;
     if (!f) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".endtry must be inside a .func");
@@ -1593,6 +1683,9 @@ static bool directive(Asm *A, Cur *c) {
     if (IS(".try")) return dir_try(A, c);
     if (IS(".endtry")) return dir_endtry(A, c);
     if (IS(".loc")) return dir_loc(A, c);
+    if (IS(".requires")) return dir_requires(A, c);
+    if (IS(".library")) return dir_library(A, c);
+    if (IS(".public")) return dir_public(A, c);
     if (IS(".ends")) return aerr(A, c->pl, d->col, "E_ASM_SYNTAX", ".ends without .struct");
     if (IS(".endf")) return dir_endf(A, c);
     if (IS(".regs")) return dir_regs(A, c);
@@ -2063,6 +2156,15 @@ static Module *finish(Asm *A) {
         aerr(A, A->struct_pl, 0, "E_ASM_SYNTAX", "missing .ends for struct %s", A->cur_struct->name);
         return NULL;
     }
+    if (A->publics.n && !A->lib_name) {
+        aerr(A, A->public_pl, 0, "E_ASM_SYNTAX", ".public belongs in a library's manifest (with .library)");
+        return NULL;
+    }
+    if (A->lib_name && (A->funcs.n || A->imports.n || A->gdata.n || A->structs.n || A->externs.n || A->extensions.n)) {
+        aerr(A, A->lib_pl, 0, "E_ASM_SYNTAX",
+             "a library's manifest holds only .library, .requires and .public (no code, data or imports)");
+        return NULL;
+    }
     bind_pending(A);
     data_align(A, 8);
     sync_tags(A);
@@ -2092,6 +2194,17 @@ static Module *finish(Asm *A) {
     Module *m = xcalloc(1, sizeof *m);
     m->name = xstrdup(A->modname);
     m->source = xstrdup(A->pp.files.n ? A->pp.files.v[0] : "");
+    m->nrequires = (uint32_t)A->requires.n;
+    m->requires = xcalloc(A->requires.n + 1, sizeof(MRequire));
+    for (size_t i = 0; i < A->requires.n; i++) {
+        m->requires[i].lib = xstrdup(A->requires.v[i].lib);
+        m->requires[i].constraint = xstrdup(A->requires.v[i].constraint);
+    }
+    m->lib_name = A->lib_name ? xstrdup(A->lib_name) : NULL;
+    m->lib_version = A->lib_version ? xstrdup(A->lib_version) : NULL;
+    m->npublics = (uint32_t)A->publics.n;
+    m->publics = xcalloc(A->publics.n + 1, sizeof(char *));
+    for (size_t i = 0; i < A->publics.n; i++) m->publics[i] = xstrdup(A->publics.v[i]);
     m->nsrcfiles = (uint32_t)A->srcfiles.n;
     m->srcfiles = xcalloc(A->srcfiles.n + 1, sizeof(char *));
     for (size_t i = 0; i < A->srcfiles.n; i++) m->srcfiles[i] = xstrdup(A->srcfiles.v[i]);
@@ -2188,6 +2301,15 @@ static Module *finish(Asm *A) {
 }
 
 static void asm_free(Asm *A) {
+    for (size_t i = 0; i < A->requires.n; i++) {
+        free(A->requires.v[i].lib);
+        free(A->requires.v[i].constraint);
+    }
+    VEC_FREE(A->requires);
+    free(A->lib_name);
+    free(A->lib_version);
+    for (size_t i = 0; i < A->publics.n; i++) free(A->publics.v[i]);
+    VEC_FREE(A->publics);
     for (size_t i = 0; i < A->srcfiles.n; i++) free(A->srcfiles.v[i]);
     VEC_FREE(A->srcfiles);
     smap_free(&A->srcmap);

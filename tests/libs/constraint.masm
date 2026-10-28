@@ -1,0 +1,14 @@
+; `.requires` in a program picks a version: the newest that the constraint
+; allows. Of greet 1.0.0, 1.2.0 and 2.0.0, ^1.0 allows 1.0.0 and 1.2.0.
+; option: --lib-path build/test-libs
+.include "std/test.inc"
+.requires greet, "^1.0"
+.requires mlwsvm, ">=0.3"                ; the VM itself
+.import greet
+
+.func main
+    call greet.version () -> (R0)
+    strcmp I0, R0, "1.2.0"
+    ASSERT_EQ I0, 0
+    ret 0
+.endf

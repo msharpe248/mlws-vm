@@ -112,6 +112,10 @@ typedef struct FieldRef {
     uint32_t index;
 } FieldRef;
 
+typedef struct LibWant {
+    char *lib, *constraint, *who; /* who: the module or library that asked */
+} LibWant;
+
 typedef struct LModule {
     Module *m;
     char *path;
@@ -124,6 +128,7 @@ typedef struct LModule {
     const StructDef **structs; /* resolved struct table (local or imported), m->nstructs */
     struct FieldRef *frefs;   /* resolved field references, m->nfrefs */
     const NativeDef **natives; /* m->nnatives */
+    struct LibArchive *lib;   /* the library archive it came from, or NULL (a plain file) */
 } LModule;
 
 typedef void (*OutputFn)(void *ctx, const char *s, size_t n);
@@ -167,6 +172,13 @@ typedef struct VM {
     StrMap modmap;
     VEC(char *) libpaths;
     VEC(char *) loading; /* import chain for cycle reporting */
+    /* libraries (loader.c): the archives on the library path, found on first
+     * need; the one chosen for each library name; and the version constraints
+     * stated so far, which a library chosen later must meet */
+    VEC(struct LibArchive *) archives;
+    bool archives_scanned;
+    StrMap libsel;
+    VEC(struct LibWant) wants;
     StrMap natives;      /* name -> const NativeDef* */
     OutputFn out;
     void *out_ctx;

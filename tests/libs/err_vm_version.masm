@@ -1,0 +1,7 @@
+; `.requires mlwsvm, ...` states the versions of the VM a program runs on.
+; expect-error: E_LINK_VERSION
+.requires mlwsvm, ">=99"
+
+.func main
+    ret 0
+.endf

@@ -60,7 +60,7 @@ DL_LIBS := -ldl -lpthread
 endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: all test test-ext check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
+.PHONY: all test test-ext test-libs check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
 
 all: $(BIN)
 
@@ -125,7 +125,13 @@ build/ext/demo.mlwsx: extensions/demo/demo.c include/mlwsvm/mlwsvm.h
 # Trusted extension directories for tests/native: a good one, and three that
 # must be refused (not in TRUSTED, changed since installed, writable by others).
 TEST_EXT := build/test-ext
-test-ext: $(BIN) build/ext/demo.mlwsx
+# The library archives the tests import (tests/libs): one per tests/_libs/NAME-VERSION.
+TEST_LIBS := build/test-libs
+test-libs: $(BIN)
+	@rm -rf $(TEST_LIBS) && mkdir -p $(TEST_LIBS)
+	@for d in tests/_libs/*/; do ./$(BIN) lib build $$d -o $(TEST_LIBS)/$$(basename $$d).mlwsl >/dev/null || exit 1; done
+
+test-ext: $(BIN) build/ext/demo.mlwsx test-libs
 	@rm -rf build/test-ext build/test-ext-unlisted build/test-ext-tampered build/test-ext-open
 	@./$(BIN) ext install --dir $(TEST_EXT) build/ext/demo.mlwsx >/dev/null
 	@./$(BIN) ext allow-ffi --dir $(TEST_EXT) - libm libm.so.6 >/dev/null

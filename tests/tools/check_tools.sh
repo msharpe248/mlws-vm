@@ -46,6 +46,32 @@ MLWSVM_CACHE="$CDIR/cache" $BIN run --no-cache "$CDIR/src/prog.masm" >/dev/null
 [ "$(ls "$CDIR/cache" | grep -c '\.mlwsc$')" = 0 ] || fail "cache: --no-cache made an entry"
 rm -rf "${CDIR:?}"
 
+# mlwsvm lib: build, info, and what it refuses
+LDIR=$(mktemp -d)
+mkdir -p "$LDIR/ok/kit" "$LDIR/nomanifest" "$LDIR/outside" "$LDIR/nopublic" "$LDIR/out"
+printf '.library kit, "0.1.0"\n.public kit\n' > "$LDIR/ok/library.masm"
+printf '.import kit.part\n.export two\n.func two -> i64\n    call kit.part.one () -> (I0)\n    add I0, 1\n    ret I0\n.endf\n' > "$LDIR/ok/kit.masm"
+printf '.export one\n.func one -> i64\n    ret 1\n.endf\n' > "$LDIR/ok/kit/part.masm"
+$BIN lib build "$LDIR/ok" -o "$LDIR/out/kit-0.1.0.mlwsl" >/dev/null || fail "lib build"
+$BIN lib info "$LDIR/out/kit-0.1.0.mlwsl" | grep -q '^module kit.part ' || fail "lib info: kit.part"
+$BIN lib info "$LDIR/out/kit-0.1.0.mlwsl" | grep -q '^module kit (public)' || fail "lib info: public kit"
+printf '.import kit\n.func main\n    call kit.two () -> (I0)\n    ret I0\n.endf\n' > "$LDIR/use.masm"
+set +e
+MLWSVM_NO_CACHE=1 $BIN run --lib-path "$LDIR/out" "$LDIR/use.masm"; rc=$?
+set -e
+[ $rc = 2 ] || fail "a program using the built library exited with $rc"
+printf '.export x\n.func x\n    ret\n.endf\n' > "$LDIR/nomanifest/x.masm"
+! $BIN lib build "$LDIR/nomanifest" -o "$LDIR/out/x.mlwsl" 2>/dev/null || fail "lib build without a manifest"
+printf '.library kit, "0.1.0"\n' > "$LDIR/outside/library.masm"
+cp "$LDIR/nomanifest/x.masm" "$LDIR/outside/other.masm"
+! $BIN lib build "$LDIR/outside" -o "$LDIR/out/y.mlwsl" 2>/dev/null || fail "lib build with a module outside the library"
+printf '.library kit, "0.1.0"\n.public kit.missing\n' > "$LDIR/nopublic/library.masm"
+! $BIN lib build "$LDIR/nopublic" -o "$LDIR/out/z.mlwsl" 2>/dev/null || fail "lib build with a missing public module"
+printf 'not an archive' > "$LDIR/out/broken-1.0.0.mlwsl"
+MLWSVM_NO_CACHE=1 $BIN run --lib-path "$LDIR/out" "$LDIR/use.masm" 2>&1 >/dev/null | grep -q 'ignoring .*broken-1.0.0.mlwsl' ||
+    fail "a damaged archive is not reported"
+rm -rf "${LDIR:?}"
+
 # --trace with a limit
 N=$($BIN run --trace - --trace-limit 5 examples/hello.masm 2>&1 >/dev/null | grep -c '^\[1\]')
 [ "$N" = 5 ] || fail "trace limit (got $N lines)"
@@ -68,4 +94,4 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
 fi
-echo "check-tools: profile, .loc, cache, trace, monitor, top OK"
+echo "check-tools: profile, .loc, cache, lib, trace, monitor, top OK"

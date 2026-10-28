@@ -1,0 +1,9 @@
+; No archive of greet meets the constraint (there are 1.0.0, 1.2.0 and 2.0.0).
+; option: --lib-path build/test-libs
+; expect-error: E_LINK_VERSION
+.requires greet, ">=3"
+.import greet
+
+.func main
+    ret 0
+.endf

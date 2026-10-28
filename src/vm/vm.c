@@ -2,6 +2,7 @@
 #include "vm.h"
 #include "../heap/heap.h"
 
+#include "../loader/library.h"
 #include "../platform/platform.h"
 
 static void default_out(void *ctx, const char *s, size_t n) {
@@ -96,6 +97,15 @@ void vm_free(VM *vm) {
     for (size_t i = 0; i < vm->mods.n; i++) lmodule_free(vm->mods.v[i]);
     VEC_FREE(vm->mods);
     smap_free(&vm->modmap);
+    for (size_t i = 0; i < vm->archives.n; i++) lib_free(vm->archives.v[i]);
+    VEC_FREE(vm->archives);
+    smap_free(&vm->libsel);
+    for (size_t i = 0; i < vm->wants.n; i++) {
+        free(vm->wants.v[i].lib);
+        free(vm->wants.v[i].constraint);
+        free(vm->wants.v[i].who);
+    }
+    VEC_FREE(vm->wants);
     free(vm->cache_dir);
     for (size_t i = 0; i < vm->libpaths.n; i++) free(vm->libpaths.v[i]);
     VEC_FREE(vm->libpaths);

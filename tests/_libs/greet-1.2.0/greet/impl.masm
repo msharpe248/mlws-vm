@@ -1,0 +1,6 @@
+; The private part of greet.
+.export text
+
+.func text -> ref
+    ret "hello"
+.endf

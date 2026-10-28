@@ -34,6 +34,8 @@ the message also names the macro and where it was expanded.
 | `E_LOAD_NAME` | A module declares a different name than it was imported as, or the name is already loaded |
 | `E_LOAD_LIMIT` | Too many modules |
 | `E_LINK_CYCLE` | Import cycle (the message shows the chain) |
+| `E_LINK_VERSION` | No version of a library meets every `.requires` constraint, a library already chosen does not meet a later one, or the VM's version does not meet `.requires mlwsvm, …` (the message says who needs which versions) |
+| `E_LINK_PRIVATE` | An import of a module that its library does not list as `.public`, from outside the library |
 | `E_LINK_UNDEF` | Imported function, data symbol or struct type not exported by the module, or a struct field that does not exist |
 | `E_LINK_NATIVE` | Unknown native function name in `ncall`, an `.extern` whose name another native already has with a different declaration, or a host native that `mlws_define` refused ([EMBEDDING.md](EMBEDDING.md)) |
 | `E_LINK_EXT` | A native extension is not installed, cannot be loaded, or failed to initialise ([EXTENDING.md](EXTENDING.md)) |

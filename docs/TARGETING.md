@@ -484,6 +484,11 @@ decoded form, and possibly a generational collector. These need no changes to
 generated code, but which forms get specialised should follow what compilers
 actually emit, so the compilers' output will decide them.
 
+A language's runtime or standard library can ship as a library archive
+(`mlwsvm lib build`, [ASSEMBLY.md §8.1](ASSEMBLY.md#81-libraries)): one
+versioned file whose internal modules stay private, which compiled programs
+import and pin with `.requires`.
+
 Ship `.masm`: the VM assembles it once and keeps the result in its module cache
 ([TOOLING.md](TOOLING.md#module-cache)), so a large generated program costs the
 assembler only on its first run, even when it is written to a new temporary

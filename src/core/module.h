@@ -6,7 +6,7 @@
 #include "types.h"
 
 #define MLWSO_MAGIC "MLWS"
-#define MLWSO_VERSION 7
+#define MLWSO_VERSION 8
 
 /* A call has a target and an argc operand, leaving 30 for arguments/results. */
 #define MAX_PARAMS 30
@@ -160,6 +160,12 @@ typedef struct MFfiFree {
     char *tag, *lib, *sym;
 } MFfiFree;
 
+/* `.requires lib, "constraint"`: a library (or "mlwsvm", the VM) this module
+ * needs, in versions the constraint allows (src/core/semver.h). */
+typedef struct MRequire {
+    char *lib, *constraint;
+} MRequire;
+
 typedef struct Module {
     char *name;   /* dotted module name, e.g. "std.io" */
     char *source; /* source file the module was assembled from (debug) */
@@ -196,6 +202,14 @@ typedef struct Module {
     uint32_t nffrees;
     MCallback *callbacks;
     uint32_t ncallbacks;
+    MRequire *requires;
+    uint32_t nrequires;
+    /* A library's manifest (`.library name, "version"`, docs/ASSEMBLY.md):
+     * its name and version, and the modules others may import. NULL and 0
+     * in any other module. */
+    char *lib_name, *lib_version;
+    char **publics;
+    uint32_t npublics;
 } Module;
 
 void module_free(Module *m);

@@ -13,7 +13,7 @@ file produces `E_LOAD_FORMAT` (or `E_VERIFY`) rather than a crash.
 
 ```
 magic        4 bytes  "MLWS"
-version      u16      7
+version      u16      8
 flags        u16      0
 name         str      dotted module name, e.g. "std.io"
 source       str      source file name (for backtraces); may be empty
@@ -110,6 +110,10 @@ callbacks    uleb n, then n × {             .callback function-pointer types
                result kind u8, result tag str                    0, a number or 13 ptr; async: 0
              }
 
+requires     uleb n, then n × { library str, constraint str }   .requires
+library      name str, version str          .library, in a library's manifest; both empty otherwise
+publics      uleb n, then n × str           .public: the library's public modules (a manifest only)
+
 (nothing may follow)
 ```
 
@@ -192,3 +196,26 @@ interpreter relies on.
 The header's version number identifies this layout, and the loader refuses a
 file with any other version. Assemble `.mlwso` files with the VM that will run
 them, or ship `.masm`.
+
+## Library archives (`.mlwsl`)
+
+`mlwsvm lib build` writes a library's manifest and modules into one file
+([ASSEMBLY.md §8.1](ASSEMBLY.md#81-libraries)); the reader is
+`src/loader/library_io.c`.
+
+```
+magic        4 bytes  "MLWL"
+version      u16      1
+flags        u16      0
+manifest     uleb n, then n bytes        a module image (above) with .library, .requires and .public
+modules      uleb n, then n × {
+               name  str                 the module, `library` or `library.…`
+               image uleb len, then len bytes   its module image
+             }
+
+(nothing may follow)
+```
+
+The loader reads an archive's manifest and module table when it scans the
+library path, and decodes a module only when it is imported.
+

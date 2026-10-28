@@ -1,0 +1,8 @@
+; A module a library does not list as .public cannot be imported from outside it.
+; option: --lib-path build/test-libs
+; expect-error: E_LINK_PRIVATE
+.import greet.impl
+
+.func main
+    ret 0
+.endf

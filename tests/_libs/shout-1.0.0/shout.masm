@@ -1,0 +1,8 @@
+; shout: which version of greet it was linked with.
+.import greet
+.export greet_version
+
+.func greet_version -> ref
+    call greet.version () -> (R0)
+    ret R0
+.endf

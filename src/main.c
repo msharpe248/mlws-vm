@@ -1,12 +1,11 @@
 /* main.c - the `mlwsvm` command line: run, debug, top, asm, dis, test, doc, ext,
- * bindgen and version. */
+ * lib, bindgen and version. */
 #include "asm/asm.h"
 #include "core/disasm.h"
+#include "core/version.h"
 #include "platform/platform.h"
 #include "tools/tools.h"
 #include "vm/run.h"
-
-#define MLWSVM_VERSION "0.3.0"
 
 static void usage(FILE *f) {
     fputs("usage: mlwsvm <command> [options]\n"
@@ -35,6 +34,7 @@ static void usage(FILE *f) {
           "  test [-L dir] [-v] [VM options] [paths...]                  run assembly tests (default: tests/)\n"
           "  doc  isa|natives [-o file]                                  generate reference docs\n"
           "  ext  list|install|remove|allow-ffi|deny-ffi [--dir D] ...  manage trusted native code\n"
+          "  lib  build DIR [-o FILE] | info FILE.mlwsl | list           library archives\n"
           "  bindgen [-l LIB] [-p PREFIX] [-o OUT] [--all] header.h       FFI declarations from a C header (clang)\n"
           "  version\n"
           "\n"
@@ -381,6 +381,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "top")) rc = tool_top(n, args);
     else if (!strcmp(cmd, "doc")) rc = tool_doc(n, args);
     else if (!strcmp(cmd, "ext")) rc = tool_ext(n, args, &g_env);
+    else if (!strcmp(cmd, "lib")) rc = tool_lib(n, args, &g_env);
     else if (!strcmp(cmd, "bindgen")) rc = tool_bindgen(n, args);
     else if (!strcmp(cmd, "version") || !strcmp(cmd, "--version")) {
         printf("mlwsvm %s\n", MLWSVM_VERSION);

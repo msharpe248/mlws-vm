@@ -1,0 +1,19 @@
+; Library archives (.mlwsl) on the library path: an import finds the module
+; in the archive of its library, and with no constraint the newest version is
+; chosen. tests/_libs holds the sources: greet in versions 1.0.0, 1.2.0 and
+; 2.0.0 (`make test-libs` builds them into build/test-libs). greet's public
+; module imports greet.impl, which is private to it: within a library, that
+; is allowed.
+; option: --lib-path build/test-libs
+.include "std/test.inc"
+.import greet
+
+.func main
+    call greet.version () -> (R0)
+    strcmp I0, R0, "2.0.0"
+    ASSERT_EQ I0, 0
+    call greet.hello () -> (R1)          ; through the private greet.impl
+    strcmp I0, R1, "hello"
+    ASSERT_EQ I0, 0
+    ret 0
+.endf

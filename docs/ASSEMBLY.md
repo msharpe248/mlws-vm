@@ -488,7 +488,47 @@ every instruction.
   then loads imports recursively, rejects import cycles (`E_LINK_CYCLE`), resolves
   every symbol (`E_LINK_UNDEF`) and runs the verifier before any code runs.
 
-### 8.1 The standard library (`lib/std`)
+### 8.1 Libraries
+
+A **library** is a named, versioned set of modules shipped as one archive,
+`name-version.mlwsl`. Its modules are named `name` or `name.…`, and its
+manifest, `library.masm`, says what it is:
+
+```asm
+; json5/library.masm
+.library json5, "1.2.0"           ; name and version (MAJOR.MINOR.PATCH)
+.requires textutil, "^2.1"        ; other libraries it needs, and which versions
+.requires mlwsvm, ">=0.4"         ; the VM itself
+.public json5, json5.parse        ; the modules others may import
+```
+
+`mlwsvm lib build json5/` assembles the manifest and every module under the
+directory (`json5/parse.masm` is the module `json5.parse`; directories whose
+names start with `_` hold include files) into `json5-1.2.0.mlwsl`
+([TOOLING.md](TOOLING.md#libraries-mlwsvm-lib)).
+
+* **Finding a library.** Archives go in any directory of the library path. An
+  import that is not a plain module file is looked for in the archives of its
+  library, the longest prefix of its name that some archive provides
+  (`json5.parse` comes from library `json5`). Plain module files, unversioned,
+  take precedence, which is how a library is used while it is developed.
+* **Versions.** A constraint is one or more terms, all of which must hold:
+  `1.2.3` or `=1.2.3` (exactly), `^1.2.3` (compatible: `>=1.2.3`, `<2.0.0`;
+  `^0.4.1` means `<0.5.0`), `~1.2.3` (`>=1.2.3`, `<1.3.0`), `>=`, `>`, `<=`,
+  `<`, and `*`. A version may leave out its minor and patch numbers.
+* **One version per run.** A library is chosen the first time one of its
+  modules is needed: the newest version that meets every constraint stated so
+  far, by the program (any module may say `.requires`) and by the libraries
+  already chosen. Its own requirements are then stated in turn. A constraint
+  that the chosen version does not meet, or one that no version meets, is
+  `E_LINK_VERSION`, naming who needs which versions.
+* **Private modules.** A module that the manifest does not list as `.public`
+  can be imported only by the library's own modules; from anywhere else it is
+  `E_LINK_PRIVATE`.
+* `.requires mlwsvm, "…"` states the versions of the VM a program or library
+  runs on.
+
+### 8.2 The standard library (`lib/std`)
 
 | File | Use with | Contents |
 |---|---|---|
@@ -619,6 +659,8 @@ macro-only files use the `.inc` extension and are not modules.
 | `.struct Name` ... `field: type` ... `.ends` | top level | Define a struct type |
 | `.try handler` ... `.endtry`, `.try start, end, handler` | in function | Exception handler region |
 | `.loc "file", line`, `.loc` | in function | Source position (in a translated program) of the instructions that follow; bare: none |
+| `.requires lib, "constraint"` | top level | A library (or `mlwsvm`) this module needs, and which versions (§8.1) |
+| `.library name, "version"`, `.public mod, ...` | a manifest | A library's name and version, and its public modules (§8.1) |
 | `.regs I=n, F=n, R=n, P=n` | in function | Minimum register window |
 | `.alias name, REG` | anywhere | Register alias (module-wide or function-local) |
 | `.i8` ... `.f64`, `.b`, `.c`, `.ascii`, `.asciz`, `.zero`, `.space`, `.align` | top level | Global data |

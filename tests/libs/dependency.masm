@@ -1,0 +1,17 @@
+; A library's own requirements count: shout needs greet ^1.1, so loading
+; shout first makes greet 1.2.0 the one version of greet for the whole run,
+; and the program's later import of greet gets that version too.
+; option: --lib-path build/test-libs
+.include "std/test.inc"
+.import shout
+.import greet
+
+.func main
+    call shout.greet_version () -> (R0)
+    strcmp I0, R0, "1.2.0"
+    ASSERT_EQ I0, 0
+    call greet.version () -> (R1)        ; the same copy
+    strcmp I0, R1, "1.2.0"
+    ASSERT_EQ I0, 0
+    ret 0
+.endf

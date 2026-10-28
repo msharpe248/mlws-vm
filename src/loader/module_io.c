@@ -1,6 +1,7 @@
 /* module_io.c - .mlwso serialisation and Module helpers. Layout documented in
  * docs/BINARY_FORMAT.md; keep the two in sync. */
 #include "../core/module.h"
+#include "../core/semver.h"
 
 void module_free(Module *m) {
     if (!m) return;
@@ -55,6 +56,15 @@ void module_free(Module *m) {
         free(cb->ret_tag);
     }
     free(m->callbacks);
+    for (uint32_t i = 0; i < m->nrequires; i++) {
+        free(m->requires[i].lib);
+        free(m->requires[i].constraint);
+    }
+    free(m->requires);
+    free(m->lib_name);
+    free(m->lib_version);
+    for (uint32_t i = 0; i < m->npublics; i++) free(m->publics[i]);
+    free(m->publics);
     for (uint32_t i = 0; i < m->nstructs; i++) {
         MStruct *st = &m->structs[i];
         free(st->name);
@@ -237,6 +247,15 @@ void module_write(const Module *m, ByteBuf *b) {
         bb_u8(b, cb->ret);
         bb_str(b, cb->ret_tag ? cb->ret_tag : "");
     }
+    bb_uleb(b, m->nrequires);
+    for (uint32_t i = 0; i < m->nrequires; i++) {
+        bb_str(b, m->requires[i].lib);
+        bb_str(b, m->requires[i].constraint);
+    }
+    bb_str(b, m->lib_name ? m->lib_name : "");
+    bb_str(b, m->lib_version ? m->lib_version : "");
+    bb_uleb(b, m->npublics);
+    for (uint32_t i = 0; i < m->npublics; i++) bb_str(b, m->publics[i]);
 }
 
 #define FAIL(...)                                                              \
@@ -569,6 +588,30 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
         if ((cb->ret > FFI_F64 && cb->ret != FFI_PTR) || (cb->ret != FFI_VOID && cb->flags & MCB_ASYNC))
             FAIL("callback %s: bad result kind", cb->name);
     }
+    n = br_uleb(&r);
+    CHECK_COUNT(n, 2);
+    m->nrequires = (uint32_t)n;
+    m->requires = xcalloc(n + 1, sizeof(MRequire));
+    for (uint32_t i = 0; i < m->nrequires; i++) {
+        m->requires[i].lib = br_str(&r);
+        m->requires[i].constraint = br_str(&r);
+    }
+    m->lib_name = br_str(&r);
+    m->lib_version = br_str(&r);
+    CHECK();
+    if (!*m->lib_name) free(m->lib_name), m->lib_name = NULL;
+    if (!*m->lib_version) free(m->lib_version), m->lib_version = NULL;
+    n = br_uleb(&r);
+    CHECK_COUNT(n, 1);
+    m->npublics = (uint32_t)n;
+    m->publics = xcalloc(n + 1, sizeof(char *));
+    for (uint32_t i = 0; i < m->npublics; i++) m->publics[i] = br_str(&r);
+    CHECK();
+    for (uint32_t i = 0; i < m->nrequires; i++) {
+        char why[256];
+        if (!semver_constraint_ok(m->requires[i].constraint, why, sizeof why)) FAIL("requires %s: %s", m->requires[i].lib, why);
+    }
+    if (m->lib_version && !semver_parse(m->lib_version, &(SemVer){0})) FAIL("library version '%s' is malformed", m->lib_version);
     if (r.pos != r.n) FAIL("trailing bytes after the module");
 
     for (uint32_t i = 0; i < m->nfuncs; i++) {

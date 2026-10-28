@@ -1,0 +1,4 @@
+; A test library: greet 1.2.0. Only the module greet is public; greet.impl is
+; its own business (importing it from outside fails with E_LINK_PRIVATE).
+.library greet, "1.2.0"
+.public greet

@@ -1,0 +1,4 @@
+; A test library that needs greet ^1.1.
+.library shout, "1.0.0"
+.requires greet, "^1.1"
+.public shout
