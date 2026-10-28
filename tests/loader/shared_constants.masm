@@ -1,0 +1,23 @@
+; A constant is one object in the whole VM: the 3n, 1.50d and "shared" that
+; another module returns are the very objects this module's own literals
+; name, so identity tests (beq.r, seq.r) agree across modules, as compilers
+; that use BigInt constants as markers rely on. Constants are immutable, so
+; sharing them is safe. Values that are equal but written differently (1.5d
+; and 1.50d, which differ in scale) stay distinct.
+.include "std/test.inc"
+.import _lib.consts as k
+
+.func main
+    call k.big () -> (R0)
+    seq.r I0, R0, 3n
+    ASSERT_TRUE I0
+    call k.dec () -> (R1)
+    seq.r I0, R1, 1.50d
+    ASSERT_TRUE I0
+    seq.r I0, R1, 1.5d
+    ASSERT_FALSE I0
+    call k.text () -> (R2)
+    seq.r I0, R2, "shared"
+    ASSERT_TRUE I0
+    ret 0
+.endf

@@ -1,0 +1,14 @@
+; Constants for tests/loader/shared_constants.masm to compare with its own.
+.export big, dec, text
+
+.func big -> ref
+    ret 3n
+.endf
+
+.func dec -> ref
+    ret 1.50d
+.endf
+
+.func text -> ref
+    ret "shared"
+.endf

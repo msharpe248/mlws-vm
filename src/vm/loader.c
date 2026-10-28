@@ -151,14 +151,33 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
     lm->consts = xcalloc(m->nconsts + 1, sizeof(Obj *));
     for (uint32_t i = 0; i < m->nconsts; i++) {
         const MConst *c = &m->consts[i];
-        if (c->kind == CONST_STRING) {
-            lm->consts[i] = &str_new_immortal(c->data, c->len)->h;
-            continue;
+        /* One object per kind and text in the whole VM: every module's 3n,
+         * or "name", is the same object, so identity tests (beq.r R0, 3n)
+         * agree across modules. Constants are immutable, so sharing is safe.
+         * (A string with a NUL in it is not a key: it gets its own object.) */
+        bool keyed = !memchr(c->data, 0, c->len);
+        StrBuf key = {0};
+        void *v;
+        if (keyed) {
+            sb_putc(&key, (char)('0' + c->kind));
+            sb_putn(&key, c->data, c->len);
+            if (smap_get(&vm->const_pool, key.s, &v)) {
+                lm->consts[i] = v;
+                sb_free(&key);
+                continue;
+            }
         }
-        lm->consts[i] = num_const(c->kind == CONST_BIG ? T_BIG : T_DEC, c->data, c->len);
-        if (!lm->consts[i])
+        Obj *o = c->kind == CONST_STRING ? &str_new_immortal(c->data, c->len)->h
+                                         : num_const(c->kind == CONST_BIG ? T_BIG : T_DEC, c->data, c->len);
+        if (!o) {
+            sb_free(&key);
             return mlws_err(err, "E_LOAD_FORMAT", "module %s: malformed %s literal \"%s\"", m->name,
                             c->kind == CONST_BIG ? "BigInt" : "decimal", c->data);
+        }
+        VEC_PUSH(vm->const_objs, o);
+        if (keyed) smap_put(&vm->const_pool, key.s, o);
+        sb_free(&key);
+        lm->consts[i] = o;
     }
     lm->grefs = xcalloc(m->ngrefs + 1, sizeof(uint64_t));
     for (uint32_t i = 0; i < m->ngrefs; i++) {

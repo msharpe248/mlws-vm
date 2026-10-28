@@ -56,6 +56,11 @@ The language is line-oriented: one statement per line.
 
 Escapes: `\n \t \r \0 \\ \" \' \xHH \u{HEX}`.
 
+String, BigInt and decimal literals are immutable objects, and each one
+(by kind and the text written) is a single object in the whole VM: every
+module's `3n` or `"name"` is the same object, so `beq.r` compares them by
+identity.
+
 A statement has this shape:
 
 ```

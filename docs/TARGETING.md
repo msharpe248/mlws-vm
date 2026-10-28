@@ -135,8 +135,11 @@ switch x { 0: .. 1: .. }       jtab x, .Lcase0, .Lcase1, .Lcase2
 * A module-level variable becomes a data directive: `total: .i64 0`. Reference it
   as `@total`. Each process has its own copy.
 * Compile-time constants become `.const NAME = value` or literals.
-* String literals become `"..."` operands. They are deduplicated per module,
-  immutable, and compare equal by identity (`beq.r`).
+* String literals become `"..."` operands. They are immutable, and each value
+  is one object in the whole VM, in every module, so equal literals compare
+  equal by identity (`beq.r`). The same holds for BigInt and decimal literals
+  (`3n`, `1.50d`), which makes them usable as markers across modules (but
+  `1.5d` and `1.50d`, written differently, are two objects).
 * Lookup tables become data directives with indexed operands:
   `table: .i32 ...` and then `mov.i32 I0, @table{I1*4}`.
 

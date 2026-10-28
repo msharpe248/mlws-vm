@@ -73,8 +73,7 @@ static void lmodule_free(LModule *lm) {
         free(lm->funcs);
     }
     if (lm->consts) {
-        for (uint32_t i = 0; i < m->nconsts; i++) free(lm->consts[i]);
-        free(lm->consts);
+        free(lm->consts); /* the objects are the VM's (const_pool) */
     }
     free(lm->grefs);
     free(lm->natives);
@@ -101,6 +100,9 @@ void vm_free(VM *vm) {
     for (size_t i = 0; i < vm->archives.n; i++) lib_free(vm->archives.v[i]);
     VEC_FREE(vm->archives);
     smap_free(&vm->libsel);
+    for (size_t i = 0; i < vm->const_objs.n; i++) free(vm->const_objs.v[i]);
+    VEC_FREE(vm->const_objs);
+    smap_free(&vm->const_pool);
     for (size_t i = 0; i < vm->wants.n; i++) {
         free(vm->wants.v[i].lib);
         free(vm->wants.v[i].constraint);

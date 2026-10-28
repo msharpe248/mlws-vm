@@ -178,6 +178,10 @@ typedef struct VM {
     VEC(struct LibArchive *) archives;
     bool archives_scanned;
     StrMap libsel;
+    /* every module's constants (strings, BigInts, decimals), one object per
+     * kind and text, shared by all modules: owned here, freed with the VM */
+    StrMap const_pool;
+    VEC(Obj *) const_objs;
     VEC(struct LibWant) wants;
     StrMap natives;      /* name -> const NativeDef* */
     OutputFn out;
