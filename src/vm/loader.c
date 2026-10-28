@@ -370,6 +370,19 @@ static LibArchive *choose_library(VM *vm, const char *lib, MlwsError *err) {
 
 static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive *lib, MlwsError *err);
 
+/* Whether `who` (a module of library lib, or of none) may import dep: only
+ * a library's own modules may import its private ones. */
+static bool may_import(const char *who, const LibArchive *lib, const LModule *dep, MlwsError *err) {
+    if (!dep->lib || dep->lib == lib || lib_is_public(dep->lib, dep->m->name)) return true;
+    StrBuf pub = {0};
+    for (uint32_t k = 0; k < dep->lib->manifest->npublics; k++)
+        sb_printf(&pub, "%s%s", k ? ", " : "", dep->lib->manifest->publics[k]);
+    mlws_err(err, "E_LINK_PRIVATE", "%s imports %s, which library %s keeps private (its public modules: %s)", who,
+             dep->m->name, dep->lib->manifest->lib_name, pub.n ? pub.s : "none");
+    sb_free(&pub);
+    return false;
+}
+
 /* Module name from a library archive: 1 loaded (*out), 0 no archive has it,
  * -1 an error. The library is the longest prefix of the name that some
  * archive on the path provides. */
@@ -413,7 +426,8 @@ static int require_from_library(VM *vm, const char *name, LModule **out, MlwsErr
 }
 
 static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive *lib, MlwsError *err) {
-    if (smap_has(&vm->modmap, m->name)) {
+    void *had;
+    if (smap_get(&vm->modmap, m->name, &had) && had) { /* (NULL: a run-time load of it failed) */
         mlws_err(err, "E_LOAD_NAME", "a module named '%s' is already loaded (%s)", m->name, path);
         module_free(m);
         return NULL;
@@ -437,15 +451,7 @@ static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive 
     for (uint32_t i = 0; i < m->nimports; i++) {
         LModule *dep = vm_require(vm, m->imports[i], err);
         if (!dep) return NULL;
-        if (dep->lib && dep->lib != lib && !lib_is_public(dep->lib, dep->m->name)) {
-            StrBuf pub = {0};
-            for (uint32_t k = 0; k < dep->lib->manifest->npublics; k++)
-                sb_printf(&pub, "%s%s", k ? ", " : "", dep->lib->manifest->publics[k]);
-            mlws_err(err, "E_LINK_PRIVATE", "%s imports %s, which library %s keeps private (its public modules: %s)",
-                     m->name, dep->m->name, dep->lib->manifest->lib_name, pub.n ? pub.s : "none");
-            sb_free(&pub);
-            return NULL;
-        }
+        if (!may_import(m->name, lib, dep, err)) return NULL;
     }
     if (!link_module(vm, lm, err)) return NULL;
     free(vm->loading.v[--vm->loading.n]);
@@ -455,7 +461,7 @@ static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive 
 
 LModule *vm_require(VM *vm, const char *name, MlwsError *err) {
     void *v;
-    if (smap_get(&vm->modmap, name, &v)) {
+    if (smap_get(&vm->modmap, name, &v) && v) { /* (NULL: a run-time load that failed) */
         LModule *lm = v;
         if (lm->state == LM_READY) return lm;
         StrBuf chain = {0};
@@ -499,7 +505,37 @@ LModule *vm_require(VM *vm, const char *name, MlwsError *err) {
 LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err) {
     Module *m = assemble_text(name, text, name, (const char *const *)vm->libpaths.v, vm->libpaths.n, err);
     if (!m) return NULL;
-    return register_module(vm, m, name, NULL, err);
+    plat_lock(vm->mods_lock); /* an embedding host may load while services run */
+    LModule *lm = register_module(vm, m, name, NULL, err);
+    plat_unlock(vm->mods_lock);
+    return lm;
+}
+
+LModule *vm_load_dynamic(VM *vm, const char *name, const LModule *from, MlwsError *err) {
+    plat_lock(vm->mods_lock);
+    size_t start = vm->mods.n, chain = vm->loading.n;
+    LModule *lm = vm_require(vm, name, err);
+    if (lm && !may_import(from ? from->m->name : "the program", from ? from->lib : NULL, lm, err)) lm = NULL;
+    if (!lm) { /* what this load registered but did not link is dropped; the rest stays loaded */
+        for (size_t i = start; i < vm->mods.n; i++) {
+            LModule *x = vm->mods.v[i];
+            if (x->state == LM_READY) continue;
+            x->state = LM_FAILED;
+            smap_put(&vm->modmap, x->m->name, NULL);
+        }
+        while (vm->loading.n > chain) free(vm->loading.v[--vm->loading.n]);
+    }
+    plat_unlock(vm->mods_lock);
+    return lm;
+}
+
+LModule *vm_module_named(VM *vm, const char *name) {
+    void *v = NULL;
+    plat_lock(vm->mods_lock);
+    smap_get(&vm->modmap, name, &v);
+    LModule *lm = v && ((LModule *)v)->state == LM_READY ? v : NULL;
+    plat_unlock(vm->mods_lock);
+    return lm;
 }
 
 LModule *vm_load_root(VM *vm, const char *path, MlwsError *err) {
@@ -514,5 +550,8 @@ LModule *vm_load_root(VM *vm, const char *path, MlwsError *err) {
     Module *m = read_module_file(vm, path, defname, err);
     free(defname);
     if (!m) return NULL;
-    return register_module(vm, m, path, NULL, err);
+    plat_lock(vm->mods_lock);
+    LModule *lm = register_module(vm, m, path, NULL, err);
+    plat_unlock(vm->mods_lock);
+    return lm;
 }

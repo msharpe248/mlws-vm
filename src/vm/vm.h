@@ -98,7 +98,7 @@ typedef struct Function {
     uint32_t read_first[NBANKS];
 } Function;
 
-enum { LM_LOADING = 1, LM_READY = 2 };
+enum { LM_LOADING = 1, LM_READY = 2, LM_FAILED = 3 }; /* FAILED: a load at run time that did not link */
 
 #include "../core/builtins.h"
 
@@ -193,6 +193,7 @@ typedef struct VM {
     struct Sched *sched;         /* process table, run queues, timers, worker threads */
     int threads;                 /* worker threads; 0 = one per core (MLWSVM_THREADS) */
     struct PlatLock *lock;       /* pid allocation, counters, exit records */
+    struct PlatLock *mods_lock;  /* mods and the loader's state, once processes run (module.load) */
     struct PlatLock *out_lock;   /* program output and crash reports */
     uint64_t main_pid;           /* finishing it ends the program; freed by its runner */
     _Atomic uint64_t insns_retired; /* instructions of processes already freed */
@@ -378,6 +379,7 @@ struct Process {
     Segment stack;
     Segment *globals;
     uint32_t nglobals;
+    VEC(Segment *) old_globals; /* arrays replaced by proc_grow_globals, kept until the process ends */
     VEC(Segment) raw;
     VEC(uint32_t) rawfree;
     uint64_t sp, fp;
@@ -485,6 +487,11 @@ void vm_options_from_env(VM *vm);
 LModule *vm_load_root(VM *vm, const char *path, MlwsError *err);
 LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err); /* source in memory */
 LModule *vm_require(VM *vm, const char *name, MlwsError *err);
+/* Load a module while the program runs (module.load), as an import of `from`
+ * (for privacy; NULL: the program), under mods_lock. A load that fails
+ * leaves the modules it had not linked unusable and their names free. */
+LModule *vm_load_dynamic(VM *vm, const char *name, const LModule *from, MlwsError *err);
+LModule *vm_module_named(VM *vm, const char *name); /* a loaded, linked module, or NULL */
 /* modcache.c: a .masm file assembled, or its module from the cache */
 Module *modcache_assemble(VM *vm, const char *path, const char *default_name, MlwsError *err);
 /* verify.c */
@@ -494,6 +501,8 @@ void vm_whole_windows(VM *vm);
 
 /* process.c */
 Process *proc_new(VM *vm);
+/* Give p the global segments of modules loaded since it started (module.load). */
+void proc_grow_globals(Process *p);
 /* Where instruction pc of f is: "fib.lua:4; fib.masm:120" when a `.loc`
  * says what program line it came from, else "fib.masm:120" (base: file
  * names without their directories). */
@@ -600,6 +609,8 @@ const NativeDef *natives_os_table(size_t *n);
 /* sched.c: std.proc (the registry, request/reply calls) */
 void natives_register_proc(VM *vm);
 const NativeDef *natives_proc_table(size_t *n);
+void natives_register_modules(VM *vm); /* modload.c */
+const NativeDef *natives_modules_table(size_t *n);
 /* text.c: std.text and std.json */
 void natives_register_text(VM *vm);
 void natives_register_util(VM *vm);

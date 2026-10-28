@@ -14,6 +14,7 @@ restricts them.
 | `net` | TCP, UDP, DNS |
 | `text`, `json` | formatting, string utilities, UTF-8, JSON |
 | `proc`, `std.supervisor` | the process count, a name registry, request/reply calls, supervisors |
+| `module` | loading modules while the program runs ([ABI.md §9](ABI.md#9-loading-modules-at-run-time)) |
 | `time` | clocks, dates and ISO 8601 |
 | `hash`, `random` | CRC-32, SHA-256, SipHash; random numbers |
 | `hex`, `base64`, `url`, `csv` | encodings |

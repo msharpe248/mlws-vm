@@ -1,0 +1,8 @@
+; A module that cannot be linked: it imports one that does not exist.
+.import counter
+.import no_such_module
+.export f
+
+.func f
+    ret
+.endf

@@ -191,7 +191,7 @@ check-tsan: test-ext
 	$(MAKE) BUILD=build-tsan BIN=mlwsvm-tsan \
 	    CFLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" LDFLAGS="-fsanitize=thread"
 	TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=4 ./mlwsvm-tsan test tests examples
-	TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=8 ./mlwsvm-tsan test tests/processes tests/threads tests/native tests/os tests/net
+	TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=8 ./mlwsvm-tsan test tests/processes tests/threads tests/native tests/os tests/net tests/libs
 	$(MAKE) BUILD=build-tsan BIN=mlwsvm-tsan \
 	    CFLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" LDFLAGS="-fsanitize=thread" build-tsan/embed-host
 	TSAN_OPTIONS=halt_on_error=1 ./build-tsan/embed-host lib

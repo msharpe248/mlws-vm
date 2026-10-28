@@ -6,6 +6,36 @@
 #include "../platform/platform.h"
 #include "proc_internal.h"
 
+/* A process's copy of a module's global segment. */
+static void global_init(Segment *s, const Module *m) {
+    s->size = m->gsize;
+    s->data = xcalloc(m->gsize + 1, 1);
+    s->tags = xcalloc(m->gsize / 8 + 1, 1);
+    memcpy(s->data, m->gdata, m->gsize);
+    memcpy(s->tags, m->gtags, m->gsize / 8);
+    s->gen = 1;
+    s->kind = SEGK_GLOBAL;
+    s->live = 1;
+}
+
+/* The segments of the modules loaded since p started. The old array is kept,
+ * not freed: the instruction that got here may hold a pointer into it for
+ * another of its operands (the data the two copies point to is the same). */
+void proc_grow_globals(Process *p) {
+    VM *vm = p->vm;
+    plat_lock(vm->mods_lock);
+    uint32_t n = (uint32_t)vm->mods.n;
+    if (n > p->nglobals) {
+        Segment *g = xcalloc(n + 1, sizeof(Segment));
+        memcpy(g, p->globals, p->nglobals * sizeof(Segment));
+        for (uint32_t i = p->nglobals; i < n; i++) global_init(&g[i], vm->mods.v[i]->m);
+        VEC_PUSH(p->old_globals, p->globals);
+        p->globals = g;
+        p->nglobals = n;
+    }
+    plat_unlock(vm->mods_lock);
+}
+
 Process *proc_new(VM *vm) {
     Process *p = xcalloc(1, sizeof *p);
     p->vm = vm;
@@ -18,20 +48,11 @@ Process *proc_new(VM *vm) {
     p->sp = p->fp = PTR_MAKE(SEG_STACK, 1, bytes);
     p->stack_low_off = bytes;
     p->stack_ref_lo = vm->stack_words;
+    plat_lock(vm->mods_lock); /* (another thread may be loading a module) */
     p->nglobals = (uint32_t)vm->mods.n;
     p->globals = xcalloc(p->nglobals + 1, sizeof(Segment));
-    for (uint32_t i = 0; i < p->nglobals; i++) {
-        const Module *m = vm->mods.v[i]->m;
-        Segment *s = &p->globals[i];
-        s->size = m->gsize;
-        s->data = xcalloc(m->gsize + 1, 1);
-        s->tags = xcalloc(m->gsize / 8 + 1, 1);
-        memcpy(s->data, m->gdata, m->gsize);
-        memcpy(s->tags, m->gtags, m->gsize / 8);
-        s->gen = 1;
-        s->kind = SEGK_GLOBAL;
-        s->live = 1;
-    }
+    for (uint32_t i = 0; i < p->nglobals; i++) global_init(&p->globals[i], vm->mods.v[i]->m);
+    plat_unlock(vm->mods_lock);
     memcpy(p->quota, vm->default_quota, sizeof p->quota);
     /* The pid is assigned now; the process joins the table in sched_start. */
     plat_lock(vm->lock);
@@ -85,6 +106,8 @@ void proc_free(Process *p) {
         free(p->globals[i].tags);
     }
     free(p->globals);
+    for (size_t i = 0; i < p->old_globals.n; i++) free(p->old_globals.v[i]);
+    VEC_FREE(p->old_globals);
     for (size_t i = 0; i < p->raw.n; i++) free(p->raw.v[i].data);
     VEC_FREE(p->raw);
     VEC_FREE(p->rawfree);
@@ -386,6 +409,7 @@ Segment *proc_segment(Process *p, uint64_t ptr) {
         s = &p->stack;
         if (!s->data && s->gen == gen) stack_alloc(s);
     } else if (seg < SEG_RAW0) {
+        if (seg - SEG_GLOBAL0 >= p->nglobals) proc_grow_globals(p); /* a module loaded since p started */
         if (seg - SEG_GLOBAL0 >= p->nglobals) vm_trap(p, "E_BAD_PTR", "invalid pointer (unknown global segment %u)", seg);
         s = &p->globals[seg - SEG_GLOBAL0];
     } else {

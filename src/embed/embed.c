@@ -132,12 +132,11 @@ bool mlws_load_source(MlwsVM *e, const char *module, const char *source) {
 /* ---- running --------------------------------------------------------------- */
 
 static Function *find_function(MlwsVM *e, const char *module, const char *name) {
-    void *v;
-    if (!smap_get(&e->vm->modmap, module, &v)) {
+    LModule *lm = vm_module_named(e->vm, module);
+    if (!lm) {
         fail(e, "E_LOAD_NOT_FOUND", "module %s is not loaded", module);
         return NULL;
     }
-    LModule *lm = v;
     int i = module_find_export_func(lm->m, name);
     if (i < 0) {
         fail(e, "E_LINK_UNDEF", "module %s does not export a function %s", module, name);
@@ -214,9 +213,9 @@ bool mlws_call(MlwsVM *e, const char *module, const char *function, const MlwsAr
 bool mlws_run_main(MlwsVM *e, const char *module, int64_t *exit_code) {
     clear(e);
     if (!busy(e)) return false;
-    void *v;
-    if (!smap_get(&e->vm->modmap, module, &v)) return fail(e, "E_LOAD_NOT_FOUND", "module %s is not loaded", module);
-    Function *fn = vm_find_main(v, &e->err);
+    LModule *lm = vm_module_named(e->vm, module);
+    if (!lm) return fail(e, "E_LOAD_NOT_FOUND", "module %s is not loaded", module);
+    Function *fn = vm_find_main(lm, &e->err);
     if (!fn) return false;
     if (e->have_last) run_result_free(&e->last);
     memset(&e->last, 0, sizeof e->last);

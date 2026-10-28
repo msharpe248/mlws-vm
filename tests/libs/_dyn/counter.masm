@@ -1,0 +1,20 @@
+; A module loaded at run time by tests/libs/dynamic.masm. Its global is per
+; process, as every module's is: each process that calls bump counts alone.
+.export bump, value
+
+count: .i64 0
+
+.func bump -> i64
+    add @count, 1
+    mov I0, @count
+    ret I0
+.endf
+
+.func value -> i64
+    mov I0, @count
+    ret I0
+.endf
+
+.func helper -> i64                      ; not exported
+    ret 0
+.endf

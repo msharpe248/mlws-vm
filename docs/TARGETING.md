@@ -484,6 +484,10 @@ decoded form, and possibly a generational collector. These need no changes to
 generated code, but which forms get specialised should follow what compilers
 actually emit, so the compilers' output will decide them.
 
+A language's `require`, `import()` or plugin loading maps onto `module.load`
+and `module.function`, which load a module by name while the program runs and
+give closures for its functions ([ABI.md §9](ABI.md#9-loading-modules-at-run-time)).
+
 A language's runtime or standard library can ship as a library archive
 (`mlwsvm lib build`, [ASSEMBLY.md §8.1](ASSEMBLY.md#81-libraries)): one
 versioned file whose internal modules stay private, which compiled programs

@@ -1,0 +1,80 @@
+; Loading modules while the program runs (module.*): module.load loads a
+; module and what it imports, as an import of the calling module would, and
+; module.function gives a closure for one of its exported functions, called
+; with calli. A module from a library archive gets the version the
+; constraints allow (here the program's own .requires). A process started
+; before a module was loaded gets that module's globals when it first uses
+; them, and each process has its own copy. A load that fails can be caught,
+; leaves nothing half loaded, and can be tried again.
+; option: --lib-path tests/libs/_dyn:build/test-libs
+.include "std/test.inc"
+.requires greet, "^1.0"
+
+.macro EXPECT_ERROR code, insn...
+.try .Lh\@
+    \insn
+.endtry
+    FAIL "an error was expected"
+.Lh\@:
+    catch R31
+    strcmp I31, R31->Error.code, \code
+    ASSERT_EQ I31, 0
+.endm
+
+; Started before counter is loaded: waits for a closure, then counts with it.
+.func worker(i64 parent)
+    recv R0                              ; counter.bump
+    calli R0 () -> (I1)
+    calli R0 () -> (I1)
+    send parent, I1                      ; its own count: 2
+    ret
+.endf
+
+.func main
+    spawn worker (PID) -> (I9)
+
+    ; ---- a plain module, with a global ----
+    ncall "module.loaded" ("counter") -> (I0)
+    ASSERT_FALSE I0
+    ncall "module.load" ("counter")
+    ncall "module.loaded" ("counter") -> (I0)
+    ASSERT_TRUE I0
+    ncall "module.load" ("counter")      ; already loaded: nothing to do
+    ncall "module.function" ("counter", "bump") -> (R1)
+    calli R1 () -> (I1)
+    ASSERT_EQ I1, 1
+    calli R1 () -> (I1)
+    calli R1 () -> (I1)
+    ASSERT_EQ I1, 3
+    send I9, R1                          ; to the process started before the load
+    recv I2
+    ASSERT_EQ I2, 2                      ; its own copy of the global
+    ncall "module.function" ("counter", "value") -> (R2)
+    calli R2 () -> (I3)
+    ASSERT_EQ I3, 3                      ; ours is unchanged
+    ncall "module.exports" ("counter") -> (R3)
+    ncall "text.join" (R3, ",") -> (R4)
+    strcmp I0, R4, "bump,value"
+    ASSERT_EQ I0, 0
+
+    ; ---- a library from an archive: the version the constraints allow ----
+    ncall "module.load" ("greet")
+    ncall "module.function" ("greet", "version") -> (R5)
+    calli R5 () -> (R6)
+    strcmp I0, R6, "1.2.0"
+    ASSERT_EQ I0, 0
+
+    ; ---- what cannot be loaded or found ----
+    EXPECT_ERROR "E_LOAD_NOT_FOUND", ncall "module.load" ("no_such_module")
+    EXPECT_ERROR "E_LINK_PRIVATE", ncall "module.load" ("greet.impl")
+    EXPECT_ERROR "E_LINK_UNDEF", ncall "module.function" ("counter", "helper")
+    EXPECT_ERROR "E_LOAD_NOT_FOUND", ncall "module.function" ("not_loaded", "f")
+    ; broken fails to link: nothing of it is left, and trying again fails the same way
+    EXPECT_ERROR "E_LOAD_NOT_FOUND", ncall "module.load" ("broken")
+    ncall "module.loaded" ("broken") -> (I0)
+    ASSERT_FALSE I0
+    EXPECT_ERROR "E_LOAD_NOT_FOUND", ncall "module.load" ("broken")
+    ; a closure's signature is checked when it is called
+    EXPECT_ERROR "E_TYPE", calli R1 (5) -> (I0)
+    ret 0
+.endf

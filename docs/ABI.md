@@ -488,3 +488,37 @@ not run). Pointers into a data stack are valid only while that stack runs (§4).
 * Tools see the running context: a backtrace includes the resumers, while the
   debugger's `bt`, the profiler's stacks and the monitor show the running
   coroutine's frames.
+
+## 9. Loading modules at run time
+
+A running program can load a module it did not import, and call it:
+
+```asm
+    ncall "module.load" ("plugins.csv")            ; and what it imports
+    ncall "module.function" ("plugins.csv", "parse") -> (R1)
+    calli R1 (R0) -> (R2)                          ; parse(R0)
+```
+
+* `module.load` loads the module as if the calling function's module had
+  imported it: found on the library path (a plain module file or a library
+  archive), its imports loaded too, every library chosen against the version
+  constraints already stated ([ASSEMBLY.md §8.1](ASSEMBLY.md#81-libraries)),
+  privacy checked, and everything verified before it can run. Loading a
+  loaded module does nothing. Errors are the loader's (`E_LOAD_NOT_FOUND`,
+  `E_LINK_VERSION`, `E_LINK_PRIVATE`, `E_VERIFY`, ...), raised as catchable
+  exceptions; a load that fails leaves none of its unlinked modules behind, so
+  it can be tried again. It counts as an OS call (quota kind 5), since it reads
+  files and may load native extensions.
+* `module.function` returns a closure for a function the module exports
+  (`E_LINK_UNDEF` if it exports none of that name); `calli` checks its
+  signature at each call. `module.loaded` and `module.exports` ask what is
+  loaded and exported. A module is named by its string.
+* **A loaded module stays loaded** until the VM ends, so a closure can never
+  outlive its code. Loading another version of a module that is already
+  loaded is not possible.
+* **Globals.** Every process has its own copy of each module's global
+  segment, as always: a process started before the module was loaded gets
+  its copy the first time it uses one of the module's globals.
+* Processes on any worker thread may load modules at the same time; loads
+  are serialized, and spawning waits only while a module is being added.
+

@@ -1,0 +1,9 @@
+; Loaded by tests/libs/dynamic_threads.masm from several processes at once.
+.import counter
+.export twice
+
+.func twice -> i64
+    call counter.bump () -> (I0)
+    call counter.bump () -> (I0)
+    ret I0
+.endf

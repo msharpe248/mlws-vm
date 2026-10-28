@@ -192,3 +192,14 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `math.powmod` | i64, i64, i64 | i64 | b^e mod m, without overflow (e >= 0, m > 0). |
 | `math.gcd` | i64, i64 | i64 | Greatest common divisor (of the absolute values). |
 | `math.lcm` | i64, i64 | i64 | Least common multiple (E_OVERFLOW if it does not fit). |
+
+## Loading modules at run time (`module.*`)
+
+> Generated from `src/native/modload.c`. See [ABI.md](ABI.md#9-loading-modules-at-run-time).
+
+| Name | Parameters | Results | Description |
+|---|---|---|---|
+| `module.load` | r | - | Load a module (and what it imports) while the program runs: as if the calling module imported it, with the same library versions, privacy and verification. Loading a loaded module does nothing. |
+| `module.loaded` | r | b | Whether a module is loaded. |
+| `module.function` | r, r | r | A closure for a function a loaded module exports, to call with calli (its signature is checked then). |
+| `module.exports` | r | r | The names of the functions a loaded module exports. |

@@ -51,6 +51,7 @@ VM *vm_new(void) {
     plat_ignore_sigpipe();   /* writes to a closed pipe or socket fail with E_RESET */
     plat_raise_fd_limit();   /* many connections need many descriptors */
     vm->lock = plat_lock_new();
+    vm->mods_lock = plat_lock_new();
     const char *unsafe = getenv("MLWSVM_UNSAFE_NATIVE");
     vm->unsafe_native = unsafe && *unsafe && strcmp(unsafe, "0") != 0;
     vm->out_lock = plat_lock_new();
@@ -120,6 +121,7 @@ void vm_free(VM *vm) {
     copy_state_free();
     smap_free(&vm->natives);
     plat_lock_free(vm->lock);
+    plat_lock_free(vm->mods_lock);
     plat_lock_free(vm->out_lock);
     free(vm);
 }

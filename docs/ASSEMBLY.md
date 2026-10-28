@@ -527,6 +527,9 @@ names start with `_` hold include files) into `json5-1.2.0.mlwsl`
   `E_LINK_PRIVATE`.
 * `.requires mlwsvm, "…"` states the versions of the VM a program or library
   runs on.
+* A running program can also load a module it does not import, by name, with
+  `module.load`, and call its exported functions through closures
+  ([ABI.md §9](ABI.md#9-loading-modules-at-run-time)).
 
 ### 8.2 The standard library (`lib/std`)
 

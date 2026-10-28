@@ -48,7 +48,8 @@ base:
   `.masm` or binary `.mlwso`, cycle detection, and a load-time verifier.
   Libraries ship as one versioned archive (`mlwsvm lib build`), state which
   versions of each other they need (`.requires json5, "^1.2"`), and keep
-  their internal modules private.
+  their internal modules private. A running program can load more modules by
+  name (`module.load`) and call them through closures.
 * **Rich heap types with a garbage collector**: strings, byte buffers, typed
   arrays, structs declared in assembly (`R0->Point.x`), dynamically typed lists,
   insertion-ordered maps, closures, BigInts (`123n`) and exact decimals (`19.99d`).

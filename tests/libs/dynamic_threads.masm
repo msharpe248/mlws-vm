@@ -1,0 +1,38 @@
+; module.load from many processes at once, on several worker threads, while
+; other processes are being spawned: the module (and the one it imports) is
+; loaded once, every process gets a working closure, and each process counts
+; in its own copy of the module's global.
+; option: --lib-path tests/libs/_dyn
+.include "std/test.inc"
+
+.func child
+    ret
+.endf
+
+.func worker(i64 parent)
+    spawn child ()                       ; spawning while others load
+    ncall "module.load" ("tally")
+    spawn child ()
+    ncall "module.function" ("tally", "twice") -> (R0)
+    mov I2, 0
+1:  calli R0 () -> (I1)
+    inc I2
+    blt I2, 50, 1b
+    send parent, I1                      ; 2 bumps x 50 calls: 100 in this process
+    ret
+.endf
+
+.func main
+    mov I0, 0
+1:  spawn worker (PID)
+    inc I0
+    blt I0, 16, 1b
+    mov I0, 0
+2:  recv I1
+    ASSERT_EQ I1, 100
+    inc I0
+    blt I0, 16, 2b
+    ncall "module.loaded" ("counter") -> (I3)
+    ASSERT_TRUE I3
+    ret 0
+.endf

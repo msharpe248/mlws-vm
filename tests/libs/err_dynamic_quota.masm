@@ -1,0 +1,10 @@
+; module.load reads files (and may load native code), so it counts as an OS
+; call: a process without OS calls (quota os=0) cannot load modules.
+; option: --lib-path tests/libs/_dyn
+; option: --quota os=0
+; expect-error: E_QUOTA
+
+.func main
+    ncall "module.load" ("counter")
+    ret 0
+.endf
