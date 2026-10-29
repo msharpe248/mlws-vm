@@ -44,7 +44,7 @@ that is.
 |---|---|
 | `fold` | An instruction whose operands are all constants is replaced by a `mov` of its result: arithmetic, bitwise, shifts, compares, `sel`, `cvt` and `bitcast`. |
 | `simplify` | Identities true for any value of the other operand: `x + 0`, `x * 1`, `x / 1`, `x - x`, `x ^ x`, `x & -1`, `x \| 0`, `x * 0` become a move. A multiply by a power of two becomes a shift, and `beq x, 0` becomes `bz x`. A compare or commutative operation with its constant first has it put second: `blt 1, x` becomes `bgt x, 1`. |
-| `constprop` | A register known to hold a constant at an instruction is read as that constant. A store of the value the register already holds is removed. Constants don't go into a store to an element, a global or a closure capture, whose fast forms take a register. |
+| `constprop` | A register known to hold a constant at an instruction is read as that constant. A store of the value the register already holds is removed. Constants don't go into a store to an element, a global or a closure capture, whose fast forms take a register. A call's arguments and a ret's values take a constant only where the function computed it, so that computing it can be removed: their register-only forms are faster than the ones with constants. |
 | `copyprop` | Within a block, a register copied from another by a full-width move is read from the original instead, so the copy usually dies. |
 | `dce` | A pure instruction whose result nothing reads is removed. |
 | `branches` | A branch to a `jmp` goes straight to its target. A `jmp` to the next instruction is removed. A branch on constants becomes a `jmp`, or is removed. `bcc L1; jmp L2; L1:` becomes `bncc L2`. A `jmp` to a `ret` becomes the `ret`, and a `jtab` on a constant becomes a `jmp`. A branch is also decided by what earlier code established (see below). |
@@ -52,7 +52,7 @@ that is.
 | `peephole` | `nop`s, a full-width move of a register to itself, and the move back in `mov a, b; mov b, a` are removed. |
 | `deadfuncs` | A function nothing can call is removed. Callable means exported, `main`, or named by an instruction of a callable function (a call, a spawn, a closure). |
 | `compact` | A function's registers are renumbered to the lowest of each bank, and its window shrinks to them. Parameters keep their places. Registers a call must clear are placed next to the R bank, so the single run it clears is as short as it can be. |
-| `inline` | A call to a small function of the same module (up to 12 instructions, with no calls, handlers, stack or frame operands, or `UP`) becomes its body, on registers of the caller's that nothing else uses. |
+| `inline` | A call to a small function of the same module becomes its body, on registers of the caller's that nothing else uses. The function must have at most 40 instructions, and no handlers, stack or frame operands, `UP`, tail calls or coroutine switches. Its own calls are then made from the caller's frame. A caller grows by at most its own size. Only direct calls are inlined: a call through a closure (`calli`) has no known target. |
 | `tailcall` | `call g (...) -> (r...); ret r...` becomes `tcall g (...)`, for a `g` of the same module that declares the same results. A call inside a `.try` region is never converted. |
 
 **What a branch establishes.** Each edge of a branch knows what the branch

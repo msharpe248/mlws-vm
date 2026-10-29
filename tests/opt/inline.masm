@@ -3,12 +3,13 @@
 ; start as 0 every time, as a new window does (bump reads I1 before writing
 ; it, so calling it twice must not see the first call's value). A fault in
 ; the body is caught by the caller's handler, as it would be when the call
-; returned it. A function that calls one is not inlined, until what it
-; calls is inlined into it: outer then calls nothing, and is inlined into main
-; too. fact, which calls itself, never is. Six calls are inlined: add3 into
-; outer and into main, bump twice, divide, and outer.
+; returned it. A function that calls others can be inlined too: they are
+; then called from the caller's frame. fact, which calls itself, is inlined
+; into main once, and its call to itself stays a call (a function is never
+; inlined into itself). Seven calls are inlined: add3 into outer and into
+; main, bump twice, divide, outer, and fact.
 ; option: --opt inline
-; expect-opt: inline 6
+; expect-opt: inline 7
 .include "std/test.inc"
 
 .func add3(i64 a, i64 b, i64 c) -> i64
@@ -26,12 +27,12 @@
     ret I2
 .endf
 
-.func outer(i64 x) -> i64                ; calls add3, until add3 is inlined into it
+.func outer(i64 x) -> i64                ; calls add3 (inlined into it), and is inlined into main
     call add3 (x, x, x) -> (I1)
     ret I1
 .endf
 
-.func fact(i64 n) -> i64                 ; calls itself: never inlined
+.func fact(i64 n) -> i64                 ; calls itself: inlined into main, not into itself
     ble n, 1, 1f
     sub I1, n, 1
     call fact (I1) -> (I2)

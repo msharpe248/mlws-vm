@@ -278,6 +278,17 @@ $BIN opt -O9 x.masm 2>/dev/null && fail "opt -O9 accepted"
 $BIN run --opt 3,-nosuch examples/hello.masm 2>/dev/null && fail "--opt with an unknown pass accepted"
 MLWSVM_NO_CACHE=1 $BIN run --opt 2 --opt-report "$ODIR/r.txt" examples/fib.masm >/dev/null || fail "--opt-report run"
 grep -q "^mlwsvm opt: 1 module, 2 functions" "$ODIR/r.txt" || fail "--opt-report: $(cat "$ODIR/r.txt")"
+# mlwsvm dis: a string with bytes that are not UTF-8 is written with escapes,
+# so the assembly is valid UTF-8 and assembles to the same module
+printf '.func main\n    mov.r R0, "a\\xc2b\\xe2\\x82\\xacc"\n    len I0, R0\n    ret I0\n.endf\n' > "$ODIR/bytes.masm"
+$BIN asm "$ODIR/bytes.masm" -o "$ODIR/bytes.mlwso" || fail "dis: assembling bytes.masm"
+$BIN dis "$ODIR/bytes.mlwso" > "$ODIR/bytes2.masm" || fail "dis: bytes.mlwso"
+grep -q 'a\\xc2b' "$ODIR/bytes2.masm" || fail "dis: the stray byte is not escaped ($(cat "$ODIR/bytes2.masm"))"
+if command -v iconv >/dev/null 2>&1; then
+    iconv -f UTF-8 -t UTF-8 "$ODIR/bytes2.masm" >/dev/null 2>&1 || fail "dis: the output is not UTF-8"
+fi
+$BIN asm "$ODIR/bytes2.masm" -o "$ODIR/bytes2.mlwso" || fail "dis: reassembling"
+$BIN dis "$ODIR/bytes2.mlwso" | grep -q 'a\\xc2b€c' || fail "dis: the string changed on the way round"
 rm -rf "${ODIR:?}"
 
 # --trace with a limit

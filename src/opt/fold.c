@@ -28,7 +28,9 @@ enum { CK_WORD = 0, CK_POOL = 1, CK_NONNULL = 2 }; /* a number (or null), a cons
 
 typedef struct {
     uint8_t k, kind;
-    Word w; /* CK_POOL: w.u is the constant's index */
+    uint8_t made; /* the value was computed by an instruction of the function (not a new window's 0, a
+                     parameter or what a branch said), which a constant in its place may leave dead */
+    Word w;       /* CK_POOL: w.u is the constant's index */
 } CVal;
 
 #define TRACKED 3 /* banks I, F, R */
@@ -57,7 +59,10 @@ static bool meet(CState *a, const CState *b) {
             if (y->k == CV_TOP || x->k == CV_BOT) continue;
             if (x->k == CV_TOP) *x = *y, ch = true;
             else if (y->k == CV_BOT) x->k = CV_BOT, ch = true;
-            else if (cv_same(x, y)) continue;
+            else if (cv_same(x, y)) {
+                if (x->made && !y->made) x->made = 0, ch = true;
+                continue;
+            }
             else if (is_object(x) && is_object(y)) { /* two objects: still an object */
                 if (x->kind != CK_NONNULL) x->kind = CK_NONNULL, ch = true;
             } else x->k = CV_BOT, ch = true;
@@ -233,6 +238,7 @@ static void step(CState *s, const Insn *in, const Effect *e) {
         CVal *v = slot(s, d);
         if (v) {
             *v = res;
+            v->made = 1;
             if (res.kind == CK_WORD) v->w = written(d, rt, res.w);
         }
     }
@@ -242,7 +248,7 @@ static void step(CState *s, const Insn *in, const Effect *e) {
         if (o->mode != OM_FIELD && o->mode != OM_ELEM && o->mode != OM_ELEMI) continue;
         if (REG_BANK(o->reg) != BANK_R || rs_has(&e->may, o->reg)) continue;
         CVal *v = slot(s, o->reg);
-        if (!is_object(v)) v->k = CV_CONST, v->kind = CK_NONNULL;
+        if (!is_object(v)) v->k = CV_CONST, v->kind = CK_NONNULL, v->made = 0;
     }
 }
 
@@ -265,9 +271,9 @@ static void refine(CState *s, const Insn *in, bool taken) {
         CVal *v = slot(s, o->reg);
         bool zero = (in->op == OP_BZ) == taken;
         if (zero) {
-            v->k = CV_CONST, v->kind = CK_WORD, v->w.u = 0;
+            v->k = CV_CONST, v->kind = CK_WORD, v->w.u = 0, v->made = 0;
         } else if (b == BANK_R && !is_object(v)) {
-            v->k = CV_CONST, v->kind = CK_NONNULL;
+            v->k = CV_CONST, v->kind = CK_NONNULL, v->made = 0;
         }
         return;
     }
@@ -279,9 +285,9 @@ static void refine(CState *s, const Insn *in, bool taken) {
             CVal *v = slot(s, o->reg);
             if (c->mode == OM_IMM) {
                 if (REG_BANK(o->reg) == BANK_R && c->imm != 0) continue;
-                v->k = CV_CONST, v->kind = CK_WORD, v->w.i = c->imm;
+                v->k = CV_CONST, v->kind = CK_WORD, v->w.i = c->imm, v->made = 0;
             } else if (c->mode == OM_CONST && REG_BANK(o->reg) == BANK_R) {
-                v->k = CV_CONST, v->kind = CK_POOL, v->w.u = c->index;
+                v->k = CV_CONST, v->kind = CK_POOL, v->w.u = c->index, v->made = 0;
             }
         }
         return;
@@ -290,7 +296,7 @@ static void refine(CState *s, const Insn *in, bool taken) {
         const Operand *o = &in->ops[0];
         if ((in->op == OP_BISA) != taken || o->mode != OM_REG || REG_BANK(o->reg) != BANK_R) return;
         CVal *v = slot(s, o->reg);
-        if (!is_object(v)) v->k = CV_CONST, v->kind = CK_NONNULL;
+        if (!is_object(v)) v->k = CV_CONST, v->kind = CK_NONNULL, v->made = 0;
         return;
     }
     default: return;
@@ -417,6 +423,15 @@ static bool const_operand(const OFunc *f, const Insn *in, int k, uint8_t reg, co
 /* A store whose fast form takes its value from a register: a constant there
  * would send it to the general path (an element, a global or a closure
  * capture; a field has a form that stores a constant). */
+
+/* A call's arguments and a ret's values: the register-only forms copy words
+ * straight across, and with a constant among them each value's kind is
+ * tested as it is copied. So a constant goes there only if it was computed in
+ * the function, whose computing may then be removed; never for a value that
+ * was only known (a new window's 0, or what a branch said). */
+static bool passes_values(const Insn *in) {
+    return in->op == OP_RET || in->op == OP_CALL || in->op == OP_TCALL || op_calls_closure(in->op);
+}
 static bool store_wants_register(const Insn *in) {
     if (in->op != OP_MOV || in->nops != 2) return false;
     uint8_t m = in->ops[0].mode;
@@ -434,6 +449,7 @@ static bool substitute(OFunc *f, uint32_t pc, const CState *s) {
         if (o->mode != OM_REG || !is_src_pos(in, k)) continue;
         const CVal *v = slot((CState *)s, o->reg);
         if (!v || v->k != CV_CONST || v->kind == CK_NONNULL) continue;
+        if (passes_values(in) && !v->made) continue;
         Operand c, was = *o;
         if (!const_operand(f, in, k, o->reg, v, &c)) continue;
         *o = c;

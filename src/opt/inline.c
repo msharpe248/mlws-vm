@@ -9,22 +9,25 @@
  *                             jmp done                then on after the call
  *                     done:
  *
- * The moves are cleaned up afterwards (constprop, copyprop, dce). Only a leaf
+ * The moves are cleaned up afterwards (constprop, copyprop, dce). Only a
  * function that does nothing that depends on having a frame of its own: no
- * calls, no exception handlers, no stack (push, pop, enter, SP, FP, ARG, LOC),
- * no closure captures (UP), no catch. A fault inside it is then reported in
- * the caller's frame, and caught by the caller's handlers, as it would be
- * after the call returned the error to it. */
+ * exception handlers, no stack (push, pop, enter, SP, FP, ARG, LOC), no
+ * closure captures (UP), no catch, no tail call (it would end the caller's
+ * frame), no coroutine switch. It may call other functions: they run from the
+ * caller's frame. A fault inside it is reported in the caller's frame, and
+ * caught by the caller's handlers, as it would be after the call returned the
+ * error to it. A caller grows by at most its own size (and no more than
+ * CALLER_MAX), so inlining cannot multiply code without bound. */
 #include "opt_internal.h"
 
-#define INLINE_MAX 12      /* instructions in the function inlined */
+#define INLINE_MAX 40      /* instructions in the function inlined */
 #define CALLER_MAX 4000    /* instructions a caller may grow to */
 
 
 static bool frameless(const Insn *in) {
-    if (op_info[in->op].flags & OPF_CALL) return false;
     switch (in->op) {
     case OP_PUSH: case OP_POP: case OP_DROP: case OP_ENTER: case OP_LEA: case OP_CATCH: case OP_BREAK:
+    case OP_TCALL: case OP_TCALLI: case OP_CORESUME: case OP_COYIELD: case OP_CONEW: case OP_COCUR:
         return false;
     default: break;
     }
@@ -100,6 +103,7 @@ static bool inline_call(OFunc *f, uint32_t pc, OFunc *g) {
     int argc = (int)call->ops[1].imm, nres = call->nops - 2 - argc;
     if (argc != gm->nparams || nres > gm->nrets) return false;
     if (f->code.n + g->code.n * 3 + 64 > CALLER_MAX) return false;
+    if (f->code.n + g->code.n > 2 * (size_t)f->before + 64) return false; /* the caller's budget */
     uint32_t gused[NBANKS], fused[NBANKS];
     ofn_used_regs(g, gused);
     ofn_used_regs(f, fused);

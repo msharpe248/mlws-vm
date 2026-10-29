@@ -91,10 +91,34 @@ void sb_free(StrBuf *b) {
     b->n = b->cap = 0;
 }
 
+/* How many bytes of a valid UTF-8 sequence start at s (of n left), or 0. */
+static size_t utf8_seq(const unsigned char *s, size_t n) {
+    size_t len = s[0] >= 0xF0 && s[0] <= 0xF4 ? 4 : s[0] >= 0xE0 ? 3 : s[0] >= 0xC2 && s[0] < 0xE0 ? 2 : 0;
+    if (!len || len > n) return 0;
+    for (size_t k = 1; k < len; k++)
+        if ((s[k] & 0xC0) != 0x80) return 0;
+    if (len == 3 && ((s[0] == 0xE0 && s[1] < 0xA0) || (s[0] == 0xED && s[1] >= 0xA0))) return 0; /* overlong, surrogate */
+    if (len == 4 && ((s[0] == 0xF0 && s[1] < 0x90) || (s[0] == 0xF4 && s[1] >= 0x90))) return 0; /* overlong, > U+10FFFF */
+    return len;
+}
+
+/* A string literal, as the assembler reads it: valid UTF-8 as itself, and
+ * every other byte that is not plain ASCII as an escape, so the text is valid
+ * UTF-8 whatever the bytes are. */
 void sb_put_quoted(StrBuf *b, const char *s, size_t n) {
     sb_putc(b, '"');
     for (size_t i = 0; i < n; i++) {
         unsigned char c = (unsigned char)s[i];
+        if (c >= 0x80) {
+            size_t len = utf8_seq((const unsigned char *)s + i, n - i);
+            if (len) {
+                sb_putn(b, s + i, len);
+                i += len - 1;
+            } else {
+                sb_printf(b, "\\x%02x", c);
+            }
+            continue;
+        }
         switch (c) {
         case '"': sb_puts(b, "\\\""); break;
         case '\\': sb_puts(b, "\\\\"); break;
