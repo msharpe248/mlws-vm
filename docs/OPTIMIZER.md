@@ -44,16 +44,34 @@ that is.
 |---|---|
 | `fold` | An instruction whose operands are all constants is replaced by a `mov` of its result: arithmetic, bitwise, shifts, compares, `sel`, `cvt` and `bitcast`. |
 | `simplify` | Identities true for any value of the other operand: `x + 0`, `x * 1`, `x / 1`, `x - x`, `x ^ x`, `x & -1`, `x \| 0`, `x * 0` become a move. A multiply by a power of two becomes a shift, and `beq x, 0` becomes `bz x`. A compare or commutative operation with its constant first has it put second: `blt 1, x` becomes `bgt x, 1`. |
-| `constprop` | A register known to hold a constant at an instruction is read as that constant. A store of the value the register already holds is removed. |
+| `constprop` | A register known to hold a constant at an instruction is read as that constant. A store of the value the register already holds is removed. Constants don't go into a store to an element, a global or a closure capture, whose fast forms take a register. |
 | `copyprop` | Within a block, a register copied from another by a full-width move is read from the original instead, so the copy usually dies. |
 | `dce` | A pure instruction whose result nothing reads is removed. |
-| `branches` | A branch to a `jmp` goes straight to its target. A `jmp` to the next instruction is removed. A branch on constants becomes a `jmp`, or is removed. `bcc L1; jmp L2; L1:` becomes `bncc L2`. A `jmp` to a `ret` becomes the `ret`, and a `jtab` on a constant becomes a `jmp`. |
+| `branches` | A branch to a `jmp` goes straight to its target. A `jmp` to the next instruction is removed. A branch on constants becomes a `jmp`, or is removed. `bcc L1; jmp L2; L1:` becomes `bncc L2`. A `jmp` to a `ret` becomes the `ret`, and a `jtab` on a constant becomes a `jmp`. A branch is also decided by what earlier code established (see below). |
 | `unreachable` | Instructions nothing reaches, from the entry or a live exception handler, are removed. |
 | `peephole` | `nop`s, a full-width move of a register to itself, and the move back in `mov a, b; mov b, a` are removed. |
 | `deadfuncs` | A function nothing can call is removed. Callable means exported, `main`, or named by an instruction of a callable function (a call, a spawn, a closure). |
-| `compact` | A function's registers are renumbered to the lowest of each bank, and its window shrinks to them. Parameters keep their places. |
+| `compact` | A function's registers are renumbered to the lowest of each bank, and its window shrinks to them. Parameters keep their places. Registers a call must clear are placed next to the R bank, so the single run it clears is as short as it can be. |
 | `inline` | A call to a small function of the same module (up to 12 instructions, with no calls, handlers, stack or frame operands, or `UP`) becomes its body, on registers of the caller's that nothing else uses. |
 | `tailcall` | `call g (...) -> (r...); ret r...` becomes `tcall g (...)`, for a `g` of the same module that declares the same results. A call inside a `.try` region is never converted. |
+
+**What a branch establishes.** Each edge of a branch knows what the branch
+tested:
+- after `bnz R0, L`, R0 holds an object at `L` and is null on the
+  fall-through (`bz` the other way round);
+- after `beq I0, 5, L`, I0 is 5 at `L`;
+- an R register whose field or element was used without a trap, or that a
+  taken `bisa` tested, holds an object.
+
+These facts decide later branches. Dynamically typed code tests the same
+value's type again and again on one path (compiled Lua's `fib` has five such
+tests on its path for boxed values), and the tests after the first are
+decided. A branch decided this way sends nothing along the edge it never
+takes, so what is known on its other edge stays known.
+
+Nothing is inferred where it would be wrong. `bz.i32 x` says nothing about
+x's upper 32 bits, so only 64-bit integer and reference tests count, and
+`beq F0, 0.0` is taken for `-0.0` too, so float equality counts for nothing.
 
 The `-O1` passes run in rounds until a round changes nothing. Each pass's
 result is often another pass's opportunity. A folded constant makes a branch
@@ -224,7 +242,8 @@ Three test-file headers check the optimizer
   - narrow and NaN folding;
   - types of pushed values;
   - window zeroing for inlined bodies;
-  - no tail calls in `.try` regions.
+  - no tail calls in `.try` regions;
+  - facts from branches, and the narrow and float cases where none hold.
 * **`make check-opt`** runs the whole suite and the examples with every
   module at `--opt 3`, plainly and with GC stress. Two tests say `no-opt`:
   the debugger's transcript shows registers that `compact` renumbers, and

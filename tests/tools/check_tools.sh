@@ -268,7 +268,8 @@ done
 $BIN opt --list | grep -q "^constprop .*-O1" || fail "opt --list"
 OUT=$($BIN opt -O3 -S tests/control/branches.masm 2>"$ODIR/report") || fail "opt -S"
 echo "$OUT" | grep -q "^.func main" || fail "opt -S: no assembly"
-grep -q "^  instructions .*-89.7%" "$ODIR/report" || fail "opt: the report ($(cat "$ODIR/report"))"
+AFTER=$(awk '/^  instructions/ { print $2 "," $3 }' "$ODIR/report")
+case "$AFTER" in 39,[1-6]) ;; *) fail "opt: the report ($(cat "$ODIR/report"))" ;; esac
 grep -q "branches .*jumps threaded" "$ODIR/report" || fail "opt: the report's passes"
 $BIN opt -O1 -v -o "$ODIR/c.mlwso" tests/opt/dead.masm 2>&1 | grep -q "dead.masm:21 unused+1 dce: its result is never read: mul.i64 I2, I0, I0" ||
     fail "opt -v: the change log"

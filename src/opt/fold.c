@@ -10,13 +10,21 @@
  * and computing uses the interpreter's own arithmetic (core/arith.h), so a
  * folded value is the one the instruction would have produced. P registers
  * are not tracked (pointer arithmetic can trap), and neither is anything in
- * memory. */
+ * memory.
+ *
+ * A branch says something on each of its edges: after `bz R0, L` R0 is null
+ * at L and an object on the fall-through; after `beq I0, 5, L`, I0 is 5 at
+ * L. An R register can also be known to be not null without a known value:
+ * a bnz or bisa taken, or a field or element of it read or written without
+ * a trap. These facts decide later branches (a type test repeated on a path
+ * that has made it already), and a branch decided this way sends nothing
+ * along the edge it never takes. */
 #include "opt_internal.h"
 
 #include "../core/arith.h"
 
 enum { CV_TOP = 0, CV_CONST = 1, CV_BOT = 2 };
-enum { CK_WORD = 0, CK_POOL = 1 }; /* a number (or null), or a constant-pool object */
+enum { CK_WORD = 0, CK_POOL = 1, CK_NONNULL = 2 }; /* a number (or null), a constant-pool object, or some object */
 
 typedef struct {
     uint8_t k, kind;
@@ -27,6 +35,8 @@ typedef struct {
 typedef struct {
     CVal r[TRACKED][NREGS];
 } CState;
+
+static bool is_object(const CVal *v) { return v->k == CV_CONST && (v->kind == CK_POOL || v->kind == CK_NONNULL); }
 
 static CVal *slot(CState *s, uint8_t reg) {
     Bank b = (Bank)REG_BANK(reg);
@@ -46,7 +56,11 @@ static bool meet(CState *a, const CState *b) {
             const CVal *y = &b->r[bk][i];
             if (y->k == CV_TOP || x->k == CV_BOT) continue;
             if (x->k == CV_TOP) *x = *y, ch = true;
-            else if (y->k == CV_BOT || !cv_same(x, y)) x->k = CV_BOT, ch = true;
+            else if (y->k == CV_BOT) x->k = CV_BOT, ch = true;
+            else if (cv_same(x, y)) continue;
+            else if (is_object(x) && is_object(y)) { /* two objects: still an object */
+                if (x->kind != CK_NONNULL) x->kind = CK_NONNULL, ch = true;
+            } else x->k = CV_BOT, ch = true;
         }
     return ch;
 }
@@ -71,7 +85,7 @@ static bool val_of(const CState *s, const Operand *o, MlwsType t, CVal *out) {
         return true;
     case OM_REG: {
         const CVal *v = slot((CState *)s, o->reg);
-        if (!v || v->k != CV_CONST) return false;
+        if (!v || v->k != CV_CONST || v->kind == CK_NONNULL) return false;
         *out = *v;
         if (v->kind == CK_WORD) {
             Bank b = (Bank)REG_BANK(o->reg);
@@ -222,6 +236,131 @@ static void step(CState *s, const Insn *in, const Effect *e) {
             if (res.kind == CK_WORD) v->w = written(d, rt, res.w);
         }
     }
+    /* a field or element of an R register used without a trap: it is an object */
+    for (int k = 0; k < in->nops; k++) {
+        const Operand *o = &in->ops[k];
+        if (o->mode != OM_FIELD && o->mode != OM_ELEM && o->mode != OM_ELEMI) continue;
+        if (REG_BANK(o->reg) != BANK_R || rs_has(&e->may, o->reg)) continue;
+        CVal *v = slot(s, o->reg);
+        if (!is_object(v)) v->k = CV_CONST, v->kind = CK_NONNULL;
+    }
+}
+
+/* ---- what branches say ---- */
+
+static bool full_width(MlwsType t, Bank b) {
+    return b == BANK_R ? t == T_R : b == BANK_I && (t == T_I64 || t == T_U64);
+}
+
+/* What branch `in` says about its operand on the edge it takes (taken) or
+ * the one it falls through. */
+static void refine(CState *s, const Insn *in, bool taken) {
+    MlwsType t = (MlwsType)in->type;
+    switch (in->op) {
+    case OP_BZ: case OP_BNZ: {
+        const Operand *o = &in->ops[0];
+        if (o->mode != OM_REG) return;
+        Bank b = (Bank)REG_BANK(o->reg);
+        if (!full_width(t, b)) return;
+        CVal *v = slot(s, o->reg);
+        bool zero = (in->op == OP_BZ) == taken;
+        if (zero) {
+            v->k = CV_CONST, v->kind = CK_WORD, v->w.u = 0;
+        } else if (b == BANK_R && !is_object(v)) {
+            v->k = CV_CONST, v->kind = CK_NONNULL;
+        }
+        return;
+    }
+    case OP_BEQ: case OP_BNE: {
+        if ((in->op == OP_BEQ) != taken) return; /* only equality says what the value is */
+        for (int k = 0; k < 2; k++) {
+            const Operand *o = &in->ops[k], *c = &in->ops[1 - k];
+            if (o->mode != OM_REG || !full_width(t, (Bank)REG_BANK(o->reg))) continue;
+            CVal *v = slot(s, o->reg);
+            if (c->mode == OM_IMM) {
+                if (REG_BANK(o->reg) == BANK_R && c->imm != 0) continue;
+                v->k = CV_CONST, v->kind = CK_WORD, v->w.i = c->imm;
+            } else if (c->mode == OM_CONST && REG_BANK(o->reg) == BANK_R) {
+                v->k = CV_CONST, v->kind = CK_POOL, v->w.u = c->index;
+            }
+        }
+        return;
+    }
+    case OP_BISA: case OP_BNISA: {
+        const Operand *o = &in->ops[0];
+        if ((in->op == OP_BISA) != taken || o->mode != OM_REG || REG_BANK(o->reg) != BANK_R) return;
+        CVal *v = slot(s, o->reg);
+        if (!is_object(v)) v->k = CV_CONST, v->kind = CK_NONNULL;
+        return;
+    }
+    default: return;
+    }
+}
+
+/* Whether a conditional branch is taken, from what is known: 1, 0, or -1. */
+static int decide_known(const CState *s, const Insn *in) {
+    MlwsType t = (MlwsType)in->type;
+    switch (in->op) {
+    case OP_BZ: case OP_BNZ: {
+        const Operand *o = &in->ops[0];
+        bool zero;
+        if (o->mode == OM_REG && REG_BANK(o->reg) == BANK_R) {
+            const CVal *v = slot((CState *)s, o->reg);
+            if (v->k != CV_CONST) return -1;
+            zero = v->kind == CK_WORD && v->w.u == 0;
+        } else if (type_is_int(t)) {
+            CVal v;
+            if (!val_of(s, o, t, &v) || v.kind != CK_WORD) return -1;
+            zero = v.w.i == 0;
+        } else {
+            return -1;
+        }
+        return zero == (in->op == OP_BZ);
+    }
+    case OP_BISA: case OP_BNISA: {
+        const Operand *o = &in->ops[0];
+        if (o->mode != OM_REG || REG_BANK(o->reg) != BANK_R) return -1;
+        const CVal *v = slot((CState *)s, o->reg);
+        if (v->k != CV_CONST || v->kind != CK_WORD) return -1; /* only null is known not to be the struct */
+        return in->op == OP_BNISA;
+    }
+    case OP_BEQ: case OP_BNE: case OP_BLT: case OP_BLE: case OP_BGT: case OP_BGE: {
+        if (in->nops != 3) return -1;
+        CVal a, b;
+        if (t == T_R) {
+            if (in->op != OP_BEQ && in->op != OP_BNE) return -1;
+            const CVal *x = in->ops[0].mode == OM_REG ? slot((CState *)s, in->ops[0].reg) : NULL;
+            const CVal *y = in->ops[1].mode == OM_REG ? slot((CState *)s, in->ops[1].reg) : NULL;
+            CVal xi, yi;
+            if (!x) {
+                if (!val_of(s, &in->ops[0], t, &xi)) return -1;
+                x = &xi;
+            }
+            if (!y) {
+                if (!val_of(s, &in->ops[1], t, &yi)) return -1;
+                y = &yi;
+            }
+            if (x->k != CV_CONST || y->k != CV_CONST) return -1;
+            bool xnull = x->kind == CK_WORD && x->w.u == 0, ynull = y->kind == CK_WORD && y->w.u == 0;
+            bool eq;
+            if (xnull && ynull) eq = true;
+            else if ((xnull && is_object(y)) || (ynull && is_object(x))) eq = false;
+            else if (x->kind == CK_POOL && y->kind == CK_POOL && x->w.u == y->w.u) eq = true;
+            else return -1;
+            return eq == (in->op == OP_BEQ);
+        }
+        if (!(type_is_int(t) || type_is_float(t))) return -1;
+        if (!val_of(s, &in->ops[0], t, &a) || !val_of(s, &in->ops[1], t, &b)) return -1;
+        if (a.kind != CK_WORD || b.kind != CK_WORD) return -1;
+        return arith_compare(in->op, t, a.w, b.w);
+    }
+    default: return -1;
+    }
+}
+
+static bool cond_branch_op(int op) {
+    return op == OP_BZ || op == OP_BNZ || op == OP_BEQ || op == OP_BNE || op == OP_BLT || op == OP_BLE ||
+           op == OP_BGT || op == OP_BGE || op == OP_BISA || op == OP_BNISA;
 }
 
 /* ---- rewriting ---- */
@@ -275,16 +414,26 @@ static bool const_operand(const OFunc *f, const Insn *in, int k, uint8_t reg, co
     return true;
 }
 
+/* A store whose fast form takes its value from a register: a constant there
+ * would send it to the general path (an element, a global or a closure
+ * capture; a field has a form that stores a constant). */
+static bool store_wants_register(const Insn *in) {
+    if (in->op != OP_MOV || in->nops != 2) return false;
+    uint8_t m = in->ops[0].mode;
+    return m == OM_ELEM || m == OM_ELEMI || m == OM_GLOBAL || m == OM_GLOBALIDX || m == OM_UPVAL;
+}
+
 static bool substitute(OFunc *f, uint32_t pc, const CState *s) {
     Insn *in = &f->code.v[pc].in;
     MlwsType it = (MlwsType)in->type;
     if (it == T_BIG || it == T_DEC) return false; /* number arithmetic reads its operands as numbers */
+    if (store_wants_register(in)) return false;
     bool any = false;
     for (int k = 0; k < in->nops; k++) {
         Operand *o = &in->ops[k];
         if (o->mode != OM_REG || !is_src_pos(in, k)) continue;
         const CVal *v = slot((CState *)s, o->reg);
-        if (!v || v->k != CV_CONST) continue;
+        if (!v || v->k != CV_CONST || v->kind == CK_NONNULL) continue;
         Operand c, was = *o;
         if (!const_operand(f, in, k, o->reg, v, &c)) continue;
         *o = c;
@@ -545,6 +694,7 @@ bool pass_constants(OFunc *f) {
     }
     uint8_t *reached = xcalloc(g.n, 1);
     Effect *eff = ofn_effects(f);
+    bool facts = opt_on(f, PASS_BRANCHES); /* what branches say, and the branches it decides */
     while (nwork) {
         uint32_t b = work[--nwork];
         queued[b] = 0;
@@ -560,9 +710,26 @@ bool pass_constants(OFunc *f) {
                     if (!queued[t]) queued[t] = 1, work[nwork++] = t;
             }
         }
+        const Insn *last = &f->code.v[g.b[b].end - 1].in;
+        bool cond = cond_branch_op(last->op);
+        uint32_t tb = UINT32_MAX, fb = UINT32_MAX; /* the blocks of its target and of what follows it */
+        int d = -1;
+        if (cond) {
+            uint32_t at = last->ops[last->nops - 1].index;
+            if (at < n) tb = g.of[at];
+            if (g.b[b].end < n) fb = g.of[g.b[b].end];
+            if (tb == fb) cond = false;
+            else if (facts) d = decide_known(&s, last);
+        }
         for (uint32_t k = 0; k < ns; k++) {
             uint32_t t = succ[k];
-            if (meet(&in[t], &s) || !reached[t])
+            CState es = s;
+            if (cond && (t == tb || t == fb)) {
+                bool taken = t == tb;
+                if (d >= 0 && d != (int)taken) continue; /* never goes this way */
+                if (facts) refine(&es, last, taken);
+            }
+            if (meet(&in[t], &es) || !reached[t])
                 if (!queued[t]) {
                     queued[t] = 1;
                     if (nwork >= g.n) work = xrealloc(work, (nwork + 1) * sizeof *work);
@@ -591,6 +758,23 @@ bool pass_constants(OFunc *f) {
                     replace(f, i, &m, PASS_FOLD, "computed now");
                     oeffect(&f->code.v[i].in, &eff[i]);
                     ch = true;
+                }
+            }
+            if (facts && cond_branch_op(ins->op)) {
+                int d = decide_known(&s, ins);
+                if (d == 0) {
+                    ochange(f, PASS_BRANCHES, i, ins, "known not to be taken (from what earlier code established)");
+                    f->code.v[i].dead = true;
+                    ch = true;
+                    continue;
+                }
+                if (d == 1) {
+                    Insn j = insn_make(OP_JMP, T_NONE, 1);
+                    j.ops[0] = op_label(ins->ops[ins->nops - 1].index);
+                    replace(f, i, &j, PASS_BRANCHES, "known to be taken (from what earlier code established)");
+                    oeffect(&f->code.v[i].in, &eff[i]);
+                    ch = true;
+                    continue;
                 }
             }
             bool was = ch;

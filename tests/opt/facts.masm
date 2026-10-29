@@ -1,0 +1,110 @@
+; What a branch tests is known on each of its edges, and decides later
+; branches (branches, with constprop and unreachable cleaning up):
+;  - after `bnz R0, L`, R0 is an object at L and null on the fall-through;
+;    after `bz`, the other way round;
+;  - an R register whose field or element was used without a trap, or that
+;    a taken bisa tested, is an object;
+;  - after `beq x, 5, L`, x is 5 at L (64-bit integers and references only);
+;  - a branch decided this way sends nothing along the edge it never takes,
+;    so what is known on the other edge is not mixed with it.
+; Where it would be wrong, nothing is inferred: bz.i32 x says nothing about
+; x's upper 32 bits, and beq F0, 0.0 is also taken for -0.0.
+; option: --opt 1
+; expect-insns: retest 3
+; expect-insns: after_field 2
+; expect-insns: after_isa 3
+; expect-insns: equal 3
+; expect-insns: pruned 1
+; expect-insns: narrow 3
+; expect-insns: float_zero 3
+.include "std/test.inc"
+
+.struct P
+    x: i64
+.ends
+
+; The second bnz is always taken: R0 is an object there.
+.func retest(ref r) -> i64
+    bnz r, 1f
+    ret 0
+1:  bnz r, 2f                            ; decided: a jmp, then the ret 1 is unreachable
+    ret 1
+2:  ret 2
+.endf
+
+; R0's field was read, so R0 is not null: the bz is never taken.
+.func after_field(ref p) -> i64
+    mov I0, p->P.x
+    bz p, 1f                             ; removed
+    ret I0
+1:  ret -1
+.endf
+
+; A struct, so not null.
+.func after_isa(ref p) -> i64
+    bnisa p, P, 1f
+    bz p, 2f                             ; removed
+    ret 1
+1:  ret 0
+2:  ret -1
+.endf
+
+; x is 5 where beq jumps: x + 1 is 6 there.
+.func equal(i64 x) -> i64
+    beq x, 5, 1f
+    ret 0
+1:  add I1, x, 1                         ; folded to 6, into the ret
+    ret I1
+.endf
+
+; The bz on 1 is never taken, so only I2 = 5 reaches the ret.
+.func pruned -> i64
+    mov I1, 1
+    bz I1, 1f
+    mov I2, 5
+    jmp 2f
+1:  mov I2, 7
+2:  ret I2                               ; ret 5
+.endf
+
+; bz.i32 tests only the low 32 bits: x may be 0x100000000, not 0.
+.func narrow(i64 x) -> i64
+    bz.i32 x, 1f
+    ret 0
+1:  ret x
+.endf
+
+; beq F0, 0.0 is taken for -0.0 too: F0 is not known to be +0.0.
+.func float_zero(f64 y) -> f64
+    beq y, 0.0, 1f
+    ret 1.0
+1:  ret y
+.endf
+
+.func main
+    call retest (null) -> (I0)
+    ASSERT_EQ I0, 0
+    lnew R1
+    call retest (R1) -> (I0)
+    ASSERT_EQ I0, 2
+    new R2, P
+    mov R2->P.x, 9
+    call after_field (R2) -> (I0)
+    ASSERT_EQ I0, 9
+    call after_isa (R2) -> (I0)
+    ASSERT_EQ I0, 1
+    call after_isa (R1) -> (I0)
+    ASSERT_EQ I0, 0
+    call equal (5) -> (I0)
+    ASSERT_EQ I0, 6
+    call equal (4) -> (I0)
+    ASSERT_EQ I0, 0
+    call pruned () -> (I0)
+    ASSERT_EQ I0, 5
+    call narrow (0x100000000) -> (I0)
+    ASSERT_EQ I0, 0x100000000
+    call float_zero (-0.0) -> (F0)
+    bitcast.i64.f64 I0, F0
+    ASSERT_EQ I0, 0x8000000000000000     ; -0.0 came back, not +0.0
+    ret 0
+.endf
