@@ -376,7 +376,8 @@ exception is constant-pool strings, which are immutable and immortal.
   instruction, including a native call, nothing moves or is freed.
 * **Roots.** These are every `R` register of every live frame, every
   reference-tagged word of the data stack and of every module's global segment,
-  and every live handle. A coroutine's registers, frames and stack are reachable
+  every live handle, the messages in the mailbox, the exception being thrown,
+  and the values a native call in progress is using. A coroutine's registers, frames and stack are reachable
   through the coroutine object (§8); the running one and its resumers are roots. Nothing else keeps an object alive, so a reference held
   only in raw memory (which can't store references anyway) or in an integer
   doesn't count.

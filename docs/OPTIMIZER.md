@@ -82,9 +82,10 @@ Nothing is inferred where it would be wrong. `bz.i32 x` says nothing about
 x's upper 32 bits, so only 64-bit integer and reference tests count, and
 `beq F0, 0.0` is taken for `-0.0` too, so float equality counts for nothing.
 
-The `-O1` passes run in rounds until a round changes nothing. Each pass's
-result is often another pass's opportunity. A folded constant makes a branch
-decidable, which makes a block unreachable, which leaves a move dead.
+The `-O1` passes run in rounds until a round changes nothing, at most 8.
+Each pass's result is often another pass's opportunity. A folded constant
+makes a branch decidable, which makes a block unreachable, which leaves a
+move dead.
 
 ### Choosing passes
 
@@ -269,9 +270,10 @@ Three test-file headers check the optimizer
 * **One module at a time.** It sees no further than the module it optimizes.
   It cannot inline a function of another module, or know what an imported
   function returns.
-* **No memory.** Values in memory, globals, elements and fields are never
-  tracked, so loads are never removed or reused, and stores are never
-  removed.
+* **Little memory.** Values in memory, globals, elements and fields are not
+  tracked. A load is reused (`cse`) only while no instruction between could
+  have written memory, within a block or along a chain of blocks with one
+  predecessor each; stores are never removed.
 * **No loop optimizations.** Nothing is hoisted out of loops, and no loop is
   unrolled or strength-reduced.
 * **No `P` registers.** Pointer values are not tracked (pointer arithmetic

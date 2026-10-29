@@ -154,7 +154,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 
 | | |
 |---|---|
-| [docs/DESIGN.md](docs/DESIGN.md) | How the whole system is put together and why: the path from source to running code, and the design of each part |
+| [docs/DESIGN.md](docs/DESIGN.md) | How the whole system is put together and why: the path from source to running code, and each part's data structures, algorithms and connections (a process in memory, the collector, the scheduler, the optimizer's analyses, ...) |
 | [docs/ASSEMBLY.md](docs/ASSEMBLY.md) | The assembly language: syntax, directives, functions, data, macros, modules and libraries |
 | [docs/ADDRESSING.md](docs/ADDRESSING.md) | Every addressing mode |
 | [docs/ISA.md](docs/ISA.md) | Instruction reference (generated from `src/core/opcodes.def`) |
