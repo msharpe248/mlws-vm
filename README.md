@@ -201,7 +201,7 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 
 ## Status
 
-The current release is 0.5.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
+The current release is 0.6.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
 on GitHub. Everything described in `docs/` is implemented and tested on macOS and Linux
 (GitHub Actions: Linux GCC and Clang, macOS Clang), in every test mode: the
 plain suite, GC stress, the optimizer, AddressSanitizer, ThreadSanitizer, the tools, and builds
