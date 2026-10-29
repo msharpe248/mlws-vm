@@ -508,6 +508,7 @@ static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive 
         module_free(m);
         return NULL;
     }
+    if (vm->opt.passes) m = modcache_optimize(vm, m); /* --opt */
     LModule *lm = xcalloc(1, sizeof *lm);
     lm->m = m;
     lm->lib = lib;

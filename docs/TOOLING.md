@@ -17,6 +17,7 @@ dashboard and a `top`-style terminal view.
 | Native code | `mlwsvm ext list\|install\|remove\|allow-ffi\|deny-ffi` ([EXTENDING.md](EXTENDING.md)) | — |
 | Bindings generator | `mlwsvm bindgen [-l LIB] [-p PREFIX] [-o OUT] header.h` | — |
 | Libraries | `mlwsvm lib build DIR \| info FILE \| list` | — |
+| Optimizer | `mlwsvm opt -O2 prog.masm`, or `mlwsvm run --opt 2 prog.masm` ([OPTIMIZER.md](OPTIMIZER.md)) | none |
 
 The profiler, tracer and debugger use one per-instruction hook, which is
 installed only while one of them is active. A program run under them uses a
@@ -42,6 +43,13 @@ contents, and what their names were resolved against (the working directory,
 the source's directory, the program's directory and the library path): if any of them differs, the source
 is assembled again and the entry replaced. Backtraces name the file that was
 run, wherever the entry was made.
+
+With `--opt` ([OPTIMIZER.md](OPTIMIZER.md)), each module's optimized form is
+kept as well, found by a SHA-256 of the executable, the passes and the module
+as loaded. That holds for every module, from a `.masm` file, a `.mlwso` file
+or a library archive, so a module is optimized once per set of passes. A run
+asked for `--opt-report` optimizes afresh, so that its report says what the
+passes did.
 
 | Setting | Effect |
 |---|---|
@@ -116,6 +124,8 @@ a test file's own lines override both.
 | `--quota LIST` | unlimited | starting limits for every process, e.g. `heap=64M,raw=1G,mailbox=1000,insns=5000000,foreign=0,os=0`; any subset, `unlimited` resets one |
 | `--ext-path DIR[:DIR]` | (none) | trusted native-extension directories, searched before `lib/ext` ([EXTENDING.md](EXTENDING.md)) |
 | `--lib-path DIR[:DIR]` | (none) | more library directories (for modules and library archives), searched after the program's own |
+| `--opt LIST` | `0` (off) | optimize every module as it is loaded: a level `0` to `3`, and passes to add or (`-name`) leave out, e.g. `2`, `3,-tailcall`, `fold,dce` ([OPTIMIZER.md](OPTIMIZER.md)) |
+| `--opt-report FILE\|-` | (none) | when the run ends, write the optimizer's report of the modules it loaded to FILE (`-`: stderr) |
 
 Sizes take an optional `K`, `M` or `G` suffix (powers of 1024). A bad value is
 an error (exit code 2) on the command line, a failing test in a test file, and a

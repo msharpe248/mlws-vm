@@ -16,7 +16,13 @@
  * off. It is made private (0700), and used only if it passes the same trust
  * check as native code, because a module can declare foreign functions. An
  * entry is written to a temporary file and renamed into place, so readers
- * never see half of one. Past MODCACHE_MAX entries the oldest are removed. */
+ * never see half of one. Past MODCACHE_MAX entries the oldest are removed.
+ *
+ * With --opt, a module's optimized form is kept too (modcache_optimize), found
+ * by a SHA-256 of the executable, the passes and the module as loaded (its
+ * .mlwso bytes), so the optimizer runs once per module and set of passes,
+ * wherever the module came from: a .masm file, a .mlwso file or a library
+ * archive. */
 #include "vm.h"
 
 #include "../asm/asm.h"
@@ -117,7 +123,7 @@ static Module *cache_read(const Dirs *lp, const char *entry, const char *path) {
     if (ok && !r.err) {
         MlwsError e;
         m = module_read(r.b + r.pos, r.n - r.pos, &e);
-        if (m) { /* the backtraces' file is this one, wherever the entry was made */
+        if (m && path) { /* the backtraces' file is this one, wherever the entry was made */
             free(m->source);
             m->source = xstrdup(path);
         }
@@ -243,5 +249,47 @@ Module *modcache_assemble(VM *vm, const char *path, const char *default_name, co
     }
     free(entry);
     VEC_FREE(lp);
+    return m;
+}
+
+Module *modcache_optimize(VM *vm, Module *m) {
+    const char *dir = vm->opt_report ? NULL : cache_dir(vm); /* a report says what the passes did: they run */
+    char *exe = dir ? plat_exe_path(NULL) : NULL;
+    PlatStat st;
+    int e;
+    if (!exe || !plat_stat(exe, true, &st, &e)) {
+        free(exe);
+        opt_module(m, &vm->opt, vm->opt_report);
+        return m;
+    }
+    ByteBuf b = {0};
+    module_write(m, &b);
+    Sha256 h;
+    sha256_init(&h);
+    hash_str(&h, "mlwsvm optimized module");
+    hash_str(&h, exe);
+    sha256_update(&h, &st.size, sizeof st.size);
+    sha256_update(&h, &st.mtime_ns, sizeof st.mtime_ns);
+    sha256_update(&h, &vm->opt.passes, sizeof vm->opt.passes);
+    hash_str(&h, m->source ? m->source : "");
+    sha256_update(&h, b.b, b.n);
+    bb_free(&b);
+    free(exe);
+    uint8_t key[32];
+    sha256_final(&h, key);
+    char name[80];
+    for (int i = 0; i < 32; i++) snprintf(name + 2 * i, 3, "%02x", key[i]);
+    strcat(name, ".mlwsc");
+    char *entry = path_join(dir, name);
+    Dirs none = {0};
+    Module *c = cache_read(&none, entry, m->source);
+    if (c) {
+        module_free(m);
+        m = c;
+    } else {
+        opt_module(m, &vm->opt, vm->opt_report);
+        cache_write(&none, dir, entry, m->source ? m->source : "", m, NULL, 0);
+    }
+    free(entry);
     return m;
 }

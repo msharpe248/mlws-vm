@@ -1,0 +1,101 @@
+; The optimizer computes now what instructions on constants would compute
+; when they run (fold), with the interpreter's own arithmetic, so the value
+; is the same at every width and in every corner: narrow types wrap, f32
+; rounds, shift counts are taken modulo the width, NaN is unequal to itself,
+; float-to-integer conversion saturates, and INT64_MIN / -1 is INT64_MIN.
+; An integer division by zero is not folded: it must still trap (by_zero
+; keeps it, with the 0 moved into it). Each other function is left as a
+; single `ret` of its constant: constprop puts the folded register into the
+; ret, and dce removes the move. (main's cvt of 0.3 is the twelfth fold.)
+; option: --opt fold,constprop,dce
+; expect-opt: fold 12
+; expect-insns: wide 1
+; expect-insns: narrow 1
+; expect-insns: unsigned 1
+; expect-insns: shift 1
+; expect-insns: f32 1
+; expect-insns: nan 1
+; expect-insns: saturate 1
+; expect-insns: min_div 1
+; expect-insns: by_zero 2
+.include "std/test.inc"
+
+.func wide -> i64
+    mov I0, 6
+    mul I1, I0, 7                        ; 42
+    add I2, I1, 100, -2                  ; 140 (all the operands of a variadic add)
+    sub I3, I2, I1                       ; 98
+    ret I3
+.endf
+
+.func narrow -> i64
+    add.i8 I0, 100, 100                  ; 200 wraps to -56
+    ret I0
+.endf
+
+.func unsigned -> i64
+    sub.u8 I0, 0, 1                      ; 255
+    ret I0
+.endf
+
+.func shift -> i64
+    shl.i32 I0, 1, 33                    ; the count is taken modulo 32: 1 << 1
+    ret I0
+.endf
+
+.func f32 -> f64
+    add.f32 F0, 0.1, 0.2                 ; rounded to f32, not 0.30000000000000004
+    ret F0
+.endf
+
+.func nan -> i64
+    div.f64 F0, 0.0, 0.0                 ; NaN
+    sne.f64 I0, F0, F0                   ; NaN != NaN is true
+    ret I0
+.endf
+
+.func saturate -> i64
+    cvt.i32.f64 I0, 1e20                 ; too big: the largest i32
+    ret I0
+.endf
+
+.func min_div -> i64
+    mov I0, 0x8000000000000000           ; INT64_MIN
+    div I1, I0, -1                       ; INT64_MIN, not a trap
+    ret I1
+.endf
+
+; Not folded: the division must trap when it runs.
+.func by_zero -> i64
+    mov I0, 0
+    div I1, 10, I0
+    ret I1
+.endf
+
+.func main
+    call wide () -> (I0)
+    ASSERT_EQ I0, 98
+    call narrow () -> (I0)
+    ASSERT_EQ I0, -56
+    call unsigned () -> (I0)
+    ASSERT_EQ I0, 255
+    call shift () -> (I0)
+    ASSERT_EQ I0, 2
+    call f32 () -> (F0)
+    cvt.f32.f64 F1, 0.3                  ; 0.3 rounded to f32 is the same float
+    ASSERT_EQ F0, F1, f64
+    call nan () -> (I0)
+    ASSERT_EQ I0, 1
+    call saturate () -> (I0)
+    ASSERT_EQ I0, 2147483647
+    call min_div () -> (I0)
+    ASSERT_EQ I0, 0x8000000000000000
+.try 1f
+    call by_zero () -> (I0)
+.endtry
+    FAIL "a division by zero was folded away"
+1:  catch R0
+    strcmp I1, R0->Error.code, "E_DIV_ZERO"
+    ASSERT_EQ I1, 0
+    ret 0
+.endf

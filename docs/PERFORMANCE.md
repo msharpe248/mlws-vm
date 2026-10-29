@@ -107,6 +107,12 @@ unknown type, two-word table values, inline-cache guards), allocation, and,
 in `strings` and `iterate`, library functions that run as VM code where
 Lua's are in C.
 
+With the optimizer ([OPTIMIZER.md](OPTIMIZER.md#performance)), the same
+benchmarks take up to 15% less time at `--opt 2` (`loop`; `binarytrees` 4%),
+and `spectralnorm` 30% less at `--opt 3`, where its small helpers are
+inlined. The rest are within 1.5%: hand-written code, and code that spends its
+time in calls and allocation, has little for it to remove.
+
 ### Against other virtual machines
 
 The same `fib` and `loop` programs on Lua 5.5, the JVM and CPython

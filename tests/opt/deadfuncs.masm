@@ -1,0 +1,37 @@
+; deadfuncs: a function of the module that nothing can call is removed:
+; not exported, not main, and named by no instruction of a function that
+; can be called (a call, a spawn, a closure). unused goes, and so does
+; only_from_unused, which only unused called. api stays (exported: other
+; modules, module.function and C hosts may call it), and so does by_closure,
+; which a closure names.
+; option: --opt deadfuncs
+; expect-opt: deadfuncs 2
+.include "std/test.inc"
+.export api
+
+.func only_from_unused -> i64
+    ret 1
+.endf
+
+.func unused -> i64
+    call only_from_unused () -> (I0)
+    ret I0
+.endf
+
+.func api -> i64
+    ret 2
+.endf
+
+.func by_closure -> i64
+    ret 3
+.endf
+
+.func main
+    closure by_closure () -> (R0)
+    calli R0 () -> (I0)
+    ASSERT_EQ I0, 3
+    ncall "module.function" ("deadfuncs", "api") -> (R1)
+    calli R1 () -> (I1)
+    ASSERT_EQ I1, 2
+    ret 0
+.endf

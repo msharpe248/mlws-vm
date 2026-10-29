@@ -1,6 +1,7 @@
 #!/bin/sh
 # Smoke test for the tools that cannot be exercised from inside an assembly
-# test: --monitor (HTTP API and dashboard), `mlwsvm top`, --profile and --trace.
+# test: --monitor (HTTP API and dashboard), `mlwsvm top`, --profile, --trace
+# and `mlwsvm opt`.
 # Usage: tests/tools/check_tools.sh [path/to/mlwsvm]      (run by `make check-tools`)
 set -eu
 BIN=${1:-./mlwsvm}
@@ -233,6 +234,32 @@ for order in "v1 v12" "v12 v1"; do
 done
 rm -rf "${PDIR:?}"
 
+# mlwsvm opt: its encoder gives back every module byte for byte (decoding and
+# re-encoding each function, with no pass on); -S, the report, --list, the
+# change log, and --opt-report at the end of a run.
+ODIR=$(mktemp -d)
+n=0
+for f in $(find tests examples lib -name '*.masm' -not -path '*/_bindgen/*'); do
+    $BIN asm "$f" -o "$ODIR/a.mlwso" >/dev/null 2>&1 || continue
+    $BIN opt -q -O0 --passes encode -o "$ODIR/b.mlwso" "$f" || fail "opt --passes encode: $f"
+    cmp -s "$ODIR/a.mlwso" "$ODIR/b.mlwso" || fail "opt: re-encoding changed $f"
+    n=$((n + 1))
+done
+[ $n -gt 250 ] || fail "opt: only $n modules re-encoded"
+$BIN opt --list | grep -q "^constprop .*-O1" || fail "opt --list"
+OUT=$($BIN opt -O3 -S tests/control/branches.masm 2>"$ODIR/report") || fail "opt -S"
+echo "$OUT" | grep -q "^.func main" || fail "opt -S: no assembly"
+grep -q "^  instructions .*-89.7%" "$ODIR/report" || fail "opt: the report ($(cat "$ODIR/report"))"
+grep -q "branches .*jumps threaded" "$ODIR/report" || fail "opt: the report's passes"
+$BIN opt -O1 -v -o "$ODIR/c.mlwso" tests/opt/dead.masm 2>&1 | grep -q "dead.masm:21 unused+1 dce: its result is never read: mul.i64 I2, I0, I0" ||
+    fail "opt -v: the change log"
+$BIN run "$ODIR/c.mlwso" || fail "opt: the optimized module does not run"
+$BIN opt -O9 x.masm 2>/dev/null && fail "opt -O9 accepted"
+$BIN run --opt 3,-nosuch examples/hello.masm 2>/dev/null && fail "--opt with an unknown pass accepted"
+MLWSVM_NO_CACHE=1 $BIN run --opt 2 --opt-report "$ODIR/r.txt" examples/fib.masm >/dev/null || fail "--opt-report run"
+grep -q "^mlwsvm opt: 1 module, 2 functions" "$ODIR/r.txt" || fail "--opt-report: $(cat "$ODIR/r.txt")"
+rm -rf "${ODIR:?}"
+
 # --trace with a limit
 N=$($BIN run --trace - --trace-limit 5 examples/hello.masm 2>&1 >/dev/null | grep -c '^\[1\]')
 [ "$N" = 5 ] || fail "trace limit (got $N lines)"
@@ -255,4 +282,4 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
 fi
-echo "check-tools: profile, .loc, cache, lib, --also, trace, monitor, top OK"
+echo "check-tools: profile, .loc, cache, lib, --also, opt, trace, monitor, top OK"

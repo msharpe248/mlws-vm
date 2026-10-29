@@ -48,6 +48,9 @@ jobs:
       - name: GC stress
         run: make CC=$CC check-gc
 
+      - name: Optimizer (every module at --opt 3, also with GC stress)
+        run: make CC=$CC check-opt
+
       - name: Tools (monitor, top, profiler, tracer)
         run: make CC=$CC check-tools
 

@@ -11,11 +11,13 @@
 
 typedef enum {
     OPT_STACK_WORDS, OPT_THREADS, OPT_MAX_FRAMES, OPT_SLICE, OPT_GC_MIN, OPT_QUOTA, OPT_EXT_PATH, OPT_LIB_PATH,
+    OPT_OPT, OPT_OPT_REPORT,
     OPT__COUNT
 } OptId;
 
 static const char *const OPT_NAMES[OPT__COUNT] = {"stack-words", "threads", "max-frames", "slice",
-                                                  "gc-min",      "quota",   "ext-path", "lib-path"};
+                                                  "gc-min",      "quota",   "ext-path", "lib-path",
+                                                  "opt",         "opt-report"};
 
 static int opt_find(const char *name) {
     for (int i = 0; i < OPT__COUNT; i++)
@@ -146,6 +148,16 @@ bool vm_set_option(VM *vm, const char *name, const char *value, MlwsError *err) 
         }
         return true;
     }
+    case OPT_OPT: { /* the optimizer's passes: "2", "3,-inline", "fold,dce", "none" */
+        char msg[512];
+        if (!opt_parse(value, &vm->opt, msg, sizeof msg)) return mlws_err(err, "E_BAD_OPTION", "--opt: %s", msg), false;
+        return true;
+    }
+    case OPT_OPT_REPORT: /* where vm_free writes what the optimizer did */
+        free(vm->opt_report_path);
+        vm->opt_report_path = xstrdup(value);
+        if (!vm->opt_report) vm->opt_report = xcalloc(1, sizeof *vm->opt_report);
+        return true;
     default: return mlws_err(err, "E_BAD_OPTION", "unknown option --%s", name), false;
     }
 }

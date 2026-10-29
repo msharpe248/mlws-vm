@@ -1,0 +1,50 @@
+; simplify: identities that hold whatever the other operand is (x + 0,
+; x * 1, x - x, x ^ x, x & -1 ...), a multiply by a power of two as a
+; shift, a compare with 0 as bz / bnz, and a constant put second where a
+; compare or commutative arithmetic has it first (the quickener's fast forms
+; take a constant second; a compare is mirrored: 1 < x is x > 1). Floats only
+; where it is exact: x * 1.0 and x - 0.0, never x + 0.0 (-0.0 + 0.0 is +0.0).
+; The ten: five in ints, one in floats, two in compares, and main's two
+; ASSERT_EQ of a value with 0, which compare with 0 (bz).
+; option: --opt simplify
+; expect-opt: simplify 10
+.include "std/test.inc"
+
+.func ints(i64 x) -> i64
+    add I1, x, 0                         ; mov I1, x
+    mul I2, I1, 8                        ; shl I2, I1, 3
+    sub I3, x, x                         ; mov I3, 0
+    xor I4, x, x                         ; mov I4, 0
+    and I5, I2, -1                       ; mov I5, I2
+    add I6, I5, I3, I4                   ; (three sources: left alone)
+    ret I6
+.endf
+
+.func floats(f64 y) -> f64
+    mul F1, y, 1.0                       ; mov F1, y
+    add F2, F1, 0.0                      ; stays: not an identity for -0.0
+    ret F2
+.endf
+
+.func compares(i64 x) -> i64
+    beq x, 0, 1f                         ; bz x, 1f
+    blt 1, x, 2f                         ; bgt x, 1, 2f
+    ret 1
+1:  ret 0
+2:  ret 2
+.endf
+
+.func main
+    call ints (5) -> (I0)
+    ASSERT_EQ I0, 40
+    call floats (-0.0) -> (F0)
+    bitcast.i64.f64 I0, F0
+    ASSERT_EQ I0, 0                      ; +0.0: -0.0 + 0.0
+    call compares (0) -> (I0)
+    ASSERT_EQ I0, 0
+    call compares (1) -> (I0)
+    ASSERT_EQ I0, 1
+    call compares (5) -> (I0)
+    ASSERT_EQ I0, 2
+    ret 0
+.endf

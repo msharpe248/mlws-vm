@@ -1,0 +1,26 @@
+; compact: the registers a function uses are renumbered to the lowest of each
+; bank, and its window shrinks to them; parameters keep their places. spread
+; uses I0 (a parameter), F0 (a parameter), I7, F9 and R12, and ends up with a
+; window of I0-I1, F0-F1 and R0. Only the tools can tell (the debugger shows
+; the new numbers).
+; option: --opt compact
+; expect-opt: compact 1
+.include "std/test.inc"
+
+.func spread(i64 a, f64 b) -> f64
+    cvt.f64.i64 F9, a
+    add F9, F9, b
+    mov I7, 2
+    lnew R12
+    lpush R12, I7
+    len I7, R12
+    cvt.f64.i64 F0, I7
+    add F9, F9, F0
+    ret F9
+.endf
+
+.func main
+    call spread (3, 0.5) -> (F0)
+    ASSERT_EQ F0, 4.5, f64
+    ret 0
+.endf

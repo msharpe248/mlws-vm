@@ -1,0 +1,73 @@
+; dce removes instructions whose results nothing reads, if removing them
+; cannot be seen: pure instructions only (no memory, no trap, no
+; allocation). Three cases where a store nothing reads must stay:
+;  - in a .try region, a value the handler reads, since a trap later in the
+;    region shows it;
+;  - a division that may trap (by a register);
+;  - a write to an R register that may hold an object: R registers are the
+;    collector's roots, so `mov R1, null` can be what lets an object go
+;    (and its finalizer run). Where the register is still null, or holds a
+;    constant, the write goes.
+; option: --opt dce
+; expect-opt: dce 5
+; expect-insns: unused 2
+; expect-insns: handler_sees 6
+; expect-insns: may_trap 2
+; expect-insns: release 4
+.include "std/test.inc"
+
+.func unused(i64 x) -> i64
+    add I1, x, 1                         ; never read: removed
+    mul I2, x, x                         ; never read: removed
+    mov.r R1, null                       ; R1 is still null: removed
+    add I3, x, 2
+    ret I3
+.endf
+
+; With d = 0 the division traps, and the handler returns I1: the 7 stored
+; before it, which must stay although the normal path never reads I1. (So
+; must the 8: a trap after it would show it. Nothing here is removed.)
+.func handler_sees(i64 d) -> i64
+    mov I1, 7
+.try 1f
+    div I2, 10, d
+    mov I1, 8
+.endtry
+    ret I2
+1:  catch R0
+    ret I1
+.endf
+
+; The quotient is never read, but the division may trap: it stays.
+.func may_trap(i64 d) -> i64
+    div I1, 100, d
+    mov I2, 9                            ; removed
+    ret 1
+.endf
+
+; R1 holds a list until it is cleared: the clearing stays, though nothing
+; reads R1 afterwards. The second clearing (R1 is null by then) goes.
+.func release -> i64
+    lnew R1
+    len I1, R1
+    mov.r R1, null
+    mov.r R1, null                       ; removed
+    ret I1
+.endf
+
+.func main
+    call unused (40) -> (I0)
+    ASSERT_EQ I0, 42
+    call handler_sees (0) -> (I0)
+    ASSERT_EQ I0, 7
+    call handler_sees (5) -> (I0)
+    ASSERT_EQ I0, 2
+.try 1f
+    call may_trap (0) -> (I0)
+.endtry
+    FAIL "the division by zero was removed"
+1:  catch R0
+    call release () -> (I0)
+    ASSERT_EQ I0, 0
+    ret 0
+.endf

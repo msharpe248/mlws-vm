@@ -1,0 +1,78 @@
+; The branches pass: a branch to a jmp goes where the jmp goes (threading);
+; a jmp to the next instruction goes; a branch decided by constants becomes
+; a jmp, or goes when it is never taken; `bcc L1; jmp L2; L1:` becomes
+; `bncc L2`; a jmp to a ret becomes that ret; and a jtab on a constant is a
+; jmp. unreachable then removes what nothing reaches any more.
+; option: --opt branches,unreachable
+; expect-insns: thread 5
+; expect-insns: decided 2
+; expect-insns: inverted 3
+; expect-insns: to_ret 3
+; expect-insns: table 1
+.include "std/test.inc"
+
+; blt goes straight to `done` (through the two jmps); the jmps are then
+; unreachable or jmps to the next instruction.
+.func thread(i64 x) -> i64
+    blt x, 10, 1f
+    mov I1, 1
+    ret I1
+1:  jmp 2f
+2:  jmp done
+done:
+    mov I1, 2
+    ret I1
+.endf
+
+; 1 < 2 always: the branch is a jmp, and what it jumps over is unreachable.
+.func decided -> i64
+    blt 1, 2, 1f
+    mov I0, 99
+    ret I0
+1:  mov I0, 7
+    ret I0
+.endf
+
+; ble x, 0, 1f; jmp 2f; 1:  is  bgt x, 0, 2f
+.func inverted(i64 x) -> i64
+    ble x, 0, 1f
+    jmp 2f
+1:  ret 1
+2:  ret 2
+.endf
+
+; Both jmps to the ret become rets, and the ret itself is then unreachable.
+.func to_ret(i64 x) -> i64
+    bz x, 1f
+    jmp out
+1:  jmp out
+out:
+    ret 5
+.endf
+
+; jtab 1 goes to its second label.
+.func table -> i64
+    jtab 1, a, b, c
+    ret 0
+a:  ret 10
+b:  ret 20
+c:  ret 30
+.endf
+
+.func main
+    call thread (3) -> (I0)
+    ASSERT_EQ I0, 2
+    call thread (30) -> (I0)
+    ASSERT_EQ I0, 1
+    call decided () -> (I0)
+    ASSERT_EQ I0, 7
+    call inverted (0) -> (I0)
+    ASSERT_EQ I0, 1
+    call inverted (3) -> (I0)
+    ASSERT_EQ I0, 2
+    call to_ret (0) -> (I0)
+    ASSERT_EQ I0, 5
+    call table () -> (I0)
+    ASSERT_EQ I0, 20
+    ret 0
+.endf

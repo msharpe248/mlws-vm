@@ -156,6 +156,7 @@ civil-date conversions.
 | One opcode table that generates the assembler, disassembler, verifier and docs | X-macro tables (LLVM's TableGen in spirit) | |
 | Debugger (`break`/`step`/`next`/`finish`/`bt`), profiler, tracer | **gdb**; flame graphs and the collapsed-stack format (Brendan Gregg); pprof-style hot lists | Breakpoints and stepping are per instruction across many processes; debugger sessions are scriptable from test files (`; debug-script:`) |
 | Live monitor, web dashboard, `top` | **Erlang's observer** and `etop`; Unix `top`; JVM JMX/VisualVM | Served by the first worker thread, polling a socket between time slices, so no extra thread; other workers pause briefly per request for a consistent snapshot; plain JSON plus a text view |
+| An optimizer over the bytecode (`mlwsvm opt`, `--opt`): folding, propagation, dead code, branches, peephole, inlining, tail calls; -O levels, each pass on or off by name, a report per pass and function | LLVM's `opt` and pass manager, and its `-O` levels; GCC's `-f`/`-fno-` flags; McKeeman's peephole optimization (1965); Wegman and Zadeck's constant propagation; ProGuard and R8, which optimize JVM bytecode offline and report what they removed; Erlang's `beam_ssa` passes; CPython's peephole optimizer | It runs on the portable module before linking, so the same optimizer works ahead of time and at every load, with results kept in the module cache; folding calls the interpreter's own arithmetic, so no folded value can differ from a run; the levels are defined by who can observe a pass (nothing but instruction counts at -O1, the tools at -O2, backtraces at -O3), because languages compiled to it read their frames. |
 | Tests written in the VM's own assembly, with `; expect-*` comments | LLVM `lit`/FileCheck-style golden tests | Also run with a collection at every allocation (`make check-gc`), under ASan/UBSan, and on several threads under ThreadSanitizer. |
 
 ---
@@ -245,6 +246,7 @@ of the instructions in call-heavy code.
 | M38 | Cargo's and npm's version constraints; Erlang/OTP applications; JAR manifests and the Java module system's exports; Go modules |
 | M39 | `dlopen` and `dlsym`; Erlang's `code:load_file`; Java's class loaders; Lua's `require` |
 | M40 | Erlang/OTP applications in one node; shell process groups and `wait`; Procfile runners; Node.js's module cache keyed by file, against Python's `sys.modules` keyed by name; stdio line buffering and Erlang's group leader for whole lines of output |
+| M41 | LLVM's `opt` and `-O` levels; GCC's `-fno-*` flags; peephole optimization (McKeeman); Wegman–Zadeck constant propagation; ProGuard/R8 (offline bytecode optimizers with reports); CPython's peephole optimizer |
 
 ## References
 

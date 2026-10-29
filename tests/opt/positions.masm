@@ -1,0 +1,33 @@
+; What the optimizer removes, it removes with its place in the source: the
+; instructions left keep their lines and their .loc positions, and a .try
+; region keeps covering what is left of it. Here the moves before the fault
+; are removed (constprop and dce), and the fault is still reported at
+; shapes.lua:12, and still caught by its handler.
+; option: --opt 1
+.include "std/test.inc"
+
+.func area(ref shape) -> i64
+    .loc "shapes.lua", 10
+    mov I0, 2
+    mov I3, 1                            ; never read
+    .loc "shapes.lua", 12
+    mov I1, shape[I0]                    ; E_BOUNDS for a short list: at shapes.lua:12
+    ret I1
+.endf
+
+.func main
+    lnew R0
+    lpush R0, 1
+.try 1f
+    mov I5, 3                            ; never read: removed, at the region's start
+    call area (R0) -> (I0)
+.endtry
+    FAIL "area should have trapped"
+1:  catch R1
+    mov R2, R1->Error.trace
+    strfind I1, R2, "at positions.area (shapes.lua:12; "
+    ASSERT_GE I1, 0
+    strfind I1, R2, "shapes.lua:10"
+    ASSERT_LT I1, 0
+    ret 0
+.endf

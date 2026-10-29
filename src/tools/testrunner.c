@@ -7,6 +7,11 @@
  *   ; skip: <reason>
  *   ; debug-script: <debugger command>                (repeatable: run under
  *                                                       `mlwsvm debug`; stdout is the transcript)
+ *   ; expect-opt: <pass> <n>                         (repeatable: the optimizer made exactly n
+ *                                                       changes of that pass to this file's module)
+ *   ; expect-insns: <function> <n>                   (repeatable: its instructions once optimized)
+ *   ; no-opt: <reason>                               (not optimized by MLWSVM_OPT or --opt on the
+ *                                                       command line; its own `; option: --opt` still applies)
  *
  * Directories whose name starts with '_' hold helper modules and are skipped.
  *
@@ -32,6 +37,9 @@ typedef struct {
     StrVec options; /* `; option: --name value`, as name, value pairs */
     char *option_error;
     StrVec script; /* debugger commands */
+    StrVec opt_want; /* "pass n" */
+    StrVec insns_want; /* "function n" */
+    bool no_opt;
 } Expect;
 
 static void capture(void *ctx, const char *s, size_t n) { sb_putn(ctx, s, n); }
@@ -119,6 +127,12 @@ static void parse_expect(const char *text, Expect *e) {
             snprintf(e->error_want, sizeof e->error_want, "%s", v);
             char *s = e->error_want + strlen(e->error_want);
             while (s > e->error_want && isspace((unsigned char)s[-1])) *--s = 0;
+        } else if ((v = after_key(line, "expect-opt:"))) {
+            VEC_PUSH(e->opt_want, xstrdup(v));
+        } else if ((v = after_key(line, "expect-insns:"))) {
+            VEC_PUSH(e->insns_want, xstrdup(v));
+        } else if ((v = after_key(line, "no-opt:"))) {
+            e->no_opt = true;
         } else if ((v = after_key(line, "debug-script:"))) {
             VEC_PUSH(e->script, xstrdup(v));
         } else if ((v = after_key(line, "threads:"))) {
@@ -140,6 +154,56 @@ static void parse_expect(const char *text, Expect *e) {
         free(line);
         p = nl ? nl + 1 : p + len;
     }
+}
+
+/* The optimizer's report on the test's own module. */
+static const OptModStat *opt_stat_for(const OptReport *rep, const char *path) {
+    for (size_t i = 0; i < rep->mods.n; i++)
+        if (!strcmp(rep->mods.v[i].source, path)) return &rep->mods.v[i];
+    return NULL;
+}
+
+static void check_opt(const Expect *e, const OptReport *rep, const char *path, StrBuf *why) {
+    const OptModStat *ms = rep ? opt_stat_for(rep, path) : NULL;
+    if (!ms) {
+        sb_printf(why, "expect-opt / expect-insns: the module was not optimized (add `; option: --opt ...`)");
+        return;
+    }
+    for (size_t k = 0; k < e->opt_want.n && !why->n; k++) {
+        char name[64];
+        long long want;
+        if (sscanf(e->opt_want.v[k], "%63s %lld", name, &want) != 2) {
+            sb_printf(why, "bad '; expect-opt:' line: %s (expected a pass and a count)", e->opt_want.v[k]);
+            return;
+        }
+        int p = -1;
+        for (int q = 0; q < PASS__COUNT; q++)
+            if (!strcmp(opt_pass_name(q), name)) p = q;
+        if (p < 0) sb_printf(why, "expect-opt: unknown pass '%s'", name);
+        else if ((long long)ms->counts[p] != want)
+            sb_printf(why, "expect-opt: %s made %llu changes, expected %lld", name, (unsigned long long)ms->counts[p], want);
+    }
+    for (size_t k = 0; k < e->insns_want.n && !why->n; k++) {
+        char name[128];
+        long long want;
+        if (sscanf(e->insns_want.v[k], "%127s %lld", name, &want) != 2) {
+            sb_printf(why, "bad '; expect-insns:' line: %s (expected a function and a count)", e->insns_want.v[k]);
+            return;
+        }
+        const OptFuncStat *fs = NULL;
+        for (size_t q = 0; q < ms->funcs.n; q++)
+            if (!strcmp(ms->funcs.v[q].func, name)) fs = &ms->funcs.v[q];
+        if (!fs) sb_printf(why, "expect-insns: no function '%s' after optimizing", name);
+        else if ((long long)fs->after != want)
+            sb_printf(why, "expect-insns: %s has %u instructions, expected %lld", name, fs->after, want);
+    }
+}
+
+static void free_expect(Expect *e) {
+    for (size_t k = 0; k < e->opt_want.n; k++) free(e->opt_want.v[k]);
+    VEC_FREE(e->opt_want);
+    for (size_t k = 0; k < e->insns_want.n; k++) free(e->insns_want.v[k]);
+    VEC_FREE(e->insns_want);
 }
 
 /* The watchdog: which test is running, and since when. */
@@ -203,6 +267,7 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
             for (size_t k = 0; k < e.options.n; k++) free(e.options.v[k]);
             VEC_FREE(e.options);
             free(e.option_error);
+            free_expect(&e);
             continue;
         }
         VM *vm = vm_new();
@@ -210,6 +275,9 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         MlwsError oerr;
         for (size_t k = 0; k < opts.n && !why.n; k += 2)
             if (!vm_set_option(vm, opts.v[k], opts.v[k + 1], &oerr)) sb_printf(&why, "%s", oerr.msg);
+        if (e.no_opt) vm->opt.passes = 0; /* (MLWSVM_OPT, --opt) */
+        bool want_opt = e.opt_want.n || e.insns_want.n;
+        if (want_opt && !vm->opt_report) vm->opt_report = xcalloc(1, sizeof *vm->opt_report);
         for (size_t k = 0; k < e.options.n && !why.n; k += 2) /* the test's own settings win */
             if (!vm_set_option(vm, e.options.v[k], e.options.v[k + 1], &oerr)) sb_printf(&why, "%s", oerr.msg);
         if (e.option_error && !why.n) sb_printf(&why, "bad '; option:' line: %s (expected --name value)", e.option_error);
@@ -242,6 +310,7 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         } else if (r.exit_code != e.exit_want) {
             sb_printf(&why, "exit code %lld, expected %lld", (long long)r.exit_code, (long long)e.exit_want);
         }
+        if (!why.n && want_opt) check_opt(&e, vm->opt_report, path, &why);
         if (!why.n && e.has_stdout && strcmp(out.s ? out.s : "", e.stdout_want.s) != 0) {
             sb_printf(&why, "stdout mismatch\n--- expected ---\n%s--- got ---\n%s", e.stdout_want.s, out.s ? out.s : "");
         }
@@ -260,6 +329,7 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         for (size_t k = 0; k < e.options.n; k++) free(e.options.v[k]);
         VEC_FREE(e.options);
         free(e.option_error);
+        free_expect(&e);
         sb_free(&e.stdout_want);
         run_result_free(&r);
         vm_free(vm);

@@ -30,6 +30,9 @@ static void usage(FILE *f) {
           "        --quota heap=B,raw=B,mailbox=N,insns=N,foreign=N,os=N   starting limits for every process\n"
           "        --ext-path DIR[:DIR]            trusted extension directories, before lib/ext\n"
           "        --lib-path DIR[:DIR]            more directories to find imports in (as -L DIR)\n"
+          "        --opt LIST                      optimize every module as it loads: a level 0-3, or passes\n"
+          "                                        (docs/OPTIMIZER.md; e.g. 2, 3,-inline, fold,dce)\n"
+          "        --opt-report FILE|-             what the optimizer did, written when the run ends\n"
           "  debug [-L dir] file.(masm|mlwso)      interactive debugger (type 'help')\n"
           "  top   [HOST:PORT] [--once]            live process table of a VM run with --monitor\n"
           "  asm  [-L dir] [-o out.mlwso] [-E] file.masm                   assemble (-E: preprocess only)\n"
@@ -38,6 +41,8 @@ static void usage(FILE *f) {
           "  doc  isa|natives [-o file]                                  generate reference docs\n"
           "  ext  list|install|remove|allow-ffi|deny-ffi [--dir D] ...  manage trusted native code\n"
           "  lib  build DIR [-o FILE] | info FILE.mlwsl | list           library archives\n"
+          "  opt  [-L dir] [-O0|-O1|-O2|-O3] [--passes LIST] [-o out.mlwso] [-S] [--report FILE|-] [-v] file.(masm|mlwso)\n"
+          "                                        optimize a module, with a report (--list: the passes)\n"
           "  bindgen [-l LIB] [-p PREFIX] [-o OUT] [--all] header.h       FFI declarations from a C header (clang)\n"
           "  version\n"
           "\n"
@@ -412,6 +417,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "doc")) rc = tool_doc(n, args);
     else if (!strcmp(cmd, "ext")) rc = tool_ext(n, args, &g_env);
     else if (!strcmp(cmd, "lib")) rc = tool_lib(n, args, &g_env);
+    else if (!strcmp(cmd, "opt")) rc = tool_opt(n, args, &g_env);
     else if (!strcmp(cmd, "bindgen")) rc = tool_bindgen(n, args);
     else if (!strcmp(cmd, "version") || !strcmp(cmd, "--version")) {
         printf("mlwsvm %s\n", MLWSVM_VERSION);

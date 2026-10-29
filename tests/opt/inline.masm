@@ -1,0 +1,61 @@
+; inline: a call to a small function of the module becomes its body, on
+; registers of the caller's that nothing else uses. The body's registers
+; start as 0 every time, as a new window does (bump reads I1 before writing
+; it, so calling it twice must not see the first call's value). A fault in
+; the body is caught by the caller's handler, as it would be when the call
+; returned it. A function that calls one is not inlined, until what it
+; calls is inlined into it: outer then calls nothing, and is inlined into main
+; too. fact, which calls itself, never is. Six calls are inlined: add3 into
+; outer and into main, bump twice, divide, and outer.
+; option: --opt inline
+; expect-opt: inline 6
+.include "std/test.inc"
+
+.func add3(i64 a, i64 b, i64 c) -> i64
+    add I3, a, b, c
+    ret I3
+.endf
+
+.func bump(i64 x) -> i64
+    add I1, x                            ; I1 starts as 0: I1 = x
+    ret I1
+.endf
+
+.func divide(i64 a, i64 b) -> i64
+    div I2, a, b
+    ret I2
+.endf
+
+.func outer(i64 x) -> i64                ; calls add3, until add3 is inlined into it
+    call add3 (x, x, x) -> (I1)
+    ret I1
+.endf
+
+.func fact(i64 n) -> i64                 ; calls itself: never inlined
+    ble n, 1, 1f
+    sub I1, n, 1
+    call fact (I1) -> (I2)
+    mul I2, n
+    ret I2
+1:  ret 1
+.endf
+
+.func main
+    call add3 (1, 2, 3) -> (I0)
+    ASSERT_EQ I0, 6
+    call bump (5) -> (I0)
+    call bump (7) -> (I1)
+    ASSERT_EQ I1, 7                      ; not 12
+.try 1f
+    call divide (1, 0) -> (I2)
+.endtry
+    FAIL "the division in the inlined body did not trap"
+1:  catch R0
+    strcmp I3, R0->Error.code, "E_DIV_ZERO"
+    ASSERT_EQ I3, 0
+    call outer (4) -> (I0)
+    ASSERT_EQ I0, 12
+    call fact (5) -> (I0)
+    ASSERT_EQ I0, 120
+    ret 0
+.endf

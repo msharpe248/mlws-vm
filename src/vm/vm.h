@@ -19,6 +19,7 @@
 
 #include "../core/insn.h"
 #include "../core/module.h"
+#include "../opt/opt.h"
 
 #include "../heap/object.h"
 
@@ -250,6 +251,10 @@ typedef struct VM {
     VEC(char *) ext_paths;       /* trusted extension directories, in search order */
     bool unsafe_native;          /* --unsafe-native: skip the trust checks */
     bool no_cache;               /* --no-cache: assemble every .masm afresh (modcache.c) */
+    /* the optimizer (src/opt, docs/OPTIMIZER.md): run on each module as it is loaded */
+    OptConfig opt;               /* --opt: the passes; none by default */
+    OptReport *opt_report;       /* what they did, if --opt-report (or a test) asks */
+    char *opt_report_path;       /* --opt-report FILE, or "-" for stderr: written by vm_free */
     int cache_state;             /* 0 not looked at yet, 1 cache_dir in use, -1 off */
     char *cache_dir;
     bool warned_unsafe;
@@ -548,6 +553,10 @@ LModule *vm_module_named(VM *vm, const char *name, const LModule *from);
 /* modcache.c: a .masm file assembled, or its module from the cache; home:
  * the program directory it was found in (searched first for .include), or NULL */
 Module *modcache_assemble(VM *vm, const char *path, const char *default_name, const Home *home, MlwsError *err);
+/* m optimized as --opt says: from the cache if it holds this module optimized
+ * with these passes, else optimized now (and kept). Returns the module to use;
+ * m is freed if it is not that. */
+Module *modcache_optimize(VM *vm, Module *m);
 /* verify.c */
 bool vm_verify_module(VM *vm, LModule *lm, MlwsError *err);
 /* Clear every call's whole window from now on (the debugger shows them). */

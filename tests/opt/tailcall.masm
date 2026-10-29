@@ -1,0 +1,39 @@
+; tailcall: `call f (...) -> (r); ret r` becomes `tcall f (...)`, so the
+; caller's frame is gone while f runs. Here that is what lets count recurse
+; 100000 deep under a limit of 1000 frames (unoptimized it fails with
+; E_CALL_DEPTH). A call inside a .try region is never made a tail call:
+; the handler must still catch what the callee throws, as guarded shows.
+; option: --opt tailcall
+; option: --max-frames 1000
+; expect-opt: tailcall 1
+.include "std/test.inc"
+
+.func count(i64 n) -> i64
+    bz n, 1f
+    sub I1, n, 1
+    call count (I1) -> (I2)
+    ret I2
+1:  ret 0
+.endf
+
+.func boom -> i64
+    throw "boom"
+    ret 0
+.endf
+
+.func guarded -> i64
+.try 1f
+    call boom () -> (I0)
+.endtry
+    ret I0
+1:  catch R0
+    ret -1
+.endf
+
+.func main
+    call count (100000) -> (I0)
+    ASSERT_EQ I0, 0
+    call guarded () -> (I0)
+    ASSERT_EQ I0, -1
+    ret 0
+.endf

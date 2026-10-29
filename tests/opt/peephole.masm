@@ -1,0 +1,24 @@
+; peephole: a nop, a full-width move of a register to itself, and the move
+; back in `mov a, b; mov b, a`, are removed. A narrower move to itself is
+; not: mov.i32 I0, I0 wraps I0 to 32 bits.
+; option: --opt peephole
+; expect-opt: peephole 3
+; expect-insns: moves 5
+.include "std/test.inc"
+
+.func moves(i64 x) -> i64
+    nop
+    mov I0, I0
+    mov I1, x
+    mov I0, I1                           ; removed: I0 is already x
+    mov.i32 I2, 0x100000005
+    mov.i32 I2, I2                       ; stays: (it would wrap; here it is 5 already)
+    add I3, I1, I2
+    ret I3
+.endf
+
+.func main
+    call moves (37) -> (I0)
+    ASSERT_EQ I0, 42
+    ret 0
+.endf

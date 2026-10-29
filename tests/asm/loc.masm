@@ -5,6 +5,7 @@
 ; `at loc.area (shapes.lua:12; tests/asm/loc.masm:15)`. The profiler,
 ; tracer, debugger and monitor show it too (docs/TOOLING.md). Here a trap and
 ; a throw are caught and their traces searched for the program lines.
+; no-opt: the traces name frames that -O3 inlines away
 .include "std/test.inc"
 
 ; The position of a trap in a function with .loc runs.

@@ -1,0 +1,64 @@
+; Constants and copies flow through registers to where they are read.
+; constprop: a register known to hold a constant is read as the constant,
+; wherever the instruction takes one; a function's registers other than its
+; parameters start as 0, as a new window reads, so they are known too.
+; copyprop: in a block, a register copied from another by a full-width move
+; is read from the original, and the copy dies (dce).
+; Where an instruction keeps a value's own type (an untyped push, a list
+; element), only a constant of the register's own natural type replaces it,
+; so the value stored keeps its type tag (tagof below), and a null never
+; replaces a register there: its natural type would be an integer.
+; option: --opt constprop,copyprop,dce
+; expect-insns: through 3
+; expect-insns: copies 2
+; expect-insns: kept_type 6
+.include "std/test.inc"
+
+; 5 and 7 reach the add as constants; the moves go.
+.func through(i64 x) -> i64
+    mov I1, 5
+    mov I2, 7
+    add I3, I1, I2, x                    ; becomes add I3, 5, 7, x
+    mul I4, I3, I1                       ; becomes mul I4, I3, 5
+    ret I4
+.endf
+
+; The copies of x are read as x; the moves go.
+.func copies(i64 x) -> i64
+    mov I1, x
+    mov I2, I1
+    add I3, I2, I1                       ; becomes add I3, x, x
+    ret I3
+.endf
+
+; A list of what was pushed: the values keep their types.
+.func kept_type -> ref
+    lnew R0
+    mov I1, 5
+    mov F1, 2.5
+    mov.r R1, null                       ; goes: R1 is null already
+    lpush R0, I1                         ; becomes lpush R0, 5 (an integer either way)
+    lpush R0, F1                         ; becomes lpush R0, 2.5
+    lpush R0, R1                         ; stays: a null literal here would be the integer 0
+    lpush R0, I9                         ; I9 was never written: 0
+    ret R0
+.endf
+
+.func main
+    call through (1) -> (I0)
+    ASSERT_EQ I0, 65                     ; (5 + 7 + 1) * 5
+    call copies (21) -> (I0)
+    ASSERT_EQ I0, 42
+    call kept_type () -> (R0)
+    tagof I1, R0[0]
+    ASSERT_EQ I1, 6                      ; i64
+    tagof I1, R0[1]
+    ASSERT_EQ I1, 12                     ; f64
+    tagof I1, R0[2]
+    ASSERT_EQ I1, 13                     ; r
+    mov R1, R0[2]
+    ASSERT_FALSE R1, r
+    mov I2, R0[3]
+    ASSERT_EQ I2, 0
+    ret 0
+.endf

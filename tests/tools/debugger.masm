@@ -1,7 +1,7 @@
 ; The debugger: breakpoints by function and line, backtraces, registers,
 ; objects, the data stack, stepping, and finishing. The test runner drives it
 ; with the debug-script lines below and compares the transcript.
-;
+; no-opt: the transcript shows registers that -O2's compact pass removes
 ; debug-script: break fact
 ; debug-script: run
 ; debug-script: bt

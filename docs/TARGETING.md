@@ -478,6 +478,27 @@ on them.
 
 ## 12. What runs fastest
 
+**Leave the clean-up to the optimizer.** `--opt 2` ([OPTIMIZER.md](OPTIMIZER.md))
+removes most of what simple code generation leaves behind:
+- moves nothing reads;
+- conversions and arithmetic on constants;
+- copies of copies;
+- jumps to jumps;
+- branches on constants;
+- code nothing reaches;
+- unused functions;
+- unused registers.
+
+So a compiler can emit the straightforward translation of each construct and
+let the optimizer remove what the context makes redundant. `--opt 3` also
+inlines small functions and makes calls whose results are returned into tail
+calls, which takes their frames out of backtraces. A language whose semantics
+read frames (an error's position in the caller, a level argument) should use
+`--opt 2`. Optimized modules are kept in the module cache, so the cost is paid
+once per module. The rest of this section is about the shapes each
+instruction runs fastest in, which the optimizer does not change, except to
+put a constant second where a compare or commutative operation has it first.
+
 Every instruction works with every operand form, but the interpreter has fast
 paths for the common shapes. They are chosen at load time, so a compiler gets
 them by emitting these shapes; nothing else changes.

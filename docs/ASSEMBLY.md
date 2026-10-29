@@ -746,6 +746,7 @@ mlwsvm dis  [-L dir] prog.masm|prog.mlwso
 mlwsvm test [-L dir] [-v] [VM options] [paths...]
 mlwsvm doc  isa|natives [-o file]
 mlwsvm ext  list|install|remove|allow-ffi|deny-ffi [--dir D] ...
+mlwsvm opt  [-L dir] [-O0|-O1|-O2|-O3] [--passes LIST] [-o out.mlwso] [-S] [-v] prog.masm|prog.mlwso
 mlwsvm bindgen [-l LIB] [-p PREFIX] [-o OUT] [--all] header.h
 mlwsvm version
 ```
@@ -763,6 +764,9 @@ Expectations are written as comments in the test file:
 ; option: --max-frames 500               (repeatable: a VM option, as on the command line)
 ; requires: ffi                           (skip unless built with libffi)
 ; debug-script: break main               (repeatable: run under the debugger; stdout = transcript)
+; expect-opt: dce 5                       (repeatable: the optimizer made exactly 5 dce changes here)
+; expect-insns: main 7                    (repeatable: main's instructions once optimized)
+; no-opt: reason                          (not optimized by MLWSVM_OPT or --opt on the command line)
 ```
 
 Tests run on one worker thread per core unless `--threads N`, `MLWSVM_THREADS` or
@@ -776,5 +780,9 @@ GC-stress run of `make check-asan` allow 1,200 seconds per test, because
 collecting at every allocation is quadratic in a growing heap
 (`examples/http_server.masm` takes about 3 minutes under AddressSanitizer).
 
+The `expect-opt`, `expect-insns` and `no-opt` lines are for testing the
+optimizer ([OPTIMIZER.md](OPTIMIZER.md#tests)).
+
 See [TOOLING.md](TOOLING.md) for the debugger, profiler, tracer, monitor and
-`bindgen`, and [EXTENDING.md](EXTENDING.md) for `ext`.
+`bindgen`, [OPTIMIZER.md](OPTIMIZER.md) for `opt`, and [EXTENDING.md](EXTENDING.md)
+for `ext`.

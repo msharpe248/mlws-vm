@@ -90,6 +90,22 @@ static void lmodule_free(LModule *lm) {
 void vm_free(VM *vm) {
     if (!vm) return;
     if (vm->tools_free) vm->tools_free(vm);
+    if (vm->opt_report) {
+        if (vm->opt_report_path) {
+            bool to_err = !strcmp(vm->opt_report_path, "-");
+            FILE *f = to_err ? stderr : fopen(vm->opt_report_path, "w");
+            if (f) {
+                fflush(stdout);
+                opt_report_print(vm->opt_report, f);
+                if (!to_err) fclose(f);
+            } else {
+                fprintf(stderr, "mlwsvm: cannot write the optimizer's report to %s\n", vm->opt_report_path);
+            }
+        }
+        opt_report_free(vm->opt_report);
+        free(vm->opt_report);
+        free(vm->opt_report_path);
+    }
     sched_free(vm); /* every remaining process */
     if (sched_abandoned(vm)) { /* a native call is still running on this VM's memory */
         fprintf(stderr, "mlwsvm: a blocking native call did not return; leaving it running\n");
