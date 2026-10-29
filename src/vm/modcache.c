@@ -20,7 +20,8 @@
  *
  * With --opt, a module's optimized form is kept too (modcache_optimize), found
  * by a SHA-256 of the executable, the passes and the module as loaded (its
- * .mlwso bytes), so the optimizer runs once per module and set of passes,
+ * .mlwso bytes, less the source file's name, which backtraces get from the
+ * file loaded), so the optimizer runs once per module and set of passes,
  * wherever the module came from: a .masm file, a .mlwso file or a library
  * archive. */
 #include "vm.h"
@@ -263,7 +264,10 @@ Module *modcache_optimize(VM *vm, Module *m) {
         return m;
     }
     ByteBuf b = {0};
+    char *source = m->source; /* not part of the key: a program written to a new file each time still hits */
+    m->source = NULL;
     module_write(m, &b);
+    m->source = source;
     Sha256 h;
     sha256_init(&h);
     hash_str(&h, "mlwsvm optimized module");
@@ -271,7 +275,6 @@ Module *modcache_optimize(VM *vm, Module *m) {
     sha256_update(&h, &st.size, sizeof st.size);
     sha256_update(&h, &st.mtime_ns, sizeof st.mtime_ns);
     sha256_update(&h, &vm->opt.passes, sizeof vm->opt.passes);
-    hash_str(&h, m->source ? m->source : "");
     sha256_update(&h, b.b, b.n);
     bb_free(&b);
     free(exe);

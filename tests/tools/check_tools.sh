@@ -26,7 +26,8 @@ rm -f "$TMPD/loc.mlwso"
 rmdir "$TMPD"
 
 # The module cache: an entry is made and used; an included file that changes,
-# or an entry that is damaged, means assembling again; --no-cache makes none
+# or an entry that is damaged, means assembling again; --no-cache makes none;
+# with --opt, optimized modules are kept and found by content
 CDIR=$(mktemp -d)
 mkdir "$CDIR/src" "$CDIR/cache"
 printf '.include "val.inc"\n.include "std/io.inc"\n.func main\n    PRINTLN_I VAL\n    ret 0\n.endf\n' > "$CDIR/src/prog.masm"
@@ -45,6 +46,19 @@ OUT=$(MLWSVM_CACHE="$CDIR/cache" $BIN run "$CDIR/src/prog.masm")
 rm -f "$CDIR"/cache/*.mlwsc
 MLWSVM_CACHE="$CDIR/cache" $BIN run --no-cache "$CDIR/src/prog.masm" >/dev/null
 [ "$(ls "$CDIR/cache" | grep -c '\.mlwsc$')" = 0 ] || fail "cache: --no-cache made an entry"
+# --opt: each module's optimized form is kept too, and found again when the
+# same program is written to another directory (as a compiler writes a fresh
+# temporary one each time)
+rm -f "$CDIR"/cache/*.mlwsc
+OUT=$(MLWSVM_CACHE="$CDIR/cache" $BIN run --opt 2 "$CDIR/src/prog.masm")
+[ "$OUT" = 2 ] || fail "cache: --opt run printed '$OUT'"
+N=$(ls "$CDIR/cache" | grep -c '\.mlwsc$')
+[ "$N" -ge 2 ] || fail "cache: --opt kept no optimized module ($N entries)"
+mkdir "$CDIR/src2"
+cp "$CDIR/src/prog.masm" "$CDIR/src/val.inc" "$CDIR/src2/"
+OUT=$(MLWSVM_CACHE="$CDIR/cache" $BIN run --opt 2 "$CDIR/src2/prog.masm")
+[ "$OUT" = 2 ] || fail "cache: --opt from another file printed '$OUT'"
+[ "$(ls "$CDIR/cache" | grep -c '\.mlwsc$')" = "$N" ] || fail "cache: the same program in another directory was optimized again"
 rm -rf "${CDIR:?}"
 
 # mlwsvm lib: build, info, and what it refuses
@@ -235,14 +249,19 @@ done
 rm -rf "${PDIR:?}"
 
 # mlwsvm opt: its encoder gives back every module byte for byte (decoding and
-# re-encoding each function, with no pass on); -S, the report, --list, the
-# change log, and --opt-report at the end of a run.
+# re-encoding each function, with no pass on), and every module optimized at
+# -O1 and -O3 reads back (the reader checks lines, .loc runs and handlers); -S, the
+# report, --list, the change log, and --opt-report at the end of a run.
 ODIR=$(mktemp -d)
 n=0
 for f in $(find tests examples lib -name '*.masm' -not -path '*/_bindgen/*'); do
     $BIN asm "$f" -o "$ODIR/a.mlwso" >/dev/null 2>&1 || continue
     $BIN opt -q -O0 --passes encode -o "$ODIR/b.mlwso" "$f" || fail "opt --passes encode: $f"
     cmp -s "$ODIR/a.mlwso" "$ODIR/b.mlwso" || fail "opt: re-encoding changed $f"
+    for level in 1 3; do
+        $BIN opt -q -O$level -o "$ODIR/c.mlwso" "$f" || fail "opt -O$level: $f"
+        $BIN dis "$ODIR/c.mlwso" >/dev/null || fail "opt -O$level: $f does not load back"
+    done
     n=$((n + 1))
 done
 [ $n -gt 250 ] || fail "opt: only $n modules re-encoded"

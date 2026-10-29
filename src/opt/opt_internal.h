@@ -9,7 +9,8 @@
 
 /* One instruction. `rb`/`rn` are the `.loc` runs (MFunc.locs) that start
  * just before it, as indices into OFunc.runs: when the instruction goes, they
- * move to the next one, so every run keeps its place. */
+ * move to the next one, so every run keeps its place (and the last of them is
+ * the one in force there). */
 typedef struct {
     Insn in;
     uint32_t line; /* MFunc.lines */

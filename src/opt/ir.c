@@ -164,17 +164,19 @@ void ofn_store(OModule *om) {
             mf->lines = xcalloc(n + 1, sizeof *mf->lines);
             for (uint32_t i = 0; i < n; i++) mf->lines[i] = f->code.v[i].line;
         }
+        /* Of the runs that start at an instruction, the last is the one in
+         * force (the others now cover nothing, their instructions gone), and
+         * runs at the end cover nothing at all: the format has at most one
+         * run per instruction, in order. */
         uint32_t nl = 0;
-        for (uint32_t i = 0; i < n; i++) nl += f->code.v[i].rn;
-        nl += f->tail_rn;
+        for (uint32_t i = 0; i < n; i++) nl += f->code.v[i].rn > 0;
         MLoc *locs = nl ? xcalloc(nl, sizeof *locs) : NULL;
         uint32_t j = 0;
-        for (uint32_t i = 0; i <= n; i++) {
-            uint32_t rb = i < n ? f->code.v[i].rb : f->tail_rb, rn = i < n ? f->code.v[i].rn : f->tail_rn;
-            for (uint32_t k = 0; k < rn; k++) {
-                locs[j] = f->runs[rb + k];
-                locs[j++].start = i;
-            }
+        for (uint32_t i = 0; i < n; i++) {
+            const OInsn *o = &f->code.v[i];
+            if (!o->rn) continue;
+            locs[j] = f->runs[o->rb + o->rn - 1];
+            locs[j++].start = i;
         }
         free(mf->locs);
         mf->locs = locs;

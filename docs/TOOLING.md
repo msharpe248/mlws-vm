@@ -46,8 +46,10 @@ run, wherever the entry was made.
 
 With `--opt` ([OPTIMIZER.md](OPTIMIZER.md)), each module's optimized form is
 kept as well, found by a SHA-256 of the executable, the passes and the module
-as loaded. That holds for every module, from a `.masm` file, a `.mlwso` file
-or a library archive, so a module is optimized once per set of passes. A run
+as loaded (but not its file's name, so a program a compiler writes to a fresh
+temporary directory each time is still found). That holds for every module,
+from a `.masm` file, a `.mlwso` file or a library archive, so a module is
+optimized once per set of passes. A run
 asked for `--opt-report` optimizes afresh, so that its report says what the
 passes did.
 
