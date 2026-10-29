@@ -200,14 +200,9 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   its `R` bank~~ (M33: done).
 * Lock-free run queues and spinning before sleeping, for many-thread,
   message-heavy programs (M35 wakes idle threads one at a time instead).
-* A bytecode optimizer: a language-independent pass over each function as it
-  is loaded or assembled. Dead moves, copy and constant propagation, branch
-  threading, and rewriting general-path shapes into fast ones (a compare and
-  a branch into one compare-and-branch, a constant operand into a register).
+* ~~A bytecode optimizer~~ (M41: done; [OPTIMIZER.md](OPTIMIZER.md)).
   Removing type checks needs the source language's types, so that stays in
-  the compilers. Worth doing once profiles of generated code (`--profile`'s
-  general-path list) show waste a generic pass would remove; in the Lox and
-  Lua compilers' output, so far, they show little.
+  the compilers.
 * A generic string replace (every occurrence of one string in another, and
   the count), which the Lua compiler's `gsub` of a plain pattern would use
   instead of its loop. Low priority.
@@ -215,6 +210,6 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 ## 5. The scripting language
 
 A separate project (`mlws-compilers`) that targets MLWSVM's assembly
-([TARGETING.md](TARGETING.md)): compilers for brainfuck and Lox so far, with Lua
-next. Their generated code drives the decisions in section 4, as it did for
-M24 and M25.
+([TARGETING.md](TARGETING.md)): compilers for brainfuck, Lox and Lua. Their
+generated code drives the decisions in section 4, as it did for M24, M25,
+M29 and M41.
