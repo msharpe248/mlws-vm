@@ -1,0 +1,93 @@
+; cse: the same computation, or the same load, done again where nothing can
+; have changed its result, becomes a copy of the register that holds it.
+; Nothing that could have changed it may come between: for a computation,
+; a write to its result's register or to one it reads; for a load, also any
+; store, call or object update. It is never assumed across a join: a value
+; reaches the next block only if that block has no other way in.
+; option: --opt cse
+; expect-opt: cse 3
+.include "std/test.inc"
+
+.struct Box
+    v: i64
+.ends
+
+; The second multiply and the second load are copies.
+.func twice(f64 a, f64 b, ref box) -> f64
+    mul F2, a, b
+    mov I0, box->Box.v
+    mul F3, a, b                         ; cse: mov F3, F2
+    mov I1, box->Box.v                   ; cse: mov I1, I0
+    add I2, I0, I1
+    cvt.f64.i64 F4, I2
+    add F5, F2, F3, F4
+    ret F5
+.endf
+
+; A store comes between: the second load is done again.
+.func stored(ref box) -> i64
+    mov I0, box->Box.v
+    mov box->Box.v, 7
+    mov I1, box->Box.v                   ; 7, not the first value
+    add I2, I0, I1
+    ret I2
+.endf
+
+; A call comes between (it may write the box): the load is done again.
+.func set7(ref box)
+    mov box->Box.v, 7
+    ret
+.endf
+
+.func called(ref box) -> i64
+    mov I0, box->Box.v
+    call set7 (box)
+    mov I1, box->Box.v
+    add I2, I0, I1
+    ret I2
+.endf
+
+; An operand changes between: computed again.
+.func changed(i64 x) -> i64
+    add I1, x, 1
+    inc x
+    add I2, x, 1                         ; x has changed: not a copy
+    add I3, I1, I2
+    ret I3
+.endf
+
+; Into the block after a branch, which has no other way in: a copy.
+.func chained(i64 x) -> i64
+    mul I1, x, x
+    bz x, 1f
+    mul I2, x, x                         ; cse: mov I2, I1
+    ret I2
+1:  ret I1
+.endf
+
+; At a join, one path has not computed it: computed again.
+.func joined(i64 x) -> i64
+    bz x, 1f
+    mul I1, x, x
+1:  mul I2, x, x                         ; reached from both paths: computed
+    ret I2
+.endf
+
+.func main
+    new R0, Box
+    mov R0->Box.v, 3
+    call twice (2.0, 3.0, R0) -> (F0)
+    ASSERT_EQ F0, 18.0, f64              ; 6 + 6 + 6
+    call stored (R0) -> (I0)
+    ASSERT_EQ I0, 10                     ; 3 + 7
+    mov R0->Box.v, 3
+    call called (R0) -> (I0)
+    ASSERT_EQ I0, 10
+    call changed (4) -> (I0)
+    ASSERT_EQ I0, 11                     ; 5 + 6
+    call chained (5) -> (I0)
+    ASSERT_EQ I0, 25
+    call joined (5) -> (I0)
+    ASSERT_EQ I0, 25
+    ret 0
+.endf

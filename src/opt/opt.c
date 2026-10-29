@@ -52,7 +52,7 @@ bool opt_parse(const char *spec, OptConfig *cfg, char *err, size_t errlen) {
             s = level_passes(3);
         } else {
             snprintf(err, errlen, "unknown optimization '%.*s' (a level 0-3, all, none, or a pass: fold, simplify, "
-                                  "constprop, copyprop, dce, branches, unreachable, peephole, deadfuncs, compact, "
+                                  "constprop, cse, copyprop, dce, branches, unreachable, peephole, deadfuncs, compact, "
                                   "inline, tailcall; -name turns one off)",
                      (int)n, p);
             return false;
@@ -70,6 +70,8 @@ static void cleanup(OFunc *f) {
     for (int round = 0; round < 8; round++) {
         bool ch = false; /* (each pass sees the code without what the one before removed) */
         if (opt_on(f, PASS_FOLD) || opt_on(f, PASS_CONSTPROP) || opt_on(f, PASS_SIMPLIFY)) ch |= pass_constants(f);
+        ofn_compact(f);
+        if (opt_on(f, PASS_CSE)) ch |= pass_cse(f);
         ofn_compact(f);
         if (opt_on(f, PASS_COPYPROP)) ch |= pass_copyprop(f);
         if (opt_on(f, PASS_PEEPHOLE)) ch |= pass_peephole(f);

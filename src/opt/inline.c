@@ -17,10 +17,15 @@
  * caller's frame. A fault inside it is reported in the caller's frame, and
  * caught by the caller's handlers, as it would be after the call returned the
  * error to it. A caller grows by at most its own size (and no more than
- * CALLER_MAX), so inlining cannot multiply code without bound. */
+ * CALLER_MAX), so inlining cannot multiply code without bound. A function of
+ * up to INLINE_SMALL instructions is inlined at any call; one up to
+ * INLINE_MAX only at a call in a loop (a block on a cycle of the function's
+ * blocks), where the call is repeated: elsewhere the copy would cost more
+ * space than the call costs time. */
 #include "opt_internal.h"
 
-#define INLINE_MAX 40      /* instructions in the function inlined */
+#define INLINE_SMALL 12    /* a function this small is inlined at any call */
+#define INLINE_MAX 40      /* a larger one, up to this, only at a call in a loop */
 #define CALLER_MAX 4000    /* instructions a caller may grow to */
 
 
@@ -42,9 +47,9 @@ static bool frameless(const Insn *in) {
     return true;
 }
 
-static bool inlinable(const OFunc *g) {
+static bool inlinable(const OFunc *g, bool in_loop) {
     const MFunc *mf = g->mf;
-    if (g->code.n == 0 || g->code.n > INLINE_MAX || g->h.n) return false;
+    if (g->code.n == 0 || g->code.n > (in_loop ? INLINE_MAX : INLINE_SMALL) || g->h.n) return false;
     if (!(mf->flags & MF_RETS_DECLARED)) return false;
     for (int k = 0; k < mf->nparams; k++)
         if (mf->params[k] == T_BIG || mf->params[k] == T_DEC) return false;
@@ -195,22 +200,87 @@ static bool inline_call(OFunc *f, uint32_t pc, OFunc *g) {
     return true;
 }
 
+/* For each instruction, whether its block is on a cycle: the blocks' strongly
+ * connected components (Tarjan's algorithm, without recursion), a component
+ * of more than one block, or of one that branches to itself. */
+static uint8_t *loop_blocks(const OFunc *f) {
+    uint32_t n = (uint32_t)f->code.n;
+    uint8_t *at = xcalloc(n + 1, 1);
+    if (!n) return at;
+    OCfg g;
+    ocfg_build(f, &g);
+    uint32_t nb = g.n, counter = 0, sp = 0, cs = 0;
+    uint32_t *index = xmalloc(nb * sizeof *index), *low = xmalloc(nb * sizeof *low), *stack = xmalloc(nb * sizeof *stack);
+    uint32_t *cstack = xmalloc(nb * sizeof *cstack), *edge = xcalloc(nb, sizeof *edge);
+    uint8_t *on = xcalloc(nb, 1), *cyc = xcalloc(nb, 1);
+    for (uint32_t b = 0; b < nb; b++) index[b] = UINT32_MAX;
+    for (uint32_t root = 0; root < nb; root++) {
+        if (index[root] != UINT32_MAX) continue;
+        cstack[cs++] = root;
+        index[root] = low[root] = counter++;
+        stack[sp++] = root, on[root] = 1;
+        while (cs) {
+            uint32_t v = cstack[cs - 1];
+            uint32_t succ[64];
+            uint32_t ns = ocfg_succs(&g, v, succ, 64);
+            if (edge[v] < ns) {
+                uint32_t w = succ[edge[v]++];
+                if (w == v) cyc[v] = 1;
+                if (index[w] == UINT32_MAX) {
+                    index[w] = low[w] = counter++;
+                    stack[sp++] = w, on[w] = 1;
+                    cstack[cs++] = w;
+                } else if (on[w] && index[w] < low[v]) {
+                    low[v] = index[w];
+                }
+                continue;
+            }
+            cs--;
+            if (cs && low[v] < low[cstack[cs - 1]]) low[cstack[cs - 1]] = low[v];
+            if (low[v] == index[v]) { /* v roots a component: pop it */
+                uint32_t size = 0, top = sp;
+                while (stack[--top] != v) size++;
+                size++;
+                for (uint32_t k = top; k < sp; k++) {
+                    on[stack[k]] = 0;
+                    if (size > 1) cyc[stack[k]] = 1;
+                }
+                sp = top;
+            }
+        }
+    }
+    for (uint32_t i = 0; i < n; i++) at[i] = cyc[g.of[i]];
+    free(index);
+    free(low);
+    free(stack);
+    free(cstack);
+    free(edge);
+    free(on);
+    free(cyc);
+    ocfg_free(&g);
+    return at;
+}
+
 bool pass_inline(OFunc *f) {
     OModule *om = f->om;
     Module *m = om->m;
     bool ch = false;
+    uint8_t *loop = loop_blocks(f); /* by instruction, in the numbering before any insertion */
+    uint32_t shift = 0;             /* instructions inserted so far */
     for (uint32_t i = 0; i < f->code.n; i++) {
         OInsn *oi = &f->code.v[i];
         if (oi->dead || oi->in.op != OP_CALL) continue;
         int64_t gi = func_index_of(&oi->in.ops[0]);
         if (gi < 0 || (uint64_t)gi >= m->nfuncs || (uint32_t)gi == f->fi) continue;
         OFunc *g = om->fn[gi];
-        if (!g || !inlinable(g)) continue;
+        if (!g || !inlinable(g, loop[i - shift])) continue;
         uint32_t before = (uint32_t)f->code.n;
         if (inline_call(f, i, g)) {
             ch = true;
+            shift += (uint32_t)f->code.n - before;
             i += (uint32_t)f->code.n - before; /* past what was inserted, onto the dead call */
         }
     }
+    free(loop);
     return ch;
 }

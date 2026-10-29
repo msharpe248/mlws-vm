@@ -96,6 +96,7 @@ uint32_t ocfg_succs(const OCfg *g, uint32_t i, uint32_t *out, uint32_t cap);
 
 /* ---- the passes ---- */
 bool pass_constants(OFunc *f);    /* fold, constprop, simplify (fold.c) */
+bool pass_cse(OFunc *f);          /* cse.c */
 bool pass_copyprop(OFunc *f);     /* copy.c */
 bool pass_peephole(OFunc *f);     /* copy.c */
 bool pass_dce(OFunc *f);          /* dce.c */

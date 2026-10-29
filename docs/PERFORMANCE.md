@@ -108,10 +108,11 @@ in `strings` and `iterate`, library functions that run as VM code where
 Lua's are in C.
 
 With the optimizer ([OPTIMIZER.md](OPTIMIZER.md#performance)), the same
-benchmarks take up to 15% less time at `--opt 2` (`loop`; `binarytrees` 4%),
-and `spectralnorm` 30% less at `--opt 3`, where its small helpers are
-inlined. The rest are within 1.5%: hand-written code, and code that spends its
-time in calls and allocation, has little for it to remove.
+benchmarks take up to 14% less time at `--opt 2` (`loop`), and at
+`--opt 3`, where small functions are inlined, `spectralnorm` takes 33% less
+and `iterate` 12% less. The rest gain up to 6%. Code that spends its time in
+calls through closures, allocation and table checks has less for it to
+remove.
 
 ### Against other virtual machines
 

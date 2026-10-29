@@ -20,6 +20,7 @@
     X(FOLD, "fold", 1, "constant expressions folded")                                \
     X(SIMPLIFY, "simplify", 1, "instructions simplified")                            \
     X(CONSTPROP, "constprop", 1, "register reads replaced by constants")             \
+    X(CSE, "cse", 1, "computations and loads reused")                                \
     X(COPYPROP, "copyprop", 1, "register reads replaced by the register copied")     \
     X(DCE, "dce", 1, "dead instructions removed")                                    \
     X(BRANCHES, "branches", 1, "jumps threaded, removed, inverted or decided")       \

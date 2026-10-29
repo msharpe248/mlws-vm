@@ -30,7 +30,7 @@ quickener has fast forms for (it puts a constant second, for one).
 | Level | Passes | What can tell the difference |
 |---|---|---|
 | `-O0` | none | |
-| `-O1` | fold, simplify, constprop, copyprop, dce, branches, unreachable, peephole | nothing but the number of instructions run |
+| `-O1` | fold, simplify, constprop, cse, copyprop, dce, branches, unreachable, peephole | nothing but the number of instructions run |
 | `-O2` | also deadfuncs, compact | also the tools: the debugger shows fewer registers and functions |
 | `-O3` | also inline, tailcall | also the program, through backtraces: frames disappear from `Error.trace` |
 
@@ -45,6 +45,7 @@ that is.
 | `fold` | An instruction whose operands are all constants is replaced by a `mov` of its result: arithmetic, bitwise, shifts, compares, `sel`, `cvt` and `bitcast`. |
 | `simplify` | Identities true for any value of the other operand: `x + 0`, `x * 1`, `x / 1`, `x - x`, `x ^ x`, `x & -1`, `x \| 0`, `x * 0` become a move. A multiply by a power of two becomes a shift, and `beq x, 0` becomes `bz x`. A compare or commutative operation with its constant first has it put second: `blt 1, x` becomes `bgt x, 1`. |
 | `constprop` | A register known to hold a constant at an instruction is read as that constant. A store of the value the register already holds is removed. Constants don't go into a store to an element, a global or a closure capture, whose fast forms take a register. A call's arguments and a ret's values take a constant only where the function computed it, so that computing it can be removed: their register-only forms are faster than the ones with constants. |
+| `cse` | The same computation, or the same load of a field, element, global or capture, done again where nothing can have changed it becomes a copy of the register holding it. For a load, nothing between may store, call or update an object. This applies within a block and into a block that has no other way in, never across a join. |
 | `copyprop` | Within a block, a register copied from another by a full-width move is read from the original instead, so the copy usually dies. |
 | `dce` | A pure instruction whose result nothing reads is removed. |
 | `branches` | A branch to a `jmp` goes straight to its target. A `jmp` to the next instruction is removed. A branch on constants becomes a `jmp`, or is removed. `bcc L1; jmp L2; L1:` becomes `bncc L2`. A `jmp` to a `ret` becomes the `ret`, and a `jtab` on a constant becomes a `jmp`. A branch is also decided by what earlier code established (see below). |
@@ -52,7 +53,7 @@ that is.
 | `peephole` | `nop`s, a full-width move of a register to itself, and the move back in `mov a, b; mov b, a` are removed. |
 | `deadfuncs` | A function nothing can call is removed. Callable means exported, `main`, or named by an instruction of a callable function (a call, a spawn, a closure). |
 | `compact` | A function's registers are renumbered to the lowest of each bank, and its window shrinks to them. Parameters keep their places. Registers a call must clear are placed next to the R bank, so the single run it clears is as short as it can be. |
-| `inline` | A call to a small function of the same module becomes its body, on registers of the caller's that nothing else uses. The function must have at most 40 instructions, and no handlers, stack or frame operands, `UP`, tail calls or coroutine switches. Its own calls are then made from the caller's frame. A caller grows by at most its own size. Only direct calls are inlined: a call through a closure (`calli`) has no known target. |
+| `inline` | A call to a small function of the same module becomes its body, on registers of the caller's that nothing else uses. The function must have at most 12 instructions, or at most 40 for a call inside a loop (a block on a cycle of the caller's blocks), where the call repeats. It must also have no handlers, stack or frame operands, `UP`, tail calls or coroutine switches. Its own calls are then made from the caller's frame. A caller grows by at most its own size. Only direct calls are inlined: a call through a closure (`calli`) has no known target. |
 | `tailcall` | `call g (...) -> (r...); ret r...` becomes `tcall g (...)`, for a `g` of the same module that declares the same results. A call inside a `.try` region is never converted. |
 
 **What a branch establishes.** Each edge of a branch knows what the branch
@@ -243,7 +244,8 @@ Three test-file headers check the optimizer
   - types of pushed values;
   - window zeroing for inlined bodies;
   - no tail calls in `.try` regions;
-  - facts from branches, and the narrow and float cases where none hold.
+  - facts from branches, and the narrow and float cases where none hold;
+  - reuse only where nothing between can change a value, and never across a join.
 * **`make check-opt`** runs the whole suite and the examples with every
   module at `--opt 3`, plainly and with GC stress. Two tests say `no-opt`:
   the debugger's transcript shows registers that `compact` renumbers, and
@@ -265,20 +267,41 @@ Three test-file headers check the optimizer
 ## Performance
 
 What `--opt` gains depends on the code. Hand-written assembly, like the
-benchmarks in `bench/`, has little to remove. Compiled code has more. Compiled
-Lua's benchmarks, on an Apple M5 (wall time, median of five runs, with the
-optimized modules in the cache):
+benchmarks in `bench/`, has little to remove. Compiled code has more. On an
+Apple M5 (wall time, median of five runs, with the optimized modules in the
+cache), against the same programs unoptimized:
 
-| Benchmark | `-O2` | `-O3` |
+| Compiled Lua | `-O2` | `-O3` |
 |---|---|---|
-| loop | -13% | -15% |
-| binarytrees | -4% | -6% |
-| iterate | -3% | -4% |
-| methods | -2% | -2% |
-| spectralnorm | +1% | -30% |
-| fib, strings, nbody, fannkuch | within 1.5% | within 1.5% |
+| spectralnorm | -3% | -33% |
+| loop | -14% | -14% |
+| iterate | -5% | -12% |
+| binarytrees | -3% | -6% |
+| nbody | -2% | -4% |
+| fannkuch | -3% | -3% |
+| methods | -3% | -2% |
+| fib, strings | within 0.5% | within 0.5% |
 
-`spectralnorm` gains from inlining its small helper functions, at `-O3` only.
+| Compiled Lox | `-O2` | `-O3` |
+|---|---|---|
+| instantiation | +1% | -15% |
+| method_call | -4% | -8% |
+| properties | -4% | -4% |
+| trees | -4% | -4% |
+| fib | -4% | -3% |
+| the other five | within 2% | within 2% |
+
+The large `-O3` gains are inlining (of small helpers in `spectralnorm`, of
+constructors in `instantiation`). `-O3` makes the Lua runtime library 3.7%
+larger, since larger functions are inlined only into loops.
+
+What is left in compiled Lua's hot code is mostly loads and type and
+inline-cache checks: in `nbody`, `mov` is 36% of the instructions run and
+`beq`/`bne` 35%. Most of the repeated checks are separated by a path that can
+change the table they check (a slow path that calls Lua code), so they are
+not redundant, and no optimizer of this code could remove them. A compiler
+could, by checking a table's shape once where it knows nothing in between
+can change it.
 
 Optimizing costs about 1.5 µs per instruction: the Lua runtime library
 (27,000 instructions) takes about 40 ms. The module cache keeps the result,
