@@ -250,7 +250,7 @@ rm -rf "${PDIR:?}"
 
 # mlwsvm opt: its encoder gives back every module byte for byte (decoding and
 # re-encoding each function, with no pass on), and every module optimized at
-# -O1 and -O3 reads back (the reader checks lines, .loc runs and handlers); -S, the
+# -O1 and with every pass reads back (the reader checks lines, .loc runs and handlers); -S, the
 # report, --list, the change log, and --opt-report at the end of a run.
 ODIR=$(mktemp -d)
 n=0
@@ -258,9 +258,9 @@ for f in $(find tests examples lib -name '*.masm' -not -path '*/_bindgen/*'); do
     $BIN asm "$f" -o "$ODIR/a.mlwso" >/dev/null 2>&1 || continue
     $BIN opt -q -O0 --passes encode -o "$ODIR/b.mlwso" "$f" || fail "opt --passes encode: $f"
     cmp -s "$ODIR/a.mlwso" "$ODIR/b.mlwso" || fail "opt: re-encoding changed $f"
-    for level in 1 3; do
-        $BIN opt -q -O$level -o "$ODIR/c.mlwso" "$f" || fail "opt -O$level: $f"
-        $BIN dis "$ODIR/c.mlwso" >/dev/null || fail "opt -O$level: $f does not load back"
+    for passes in 1 all; do
+        $BIN opt -q -O0 --passes $passes -o "$ODIR/c.mlwso" "$f" || fail "opt --passes $passes: $f"
+        $BIN dis "$ODIR/c.mlwso" >/dev/null || fail "opt --passes $passes: $f does not load back"
     done
     n=$((n + 1))
 done

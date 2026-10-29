@@ -32,13 +32,21 @@ quickener has fast forms for (it puts a constant second, for one).
 | `-O0` | none | |
 | `-O1` | fold, simplify, constprop, cse, copyprop, dce, branches, unreachable, peephole | nothing but the number of instructions run |
 | `-O2` | also deadfuncs, compact | also the tools: the debugger shows fewer registers and functions |
-| `-O3` | also inline, tailcall | also the program, through backtraces: frames disappear from `Error.trace` |
+| `-O3` | also inline | also the program, through backtraces: an inlined call has no frame of its own in `Error.trace` |
+| by name only | tailcall | also the program: the caller of a tail call has no frame during the call |
 
-`-O2` is the level to use for compiled programs in general. `-O3` is for
-languages that never read a backtrace. A language that uses frames for its
-own semantics should stop at `-O2`. Lua reports `error(msg, 2)` at the line
-of the function two frames up, for example, and `-O3` changes which function
-that is.
+`-O3` is the level to use for compiled programs. The suites of the Lua and
+Lox compilers pass at `-O3`: the frames inlining removes are those of small
+functions, which a language's error positions do not come from.
+
+`tailcall` is in no level and runs only when named (`--opt 3,tailcall`). It
+takes away the frame of a function that is still running, as far as
+backtraces can tell. A language that finds an error's position by counting
+frames reports the wrong line: compiled Lua reports `error(msg, 2)` at the
+line of the function two frames up, for example, and finds a library
+function's caller the same way. It also gains nothing measurable on the
+compiled benchmarks. Name it for a language whose tail calls must not grow
+the stack.
 
 | Pass | What it does |
 |---|---|
@@ -86,11 +94,12 @@ left to right:
 | Item | Meaning |
 |---|---|
 | `0`, `1`, `2`, `3` | exactly the passes of that level |
-| `all`, `none` | level 3, and no passes |
+| `all`, `none` | every pass (`tailcall` too), and no passes |
 | a pass name | that pass too |
 | `-name` | not that pass |
 
-So `--opt 3,-tailcall` is `-O3` without tail calls, and
+So `--opt 3,tailcall` is `-O3` with tail calls, `--opt 3,-inline` is `-O3`
+without inlining, and
 `--opt fold,constprop,dce` is those three alone. `mlwsvm opt --list` lists the
 passes with their levels. `--opt 0` (the default) turns the optimizer off.
 
@@ -157,9 +166,13 @@ At `-O2`:
   remaining functions.
 
 At `-O3`:
-- an inlined call, and the caller of a tail call, have no frame of their own;
-- backtraces and `Error.trace` lack those frames, and the profiler counts
-  their time in the caller;
+- an inlined call has no frame of its own;
+- backtraces and `Error.trace` lack that frame, and the profiler counts its
+  time in the caller.
+
+With `tailcall`:
+- the caller of a tail call has no frame during the call, and backtraces
+  lack it;
 - a recursion through tail calls no longer reaches the call depth limit.
 
 ## The report
@@ -213,7 +226,7 @@ mlwsvm opt --list
 ```
 
 * **The default level** is `-O1`, and `--passes` changes the level's set of
-  passes (`-O3 --passes -tailcall`).
+  passes (`-O3 --passes tailcall`).
 * **Output:**
   - the optimized module goes to `-o FILE`, or to `prog.mlwso` for
     `prog.masm`;
@@ -247,7 +260,7 @@ Three test-file headers check the optimizer
   - facts from branches, and the narrow and float cases where none hold;
   - reuse only where nothing between can change a value, and never across a join.
 * **`make check-opt`** runs the whole suite and the examples with every
-  module at `--opt 3`, plainly and with GC stress. Two tests say `no-opt`:
+  module optimized by every pass (`--opt all`), plainly and with GC stress. Two tests say `no-opt`:
   the debugger's transcript shows registers that `compact` renumbers, and
   `tests/asm/loc.masm` reads frames that `inline` removes.
 

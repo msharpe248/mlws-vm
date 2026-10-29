@@ -5,7 +5,7 @@
 #   make test         run the assembly test suite and the examples
 #   make check-tools  smoke-test --monitor, top, --profile and --trace
 #   make check-gc     run the tests with a garbage collection at every allocation
-#   make check-opt    run the tests with every module optimized (--opt 3), also with GC stress
+#   make check-opt    run the tests with every module optimized (--opt all), also with GC stress
 #   make check-asan   build with AddressSanitizer + UBSan and run the tests (normal and GC stress)
 #   make check-switch build with switch dispatch instead of threaded code (as MSVC would) and run the tests
 #   make check-loop   build with the threaded dispatch loop instead of tail calls (as GCC before 15 would) and run the tests
@@ -162,12 +162,12 @@ check-bindgen: $(BIN) test-ext
 check-gc: $(BIN) test-ext
 	MLWSVM_TEST_TIMEOUT=$(STRESS_TIMEOUT) MLWSVM_GC_STRESS=1 ./$(BIN) test tests examples
 
-# The tests with every module optimized at the highest level (tests that
-# depend on what -O2 and -O3 change say `; no-opt:`), plainly and with GC
-# stress. The optimizer's cache entries go to a directory of their own.
+# The tests with every module optimized by every pass (tests that depend on
+# what -O2, -O3 or tailcall change say `; no-opt:`), plainly and with GC
+# stress.
 check-opt: $(BIN) test-ext
-	MLWSVM_OPT=3 ./$(BIN) test tests examples
-	MLWSVM_TEST_TIMEOUT=$(STRESS_TIMEOUT) MLWSVM_OPT=3 MLWSVM_GC_STRESS=1 ./$(BIN) test tests examples
+	MLWSVM_OPT=all ./$(BIN) test tests examples
+	MLWSVM_TEST_TIMEOUT=$(STRESS_TIMEOUT) MLWSVM_OPT=all MLWSVM_GC_STRESS=1 ./$(BIN) test tests examples
 
 check-asan: test-ext
 	$(MAKE) BUILD=build-asan BIN=mlwsvm-asan \

@@ -491,10 +491,12 @@ removes most of what simple code generation leaves behind:
 
 So a compiler can emit the straightforward translation of each construct and
 let the optimizer remove what the context makes redundant. `--opt 3` also
-inlines small functions and makes calls whose results are returned into tail
-calls, which takes their frames out of backtraces. A language whose semantics
-read frames (an error's position in the caller, a level argument) should use
-`--opt 2`. Optimized modules are kept in the module cache, so the cost is paid
+inlines small functions, whose frames are then not in backtraces. The
+`tailcall` pass, which makes calls whose results are returned into tail
+calls, runs only when named (`--opt 3,tailcall`): it takes the calling
+function's frame away, so a language whose semantics read frames (an error's
+position in the caller, a level argument) should leave it off. Optimized
+modules are kept in the module cache, so the cost is paid
 once per module. The rest of this section is about the shapes each
 instruction runs fastest in, which the optimizer does not change, except to
 put a constant second where a compare or commutative operation has it first.

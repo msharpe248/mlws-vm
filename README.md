@@ -98,8 +98,8 @@ base:
   the debugger and the profiler show that line.
 * **An optimizer**: `--opt 2` (or `mlwsvm opt` ahead of time) removes what
   compilers leave behind: constants computed at run time, dead moves, copies,
-  jumps to jumps and unreachable code. `--opt 3` also inlines small functions
-  and makes tail calls. Each pass can be turned on or off, and a report says
+  jumps to jumps and unreachable code. `--opt 3` also inlines small functions.
+  Each pass can be turned on or off, and a report says
   what each did.
 * **A module cache**: a `.masm` file is assembled once and its module kept (and
   optimized once, with `--opt`), so a large generated program starts in
@@ -116,7 +116,7 @@ base:
 make                         # builds ./mlwsvm (a C11 compiler; libffi is used for .extern if found)
 make test                    # runs tests/ and examples/
 make check-gc                # the same, collecting garbage at every allocation
-make check-opt               # the same, with every module optimized (--opt 3), also under GC stress
+make check-opt               # the same, with every module optimized (--opt all), also under GC stress
 make check-tools             # smoke-test the monitor, top, profiler, tracer, .loc and the module cache
 make bench                   # benchmarks, with output checks (docs/PERFORMANCE.md)
 make check-asan              # test and check-gc, under AddressSanitizer + UBSan

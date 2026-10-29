@@ -14,8 +14,12 @@
  * one change. Their order here is the order the report lists them in.
  * -O1 changes nothing a program can see but how many instructions it runs.
  * -O2 adds what only the tools see (the debugger shows fewer registers and
- * functions). -O3 adds what removes frames, which a program can see in a
- * backtrace (Error.trace): a language that reads them should stop at -O2. */
+ * functions). -O3 adds inlining, whose inlined calls have no frame of their
+ * own. A pass of level OPT_NAMED_ONLY is in no level and runs only when named:
+ * tailcall, which takes the caller's frame away during the call (a language
+ * that finds an error's position by counting frames, as compiled Lua does,
+ * would report the wrong line), and gains nothing measurable. */
+#define OPT_NAMED_ONLY 9
 #define OPT_PASSES(X)                                                               \
     X(FOLD, "fold", 1, "constant expressions folded")                                \
     X(SIMPLIFY, "simplify", 1, "instructions simplified")                            \
@@ -29,7 +33,7 @@
     X(DEADFUNCS, "deadfuncs", 2, "unused functions removed")                         \
     X(COMPACT, "compact", 2, "register windows made smaller")                        \
     X(INLINE, "inline", 3, "calls inlined")                                          \
-    X(TAILCALL, "tailcall", 3, "calls turned into tail calls")
+    X(TAILCALL, "tailcall", OPT_NAMED_ONLY, "calls turned into tail calls")
 
 typedef enum {
 #define X(e, name, level, doc) PASS_##e,
@@ -50,7 +54,7 @@ const char *opt_pass_name(int pass);
 const char *opt_pass_doc(int pass);
 int opt_pass_level(int pass);
 /* A pass list: comma-separated levels and names, applied in order: "2",
- * "3,-inline", "fold,dce", "none". */
+ * "3,-inline", "3,tailcall", "fold,dce", "all", "none". */
 bool opt_parse(const char *spec, OptConfig *cfg, char *err, size_t errlen);
 
 /* What the optimizer did to one function. */

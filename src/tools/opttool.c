@@ -14,12 +14,19 @@ static int usage_opt(void) {
 
 static void list_passes(void) {
     printf("pass          level  what one change is\n");
-    for (int p = 0; p < PASS__COUNT; p++) printf("%-12s  -O%d    %s\n", opt_pass_name(p), opt_pass_level(p), opt_pass_doc(p));
+    for (int p = 0; p < PASS__COUNT; p++) {
+        char lv[16];
+        if (opt_pass_level(p) == OPT_NAMED_ONLY) snprintf(lv, sizeof lv, "named");
+        else snprintf(lv, sizeof lv, "-O%d", opt_pass_level(p));
+        printf("%-12s  %-5s  %s\n", opt_pass_name(p), lv, opt_pass_doc(p));
+    }
     printf("\n-O1 changes nothing a program can see but how many instructions it runs; -O2 also\n"
            "what only the tools see (the debugger shows fewer registers and functions); -O3 also\n"
-           "removes frames, which a program can see in a backtrace (Error.trace).\n"
-           "--passes takes a comma-separated list, applied in order after -O: levels (0-3), all,\n"
-           "none, pass names, and -name to turn one off (e.g. --passes 3,-inline).\n");
+           "inlines, and an inlined call has no frame of its own in a backtrace (Error.trace).\n"
+           "A \"named\" pass runs only when named: tailcall takes the caller's frame away during\n"
+           "the call, which changes the line a language that counts frames reports.\n"
+           "--passes takes a comma-separated list, applied in order after -O: levels (0-3), all\n"
+           "(every pass), none, pass names, and -name to turn one off (e.g. --passes 3,tailcall).\n");
 }
 
 int tool_opt(int argc, char **argv, const ToolEnv *env) {

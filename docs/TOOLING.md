@@ -126,7 +126,7 @@ a test file's own lines override both.
 | `--quota LIST` | unlimited | starting limits for every process, e.g. `heap=64M,raw=1G,mailbox=1000,insns=5000000,foreign=0,os=0`; any subset, `unlimited` resets one |
 | `--ext-path DIR[:DIR]` | (none) | trusted native-extension directories, searched before `lib/ext` ([EXTENDING.md](EXTENDING.md)) |
 | `--lib-path DIR[:DIR]` | (none) | more library directories (for modules and library archives), searched after the program's own |
-| `--opt LIST` | `0` (off) | optimize every module as it is loaded: a level `0` to `3`, and passes to add or (`-name`) leave out, e.g. `2`, `3,-tailcall`, `fold,dce` ([OPTIMIZER.md](OPTIMIZER.md)) |
+| `--opt LIST` | `0` (off) | optimize every module as it is loaded: a level `0` to `3`, and passes to add or (`-name`) leave out, e.g. `2`, `3`, `3,tailcall`, `fold,dce` ([OPTIMIZER.md](OPTIMIZER.md)) |
 | `--opt-report FILE\|-` | (none) | when the run ends, write the optimizer's report of the modules it loaded to FILE (`-`: stderr) |
 
 Sizes take an optional `K`, `M` or `G` suffix (powers of 1024). A bad value is

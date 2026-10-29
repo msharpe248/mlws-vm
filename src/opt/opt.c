@@ -48,8 +48,8 @@ bool opt_parse(const char *spec, OptConfig *cfg, char *err, size_t errlen) {
             s = 0;
         } else if (!minus && wn == 6 && !strncmp(w, "encode", 6)) {
             s |= OPT_ENCODE_ONLY;
-        } else if (!minus && wn == 3 && !strncmp(w, "all", 3)) {
-            s = level_passes(3);
+        } else if (!minus && wn == 3 && !strncmp(w, "all", 3)) { /* every pass, those run only by name too */
+            s = level_passes(OPT_NAMED_ONLY);
         } else {
             snprintf(err, errlen, "unknown optimization '%.*s' (a level 0-3, all, none, or a pass: fold, simplify, "
                                   "constprop, cse, copyprop, dce, branches, unreachable, peephole, deadfuncs, compact, "
