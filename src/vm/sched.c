@@ -1031,6 +1031,7 @@ static void io_main(void *arg) {
     heap_free_all(tls_io_frag);
     free(tls_io_frag);
     tls_io_frag = NULL;
+    copy_state_free(); /* a callback's sends used this thread's copy scratch */
 }
 
 static void io_submit(Sched *s, Process *p) {
