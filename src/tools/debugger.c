@@ -532,12 +532,12 @@ int debugger_run(VM *vm, LModule *root, Function *main_fn, DebugIO *io) {
         else if (IS("regs", "reg")) cmd_regs(&d);
         else if (IS("bt", "bt") || IS("backtrace", "ba") || IS("where", "wh")) cmd_bt(&d);
         else if (IS("list", "l") || IS("dis", "dis")) cmd_list(&d);
-        else if (IS("procs", "pr")) cmd_procs(&d);
-        else if (IS("process", "proc")) {
+        else if (IS("process", "proc")) { /* before procs, which "proc" also begins */
             uint64_t pid = strtoull(arg, NULL, 10);
             if (vm_process(vm, pid)) d.sel = pid, say(&d, "Inspecting process %llu.\n", (unsigned long long)pid);
             else say(&d, "No live process %s.\n", arg);
-        } else if (IS("quit", "q")) break;
+        } else if (IS("procs", "pr")) cmd_procs(&d);
+        else if (IS("quit", "q")) break;
         else say(&d, "Unknown command '%s'. Type 'help'.\n", cmd);
 #undef IS
     }

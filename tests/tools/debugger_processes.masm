@@ -1,11 +1,11 @@
 ; The debugger with several processes: a `break` instruction stops in a child,
-; `procs` lists processes, `process` switches the one being inspected, and a
+; `procs` lists processes, `process` (`proc`) switches the one inspected, and a
 ; failing program is reported with its error and backtrace.
 ;
 ; debug-script: run
 ; debug-script: procs
 ; debug-script: print PID
-; debug-script: process 1
+; debug-script: proc 1
 ; debug-script: bt
 ; debug-script: continue
 ; debug-script: quit
@@ -20,7 +20,7 @@
 ; expect-stdout: *   2  ready     1           0        debugger_processes.worker
 ; expect-stdout: (mdb) print PID
 ; expect-stdout: PID = 2
-; expect-stdout: (mdb) process 1
+; expect-stdout: (mdb) proc 1
 ; expect-stdout: Inspecting process 1.
 ; expect-stdout: (mdb) bt
 ; expect-stdout: #0  debugger_processes.main+1 (tests/tools/debugger_processes.masm:40)
