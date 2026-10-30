@@ -717,8 +717,8 @@ bool pass_constants(OFunc *f) {
         reached[b] = 1;
         CState s = in[b];
         for (uint32_t i = g.b[b].start; i < g.b[b].end; i++) step(&s, &f->code.v[i].in, &eff[i]);
-        uint32_t succ[64];
-        uint32_t ns = ocfg_succs(&g, b, succ, 64);
+        uint32_t succ[OCFG_MAX_SUCCS];
+        uint32_t ns = ocfg_succs(&g, b, succ, OCFG_MAX_SUCCS);
         if (g.b[b].nextra > 64) { /* a jtab with very many targets: give up on what follows it */
             for (uint32_t k = 0; k < g.b[b].nextra; k++) {
                 uint32_t t = g.b[b].extra[k];

@@ -93,6 +93,8 @@ void ocfg_build(const OFunc *f, OCfg *g);
 void ocfg_free(OCfg *g);
 /* The successors of block i, in order: fills out (up to cap) and returns how many. */
 uint32_t ocfg_succs(const OCfg *g, uint32_t i, uint32_t *out, uint32_t cap);
+/* At most: a fall-through and a target for each label operand (a jtab's). */
+#define OCFG_MAX_SUCCS (MAX_OPERANDS + 1)
 
 /* ---- the passes ---- */
 bool pass_constants(OFunc *f);    /* fold, constprop, simplify (fold.c) */

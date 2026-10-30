@@ -221,8 +221,8 @@ static uint8_t *loop_blocks(const OFunc *f) {
         stack[sp++] = root, on[root] = 1;
         while (cs) {
             uint32_t v = cstack[cs - 1];
-            uint32_t succ[64];
-            uint32_t ns = ocfg_succs(&g, v, succ, 64);
+            uint32_t succ[OCFG_MAX_SUCCS];
+            uint32_t ns = ocfg_succs(&g, v, succ, OCFG_MAX_SUCCS);
             if (edge[v] < ns) {
                 uint32_t w = succ[edge[v]++];
                 if (w == v) cyc[v] = 1;

@@ -64,10 +64,10 @@ static uint32_t *immortal_regs(const OFunc *f, const OCfg *g, const Effect *eff)
             uint32_t imm = bin[b];
             for (uint32_t i = g->b[b].start; i < g->b[b].end; i++)
                 if (!f->code.v[i].dead) imm = immortal_after(&f->code.v[i].in, &eff[i], imm);
-            uint32_t succ[64];
-            uint32_t ns = ocfg_succs(g, b, succ, 64);
-            for (uint32_t k = 0; k < ns + (g->b[b].nextra > 64 ? g->b[b].nextra - 64 : 0); k++) {
-                uint32_t t = k < ns ? succ[k] : g->b[b].extra[k];
+            uint32_t succ[OCFG_MAX_SUCCS];
+            uint32_t ns = ocfg_succs(g, b, succ, OCFG_MAX_SUCCS);
+            for (uint32_t k = 0; k < ns; k++) {
+                uint32_t t = succ[k];
                 uint32_t m = seen[t] ? bin[t] & imm : imm;
                 if (!seen[t] || m != bin[t]) bin[t] = m, seen[t] = 1, changed = true;
             }
@@ -127,10 +127,9 @@ bool pass_dce(OFunc *f) {
         changed = false;
         for (uint32_t b = g.n; b-- > 0;) {
             RegSet out = {{0}};
-            uint32_t succ[64];
-            uint32_t ns = ocfg_succs(&g, b, succ, 64);
+            uint32_t succ[OCFG_MAX_SUCCS];
+            uint32_t ns = ocfg_succs(&g, b, succ, OCFG_MAX_SUCCS);
             for (uint32_t k = 0; k < ns; k++) rs_or(&out, &live_in[succ[k]]);
-            for (uint32_t k = 64; k < g.b[b].nextra; k++) rs_or(&out, &live_in[g.b[b].extra[k]]);
             RegSet in = walk(f, &g, live_in, eff, NULL, b, out, false, &dummy);
             if (!rs_eq(&in, &live_in[b])) live_in[b] = in, changed = true;
         }

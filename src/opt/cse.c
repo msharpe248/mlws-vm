@@ -113,10 +113,9 @@ bool pass_cse(OFunc *f) {
     ocfg_build(f, &g);
     uint32_t *preds = xcalloc(g.n + 1, sizeof *preds), *pred = xcalloc(g.n + 1, sizeof *pred);
     for (uint32_t b = 0; b < g.n; b++) {
-        uint32_t succ[64];
-        uint32_t ns = ocfg_succs(&g, b, succ, 64);
+        uint32_t succ[OCFG_MAX_SUCCS];
+        uint32_t ns = ocfg_succs(&g, b, succ, OCFG_MAX_SUCCS);
         for (uint32_t k = 0; k < ns; k++) preds[succ[k]]++, pred[succ[k]] = b;
-        for (uint32_t k = 64; k < g.b[b].nextra; k++) preds[g.b[b].extra[k]] += 2;
     }
     for (size_t k = 0; k < f->h.n; k++) /* a handler is entered from anywhere in its region */
         if (f->h.v[k].target < n) preds[g.of[f->h.v[k].target]] += 2;

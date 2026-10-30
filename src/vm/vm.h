@@ -583,9 +583,9 @@ void vm_whole_windows(VM *vm);
 
 /* process.c */
 Process *proc_new(VM *vm);
-/* Make main the main process of a new program of the current run (run.c). */
+/* run.c: make main the main process of a new program of the current run */
 Program *vm_program_add(VM *vm, Process *main, const char *path, const StrVec *args);
-void vm_programs_free(VM *vm); /* when the run is over */
+void vm_programs_free(VM *vm); /* (run.c) when the run is over */
 /* Give p the global segments of modules loaded since it started (module.load). */
 void proc_grow_globals(Process *p);
 /* Where instruction pc of f is: "fib.lua:4; fib.masm:120" when a `.loc`

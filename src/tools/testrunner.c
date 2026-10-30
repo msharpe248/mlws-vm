@@ -5,6 +5,9 @@
  *   ; expect-exit: <n>                               (default 0)
  *   ; expect-error: <E_CODE>                         (assembler, loader or trap)
  *   ; skip: <reason>
+ *   ; threads: <n>                                   (run on n worker threads)
+ *   ; option: --<name> <value>                       (repeatable: a VM option, as on the command line)
+ *   ; requires: ffi                                  (skipped in a build without libffi)
  *   ; debug-script: <debugger command>                (repeatable: run under
  *                                                       `mlwsvm debug`; stdout is the transcript)
  *   ; expect-opt: <pass> <n>                         (repeatable: the optimizer made exactly n
