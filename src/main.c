@@ -55,6 +55,7 @@ static void usage(FILE *f) {
 
 static ToolEnv g_env;
 static char *g_exe_lib;
+static VEC(char *) g_mlwsvm_path; /* $MLWSVM_PATH: searched after the -L directories */
 
 void tool_env_libpaths(const ToolEnv *env, VM *vm) {
     for (size_t i = 0; i < env->libpaths.n; i++) vm_add_libpath(vm, env->libpaths.v[i]);
@@ -69,7 +70,7 @@ static void env_init(const char *argv0) {
         while (*s) {
             const char *e = strchr(s, sep);
             size_t n = e ? (size_t)(e - s) : strlen(s);
-            if (n) VEC_PUSH(g_env.libpaths, xstrndup(s, n));
+            if (n) VEC_PUSH(g_mlwsvm_path, xstrndup(s, n));
             s += n + (e ? 1 : 0);
         }
     }
@@ -94,16 +95,30 @@ static void env_init(const char *argv0) {
     }
 }
 
-/* Remove -L options from argv (they may appear anywhere) into g_env. */
-static int take_lib_opts(int argc, char **argv) {
+/* A -L option at argv[*i] (`-L dir` or `-Ldir`) goes into g_env: true if it
+ * was one (*i is then at its last word). */
+static bool take_lib_opt(int argc, char **argv, int *i) {
+    if (!strcmp(argv[*i], "-L") && *i + 1 < argc) VEC_PUSH(g_env.libpaths, xstrdup(argv[++*i]));
+    else if (!strncmp(argv[*i], "-L", 2) && argv[*i][2]) VEC_PUSH(g_env.libpaths, xstrdup(argv[*i] + 2));
+    else return false;
+    return true;
+}
+
+/* Remove -L options from argv (they may appear anywhere) into g_env. `run`
+ * takes its own, before the program file: what follows the file is the
+ * program's (os.args). */
+static int take_lib_opts(int argc, char **argv, bool run) {
     int j = 0;
-    for (int i = 0; i < argc; i++) {
-        if (!strcmp(argv[i], "-L") && i + 1 < argc) VEC_PUSH(g_env.libpaths, xstrdup(argv[++i]));
-        else if (!strncmp(argv[i], "-L", 2) && argv[i][2]) VEC_PUSH(g_env.libpaths, xstrdup(argv[i] + 2));
-        else argv[j++] = argv[i];
-    }
-    if (g_exe_lib) VEC_PUSH(g_env.libpaths, xstrdup(g_exe_lib));
+    for (int i = 0; i < argc; i++)
+        if (run || !take_lib_opt(argc, argv, &i)) argv[j++] = argv[i];
     return j;
+}
+
+/* After the -L directories: $MLWSVM_PATH, then lib/ next to the executable. */
+static void finish_libpaths(void) {
+    for (size_t i = 0; i < g_mlwsvm_path.n; i++) VEC_PUSH(g_env.libpaths, g_mlwsvm_path.v[i]);
+    VEC_FREE(g_mlwsvm_path);
+    if (g_exe_lib) VEC_PUSH(g_env.libpaths, xstrdup(g_exe_lib));
 }
 
 static void print_error(const MlwsError *e) {
@@ -130,6 +145,7 @@ static int cmd_run(int argc, char **argv) {
         else if (!strcmp(argv[i], "--gc-stress")) gc_stress = true;
         else if (!strcmp(argv[i], "--unsafe-native")) unsafe_native = true;
         else if (!strcmp(argv[i], "--no-cache")) no_cache = true;
+        else if (take_lib_opt(argc, argv, &i)) continue;
         else if (!strncmp(argv[i], "--", 2) && vm_option_known(argv[i] + 2)) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "mlwsvm run: %s needs a value\n", argv[i]);
@@ -154,6 +170,7 @@ static int cmd_run(int argc, char **argv) {
         VEC_FREE(opts);
         return 2;
     }
+    finish_libpaths();
     VM *vm = vm_new();
     for (size_t i = 0; i < opts.n; i += 2) {
         MlwsError err;
@@ -405,7 +422,8 @@ int main(int argc, char **argv) {
     }
     env_init(argv[0]);
     const char *cmd = argv[1];
-    int n = take_lib_opts(argc - 2, argv + 2);
+    int n = take_lib_opts(argc - 2, argv + 2, !strcmp(cmd, "run"));
+    if (strcmp(cmd, "run")) finish_libpaths();
     char **args = argv + 2;
     int rc;
     if (!strcmp(cmd, "run")) rc = cmd_run(n, args);

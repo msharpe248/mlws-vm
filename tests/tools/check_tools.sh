@@ -98,6 +98,29 @@ MLWSVM_NO_CACHE=1 $BIN run --lib-path "$LDIR/out" "$LDIR/use.masm" 2>&1 >/dev/nu
     fail "a damaged archive is not reported"
 rm -rf "${LDIR:?}"
 
+# The library path: -L directories before $MLWSVM_PATH's (each dir holds its
+# own `which` module); and a -L after the program file is the program's.
+WDIR=$(mktemp -d)
+mkdir -p "$WDIR/l" "$WDIR/e" "$WDIR/p"
+for d in l e; do printf '.export name\n.func name -> ref\n    ret "%s"\n.endf\n' $d > "$WDIR/$d/which.masm"; done
+cat > "$WDIR/p/prog.masm" <<'MASM'
+.include "std/io.inc"
+.import which
+.func main
+    call which.name () -> (R0)
+    ncall "os.args" () -> (R1)
+    ncall "text.join" (R1, ",") -> (R2)
+    strcat R0, R0, " ", R2
+    PRINTLN_S R0
+    ret 0
+.endf
+MASM
+OUT=$(MLWSVM_NO_CACHE=1 MLWSVM_PATH="$WDIR/e" $BIN run -L "$WDIR/l" "$WDIR/p/prog.masm" -L x 2>&1) || fail "-L: run ($OUT)"
+[ "$OUT" = "l -L,x" ] || fail "-L: before \$MLWSVM_PATH, and not taken from the program's arguments ($OUT)"
+OUT=$(MLWSVM_NO_CACHE=1 MLWSVM_PATH="$WDIR/e" $BIN run "$WDIR/p/prog.masm" 2>&1) || fail "MLWSVM_PATH: run ($OUT)"
+[ "$OUT" = "e " ] || fail "MLWSVM_PATH: not searched ($OUT)"
+rm -rf "${WDIR:?}"
+
 # mlwsvm run a.masm --also b.masm ...: several programs in one VM, to the end of the last
 PDIR=$(mktemp -d)
 cat > "$PDIR/a.masm" <<'MASM'
