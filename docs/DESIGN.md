@@ -1913,7 +1913,7 @@ Windows implementation is written but untested
 
 ## 22. Testing
 
-**Tests are MLWSVM programs.** `tests/` holds the suite (301 programs) and
+**Tests are MLWSVM programs.** `tests/` holds the suite (302 programs) and
 `examples/` holds self-checking examples, all in documented assembly. The
 test runner reads expectations from comments in each file: expected output
 lines, exit code or error code; VM options; a debugger script; what the

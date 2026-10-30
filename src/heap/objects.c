@@ -197,6 +197,7 @@ static uint32_t key_hash(Word k, uint8_t tag) {
     switch (key_class(tag)) {
     case KC_FLOAT: {
         if (k.f == 0) return 0; /* +0 and -0 are the same key */
+        if (isnan(k.f)) return 1; /* and so is every NaN (key_eq) */
         uint64_t bits;
         memcpy(&bits, &k.f, 8);
         return mix64(bits);

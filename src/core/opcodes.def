@@ -236,7 +236,7 @@ OP(LDEL,   0x00C4, "ldel",   "Lists and maps", "OQ", 0, 0,
 OP(MNEW,   0x00C5, "mnew",   "Lists and maps", "X", 0, 0,
    "New empty map. Maps iterate in insertion order.")
 OP(MSET,   0x00C6, "mset",   "Lists and maps", "OVV", TS_ANY, OPF_PERVAL,
-   "`mset map, key, value`. Keys compare by value: integers of any width by value, floats by value, strings by content, other references by identity, pointers by value. A type suffix applies to the value.")
+   "`mset map, key, value`. Keys compare by value: integers of any width by value, floats by value (0.0 and -0.0 are one key, and so are all NaNs), strings by content, other references by identity, pointers by value. A type suffix applies to the value.")
 OP(MGET,   0x00C7, "mget",   "Lists and maps", "WOVV?", TS_ANY, OPF_PERVAL,
    "`mget dst, map, key [, default]`. A missing key yields the default if given, and otherwise traps E_KEY. A type suffix applies to the value and the default.")
 OP(MHAS,   0x00C8, "mhas",   "Lists and maps", "BOV", 0, 0,

@@ -1,0 +1,41 @@
+; Every NaN is the same map key, as +0.0 and -0.0 are.
+;
+; Float keys compare by value, with all NaNs equal to each other (a NaN is
+; not equal to itself under `==`, but a map key must find itself). Their
+; hash must then agree too: NaNs differ in their bits (sign, payload), and
+; the hash was taken from the bits, so a lookup with a different NaN looked
+; in the wrong place and missed. Each NaN now hashes alike.
+;
+; The map gets 40 integer keys first, so that lookups go through its hash
+; index rather than a short map's scan of its entries.
+.include "std/test.inc"
+.func main
+    mnew R0
+    mov I0, 0
+1:  mset R0, I0, I0
+    inc I0
+    blt I0, 40, 1b
+
+    mov F0, nan                         ; the quiet NaN
+    mset R0, F0, "nan"
+    neg F1, F0                          ; the same NaN with its sign bit set
+    mhas I1, R0, F1
+    ASSERT_EQ I1, 1
+    bitcast.f64.u64 F2, 0x7FF8000000000123  ; a NaN with a payload
+    mhas I1, R0, F2
+    ASSERT_EQ I1, 1
+    mget R1, R0, F2
+    strcmp I2, R1, "nan"
+    ASSERT_EQ I2, 0
+
+    mset R0, F1, "again"                ; replaces the NaN entry
+    len I3, R0
+    ASSERT_EQ I3, 41
+    mget R1, R0, F0
+    strcmp I2, R1, "again"
+    ASSERT_EQ I2, 0
+    mdel R0, F2                         ; and any NaN removes it
+    len I3, R0
+    ASSERT_EQ I3, 40
+    ret 0
+.endf

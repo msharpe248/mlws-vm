@@ -183,7 +183,7 @@ Type codes, as `tagof` reports them: 0 for a slot never written, 1 `b`, 2 `c`, 3
 | `0x00C3` | `lins` | `obj, int, val` | int float r p | Insert a value before index i (0..len): `lins list, i, value`. |
 | `0x00C4` | `ldel` | `obj, int` | - | Delete the element at index i, shifting later elements down. |
 | `0x00C5` | `mnew` | `obj_dst` | - | New empty map. Maps iterate in insertion order. |
-| `0x00C6` | `mset` | `obj, val, val` | int float r p | `mset map, key, value`. Keys compare by value: integers of any width by value, floats by value, strings by content, other references by identity, pointers by value. A type suffix applies to the value. |
+| `0x00C6` | `mset` | `obj, val, val` | int float r p | `mset map, key, value`. Keys compare by value: integers of any width by value, floats by value (0.0 and -0.0 are one key, and so are all NaNs), strings by content, other references by identity, pointers by value. A type suffix applies to the value. |
 | `0x00C7` | `mget` | `dst, obj, val, [val]` | int float r p | `mget dst, map, key [, default]`. A missing key yields the default if given, and otherwise traps E_KEY. A type suffix applies to the value and the default. |
 | `0x00C8` | `mhas` | `bool_dst, obj, val` | - | dst = true if the map contains the key. |
 | `0x00C9` | `mdel` | `obj, val` | - | Remove a key from a map (no effect if it is absent). |
