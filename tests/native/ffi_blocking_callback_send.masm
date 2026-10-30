@@ -1,0 +1,107 @@
+; A callback from a blocking C call sends messages while other processes do.
+;
+; A `blocking` C call runs on a thread of the I/O pool, and a callback it
+; makes runs the process's own code on that thread. A message is built in a
+; scratch heap of the sending thread before it goes into the receiver's
+; mailbox. The I/O threads used to have none of their own and borrowed
+; worker 0's, which worker 0 was using at the same time for its own sends:
+; the two corrupted each other's messages (a crash, or a hang in the
+; receiver). Now each I/O thread has its own. `make check-tsan` runs this
+; with 4 and 8 workers.
+;
+; Two `caller`s sort a buffer with qsort (blocking): every comparison sends
+; a list holding a string to the collector. Four `spammer`s send the same
+; kind of list from the workers meanwhile. Each sender then sends a list of
+; one element: the number of lists it sent. Messages from one sender arrive
+; in order, so once the collector has every count it has every list, and the
+; two totals agree.
+; requires: ffi
+; option: --ext-path build/test-ext
+; threads: 4
+.include "std/test.inc"
+.callback cmp_t (ptr, ptr) -> (i32)
+.extern c.qsortb, "", "qsort" (buf, u64, u64, callback cmp_t), blocking
+
+.const SENDERS = 6
+
+collector_pid: .i64 0   ; each process has its own copy: set by caller
+sent: .i64 0            ; caller's count of lists sent from compare
+
+; Wait for SENDERS counts; send main the number of lists and their sum.
+.func collector(i64 parent)
+    mov I1, 0                   ; lists received
+    mov I2, 0                   ; counts received
+    mov I3, 0                   ; sum of the counts
+1:  recv R0
+    len I5, R0
+    beq I5, 1, 2f               ; one element: a sender's count
+    ASSERT_EQ I5, 4             ; else a list of four: check it arrived whole
+    mov.r R1, R0[3]
+    len I5, R1
+    ASSERT_EQ I5, 5             ; "12345" (or "67890")
+    inc I1
+    jmp 1b
+2:  mov.i64 I5, R0[0]
+    add I3, I5
+    inc I2
+    blt I2, SENDERS, 1b
+    send parent, I1
+    send parent, I3
+    ret
+.endf
+
+; The callback: runs on an I/O thread, inside qsort.
+.func compare(ref a, ref b) -> i32
+    mov I5, @collector_pid
+    lnew R2
+    lpush R2, 1, 2, 3
+    tostr R3, 12345
+    lpush R2, R3
+    send I5, R2
+    inc @sent
+    ret 0
+.endf
+
+.func caller(i64 to)
+    mov @collector_pid, to
+    bufnew R1, 200
+    closure compare () -> (R4)
+    mov I1, 0
+1:  ncall "c.qsortb" (R1, 200, 1, R4)
+    inc I1
+    blt I1, 5, 1b
+    lnew R2
+    lpush R2, @sent
+    send to, R2
+    ret
+.endf
+
+.func spammer(i64 to)
+    mov I1, 0
+1:  lnew R2
+    lpush R2, 4, 5, 6
+    tostr R3, 67890
+    lpush R2, R3
+    send to, R2
+    inc I1
+    blt I1, 5000, 1b
+    lnew R2
+    lpush R2, I1
+    send to, R2
+    ret
+.endf
+
+.func main
+    spawn collector (PID) -> (I0)
+    spawn caller (I0)
+    spawn caller (I0)
+    mov I2, 0
+1:  spawn spammer (I0)
+    inc I2
+    blt I2, 4, 1b
+    recv I3                     ; lists received
+    recv I4                     ; lists sent
+    ASSERT_EQ I3, I4
+    ASSERT_LT 20000, I3         ; the spammers' 20000 and the callbacks' sends
+    ret 0
+.endf

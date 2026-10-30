@@ -367,6 +367,21 @@ typedef struct {
     bool timed_out;
 } FdWait;
 
+/* A serial library's lock held by a foreign call in progress, and the hold of
+ * the call that made the callback this call came from (on the C stack). */
+typedef struct SerialHold {
+    struct PlatLock *lock;
+    struct SerialHold *outer;
+} SerialHold;
+
+/* A finalizer of a serial library whose call is in progress on this process:
+ * run under the lock when that call returns. */
+typedef struct {
+    void (*finalize)(void *ptr);
+    void *ptr;
+    struct PlatLock *lock;
+} DeferredFinalizer;
+
 /* A blocking native call in progress: made by an I/O thread, then completed
  * when the ncall instruction runs again. */
 enum { BCALL_NONE = 0, BCALL_PENDING, BCALL_DONE };
@@ -488,7 +503,8 @@ struct Process {
     /* callbacks from C into this process during a foreign call (proc_callback) */
     uint32_t cb_base;            /* frames below this belong to the code that made the call; 0: none */
     bool reentered;              /* a callback ran during the last native call: cached frame pointers are stale */
-    struct PlatLock *serial_held; /* the serial library lock held by the call in progress */
+    SerialHold *serial_held;     /* serial library locks held by the calls in progress, innermost first */
+    VEC(DeferredFinalizer) fin_deferred; /* finalizers of those libraries, waiting for their calls */
     Obj *cb_exception;           /* what a failed callback threw: rethrown when its caller returns */
     VEC(Obj *) pins;             /* objects C may be using during the call: GC roots */
     /* the small-object allocator (gc.c) */
@@ -693,7 +709,10 @@ bool sched_post(VM *vm, uint64_t pid, Word v, uint8_t tag, const char *str, size
 bool sched_post_build(VM *vm, uint64_t pid, Word (*build)(Process *heap, void *ctx), void *ctx);
 /* Inside a foreign call: fail it (raised when the call returns). */
 void native_fail(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);
-void foreign_finalize(Obj *o);       /* run a foreign handle's finalizer (GC) */
+/* Run a foreign handle's finalizer (p: the process whose handle it is, or NULL
+ * when it is being freed outside a run). */
+void foreign_finalize(Process *p, Obj *o);
+void foreign_run_deferred(Process *p, struct PlatLock *lock); /* lock NULL: all */
 ObjForeign *foreign_new_obj(Process *p, const void *type, void *ptr, ExtLib *lib);
 bool ext_run_init(VM *vm, ExtLib *lib, void *init, MlwsError *err);
 

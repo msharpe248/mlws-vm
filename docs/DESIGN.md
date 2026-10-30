@@ -1407,6 +1407,8 @@ debugger, tracer and profiler instead run the program on one worker.
 * **No heap is touched by two threads.** The sender builds the copy in its
   worker's own scratch process (`frag`), whose objects are `malloc`'d and
   never collected; the receiver adopts the finished list on its own thread.
+  A callback from a blocking C call sends from an I/O thread, which has a
+  scratch process of its own (`tls_io_frag`).
 * **The copy happens outside any lock.** It may trap (a pointer or a
   foreign handle cannot be sent), and a trap must not leave a lock held.
   `frag_reset` frees whatever a trapped copy left behind.
@@ -1587,7 +1589,11 @@ handle, freed by the tag's `.ffi_free` function).
   `Callback` message to a chosen process.
 * **Finalizers** run when a handle is collected or released, and when its
   process ends. A `serial` library's natives and finalizers run one at a
-  time, under the library's lock.
+  time, under the library's lock. `Process.serial_held` chains the serial
+  locks of the calls in progress (one per callback level, on the C stack). A
+  finalizer whose library is in one of them (a callback collected or
+  released the handle) goes on `fin_deferred` and runs when that call
+  returns; a callback's call into such a library fails `E_CALLBACK`.
 
 ### 17.4 Trust
 
@@ -1902,7 +1908,7 @@ Windows implementation is written but untested
 
 ## 22. Testing
 
-**Tests are MLWSVM programs.** `tests/` holds the suite (296 programs) and
+**Tests are MLWSVM programs.** `tests/` holds the suite (298 programs) and
 `examples/` holds self-checking examples, all in documented assembly. The
 test runner reads expectations from comments in each file: expected output
 lines, exit code or error code; VM options; a debugger script; what the

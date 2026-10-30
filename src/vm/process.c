@@ -100,6 +100,7 @@ void proc_free(Process *p) {
     VEC_FREE(p->links);
     VEC_FREE(p->monitors);
     VEC_FREE(p->pins);
+    VEC_FREE(p->fin_deferred);
     heap_free_all(p);
     free(p->stack.data); /* the tags too: one block (and maybe a coroutine's stack, coro.c) */
     for (uint32_t i = 0; i < p->nglobals; i++) {

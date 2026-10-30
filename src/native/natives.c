@@ -151,7 +151,7 @@ static void n_foreign_release(Process *p, Word *a, Word *r) {
     (void)r;
     Obj *o = a[0].r;
     if (!o || o->kind != OBJ_FOREIGN) vm_trap(p, "E_TYPE", "foreign.release needs a foreign handle");
-    foreign_finalize(o); /* idempotent: the handle forgets its pointer */
+    foreign_finalize(p, o); /* idempotent: the handle forgets its pointer */
 }
 
 static void n_test_fail(Process *p, Word *a, Word *r) {

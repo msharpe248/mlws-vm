@@ -205,7 +205,7 @@ static void fs_open(Process *p, Word *a, Word *r) {
 
 static void fs_close(Process *p, Word *a, Word *r) {
     (void)r;
-    if (get_file(p, a[0])) foreign_finalize(a[0].r);
+    if (get_file(p, a[0])) foreign_finalize(p, a[0].r);
 }
 
 static void fs_read(Process *p, Word *a, Word *r) {
@@ -355,7 +355,7 @@ static void fs_give(Process *p, Word *a, Word *r) {
     plat_unlock(p->vm->lock);
     h->owned = false;
     h->fd = -1;
-    foreign_finalize(a[0].r);
+    foreign_finalize(p, a[0].r);
     r[0].i = (int64_t)t.id;
 }
 

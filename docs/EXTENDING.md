@@ -93,7 +93,9 @@ Integers arrive canonical (sign- or zero-extended to 64 bits), floats as
 * **Thread safety.** Natives can be called from several worker threads at once.
   Declare `MLWS_NATIVE_SERIAL` for code that is not thread-safe: the VM then
   holds the extension's lock around every such call. Finalizers always run
-  under that lock.
+  under that lock. One that falls due during a call of its extension (a
+  callback dropped or released the handle) runs as soon as that call
+  returns.
 * **Blocking.** Declare `MLWS_NATIVE_BLOCKING` for anything that may wait: I/O,
   sleeping, waiting for a lock or a network. A blocking native runs on a separate
   pool of I/O threads while its process waits, in the same way as in `recv`.

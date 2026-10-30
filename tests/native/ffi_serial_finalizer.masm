@@ -1,0 +1,77 @@
+; A serial library's finalizer, when its handle goes inside that library's call.
+;
+; A `serial` library runs one call at a time under its lock, and its
+; finalizers run under the same lock. A callback from inside a serial call
+; holds that lock already (it is on the same thread, inside the call). If
+; the callback drops one of the library's handles and the collector runs, or
+; it releases one with foreign.release, the finalizer cannot run then: the
+; library is in the middle of a call, and taking the lock again on the same
+; thread killed the process. Now such a finalizer waits, and runs under the
+; lock as soon as the call that holds it returns.
+;
+; Here the library is the C library itself (""): qsort is declared serial,
+; and its handles from fopen are closed by fclose. fputs output stays in
+; the FILE's buffer until fclose, so a file's contents show whether, and
+; when, its finalizer ran.
+; requires: ffi
+; option: --ext-path build/test-ext
+.include "std/test.inc"
+.callback cmp_t (ptr, ptr) -> (i32)
+.extern c.qsort, "", "qsort" (buf, u64, u64, callback cmp_t), serial
+.ffi_free file, "", "fclose"
+.extern c.fopen, "", "fopen" (cstr, cstr) -> (ptr<file>)
+.extern c.fputs, "", "fputs" (cstr, ptr<file>) -> (i32)
+
+done: .i64 0            ; set by the first comparison: the rest do nothing
+
+; Write `text` to a new file through C stdio, and drop the handle unclosed.
+.func write_unclosed(ref path, ref text)
+    ncall "c.fopen" (path, "w") -> (R0)
+    ASSERT_TRUE R0, r
+    ncall "c.fputs" (text, R0) -> (I0)
+    ret
+.endf
+
+; The comparison qsort calls back: inside the serial call.
+.func compare(ref a, ref b) -> i32
+    mov I0, @done
+    bnz I0, 1f
+    mov @done, 1
+    call write_unclosed ("build/test-ffi-serial/gc.txt", "collected")
+    ncall "gc.collect"                 ; the handle is garbage: its fclose waits
+    ncall "fs.read_file" ("build/test-ffi-serial/gc.txt") -> (R3)
+    len I2, R3
+    ASSERT_EQ I2, 0                    ; still buffered inside the FILE
+    ncall "c.fopen" ("build/test-ffi-serial/rel.txt", "w") -> (R4)
+    ncall "c.fputs" ("released", R4) -> (I4)
+    ncall "foreign.release" (R4)       ; released, so fclose is due: it waits too
+.try h
+    ncall "c.fputs" ("again", R4)      ; but the handle is released at once
+.endtry
+    FAIL "a released handle was used"
+h:  catch R6
+1:  ret 0
+.endf
+
+.func main
+    ncall "fs.exists" ("build/test-ffi-serial") -> (I7)
+    bnz I7, 1f                         ; left over from an interrupted run
+    ncall "fs.mkdir" ("build/test-ffi-serial")
+1:  bufnew R1, 16
+    mov R1[0], 3
+    mov R1[1], 1
+    closure compare () -> (R2)
+    ncall "c.qsort" (R1, 16, 1, R2)    ; returns, and both fcloses run
+    mov I0, @done
+    ASSERT_EQ I0, 1
+    ncall "fs.read_file" ("build/test-ffi-serial/gc.txt") -> (R3)
+    strcmp I3, R3, "collected"
+    ASSERT_EQ I3, 0
+    ncall "fs.read_file" ("build/test-ffi-serial/rel.txt") -> (R5)
+    strcmp I5, R5, "released"
+    ASSERT_EQ I5, 0
+    ncall "fs.remove" ("build/test-ffi-serial/gc.txt")
+    ncall "fs.remove" ("build/test-ffi-serial/rel.txt")
+    ncall "fs.rmdir" ("build/test-ffi-serial")
+    ret 0
+.endf

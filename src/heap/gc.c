@@ -190,7 +190,7 @@ void gc_buf_free(Process *p, const Obj *o, void *b, size_t n) {
  * chunks are about to be freed). */
 static void obj_release_buffers(Process *p, Obj *o) {
     switch (o->kind) {
-    case OBJ_FOREIGN: foreign_finalize(o); break;
+    case OBJ_FOREIGN: foreign_finalize(p, o); break;
     case OBJ_CORO: coro_release((ObjCoro *)o); break;
     case OBJ_BYTES: free(((ObjBytes *)o)->data); break;
     case OBJ_LIST: {
@@ -399,9 +399,10 @@ void gc_collect(Process *p) {
 
 void heap_release_foreign(Process *p) {
     for (Obj *o = p->heap; o; o = o->next)
-        if (o->kind == OBJ_FOREIGN) foreign_finalize(o); /* idempotent: the handle forgets its pointer */
+        if (o->kind == OBJ_FOREIGN) foreign_finalize(p, o); /* idempotent: the handle forgets its pointer */
     FOR_CHUNK_OBJECTS(p, o)
-        if (o->kind == OBJ_FOREIGN) foreign_finalize(o);
+        if (o->kind == OBJ_FOREIGN) foreign_finalize(p, o);
+    foreign_run_deferred(p, NULL); /* none, unless a call never returned */
 }
 
 static void free_chunks(Chunk **chunks) {

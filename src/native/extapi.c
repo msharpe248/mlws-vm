@@ -64,22 +64,31 @@ void native_wait_fd(Process *p, int fd, int events, int64_t timeout_ms) {
 
 void native_run_blocking(Process *p) { p->native_req = NREQ_BLOCKING; }
 
+static bool serial_holds(const Process *p, const PlatLock *lock) {
+    for (const SerialHold *h = p->serial_held; h; h = h->outer)
+        if (h->lock == lock) return true;
+    return false;
+}
+
 void native_invoke(Process *p, const NativeDef *nd, Word *args, Word *rets) {
     PlatLock *serial = nd->flags & NF_SERIAL ? nd->lib->serial : NULL;
     p->cur_native = nd;
     p->in_foreign = true;
     p->foreign_err = false;
     p->native_req = NREQ_NONE;
-    if (serial && serial == p->serial_held) { /* a callback calling back into its own serial library */
+    if (serial && serial_holds(p, serial)) { /* a callback calling back into a serial library it is in */
         fail(p, "E_CALLBACK", "%s: its library is serial, and is already in a call that made this callback", nd->name);
         p->in_foreign = false;
         p->cur_native = NULL;
         return;
     }
-    PlatLock *held = p->serial_held;
-    if (serial) plat_lock(serial), p->serial_held = serial;
+    SerialHold hold = {serial, p->serial_held};
+    if (serial) plat_lock(serial), p->serial_held = &hold;
     nd->fn(p, args, rets);
-    if (serial) plat_unlock(serial), p->serial_held = held;
+    if (serial) {
+        plat_unlock(serial), p->serial_held = hold.outer;
+        if (p->fin_deferred.n) foreign_run_deferred(p, serial);
+    }
     p->in_foreign = false;
     p->cur_native = NULL;
 }
@@ -107,7 +116,10 @@ void native_call(Process *p, const NativeDef *nd, Word *args, Word *rets) {
     native_complete(p);
 }
 
-void foreign_finalize(Obj *o) {
+/* A serial library's finalizer runs under its lock. If p is inside a call of
+ * that library (a callback collected or released the handle), the lock is
+ * p's own and the library is busy: the finalizer waits for the call to return. */
+void foreign_finalize(Process *p, Obj *o) {
     ObjForeign *f = (ObjForeign *)o;
     const MlwsForeignType *t = f->type;
     if (!f->ptr || !t->finalize || o->flags & OBJF_BORROWED) {
@@ -117,9 +129,28 @@ void foreign_finalize(Obj *o) {
     void *ptr = f->ptr;
     f->ptr = NULL;
     PlatLock *serial = f->lib ? f->lib->serial : NULL;
+    if (serial && p && serial_holds(p, serial)) {
+        DeferredFinalizer d = {t->finalize, ptr, serial};
+        VEC_PUSH(p->fin_deferred, d);
+        return;
+    }
     if (serial) plat_lock(serial);
     t->finalize(ptr);
     if (serial) plat_unlock(serial);
+}
+
+void foreign_run_deferred(Process *p, PlatLock *lock) {
+    for (size_t i = 0; i < p->fin_deferred.n;) {
+        DeferredFinalizer d = p->fin_deferred.v[i];
+        if (lock && d.lock != lock) {
+            i++;
+            continue;
+        }
+        p->fin_deferred.v[i] = p->fin_deferred.v[--p->fin_deferred.n];
+        plat_lock(d.lock);
+        d.finalize(d.ptr);
+        plat_unlock(d.lock);
+    }
 }
 
 /* ---- the API: values ------------------------------------------------------------ */
@@ -283,7 +314,7 @@ static void *api_foreign_get(MlwsCtx *cx, MlwsValue v, const MlwsForeignType *ty
 
 static void api_foreign_release(MlwsCtx *cx, MlwsValue v) {
     Obj *o = want(P(cx), v, OBJ_FOREIGN, "foreign handle");
-    if (o) foreign_finalize(o);
+    if (o) foreign_finalize(P(cx), o);
 }
 
 /* ---- the API: messages from any thread ----------------------------------------------- */

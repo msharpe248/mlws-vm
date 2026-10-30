@@ -93,21 +93,29 @@ typedef struct Sched {
 #define IO_SHUTDOWN_WAIT_NS 1000000000ull /* how long the end of a program waits for blocking calls */
 
 static MLWS_THREAD_LOCAL Worker *tls_worker;
+/* An I/O thread's own message scratch heap: a callback from a blocking native
+ * runs the process's code there, and may send while worker 0 sends too. */
+static MLWS_THREAD_LOCAL Process *tls_io_frag;
 
 static bool is_live(const Process *p) { return p->state != PROC_DONE && p->state != PROC_FAILED; }
 
 /* ---- setup ---------------------------------------------------------------- */
+
+/* A heap to build outgoing messages in (a Process that never runs). */
+static Process *frag_new(VM *vm) {
+    Process *f = xcalloc(1, sizeof *f);
+    f->vm = vm;
+    f->state = PROC_DONE; /* never running, so allocation never traps */
+    for (int i = 0; i < QUOTA__COUNT; i++) f->quota[i] = UINT64_MAX;
+    return f;
+}
 
 static Worker *worker_new(VM *vm, int id) {
     Worker *w = xcalloc(1, sizeof *w);
     w->vm = vm;
     w->id = id;
     w->qlock = plat_lock_new();
-    Process *f = xcalloc(1, sizeof *f);
-    f->vm = vm;
-    f->state = PROC_DONE; /* never running, so allocation never traps */
-    for (int i = 0; i < QUOTA__COUNT; i++) f->quota[i] = UINT64_MAX;
-    w->frag = f;
+    w->frag = frag_new(vm);
     return w;
 }
 
@@ -123,10 +131,7 @@ static Sched *sched_of(VM *vm) {
     s->io_cv = plat_cond_new();
     s->io_done_cv = plat_cond_new();
     s->host_lock = plat_lock_new();
-    s->host_frag = xcalloc(1, sizeof *s->host_frag);
-    s->host_frag->vm = vm;
-    s->host_frag->state = PROC_DONE;
-    for (int q = 0; q < QUOTA__COUNT; q++) s->host_frag->quota[q] = UINT64_MAX;
+    s->host_frag = frag_new(vm);
     int n = vm->threads > 0 ? vm->threads : plat_cpu_count();
     if (n < 1) n = 1;
     if (n > MAX_THREADS) n = MAX_THREADS;
@@ -142,6 +147,13 @@ static Sched *sched_of(VM *vm) {
 static Worker *my_worker(Sched *s) {
     Worker *w = tls_worker;
     return w && w->vm->sched == s ? w : s->workers[0];
+}
+
+/* The scratch heap for a message sent from the calling thread: its worker's,
+ * or its own on an I/O thread. */
+static Process *my_frag(Sched *s) {
+    if (tls_io_frag && tls_io_frag->vm->sched == s) return tls_io_frag;
+    return my_worker(s)->frag;
 }
 
 /* ---- the process table ------------------------------------------------------ */
@@ -418,7 +430,7 @@ void sched_send(Process *p, uint64_t pid, Word v, uint8_t tag) {
         /* Copy outside the lock (copying can trap), then look again: the
          * receiver may have finished, or filled up, meanwhile. */
         plat_unlock(to->lock);
-        Process *f = my_worker(s)->frag;
+        Process *f = my_frag(s);
         frag_reset(f);
         m = frag_take(f, msg_copy(p, f, v, tag), tag);
         to = pin(s, pid);
@@ -467,7 +479,7 @@ static void report_unobserved(VM *vm, Process *p) {
 }
 
 static void send_down(Sched *s, uint64_t watcher, Process *dead, bool failed) {
-    Process *f = my_worker(s)->frag;
+    Process *f = my_frag(s);
     frag_reset(f);
     ObjStruct *d = struct_new(f, &VM_DOWN_DEF);
     d->fields[DOWNF_PID].i = (int64_t)dead->pid;
@@ -754,7 +766,7 @@ static void n_call(Process *p, Word *a, Word *r) {
             native_fail(p, "E_DEADLOCK", "proc.call: a process cannot call itself");
             return;
         }
-        Process *f = my_worker(s)->frag;
+        Process *f = my_frag(s);
         frag_reset(f);
         Word body = a[1].r ? msg_copy(p, f, a[1], T_R) : a[1]; /* traps (E_TYPE) for unsendable values */
         ObjStruct *c = struct_new(f, &VM_BUILTIN_DEFS[BUILTIN_CALL]);
@@ -813,7 +825,7 @@ static void n_reply(Process *p, Word *a, Word *r) {
     if (!c || c->h.kind != OBJ_STRUCT || c->def != &VM_BUILTIN_DEFS[BUILTIN_CALL])
         vm_trap(p, "E_TYPE", "proc.reply: expected a Call (a message from proc.call)");
     Sched *s = p->vm->sched;
-    Process *f = my_worker(s)->frag;
+    Process *f = my_frag(s);
     frag_reset(f);
     Word v = a[1].r ? msg_copy(p, f, a[1], T_R) : a[1];
     InMsg m = frag_take(f, v, T_R);
@@ -985,6 +997,7 @@ static void kill_from_outside(Process *p) {
  * has returned and the process is ready again. */
 static void io_main(void *arg) {
     Sched *s = arg;
+    tls_io_frag = frag_new(s->workers[0]->vm);
     plat_mutex_lock(s->io_lock);
     for (;;) {
         while (!s->io_stop && s->io_head == s->io_queue.n) {
@@ -1015,6 +1028,9 @@ static void io_main(void *arg) {
         plat_cond_broadcast(s->io_done_cv);
     }
     plat_mutex_unlock(s->io_lock);
+    heap_free_all(tls_io_frag);
+    free(tls_io_frag);
+    tls_io_frag = NULL;
 }
 
 static void io_submit(Sched *s, Process *p) {
