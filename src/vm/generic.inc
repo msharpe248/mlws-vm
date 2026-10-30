@@ -348,8 +348,10 @@
         case OP_ALLOC: {
             Loc d;
             loc_of(CX, &ops[0], 8, &d);
+            ptrdiff_t ri = loc_raw_index(CX, &d);
             Word w;
             w.p = proc_alloc(p, rd(CX, &ops[1], T_I64).i);
+            if (ri >= 0) d.seg = &p->raw.v[ri];
             wr_loc(CX, &d, T_P, w);
             break;
         }
@@ -360,8 +362,10 @@
             Loc d;
             loc_of(CX, &ops[0], 8, &d);
             uint64_t old = rd(CX, &ops[1], T_P).p;
+            ptrdiff_t ri = loc_raw_index(CX, &d);
             Word w;
             w.p = proc_realloc(p, old, rd(CX, &ops[2], T_I64).i);
+            if (ri >= 0) d.seg = &p->raw.v[ri];
             wr_loc(CX, &d, T_P, w);
             break;
         }
@@ -385,8 +389,10 @@
                 if (sl.seg->tags)
                     for (uint64_t w = sl.off / 8; w <= (sl.off + (uint64_t)n - 1) / 8; w++)
                         if (sl.seg->tags[w] == T_R) vm_trap(p, "E_TYPE", "memcpy cannot copy a reference slot");
+                scrub_refs(dl.seg, dl.off, (uint64_t)n); /* the source has none to lose */
                 memmove(dm, sm, (size_t)n);
             } else {
+                scrub_refs(dl.seg, dl.off, (uint64_t)n);
                 memset(dm, (int)(uint8_t)second.i, (size_t)n);
             }
             mark_raw(dl.seg, dl.off, (uint64_t)n);

@@ -1,0 +1,51 @@
+; Writing part of a reference word clears the rest of it.
+;
+; A stack or global word tagged as a reference holds a host address. Reading
+; any byte of it as a number traps, so the address cannot be seen. But a
+; write of something else over only part of the word retypes the whole word,
+; and the bytes it did not write used to keep the address: `mov.u8 SP{0}, 9`
+; over a reference left 9 in the low byte and seven bytes of the address
+; above it, all readable as an i64. Now any reference word such a write
+; touches is zeroed first, so what is left is the write and zeros.
+;
+; Each case below writes over part of its own reference word, then reads the
+; whole word back as a u64.
+.include "std/test.inc"
+.func main
+    push "w5"                   ; six reference words: SP[5] ...
+    push "w4"
+    push "w3"
+    push "w2"
+    push "w1"
+    push "w0"                   ; ... SP[0]
+
+    ; An aligned narrow store (one byte at the start of the word).
+    mov.u8 SP{0}, 9
+    ASSERT_EQ SP[0], 9, u64
+
+    ; An unaligned narrow store (two bytes in the middle of word 1).
+    mov.u16 SP{9}, 0x0101
+    ASSERT_EQ SP[1], 0x010100, u64
+
+    ; An unaligned 8-byte store, half in word 2 and half in word 3.
+    mov.i64 SP{20}, -1
+    ASSERT_EQ SP[2], 0xFFFFFFFF00000000, u64
+    ASSERT_EQ SP[3], 0x00000000FFFFFFFF, u64
+
+    ; memset of two bytes in the middle of word 4 (memset takes a pointer
+    ; value: make one with lea).
+    lea P0, SP{36}
+    memset P0, 0xFF, 2
+    ASSERT_EQ SP[4], 0x0000FFFF00000000, u64
+
+    ; memcpy of one byte from a raw block into the start of word 5.
+    alloc P1, 8
+    mov.u8 [P1], 0x55
+    lea P0, SP{40}
+    memcpy P0, P1, 1
+    ASSERT_EQ SP[5], 0x55, u64
+    free P1
+
+    drop 6
+    ret 0
+.endf

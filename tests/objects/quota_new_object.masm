@@ -1,0 +1,62 @@
+; Running out of heap quota while making an object.
+;
+; An allocation checks the heap quota before the new object exists, so the
+; E_QUOTA trap leaves nothing half made on the heap. It used to link the
+; object first and then trap, before the constructor had set it up: the
+; collector then met a struct with no definition (and crashed) or an array of
+; length 0 whose bytes were still counted (heap_bytes stayed too high).
+;
+; Each loop below fills the heap with garbage-to-be until the quota stops
+; it, drops everything and collects. The first leaves less than 1 KiB (what
+; the process keeps of the error it caught); the second must leave exactly
+; as much as the first.
+.include "std/test.inc"
+
+.struct Node
+    a: i64
+    b: i64
+    next: ref
+.ends
+
+.const HEAP = 0
+
+.func main
+    quota HEAP, 200000
+
+    ; A linked list of structs (`new`).
+    mov R0, null
+.try h1
+1:  new R1, Node
+    mov R1->Node.next, R0
+    mov R0, R1
+    jmp 1b
+.endtry
+h1: catch R2
+    strcmp I0, R2->Error.code, "E_QUOTA"
+    ASSERT_EQ I0, 0
+    mov R0, null
+    mov R1, null
+    mov R2, null
+    ncall "gc.collect" ()               ; sweeps every Node (it crashed here)
+    ncall "gc.heap_bytes" () -> (I10)   ; I10: what is left after the first loop
+    ASSERT_LT I10, 1024
+
+    ; A list of 64-element arrays (`anew`): each array is 512 bytes of
+    ; elements plus its header, all of which the sweep must give back.
+    lnew R0
+.try h2
+2:  anew.i64 R1, 64
+    lpush R0, R1
+    jmp 2b
+.endtry
+h2: catch R2
+    strcmp I0, R2->Error.code, "E_QUOTA"
+    ASSERT_EQ I0, 0
+    mov R0, null
+    mov R1, null
+    mov R2, null
+    ncall "gc.collect" ()
+    ncall "gc.heap_bytes" () -> (I11)
+    ASSERT_EQ I11, I10                  ; nothing counted for arrays that are gone
+    ret 0
+.endf

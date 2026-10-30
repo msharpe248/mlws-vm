@@ -23,6 +23,17 @@ TMPD=$(mktemp -d)
 $BIN asm tests/asm/loc.masm -o "$TMPD/loc.mlwso" >/dev/null 2>&1 || fail "asm loc.masm"
 $BIN dis "$TMPD/loc.mlwso" | grep -q '\.loc "shapes.lua", 12' || fail "dis: .loc"
 rm -f "$TMPD/loc.mlwso"
+
+# A .mlwso whose global word is tagged as a reference (the assembler never
+# writes one) is refused at load, not used: the word would be a forged pointer.
+printf 'g:  .i64 0x4141414141414141\n.func main\n    mov.r R0, @g\n    typeof I0, R0\n    ret 0\n.endf\n' > "$TMPD/gtag.masm"
+$BIN asm "$TMPD/gtag.masm" -o "$TMPD/gtag.mlwso" >/dev/null 2>&1 || fail "asm gtag.masm"
+perl -0777 -pi -e 's/AAAAAAAA\x06/AAAAAAAA\x0d/ or die' "$TMPD/gtag.mlwso" || fail "gtag: no i64 tag to patch"
+set +e
+OUT=$($BIN run "$TMPD/gtag.mlwso" 2>&1); rc=$?
+set -e
+[ $rc = 65 ] && echo "$OUT" | grep -q "E_LOAD_FORMAT.*bad word tag" || fail "forged global tag accepted ($rc: $OUT)"
+rm -f "$TMPD/gtag.masm" "$TMPD/gtag.mlwso"
 rmdir "$TMPD"
 
 # The module cache: an entry is made and used; an included file that changes,

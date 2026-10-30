@@ -285,6 +285,14 @@ static void loc_of(Ctx *c, const Operand *o, int width, Loc *L) {
     L->off = PTR_OFF(a);
 }
 
+/* proc_alloc may grow the raw-block table, moving the Segment a Loc points at:
+ * the index of L's raw block (-1 if none), to find it again after the call. */
+static ptrdiff_t loc_raw_index(Ctx *c, const Loc *L) {
+    uintptr_t s = (uintptr_t)L->seg, b = (uintptr_t)c->p->raw.v;
+    if (L->is_reg != LK_MEM || s < b || s >= b + c->p->raw.n * sizeof(Segment)) return -1;
+    return (ptrdiff_t)((s - b) / sizeof(Segment));
+}
+
 /* ---- memory --------------------------------------------------------------- */
 
 static uint8_t *mem_ptr(Ctx *c, const Loc *L, int width) {
@@ -366,9 +374,19 @@ static MLWS_COLD void note_stack_ref(Process *p, uint32_t word) {
     if (word < p->stack_ref_lo) p->stack_ref_lo = word;
 }
 
+/* Zero each reference word that [off, off+n) overlaps, before something that
+ * is not a reference is written there: what the write leaves of the word must
+ * not keep the bytes of an address (the word stops being a reference). */
+static void scrub_refs(Segment *s, uint32_t off, uint64_t n) {
+    if (!s->tags || n == 0) return;
+    for (uint64_t i = off / 8; i <= (off + n - 1) / 8; i++)
+        if (s->tags[i] == T_R) memset(s->data + i * 8, 0, 8);
+}
+
 static void mem_write(Ctx *c, const Loc *L, MlwsType t, Word w) {
     int width = type_size(t);
     uint8_t *m = mem_ptr(c, L, width);
+    if (t != T_R && (width < 8 || L->off % 8)) scrub_refs(L->seg, L->off, (uint64_t)width);
     if (t == T_R) {
         if (!L->seg->tags || L->off % 8)
             vm_trap(c->p, "E_TYPE", "references can only be stored in word-aligned stack or global slots");

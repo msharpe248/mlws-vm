@@ -46,15 +46,20 @@ static uint64_t gc_threshold(Process *p, uint64_t live) {
     return t;
 }
 
+/* Trap E_QUOTA if a heap of `bytes` would exceed p's quota. Only the running
+ * process can trap; copies into other heaps (spawn arguments, messages) are
+ * counted and caught at their next allocation. */
+static void quota_check(Process *p, uint64_t bytes) {
+    if (bytes > p->quota[QUOTA_HEAP] && p->state == PROC_RUNNING && !p->raising &&
+        !p->in_foreign) /* checked when foreign code returns: it must not be unwound */
+        vm_trap(p, "E_QUOTA", "heap quota of %llu bytes exceeded", (unsigned long long)p->quota[QUOTA_HEAP]);
+}
+
 void gc_account(Process *p, int64_t delta) {
     p->heap_bytes = (uint64_t)((int64_t)p->heap_bytes + delta);
     if (p->heap_bytes > p->heap_peak) p->heap_peak = p->heap_bytes;
     if (p->heap_bytes >= p->next_gc || p->vm->gc_stress) p->gc_pending = true;
-    /* Only the running process can trap; copies into other heaps (spawn
-     * arguments, messages) are counted and caught at their next allocation. */
-    if (delta > 0 && p->heap_bytes > p->quota[QUOTA_HEAP] && p->state == PROC_RUNNING && !p->raising &&
-        !p->in_foreign) /* checked when foreign code returns: it must not be unwound */
-        vm_trap(p, "E_QUOTA", "heap quota of %llu bytes exceeded", (unsigned long long)p->quota[QUOTA_HEAP]);
+    if (delta > 0) quota_check(p, p->heap_bytes);
 }
 
 /* ---- the small-object allocator ------------------------------------------------------
@@ -145,7 +150,10 @@ Obj *gc_alloc_unaccounted(Process *p, uint8_t kind, size_t size) {
     return o;
 }
 
+/* The quota is checked first: a trap after the object is linked would leave
+ * the sweep an object its constructor never set up (a struct with no def). */
 Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
+    quota_check(p, p->heap_bytes + size);
     Obj *o = gc_alloc_unaccounted(p, kind, size);
     gc_account(p, (int64_t)size);
     return o;

@@ -474,6 +474,10 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
     br_bytes(&r, m->gdata, n);
     br_bytes(&r, m->gtags, n / 8);
     CHECK();
+    /* Only numbers and raw bytes: a word tagged as a reference or pointer
+     * would let the file forge one (the assembler never emits such a tag). */
+    for (uint32_t w = 0; w < m->gsize / 8; w++)
+        if (m->gtags[w] != TAG_RAW && m->gtags[w] > T_F64) FAIL("global segment: bad word tag");
 
     n = br_uleb(&r);
     CHECK_COUNT(n, 1);

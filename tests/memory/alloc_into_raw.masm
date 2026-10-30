@@ -1,0 +1,39 @@
+; alloc and realloc whose destination operand is inside a raw block.
+;
+; The interpreter finds the destination before it allocates, so a bad
+; destination traps before anything is allocated. A destination in a raw
+; block is found as an entry of the process's table of raw blocks, and
+; allocating may grow that table (moving it). The destination must then be
+; looked up again in the moved table: before it was, the result was written
+; through the old table (a use after free, reported by `make check-asan`).
+;
+; Each new block below gets a new table entry (nothing is freed, so no entry
+; is reused), and the table grows several times on the way to 200 blocks.
+.include "std/test.inc"
+.func main
+    alloc P0, 16                ; P0[0] holds the newest block, P0[1] a realloc'd one
+    mov I1, 0
+1:  alloc [P0], 8               ; the destination is word 0 of P0's block
+    mov P1, [P0]
+    mov [P1], I1                ; the stored pointer works: write through it...
+    ASSERT_EQ [P1], I1          ; ...and read back
+    inc I1
+    blt I1, 200, 1b
+
+    ; realloc of null allocates, so it can grow the table too.
+    mov I1, 0
+2:  mov P0[1], null
+    realloc P0[1], P0[1], 8     ; destination and old block are both P0[1]
+    mov P1, P0[1]
+    mov [P1], 7
+    ASSERT_EQ [P1], 7
+    inc I1
+    blt I1, 100, 2b
+
+    ; Growing a block in place keeps its table entry: P0[1] now names the
+    ; grown block, whose first word was kept.
+    realloc P0[1], P0[1], 64
+    mov P1, P0[1]
+    ASSERT_EQ [P1], 7
+    ret 0
+.endf

@@ -306,8 +306,9 @@ LEB128 count and its items, strings as a length and bytes. `module_read`
 checks everything a later stage relies on: the exact format version; every
 count against the bytes left before allocating; every index into another
 table; parameter, result and field types; register counts (at most 32);
-handler and `.loc` ranges; each function's code range; symbol ranges; and
-no trailing bytes. It does not decode the code: that is the linker's job,
+handler and `.loc` ranges; each function's code range; symbol ranges; the
+global segment's word tags (numbers and raw bytes only, so a file cannot
+plant a reference); and no trailing bytes. It does not decode the code: that is the linker's job,
 followed by the verifier (§6, §7).
 
 **A library archive** (`.mlwsl`, `loader/library_io.c`) is the magic
@@ -958,7 +959,10 @@ the `MlwsType` it was last written as, `T_NONE` (never written) or
 blocks have no tags.
 
 * **Writing** a value aligned to a word sets the word's tag to the value's
-  type. An unaligned write marks every word it touches raw.
+  type. An unaligned write marks every word it touches raw. A write of
+  anything but a reference that covers only part of a reference word
+  (narrow, unaligned, `memcpy`, `memset`) zeroes that word first, so the
+  bytes it leaves cannot be read as part of an address.
 * **Reading a reference** requires the tag to be `T_R`, or `T_NONE`, which
   reads as null. Anything else traps `E_TYPE`.
 * **Reading anything else** traps if it overlaps a word tagged `T_R`, and
@@ -1077,7 +1081,10 @@ so each object's lifetime is visible.
 `gc_account(p, bytes)` charges each allocation to `heap_bytes`. It sets
 `gc_pending` when the heap reaches `next_gc` (or always, under
 `--gc-stress`), and traps `E_QUOTA` when the heap quota is exceeded, except
-while the VM builds an `Error` or foreign code runs.
+while the VM builds an `Error` or foreign code runs. Whatever grows is made
+consistent before it is charged, since the trap can come from the charge;
+`gc_alloc` checks the quota before it makes the object, so a trap never
+leaves the sweep an object its constructor did not finish.
 
 ### 11.3 When to collect
 
@@ -1895,7 +1902,7 @@ Windows implementation is written but untested
 
 ## 22. Testing
 
-**Tests are MLWSVM programs.** `tests/` holds the suite (293 programs) and
+**Tests are MLWSVM programs.** `tests/` holds the suite (296 programs) and
 `examples/` holds self-checking examples, all in documented assembly. The
 test runner reads expectations from comments in each file: expected output
 lines, exit code or error code; VM options; a debugger script; what the
