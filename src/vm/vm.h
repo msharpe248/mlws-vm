@@ -125,6 +125,8 @@ typedef struct Program {
 
 typedef struct LibWant {
     char *lib, *constraint, *who; /* who: the module or library that asked */
+    const struct LModule *mod;      /* who, if a module (NULL: a library, or a program at the start) */
+    const struct LibArchive *by;    /* who, if a library */
 } LibWant;
 
 /* A program's own directory (that of its root module's file). Its modules
@@ -206,7 +208,8 @@ typedef struct VM {
      * stated so far, which a library chosen later must meet */
     VEC(struct LibArchive *) archives;
     bool archives_scanned;
-    StrMap libsel;
+    StrMap libsel;                      /* a NULL value: none chosen (a failed load took it back) */
+    VEC(struct LibArchive *) chosen;    /* the archives in libsel, in the order they were chosen */
     /* every module's constants (strings, BigInts, decimals), one object per
      * kind and text, shared by all modules: owned here, freed with the VM */
     StrMap const_pool;

@@ -554,7 +554,10 @@ run, under `vm->mods_lock`. Each process copies a module's globals when it
 starts (`process.c:proc_new`), so a process that started before the load
 finds the new segment missing the first time it touches it, and
 `proc_grow_globals` adds it (§10.3). A load that fails marks the modules it
-had not linked `LM_FAILED` and leaves their names free. Modules are never
+had not linked `LM_FAILED` and leaves their names free, and
+`take_back_libraries` drops the library versions it chose (`VM.chosen`) and
+the constraints it stated (`VM.wants`, each with its owner), except those of
+what stays loaded. Modules are never
 unloaded, so a closure never outlives its code.
 
 ## 7. The verifier
@@ -1913,7 +1916,7 @@ Windows implementation is written but untested
 
 ## 22. Testing
 
-**Tests are MLWSVM programs.** `tests/` holds the suite (302 programs) and
+**Tests are MLWSVM programs.** `tests/` holds the suite (303 programs) and
 `examples/` holds self-checking examples, all in documented assembly. The
 test runner reads expectations from comments in each file: expected output
 lines, exit code or error code; VM options; a debugger script; what the

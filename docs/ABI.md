@@ -535,8 +535,9 @@ A running program can load a module it did not import, and call it:
   privacy checked, and everything verified before it can run. Loading a
   loaded module does nothing. Errors are the loader's (`E_LOAD_NOT_FOUND`,
   `E_LINK_VERSION`, `E_LINK_PRIVATE`, `E_VERIFY`, ...), raised as catchable
-  exceptions; a load that fails leaves none of its unlinked modules behind, so
-  it can be tried again. It counts as an OS call (quota kind 5), since it reads
+  exceptions; a load that fails leaves none of its unlinked modules behind,
+  nor the library constraints and versions only they needed, so it can be
+  tried again, and other modules loaded as if it had not been tried. It counts as an OS call (quota kind 5), since it reads
   files and may load native extensions.
 * `module.function` returns a closure for a function the module exports
   (`E_LINK_UNDEF` if it exports none of that name); `calli` checks its

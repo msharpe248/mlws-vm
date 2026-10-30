@@ -1,0 +1,9 @@
+; For tests/libs/dynamic_rollback.masm: needs greet 1, and says which it got.
+.requires greet, "^1.0"
+.import greet
+.export version
+
+.func version -> ref
+    call greet.version () -> (R0)
+    ret R0
+.endf

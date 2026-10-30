@@ -361,7 +361,8 @@ static void wants_of(VM *vm, const char *lib, StrBuf *b) {
 
 /* `who` needs library lib in a version the constraint allows: checked now if
  * lib is the VM or has been chosen, else kept for when it is. */
-static bool want(VM *vm, const char *lib, const char *constraint, const char *who, MlwsError *err) {
+static bool want(VM *vm, const char *lib, const char *constraint, const char *who, const LModule *mod,
+                 const LibArchive *by, MlwsError *err) {
     SemVer v;
     if (!strcmp(lib, "mlwsvm")) {
         semver_parse(MLWSVM_VERSION, &v);
@@ -371,7 +372,7 @@ static bool want(VM *vm, const char *lib, const char *constraint, const char *wh
         return true;
     }
     void *sel;
-    if (smap_get(&vm->libsel, lib, &sel) && !semver_satisfies(((LibArchive *)sel)->version, constraint)) {
+    if (smap_get(&vm->libsel, lib, &sel) && sel && !semver_satisfies(((LibArchive *)sel)->version, constraint)) {
         StrBuf b = {0};
         wants_of(vm, lib, &b);
         mlws_err(err, "E_LINK_VERSION", "%s needs %s %s, but %s %s is already loaded%s%s%s", who, lib, constraint, lib,
@@ -379,7 +380,7 @@ static bool want(VM *vm, const char *lib, const char *constraint, const char *wh
         sb_free(&b);
         return false;
     }
-    LibWant w = {xstrdup(lib), xstrdup(constraint), xstrdup(who)};
+    LibWant w = {xstrdup(lib), xstrdup(constraint), xstrdup(who), mod, by};
     VEC_PUSH(vm->wants, w);
     return true;
 }
@@ -390,7 +391,7 @@ static bool want(VM *vm, const char *lib, const char *constraint, const char *wh
  * set if none fits; NULL with err clear if there is none of lib at all. */
 static LibArchive *choose_library(VM *vm, const char *lib, MlwsError *err) {
     void *v;
-    if (smap_get(&vm->libsel, lib, &v)) return v;
+    if (smap_get(&vm->libsel, lib, &v) && v) return v;
     LibArchive *best = NULL;
     StrBuf found = {0};
     for (size_t i = 0; i < vm->archives.n; i++) {
@@ -415,11 +416,12 @@ static LibArchive *choose_library(VM *vm, const char *lib, MlwsError *err) {
     }
     sb_free(&found);
     smap_put(&vm->libsel, lib, best);
+    VEC_PUSH(vm->chosen, best);
     StrBuf who = {0};
     sb_printf(&who, "library %s %s", lib, best->manifest->lib_version);
     for (uint32_t i = 0; i < best->manifest->nrequires; i++) {
         const MRequire *r = &best->manifest->requires[i];
-        if (!want(vm, r->lib, r->constraint, who.s, err)) {
+        if (!want(vm, r->lib, r->constraint, who.s, NULL, best, err)) {
             sb_free(&who);
             return NULL;
         }
@@ -532,7 +534,7 @@ static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive 
      * may both have a main), a library-path one by its name */
     const char *who = home ? path : m->name;
     for (uint32_t i = 0; i < m->nrequires && !requires_stated; i++) /* before its imports choose versions */
-        if (!want(vm, m->requires[i].lib, m->requires[i].constraint, who, err)) return NULL;
+        if (!want(vm, m->requires[i].lib, m->requires[i].constraint, who, lm, NULL, err)) return NULL;
     for (uint32_t i = 0; i < m->nimports; i++) {
         LModule *dep = require(vm, m->imports[i], home, err);
         if (!dep) return NULL;
@@ -617,9 +619,39 @@ LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err
     return lm;
 }
 
+/* After a failed load: the library versions it chose and the constraints it
+ * stated go too, except those of what it leaves loaded. */
+static void take_back_libraries(VM *vm, size_t chosen, size_t wants) {
+    size_t keep = chosen;
+    for (size_t i = chosen; i < vm->chosen.n; i++) {
+        LibArchive *a = vm->chosen.v[i];
+        bool used = false;
+        for (size_t k = 0; k < vm->mods.n && !used; k++) used = vm->mods.v[k]->lib == a && vm->mods.v[k]->state == LM_READY;
+        if (used) vm->chosen.v[keep++] = a;
+        else smap_put(&vm->libsel, a->manifest->lib_name, NULL);
+    }
+    vm->chosen.n = keep;
+    keep = wants;
+    for (size_t i = wants; i < vm->wants.n; i++) {
+        LibWant *w = &vm->wants.v[i];
+        void *sel = NULL;
+        bool held = w->mod ? w->mod->state == LM_READY
+                  : w->by ? smap_get(&vm->libsel, w->by->manifest->lib_name, &sel) && sel == w->by
+                          : true;
+        if (held) {
+            vm->wants.v[keep++] = *w;
+            continue;
+        }
+        free(w->lib);
+        free(w->constraint);
+        free(w->who);
+    }
+    vm->wants.n = keep;
+}
+
 LModule *vm_load_dynamic(VM *vm, const char *name, const LModule *from, MlwsError *err) {
     plat_lock(vm->mods_lock);
-    size_t start = vm->mods.n, chain = vm->loading.n;
+    size_t start = vm->mods.n, chain = vm->loading.n, chosen = vm->chosen.n, wants = vm->wants.n;
     LModule *lm = require(vm, name, from ? from->home : NULL, err);
     if (lm && !may_import(from ? from->m->name : "the program", from ? from->lib : NULL, lm, err)) lm = NULL;
     if (!lm) { /* what this load registered but did not link is dropped; the rest stays loaded */
@@ -630,6 +662,7 @@ LModule *vm_load_dynamic(VM *vm, const char *name, const LModule *from, MlwsErro
             smap_put(&vm->modmap, x->key, NULL);
         }
         vm->loading.n = chain;
+        take_back_libraries(vm, chosen, wants);
     }
     plat_unlock(vm->mods_lock);
     return lm;
@@ -687,7 +720,7 @@ bool vm_load_roots(VM *vm, const char *const *paths, int n, LModule **out, MlwsE
     /* Every program's requirements, before any library version is chosen. */
     for (int i = 0; i < n && ok; i++)
         for (uint32_t k = 0; k < ms[i]->nrequires && ok; k++)
-            ok = want(vm, ms[i]->requires[k].lib, ms[i]->requires[k].constraint, paths[i], &errs[i]);
+            ok = want(vm, ms[i]->requires[k].lib, ms[i]->requires[k].constraint, paths[i], NULL, NULL, &errs[i]);
     for (int i = 0; i < n && ok; i++) {
         out[i] = register_module(vm, ms[i], paths[i], NULL, homes[i], true, &errs[i]);
         ms[i] = NULL; /* the VM's now (or freed) */

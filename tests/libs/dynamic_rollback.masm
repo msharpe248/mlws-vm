@@ -1,0 +1,27 @@
+; A module.load that fails takes back the library constraints it stated.
+;
+; wants2 states `.requires greet, "^2.0"` and then fails to load (it imports
+; a module that does not exist) before any version of greet is chosen.
+; Nothing of it stays loaded, so its constraint must not stay either: it
+; used to, and then wants1, which needs greet ^1.0, could not be loaded
+; (no version of greet met both). What a failed load leaves loaded keeps
+; its constraints and its library versions.
+; option: --lib-path tests/libs/_dyn:build/test-libs
+.include "std/test.inc"
+
+.func main
+.try 1f
+    ncall "module.load" ("wants2")
+.endtry
+    FAIL "wants2 should not load"
+1:  catch R0
+    strcmp I0, R0->Error.code, "E_LOAD_NOT_FOUND"
+    ASSERT_EQ I0, 0
+
+    ncall "module.load" ("wants1")      ; greet ^1.0: 1.2.0, the newest it allows
+    ncall "module.function" ("wants1", "version") -> (R1)
+    calli R1 () -> (R2)
+    strcmp I1, R2, "1.2.0"
+    ASSERT_EQ I1, 0
+    ret 0
+.endf

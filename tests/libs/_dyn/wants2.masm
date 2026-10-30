@@ -1,0 +1,10 @@
+; For tests/libs/dynamic_rollback.masm: needs greet 2, but cannot be loaded
+; (its first import does not exist), so no version of greet is chosen for it.
+.requires greet, "^2.0"
+.import no_such_module
+.import greet
+.export f
+
+.func f
+    ret
+.endf
