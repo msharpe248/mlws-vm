@@ -269,7 +269,7 @@ it is a table, and code refers to the tables by index:
 
 ```
 Module
-  name, source, srcfiles[]          dotted name; the file; files .loc names
+  name, source, srcfiles[]          dotted name; the file; files .loc names and included files
   imports[]                         module names
   consts[]   {kind, bytes}          strings, BigInts, decimals (as text)
   funcs[]    MFunc                  see below; imports are entries too
@@ -288,7 +288,8 @@ MFunc
   nparams, params[], nrets, rets[]  types
   nregs[4]                          window size per bank
   code_off, code_len, ninsns        its bytes in Module.code
-  lines[ninsns]                     the source line of each instruction
+  file                              its .masm file: source, or an included one (srcfiles)
+  lines[ninsns]                     the line of each instruction in that file
   locs[]  {start, file, line}       .loc runs: from instruction `start` on
   handlers[] {start, end, target}   .try regions, as instruction indices
 ```
@@ -1908,7 +1909,7 @@ Windows implementation is written but untested
 
 ## 22. Testing
 
-**Tests are MLWSVM programs.** `tests/` holds the suite (299 programs) and
+**Tests are MLWSVM programs.** `tests/` holds the suite (300 programs) and
 `examples/` holds self-checking examples, all in documented assembly. The
 test runner reads expectations from comments in each file: expected output
 lines, exit code or error code; VM options; a debugger script; what the

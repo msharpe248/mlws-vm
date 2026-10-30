@@ -13,11 +13,12 @@ file produces `E_LOAD_FORMAT` (or `E_VERIFY`) rather than a crash.
 
 ```
 magic        4 bytes  "MLWS"
-version      u16      8
+version      u16      9
 flags        u16      0
 name         str      dotted module name, e.g. "std.io"
 source       str      source file name (for backtraces); may be empty
-srcfiles     uleb n, then n × str            files of the translated program that `.loc` names
+srcfiles     uleb n, then n × str            files of the translated program that `.loc` names,
+                                             and included .masm files that define functions
 
 imports      uleb n, then n × str            module names, in .import order
 
@@ -38,7 +39,10 @@ functions    uleb n, then n × {
                  nregs   uleb × 4                    I, F, R, P window sizes (0..32)
                  code_off uleb, code_len uleb        byte range in the code section
                  ninsns  uleb
-                 lines   uleb × ninsns               source line of each instruction
+                 file    uleb                        the .masm file it is defined in: 1-based into
+                                                     srcfiles (an included file); 0 = `source`
+                 lines   uleb × ninsns               line of each instruction in that file
+                                                     (0: from another file)
                  nlocs   uleb, then nlocs × {        `.loc` runs, in increasing start order:
                            start uleb,               from this instruction until the next run,
                            file  uleb,               the code came from this file (1-based into

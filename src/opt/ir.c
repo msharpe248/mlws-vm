@@ -254,7 +254,8 @@ void ochange(OFunc *f, int pass, uint32_t pc, const Insn *was, const char *what)
     StrBuf b = {0};
     const Module *m = om->m;
     uint32_t line = pc < f->code.n ? f->code.v[pc].line : 0;
-    sb_printf(&b, "%s:%u %s+%u %s: %s", m->source ? m->source : m->name, line, f->mf->name, pc, opt_pass_name(pass),
+    const char *src = module_func_file(m, f->mf);
+    sb_printf(&b, "%s:%u %s+%u %s: %s", src && *src ? src : m->name, line, f->mf->name, pc, opt_pass_name(pass),
               what);
     if (was) {
         sb_puts(&b, ": ");

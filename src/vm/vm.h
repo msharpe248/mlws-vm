@@ -589,6 +589,9 @@ void proc_grow_globals(Process *p);
  * says what program line it came from, else "fib.masm:120" (base: file
  * names without their directories). */
 void fn_where(StrBuf *b, const Function *f, uint32_t pc, bool base);
+/* The .masm file f's lines are lines of: its module's source, or the included
+ * file it was defined in. */
+const char *fn_file(const Function *f);
 /* "util.who", or "util.who [b/util.masm]" when two loaded modules are named util. */
 void fn_qualname(StrBuf *b, const Function *f);
 void proc_free(Process *p);

@@ -318,7 +318,7 @@ void tools_profile_report(VM *vm, FILE *out, const char *flame_path) {
     fprintf(out, "  %6s %12s  %s\n", "%", "insns", "location");
     for (size_t i = 0; i < lines.n && i < 15; i++) {
         const Function *f = lines.v[i].f;
-        const char *src = f->mod->m->source && *f->mod->m->source ? f->mod->m->source : f->mod->path;
+        const char *src = fn_file(f);
         fprintf(out, "  %5.1f%% %12llu  %s:%u (%s.%s)\n", 100.0 * (double)lines.v[i].n / (double)total,
                 (unsigned long long)lines.v[i].n, src, lines.v[i].pc, f->mod->m->name, f->name);
     }

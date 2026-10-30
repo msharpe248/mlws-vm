@@ -60,6 +60,7 @@ typedef struct {
 typedef struct AsmFunc {
     char *name;
     const PLine *pl;
+    const char *file; /* where its .func line came from (interned by the preprocessor) */
     MFunc mf;
     StrMap labels;  /* name -> idx+1 */
     VEC(NumLabel) numlabels;
@@ -760,6 +761,15 @@ static bool parse_type_tok(Asm *A, Cur *c, MlwsType *t) {
     return true;
 }
 
+/* The 1-based index of a file in Module.srcfiles, added if new. */
+static uint32_t srcfile_index(Asm *A, const char *name) {
+    void *v;
+    if (smap_get(&A->srcmap, name, &v)) return (uint32_t)VI(v) + 1;
+    smap_put(&A->srcmap, name, IV(A->srcfiles.n));
+    VEC_PUSH(A->srcfiles, xstrdup(name));
+    return (uint32_t)A->srcfiles.n;
+}
+
 static bool dir_func(Asm *A, Cur *c) {
     if (A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", "nested .func (missing .endf for %s?)", A->cur->name);
     Token *nt = cur(c);
@@ -777,6 +787,10 @@ static bool dir_func(Asm *A, Cur *c) {
     AsmFunc *f = xcalloc(1, sizeof *f);
     f->name = name;
     f->pl = c->pl;
+    /* A function from an included file names that file: its lines are lines
+     * of it, not of the module's own source. */
+    f->file = c->pl->origin.file;
+    if (A->pp.files.n && strcmp(f->file, A->pp.files.v[0])) f->mf.file = srcfile_index(A, f->file);
     smap_put(&A->funcmap, name, IV(A->funcs.n));
     VEC_PUSH(A->funcs, f);
     A->cur = f;
@@ -1565,15 +1579,8 @@ static bool dir_loc(Asm *A, Cur *c) {
         free(name);
         return aerr(A, c->pl, col, "E_ASM_RANGE", ".loc needs a line number from 1");
     }
-    void *v;
-    if (smap_get(&A->srcmap, name, &v)) {
-        A->loc_file = (uint32_t)VI(v) + 1;
-        free(name);
-    } else {
-        smap_put(&A->srcmap, name, IV(A->srcfiles.n));
-        VEC_PUSH(A->srcfiles, name);
-        A->loc_file = (uint32_t)A->srcfiles.n;
-    }
+    A->loc_file = srcfile_index(A, name);
+    free(name);
     A->loc_line = (uint32_t)line;
     return expect_eol(A, c);
 }
@@ -2238,7 +2245,8 @@ static Module *finish(Asm *A) {
             for (int k = 0; k < ai->nops; k++) fill_operand(&tmp[k], &ai->ops[k]);
             Insn in = {.op = ai->op, .xop = ai->op, .type = ai->type, .type2 = ai->type2, .nops = (uint8_t)ai->nops, .ops = tmp};
             encode_insn(&code, &in);
-            mf->lines[i] = (uint32_t)ai->pl->origin.line;
+            /* a line from another file (an .include inside the function): unknown */
+            mf->lines[i] = strcmp(ai->pl->origin.file, af->file) ? 0 : (uint32_t)ai->pl->origin.line;
             bool same = mf->nlocs && mf->locs[mf->nlocs - 1].file == ai->loc_file &&
                         mf->locs[mf->nlocs - 1].line == ai->loc_line;
             if (!same && (mf->nlocs || ai->loc_file)) { /* a new run (none before the first .loc) */

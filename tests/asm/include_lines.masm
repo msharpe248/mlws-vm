@@ -1,0 +1,32 @@
+; Code from an included file is reported at its own file and line.
+;
+; Each function records the file its .func line came from, and its
+; instructions' lines are lines of that file. So a backtrace, a verifier
+; error, the profiler and the debugger name the included file for a
+; function defined there, and this file for one defined here. (They used to
+; take every line as a line of the module's main file.)
+;
+; area, from _inc/area.inc, faults on line 6 of that file; main calls it on
+; line 20 of this one.
+; no-opt: -O2 inlines area into main, and its fault is then main's, on line 20
+.include "std/test.inc"
+.include "_inc/area.inc"
+
+.func main
+    lnew R0
+    lpush R0, 1
+    mov R2, null
+.try 1f
+    call area (R0) -> (I0)
+.endtry
+    FAIL "area should have trapped"
+1:  catch R1
+    mov R2, R1->Error.trace
+    strfind I1, R2, "at include_lines.area ("
+    ASSERT_LE 0, I1
+    strfind I1, R2, "_inc/area.inc:6)"
+    ASSERT_LE 0, I1
+    strfind I1, R2, "include_lines.masm:20)"
+    ASSERT_LE 0, I1
+    ret 0
+.endf

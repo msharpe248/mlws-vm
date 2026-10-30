@@ -14,7 +14,8 @@ static bool verr(MlwsError *err, const LModule *lm, const Function *f, uint32_t 
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
     uint32_t line = f->mf->lines && pc < f->mf->ninsns ? f->mf->lines[pc] : 0;
-    return mlws_err(err, "E_VERIFY", "%s:%u: in %s.%s (instruction %u): %s", lm->m->source ? lm->m->source : lm->m->name,
+    const char *src = module_func_file(lm->m, f->mf);
+    return mlws_err(err, "E_VERIFY", "%s:%u: in %s.%s (instruction %u): %s", src && *src ? src : lm->m->name,
                   line, lm->m->name, f->name, pc, msg);
 }
 

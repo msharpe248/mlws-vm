@@ -52,7 +52,8 @@ void pass_deadfuncs(OModule *om) {
         }
         if (om->rep && om->rep->log) {
             StrBuf b = {0};
-            sb_printf(&b, "%s %s deadfuncs: nothing calls it", m->source ? m->source : m->name, m->funcs[i].name);
+            const char *src = module_func_file(m, &m->funcs[i]);
+            sb_printf(&b, "%s %s deadfuncs: nothing calls it", src && *src ? src : m->name, m->funcs[i].name);
             VEC_PUSH(om->rep->changes, b.s);
         }
         ofn_free(f);

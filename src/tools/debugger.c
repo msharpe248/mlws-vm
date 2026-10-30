@@ -147,8 +147,8 @@ static Function *find_function(Debugger *d, const char *name) {
     return NULL;
 }
 
-static bool source_matches(const LModule *lm, const char *file) {
-    const char *src = lm->m->source && *lm->m->source ? lm->m->source : lm->path;
+static bool source_matches(const Function *f, const char *file) {
+    const char *src = fn_file(f);
     return !strcmp(src, file) || !strcmp(path_basename(src), path_basename(file));
 }
 
@@ -183,10 +183,11 @@ static void cmd_break(Debugger *d, const char *arg) {
     bool found = false;
     for (size_t m = 0; m < d->vm->mods.n && !found; m++) {
         LModule *lm = d->vm->mods.v[m];
-        if (file ? !source_matches(lm, file) : lm != d->root) continue;
+        if (!file && lm != d->root) continue;
         for (uint32_t i = 0; i < lm->m->nfuncs && !found; i++) {
             Function *f = &lm->funcs[i];
             if (f->target != f || !f->mf->lines) continue;
+            if (file ? !source_matches(f, file) : f->mf->file != 0) continue; /* a bare line: the program's own file */
             for (uint32_t pc = 0; pc < f->ncode; pc++) {
                 if (f->mf->lines[pc] == line) {
                     add_bp(d, arg, f, pc);

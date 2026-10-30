@@ -6,7 +6,7 @@
 #include "types.h"
 
 #define MLWSO_MAGIC "MLWS"
-#define MLWSO_VERSION 8
+#define MLWSO_VERSION 9
 
 /* A call has a target and an argc operand, leaving 30 for arguments/results. */
 #define MAX_PARAMS 30
@@ -48,7 +48,8 @@ typedef struct {
     uint16_t nregs[NBANKS];
     uint32_t code_off, code_len; /* byte range within Module.code */
     uint32_t ninsns;
-    uint32_t *lines;       /* source line per instruction (ninsns entries) */
+    uint32_t file;         /* the .masm file it is defined in: 1-based into Module.srcfiles; 0 = Module.source */
+    uint32_t *lines;       /* line in that file per instruction (ninsns entries; 0 = from another file) */
     uint32_t nlocs;        /* positions in the translated program, in order of start */
     MLoc *locs;
     uint32_t nhandlers;
@@ -169,7 +170,7 @@ typedef struct MRequire {
 typedef struct Module {
     char *name;   /* dotted module name, e.g. "std.io" */
     char *source; /* source file the module was assembled from (debug) */
-    char **srcfiles; /* the translated program's files that `.loc` names */
+    char **srcfiles; /* the translated program's files that `.loc` names, and included files that define functions */
     uint32_t nsrcfiles;
     char **imports;
     uint32_t nimports;
@@ -222,6 +223,10 @@ int module_find_export_struct(const Module *m, const char *name);
 #include "bytes.h"
 void module_write(const Module *m, ByteBuf *out);
 Module *module_read(const uint8_t *data, size_t len, MlwsError *err);
+
+/* The .masm file f is defined in: Module.source, or the included file (may be
+ * empty for a module assembled from text). */
+const char *module_func_file(const Module *m, const MFunc *f);
 
 /* Where instruction pc of f came from in the program a compiler translated
  * (`.loc`): false if nothing says. */

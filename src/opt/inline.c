@@ -156,7 +156,7 @@ static bool inline_call(OFunc *f, uint32_t pc, OFunc *g) {
     uint32_t done = pc + at; /* the call itself, after the insertion: removed, so its successor */
     for (uint32_t i = 0; i < n; i++) {
         const Insn *in = &g->code.v[i].in;
-        uint32_t gl = g->code.v[i].line;
+        uint32_t gl = g->mf->file == f->mf->file ? g->code.v[i].line : line; /* a line of another file: the call's */
         if (in->op == OP_RET) {
             for (int j = 0; j < nres; j++) {
                 Operand v = copy_operand(&in->ops[j]);

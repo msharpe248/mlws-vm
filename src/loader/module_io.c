@@ -138,6 +138,7 @@ void module_write(const Module *m, ByteBuf *b) {
         bb_uleb(b, f->code_off);
         bb_uleb(b, f->code_len);
         bb_uleb(b, f->ninsns);
+        bb_uleb(b, f->file);
         for (uint32_t k = 0; k < f->ninsns; k++) bb_uleb(b, f->lines ? f->lines[k] : 0);
         bb_uleb(b, f->nlocs);
         for (uint32_t k = 0; k < f->nlocs; k++) {
@@ -350,6 +351,10 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
         uint64_t ni = br_uleb(&r);
         CHECK_COUNT(ni, 1);
         f->ninsns = (uint32_t)ni;
+        uint64_t file = br_uleb(&r);
+        CHECK();
+        if (file > m->nsrcfiles) FAIL("function %s: bad source file", f->name);
+        f->file = (uint32_t)file;
         f->lines = xcalloc(ni, sizeof(uint32_t));
         for (uint32_t k = 0; k < f->ninsns; k++) f->lines[k] = (uint32_t)br_uleb(&r);
         uint64_t nl = br_uleb(&r);
@@ -630,6 +635,10 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
         if (m->grefs[i].kind == GREF_LOCAL && m->grefs[i].offset > m->gsize) FAIL("global reference out of range");
     }
     return m;
+}
+
+const char *module_func_file(const Module *m, const MFunc *f) {
+    return f->file ? m->srcfiles[f->file - 1] : m->source;
 }
 
 bool module_srcpos(const Module *m, const MFunc *f, uint32_t pc, const char **file, uint32_t *line) {

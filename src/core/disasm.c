@@ -331,6 +331,7 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
             for (int k = 0; k < code.v[i].nops; k++)
                 if (code.v[i].ops[k].mode == OM_LABEL && code.v[i].ops[k].index < code.n)
                     is_target[code.v[i].ops[k].index] = true;
+        if (f->file) sb_printf(b, "\n; from %s (the line numbers below are its lines)", m->srcfiles[f->file - 1]);
         sb_printf(b, "\n.func %s(", f->name);
         put_types(b, f->params, f->nparams);
         sb_putc(b, ')');

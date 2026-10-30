@@ -49,6 +49,8 @@ static void proc_json(StrBuf *b, const Process *p, bool detail) {
         fn_qualname(&f, fr->fn);
         json_str(b, f.s);
         sb_free(&f);
+        sb_puts(b, ",\"file\":");
+        json_str(b, fn_file(fr->fn));
         sb_printf(b, ",\"line\":%u", fr->fn->mf->lines && pc < fr->fn->mf->ninsns ? fr->fn->mf->lines[pc] : 0);
         const char *file;
         uint32_t sline;
@@ -58,7 +60,7 @@ static void proc_json(StrBuf *b, const Process *p, bool detail) {
             sb_printf(b, ",\"source_line\":%u", sline);
         }
     } else {
-        sb_puts(b, "null,\"line\":0");
+        sb_puts(b, "null,\"file\":null,\"line\":0");
     }
     sb_printf(b,
               ",\"insns\":%llu,\"cpu_ns\":%llu,\"heap_bytes\":%llu,\"heap_peak\":%llu,\"raw_bytes\":%llu,"

@@ -734,7 +734,7 @@ macro-only files use the `.inc` extension and are not modules.
 | `.const`/`.equ`, `.set` | anywhere | Named constants |
 | `.macro/.endm`, `.rept/.endr`, `.irp/.endr` | anywhere | Macros and repetition |
 | `.if/.elif/.else/.endif`, `.ifdef`, `.ifndef`, `.ifb`, `.ifnb` | anywhere | Conditional assembly |
-| `.include "file"` | anywhere | Textual include (once per file) |
+| `.include "file"` | anywhere | Textual include (once per file); a function defined in the file reports that file's lines |
 | `.error "msg"` | anywhere | Stop with `E_ASM_USER` |
 
 ## 11. Tools

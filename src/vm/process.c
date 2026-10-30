@@ -120,12 +120,17 @@ void proc_free(Process *p) {
     free(p);
 }
 
+const char *fn_file(const Function *f) {
+    const char *src = module_func_file(f->mod->m, f->mf);
+    return src && *src ? src : f->mod->path;
+}
+
 void fn_where(StrBuf *b, const Function *f, uint32_t pc, bool base) {
     const char *file;
     uint32_t sline;
     if (module_srcpos(f->mod->m, f->mf, pc, &file, &sline)) sb_printf(b, "%s:%u; ", base ? path_basename(file) : file, sline);
     uint32_t line = f->mf->lines && pc < f->mf->ninsns ? f->mf->lines[pc] : 0;
-    const char *src = f->mod->m->source && *f->mod->m->source ? f->mod->m->source : f->mod->path;
+    const char *src = fn_file(f);
     sb_printf(b, "%s:%u", base ? path_basename(src) : src, line);
 }
 
