@@ -20,6 +20,7 @@ void pp_init(PP *pp, const char *const *libpaths, size_t nlib, MlwsError *err) {
     pp->libpaths = libpaths;
     pp->nlib = nlib;
     pp->err = err;
+    pp->asof = SIZE_MAX;
     op_init();
 }
 
@@ -44,7 +45,10 @@ void pp_free(PP *pp) {
     }
     smap_free(&pp->macros);
     for (size_t i = 0; i < pp->consts.cap; i++)
-        if (pp->consts.keys[i]) free(pp->consts.vals[i]);
+        if (pp->consts.keys[i]) {
+            free(((ConstDef *)pp->consts.vals[i])->vals);
+            free(pp->consts.vals[i]);
+        }
     smap_free(&pp->consts);
     smap_free(&pp->readonly);
     smap_free(&pp->included);
@@ -78,7 +82,13 @@ bool pp_const_lookup(void *ctx, const char *name, size_t len, ExprVal *out) {
     buf[len] = 0;
     void *v;
     if (!smap_get(&pp->consts, buf, &v)) return false;
-    *out = *(ExprVal *)v;
+    /* The value in force at line asof: the last one set at or before it, or
+     * the first (a use before the definition) */
+    const ConstDef *d = v;
+    size_t k = d->n - 1;
+    if (pp->asof != SIZE_MAX)
+        while (k > 0 && d->vals[k].from > pp->asof) k--;
+    *out = d->vals[k].v;
     return true;
 }
 
@@ -550,8 +560,10 @@ static bool do_const(PP *pp, const PLine *ln, const LineHead *h, bool readonly) 
     }
     char *name = xstrndup(toks.v[0].start, (size_t)toks.v[0].len);
     void *old;
+    ConstDef *d;
     if (smap_get(&pp->consts, name, &old)) {
-        ExprVal *o = old;
+        d = old;
+        const ExprVal *o = &d->vals[d->n - 1].v;
         bool same = o->is_float == v.is_float && (v.is_float ? o->f == v.f : o->i == v.i);
         if ((readonly || smap_has(&pp->readonly, name)) && !same) {
             ok = pp_line_error(pp->err, ln, toks.v[0].col, "E_ASM_DUP_SYM",
@@ -559,12 +571,19 @@ static bool do_const(PP *pp, const PLine *ln, const LineHead *h, bool readonly) 
             free(name);
             goto done;
         }
-        *o = v;
+        if (same) goto defined;
     } else {
-        ExprVal *nv = xmalloc(sizeof *nv);
-        *nv = v;
-        smap_put(&pp->consts, name, nv);
+        d = xcalloc(1, sizeof *d);
+        smap_put(&pp->consts, name, d);
     }
+    /* lines from here on see the new value; several assignments between two
+     * lines leave only the last */
+    if (d->n && d->vals[d->n - 1].from == pp->out.n) d->n--;
+    d->vals = xrealloc(d->vals, (d->n + 1) * sizeof *d->vals);
+    d->vals[d->n].from = pp->out.n;
+    d->vals[d->n].v = v;
+    d->n++;
+defined:
     if (readonly) smap_put(&pp->readonly, name, NULL);
     free(name);
 done:

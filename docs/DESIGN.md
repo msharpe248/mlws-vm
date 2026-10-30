@@ -358,6 +358,9 @@ line expanded it.
   contains the directive, then on the library path. Each file is included
   once, keyed by its real path.
 * **Constants** (`.const`, `.equ`, `.set`) are evaluated values, not text.
+  Each name keeps its values with the output line each applies from
+  (`ConstDef`); the assembler reads names as of the line it is on
+  (`PP.asof`), so a `.set` name has, on each line, its value there.
 
 ### 5.3 Expressions
 
@@ -1909,7 +1912,7 @@ Windows implementation is written but untested
 
 ## 22. Testing
 
-**Tests are MLWSVM programs.** `tests/` holds the suite (300 programs) and
+**Tests are MLWSVM programs.** `tests/` holds the suite (301 programs) and
 `examples/` holds self-checking examples, all in documented assembly. The
 test runner reads expectations from comments in each file: expected output
 lines, exit code or error code; VM options; a debugger script; what the

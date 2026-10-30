@@ -2435,7 +2435,10 @@ Module *assemble_file_deps(const char *path, const char *default_name, const cha
     Module *m = NULL;
     if (pp_run_file(&A.pp, path)) {
         bool ok = true;
-        for (size_t i = 0; ok && i < A.pp.out.n; i++) ok = statement(&A, &A.pp.out.v[i]);
+        for (size_t i = 0; ok && i < A.pp.out.n; i++) {
+            A.pp.asof = i; /* .set names have the values they had at this line */
+            ok = statement(&A, &A.pp.out.v[i]);
+        }
         if (ok) m = finish(&A);
     }
     if (m && files) {
@@ -2462,7 +2465,10 @@ Module *assemble_text(const char *name, const char *text, const char *default_na
     Module *m = NULL;
     if (pp_run_text(&A.pp, name, text)) {
         bool ok = true;
-        for (size_t i = 0; ok && i < A.pp.out.n; i++) ok = statement(&A, &A.pp.out.v[i]);
+        for (size_t i = 0; ok && i < A.pp.out.n; i++) {
+            A.pp.asof = i; /* .set names have the values they had at this line */
+            ok = statement(&A, &A.pp.out.v[i]);
+        }
         if (ok) m = finish(&A);
     }
     asm_free(&A);

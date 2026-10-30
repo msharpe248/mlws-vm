@@ -622,6 +622,9 @@ numbers and the macros that produced each line.
 .set   i = i + 1
 ```
 
+A `.set` name has, on each line, the value it was last set to above that line
+(in `.rept` copies too); used above its first `.set`, it has the value set there.
+
 Constant expressions use C precedence: `|| && | ^ & == != < <= > >= << >> + - * / %`
 and unary `- + ~ !`. They can use integer, float and char literals, named constants,
 `sizeof(type)` (e.g. `sizeof(f64)` is 8) and `defined(NAME)`. Integer arithmetic is

@@ -29,9 +29,19 @@ typedef struct Macro {
     SrcLoc loc;
 } Macro;
 
+/* A named constant's values, each with the first output line it applies to:
+ * a `.set` name has one per assignment that changed it. */
+typedef struct {
+    size_t n;
+    struct {
+        size_t from; /* index into PP.out */
+        ExprVal v;
+    } *vals;
+} ConstDef;
+
 typedef struct PP {
     StrMap macros;   /* name -> Macro* */
-    StrMap consts;   /* name -> ExprVal* */
+    StrMap consts;   /* name -> ConstDef* */
     StrMap readonly; /* names defined with .const (not .set) */
     StrMap included; /* realpath -> NULL */
     VEC(char *) files;
@@ -40,6 +50,9 @@ typedef struct PP {
     int uniq;
     int depth;
     VEC(PLine) out;
+    /* Constants read as they were at this output line (the assembler sets it
+     * for each line); SIZE_MAX, while preprocessing: their latest values. */
+    size_t asof;
     MlwsError *err;
 } PP;
 

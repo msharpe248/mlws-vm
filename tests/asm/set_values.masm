@@ -1,0 +1,43 @@
+; A .set name has, on each line, the value it was last set to above that line.
+;
+; The preprocessor runs over the whole file before the assembler parses
+; anything, so it keeps every value a .set name takes, with the line from
+; which each applies, and the assembler reads the name as of the line it is
+; assembling. (It used to see only the last value, on every line.) A use
+; above the first .set of a name reads the value set there, as a .const may
+; be used above its definition.
+.include "std/test.inc"
+
+.set N = 1
+
+.func main
+    mov I0, N
+    ASSERT_EQ I0, 1
+.set N = 2
+    mov I0, N
+    ASSERT_EQ I0, 2
+.set N = N * 10                 ; computed from the value in force: 20
+.set N = N + 1                  ; two assignments in a row: the line below sees the last
+    mov I0, N
+    ASSERT_EQ I0, 21
+
+    ; .rept: each copy of the body sees the value set in the copy before it.
+.set K = 0
+    mov I1, 0
+.rept 4
+.set K = K + 1
+    add I1, K                   ; adds 1, 2, 3, 4
+.endr
+    ASSERT_EQ I1, 10
+
+    ; Also in displacements: SP[K - 4] is SP[0] here.
+    push 7
+    ASSERT_EQ SP[K - 4], 7
+    drop 1
+
+    mov I2, LATER               ; used above its .set: the value set there
+    ASSERT_EQ I2, 5
+    ret 0
+.endf
+
+.set LATER = 5
