@@ -263,12 +263,15 @@ rm -rf "${PDIR:?}"
 # re-encoding each function, with no pass on), and every module optimized at
 # -O1 and with every pass reads back (the reader checks lines, .loc runs and handlers); -S, the
 # report, --list, the change log, and --opt-report at the end of a run.
+# Also `dis`: the disassembly of every module assembles again.
 ODIR=$(mktemp -d)
 n=0
 for f in $(find tests examples lib -name '*.masm' -not -path '*/_bindgen/*'); do
     $BIN asm "$f" -o "$ODIR/a.mlwso" >/dev/null 2>&1 || continue
     $BIN opt -q -O0 --passes encode -o "$ODIR/b.mlwso" "$f" || fail "opt --passes encode: $f"
     cmp -s "$ODIR/a.mlwso" "$ODIR/b.mlwso" || fail "opt: re-encoding changed $f"
+    $BIN dis "$ODIR/a.mlwso" > "$ODIR/d.masm" || fail "dis: $f"
+    $BIN asm "$ODIR/d.masm" -o "$ODIR/d.mlwso" >/dev/null || fail "dis: the disassembly of $f does not assemble"
     for passes in 1 all; do
         $BIN opt -q -O0 --passes $passes -o "$ODIR/c.mlwso" "$f" || fail "opt --passes $passes: $f"
         $BIN dis "$ODIR/c.mlwso" >/dev/null || fail "opt --passes $passes: $f does not load back"

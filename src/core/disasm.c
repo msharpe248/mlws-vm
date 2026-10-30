@@ -369,6 +369,7 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
             sb_putc(b, '\n');
             insn_free(&code.v[i]);
         }
+        if (is_target[code.n]) sb_printf(b, ".L%zu:\n", code.n); /* a .try region that runs to the end */
         sb_puts(b, ".endf\n");
         free(is_target);
         VEC_FREE(code);

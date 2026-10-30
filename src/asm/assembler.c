@@ -846,6 +846,9 @@ static bool resolve_local_labels(Asm *A, AsmFunc *f, AsmInsn *ai, AsmOp *o) {
     void *v;
     if (!smap_get(&f->labels, o->sym, &v))
         return aerr(A, ai->pl, o->col, "E_ASM_UNDEF_LABEL", "undefined label '%s' in function %s", o->sym, f->name);
+    if (VI(v) >= f->insns.n)
+        return aerr(A, ai->pl, o->col, "E_ASM_SYNTAX", "label '%s' is at the end of %s with no instruction after it",
+                    o->sym, f->name);
     o->o.index = VI(v);
     return true;
 }
@@ -882,10 +885,17 @@ static bool dir_endf(Asm *A, Cur *c) {
     A->loc_file = A->loc_line = 0; /* a .loc lasts to the end of its function */
     if (!expect_eol(A, c)) return false;
     if (f->insns.n == 0) return aerr(A, f->pl, 0, "E_ASM_SYNTAX", "function %s has no instructions", f->name);
-    for (size_t i = 0; i < f->labels.cap; i++)
-        if (f->labels.keys[i] && VI(f->labels.vals[i]) >= f->insns.n)
+    /* A label after the last instruction is only for the end of a .try region
+     * (`dis` writes one for a region that runs to the end of its function). */
+    for (size_t i = 0; i < f->labels.cap; i++) {
+        if (!f->labels.keys[i] || VI(f->labels.vals[i]) < f->insns.n) continue;
+        bool try_end = false;
+        for (size_t h = 0; h < f->handlers.n; h++)
+            try_end = try_end || (f->handlers.v[h].lbl[1] && !strcmp(f->handlers.v[h].lbl[1], f->labels.keys[i]));
+        if (!try_end)
             return aerr(A, c->pl, 0, "E_ASM_SYNTAX", "label '%s' is at the end of %s with no instruction after it",
                         f->labels.keys[i], f->name);
+    }
     for (size_t i = 0; i < f->numlabels.n; i++)
         if (f->numlabels.v[i].idx >= f->insns.n)
             return aerr(A, c->pl, 0, "E_ASM_SYNTAX", "local label %lld is at the end of %s",
@@ -925,6 +935,7 @@ static bool dir_endf(Asm *A, Cur *c) {
             idx[k] = (uint32_t)VI(v);
         }
         if (idx[0] > idx[1]) return aerr(A, h->pl, 0, "E_ASM_SYNTAX", ".try region ends before it starts");
+        if (idx[2] >= f->insns.n) return aerr(A, h->pl, 0, "E_ASM_SYNTAX", ".try handler is at the end of %s", f->name);
         h->start = idx[0];
         h->end = idx[1];
         MHandler mh = {idx[0], idx[1], idx[2]};

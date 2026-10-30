@@ -1,0 +1,45 @@
+; A .try region may run to the end of its function.
+;
+; In block form the region ends at .endtry, which may come right before
+; .endf. In the three-label form, `.try start, end, handler`, the end label
+; then follows the last instruction: a label there is allowed only as the
+; end of a .try region (a branch to it would leave the function).
+;
+; `dis` writes every region in the three-label form, so it writes such a
+; label too, and its output must assemble again (check-tools reassembles
+; the disassembly of every test, this one included).
+.include "std/test.inc"
+
+.func block_form(i64 n) -> i64
+    jmp 1f
+h:  catch R0
+    ret -1
+1:
+.try h
+    div I1, 100, n              ; traps E_DIV_ZERO for n = 0
+    ret I1
+.endtry
+.endf
+
+.func label_form(i64 n) -> i64
+    .try start, end, h
+    jmp start
+h:  catch R0
+    ret -2
+start:
+    div I1, 100, n
+    ret I1
+end:
+.endf
+
+.func main
+    call block_form (4) -> (I0)
+    ASSERT_EQ I0, 25
+    call block_form (0) -> (I0)
+    ASSERT_EQ I0, -1
+    call label_form (5) -> (I0)
+    ASSERT_EQ I0, 20
+    call label_form (0) -> (I0)
+    ASSERT_EQ I0, -2
+    ret 0
+.endf

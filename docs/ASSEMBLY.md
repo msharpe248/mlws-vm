@@ -245,8 +245,10 @@ bad:
   If anything inside them, including any function they call, raises an exception,
   control jumps to `handler`. Blocks can nest.
 * `.try start, end, handler` names the region with labels instead. `end` is
-  exclusive. This form suits compilers that lay out code themselves. Numeric local
-  labels (`1f`) work in both forms.
+  exclusive, and for a region that runs to the end of the function it is a
+  label after the last instruction (allowed only there, as a `.try` end). This
+  form suits compilers that lay out code themselves. Numeric local labels
+  (`1f`) work in both forms.
 * `throw R0` raises any non-null reference. `catch dst`, at the start of a handler,
   receives it. Rethrow by throwing the caught value again; a "finally" block is a
   catch-all handler that cleans up and rethrows.
