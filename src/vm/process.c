@@ -254,12 +254,18 @@ static bool unwind_frames(Process *p) {
     return false;
 }
 
-/* Describe an uncaught exception in p->err. */
+/* Describe an uncaught exception in p->err, and its backtrace in p->backtrace:
+ * an Error's own trace, from where it was made (a handler may have caught and
+ * rethrown it since); for anything else, where it was last thrown. */
 static void describe_uncaught(Process *p) {
     Obj *ex = p->exception;
     if (ex && ex->kind == OBJ_STRUCT && ((ObjStruct *)ex)->def == &VM_ERROR_DEF) {
         ObjStruct *e = (ObjStruct *)ex;
-        Obj *code = e->fields[ERRF_CODE].r, *msg = e->fields[ERRF_MESSAGE].r;
+        Obj *code = e->fields[ERRF_CODE].r, *msg = e->fields[ERRF_MESSAGE].r, *trace = e->fields[ERRF_TRACE].r;
+        if (trace && trace->kind == OBJ_STRING && ((ObjString *)trace)->len) {
+            p->backtrace.n = 0;
+            sb_putn(&p->backtrace, ((ObjString *)trace)->data, ((ObjString *)trace)->len);
+        }
         snprintf(p->err.code, sizeof p->err.code, "%s",
                  code && code->kind == OBJ_STRING ? ((ObjString *)code)->data : "E_UNCAUGHT");
         snprintf(p->err.msg, sizeof p->err.msg, "%s",

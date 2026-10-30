@@ -98,6 +98,14 @@ MLWSVM_NO_CACHE=1 $BIN run --lib-path "$LDIR/out" "$LDIR/use.masm" 2>&1 >/dev/nu
     fail "a damaged archive is not reported"
 rm -rf "${LDIR:?}"
 
+# An uncaught Error is reported with its own backtrace, from where it was
+# made, though a handler caught and rethrew it.
+set +e
+OUT=$($BIN run tests/exceptions/err_uncaught_trap.masm 2>&1)
+set -e
+echo "$OUT" | grep -q "^  at err_uncaught_trap.store (tests/exceptions/err_uncaught_trap.masm:8)$" ||
+    fail "uncaught: not the backtrace of the fault ($OUT)"
+
 # The library path: -L directories before $MLWSVM_PATH's (each dir holds its
 # own `which` module); and a -L after the program file is the program's.
 WDIR=$(mktemp -d)

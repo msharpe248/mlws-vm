@@ -418,9 +418,10 @@ built-in `Error` struct with `code`, `message` and `trace` string fields.
    the faulting instruction started (for an outer frame, as it was at the call).
    `catch dst` then fetches the exception.
 
-**Uncaught exceptions** end the process. An `Error` reports its own code and
-message. Any other value reports `E_UNCAUGHT`. In both cases the backtrace is the
-one captured where the exception was originally thrown:
+**Uncaught exceptions** end the process. An `Error` reports its own code,
+message and backtrace (its `trace`, captured where it was made), even if a
+handler caught it and threw it again. Any other value reports `E_UNCAUGHT`, with
+the backtrace from where it was last thrown:
 
 ```
 runtime error[E_ASSERT]: ASSERT_EQ(x, 3) failed

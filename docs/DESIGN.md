@@ -1210,7 +1210,8 @@ for each frame, innermost first, down to cb_base:
     found:  frame.pc = handler; return SLICE_YIELD (the handler runs next slice)
     else:   pop the frame (SP, FP, registers restored as ret would)
 past a coroutine's first frame: the coroutine dies; go on at its coresume
-nothing found: the process fails with the exception's code and message
+nothing found: the process fails with the exception's code and message, and
+    the backtrace of an Error's own trace (where it was made, through any rethrow)
 ```
 
 When an outer frame catches, `SP` is what it was at its call; in the frame

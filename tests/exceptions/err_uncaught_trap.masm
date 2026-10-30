@@ -1,12 +1,20 @@
-; An uncaught fault keeps its own error code, even if it passed through a
-; handler that rethrew it.
+; An uncaught fault keeps its own error code and its backtrace, even if it
+; passed through a handler that rethrew it: the report shows where the fault
+; happened (in store, line 8), not where it was rethrown. check-tools checks
+; the backtrace this prints.
 ; expect-error: E_BOUNDS
+
+.func store(ref a)
+    mov a[1], 0                 ; index 1 of a 1-element array
+    ret
+.endf
+
 .func main
 .try h
     anew.i64 R0, 1
-    mov R0[1], 0
+    call store (R0)
 .endtry
 h:
     catch R1
-    throw R1
+    throw R1                    ; rethrown from main
 .endf
