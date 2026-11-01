@@ -126,19 +126,18 @@ included on both sides):
 
 | Benchmark | MLWSVM | Erlang/OTP 29 |
 |---|---|---|
-| fib | 0.04 | 0.08 |
-| ring | 0.33 | 0.26 |
-| binarytrees | 0.65 | 0.13 |
-| nbody | 1.31 | 0.14 |
-| sorting | 0.76 | 0.11 |
+| fib | 0.03 | 0.08 |
+| ring | 0.32 | 0.25 |
+| binarytrees | 0.63 | 0.12 |
+| nbody | 0.75 | 0.14 |
+| sorting | 0.73 | 0.10 |
 
 BEAM compiles to machine code here, so its loops are not a fair match for an
 interpreter. `ring`, which passes a message round a ring of a thousand
 processes a thousand times, measures the scheduler and mailboxes more than
 code; most of what MLWSVM runs there is the compiler's selective receive,
 written in VM code around `recv`. In `nbody` every float operation unpacks
-and repacks a float's bits, and the values it keeps live outgrow the
-register banks, so some go to the stack.
+and repacks a float's bits.
 
 ### Against other virtual machines
 
