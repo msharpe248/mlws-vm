@@ -180,20 +180,37 @@ cat > "$PDIR/d.masm" <<'MASM'
     ret
 .endf
 .func main
+    ncall "proc.register" ("d_main", PID)
     spawn child ()
-    sleep 20
+    recv I0                              ; e has seen the child: end
     ret 0
 .endf
 MASM
 cat > "$PDIR/e.masm" <<'MASM'
 .include "std/io.inc"
+; Waits (at most 5 s each) for d's child to run, tells d's main to end, and
+; waits for the child to be stopped: events, not times, so a slow machine
+; does not change the answer.
 .func main
-    sleep 60                             ; d has ended by now
+    mov I1, 0
+1:  ncall "proc.whereis" ("d_child") -> (I0)
+    bnz I0, 2f
+    sleep 5
+    inc I1
+    blt I1, 1000, 1b
+    PRINTLN_S "d's child never ran"
+    ret 1
+2:  ncall "proc.whereis" ("d_main") -> (I2)
+    send I2, 1
+    mov I1, 0
+3:  sleep 5
     ncall "proc.whereis" ("d_child") -> (I0)
-    bz I0, 1f
+    bz I0, 4f
+    inc I1
+    blt I1, 1000, 3b
     PRINTLN_S "d's child still runs"
     ret 1
-1:  PRINTLN_S "d's child was stopped"
+4:  PRINTLN_S "d's child was stopped"
     ret 0
 .endf
 MASM
