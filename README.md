@@ -116,6 +116,47 @@ base:
   garbage collection at every allocation, with every module optimized, and
   with every function compiled by the JIT.
 
+## Performance
+
+The Lua and Erlang compilers in
+[mlws-compilers](https://github.com/msharpe248/mlws-compilers) compile each
+benchmark's source to MLWSVM, which runs it interpreting and with its JIT
+(`--jit on`). The reference implementations run the same source. Times are
+whole runs in milliseconds, start-up included, the median of five on an
+Apple M5 Pro. Every engine printed the same output.
+
+| Lua | MLWSVM | MLWSVM JIT | Lua 5.5 | LuaJIT 2.1 |
+|---|---|---|---|---|
+| fib (32) | 63 | **37** | 56 | 13 |
+| loop (30,000,000 iterations) | 197 | **73** | 216 | 20 |
+| methods (2M method calls and objects) | 574 | 393 | **349** | 72 |
+| strings (format, gmatch, gsub) | 362 | 349 | **135** | 101 |
+| iterate (pairs, ipairs) | 97 | **49** | 61 | 8 |
+| binarytrees (15) | 573 | **371** | 383 | 149 |
+| nbody (500,000) | 994 | 520 | **396** | 28 |
+| spectralnorm (500) | 235 | **109** | 187 | 12 |
+| fannkuch (10) | 2,000 | **746** | 800 | 127 |
+
+| Erlang | MLWSVM | MLWSVM JIT | Erlang/OTP 29 (JIT) |
+|---|---|---|---|
+| fib (30) | 42 | **22** | 88 |
+| ring (1,000 processes, 1,000,000 messages) | 335 | 343 | **257** |
+| binarytrees (16) | 661 | 325 | **129** |
+| nbody (100,000 steps) | 802 | 601 | **146** |
+| sorting (200,000 integers, maps) | 772 | 474 | **113** |
+
+Bold marks the faster of MLWSVM's JIT and the reference interpreter or
+BEAM; LuaJIT is there for scale. With its JIT, MLWSVM runs six of the nine
+Lua programs faster than Lua 5.5. Lua is faster where the time goes to its
+C library (`strings`) or to tables of floats (`nbody`). LuaJIT, a tracing
+JIT that specializes code to the types it sees, is 2.5–19× faster than
+MLWSVM's JIT. BEAM's times include its start-up of about 80 ms, which is
+most of its `fib`. Its code is 1.3–4.2× faster than MLWSVM's JIT; `ring` is
+message passing, which the JIT does not change. Start-up is 2 ms for
+MLWSVM (with the module cache) and Lua. [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
+has the benchmarks on three machines, the JIT's effect on each, and
+comparisons with the JVM and CPython.
+
 ## Build and run
 
 ```sh

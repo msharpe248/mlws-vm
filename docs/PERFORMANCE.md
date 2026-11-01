@@ -120,17 +120,17 @@ The Erlang compiler in `mlws-compilers`, also in development, makes each
 Erlang process an MLWSVM process and keeps each value in an `I` and an `R`
 register: a small integer in `I` with a null `R`, a float as its bits in `I`
 with a marker in `R`, or an object in `R`. Tuples are lists. Its benchmarks
-(`make bench` there), as whole runs in seconds, best of three on the M5,
+(`make bench` there), as whole runs in seconds, the median of five on the M5,
 against Erlang/OTP 29 with its JIT running the same source (start-up
 included on both sides):
 
-| Benchmark | MLWSVM | Erlang/OTP 29 |
-|---|---|---|
-| fib | 0.03 | 0.08 |
-| ring | 0.32 | 0.25 |
-| binarytrees | 0.63 | 0.12 |
-| nbody | 0.75 | 0.14 |
-| sorting | 0.73 | 0.10 |
+| Benchmark | MLWSVM | MLWSVM with its JIT | Erlang/OTP 29 |
+|---|---|---|---|
+| fib | 0.04 | 0.02 | 0.09 |
+| ring | 0.34 | 0.34 | 0.26 |
+| binarytrees | 0.66 | 0.33 | 0.13 |
+| nbody | 0.80 | 0.60 | 0.15 |
+| sorting | 0.77 | 0.47 | 0.11 |
 
 BEAM compiles to machine code here, so its loops are not a fair match for an
 interpreter. `ring`, which passes a message round a ring of a thousand
@@ -199,11 +199,11 @@ benchmarks of the sections above.
 | bench/closures | 99 → 42 | −58% | −52% | −52% |
 | bench/maps | 60 → 61 | +1% | −1% | +1% |
 | bench/binarytrees | 94 → 69 | −26% | −26% | −19% |
-| Erlang fib | 36 → 16 | −57% | −58% | −60% |
-| Erlang ring | 259 → 263 | +2% | +4% | +6% |
-| Erlang binarytrees | 652 → 319 | −51% | −50% | −49% |
-| Erlang nbody | 1297 → 1214 | −6% | −3% | +1% |
-| Erlang sorting | 754 → 468 | −38% | −34% | −32% |
+| Erlang fib | 35 → 15 | −57% | −62% | −62% |
+| Erlang ring | 258 → 262 | +2% | +4% | +5% |
+| Erlang binarytrees | 665 → 325 | −51% | −51% | −49% |
+| Erlang nbody | 790 → 595 | −25% | −20% | −25% |
+| Erlang sorting | 766 → 473 | −38% | −35% | −33% |
 | Lua fib | 52 → 25 | −52% | −59% | −53% |
 | Lua loop | 191 → 63 | −67% | −72% | −78% |
 | Lua methods | 572 → 383 | −33% | −22% | −28% |
@@ -236,7 +236,7 @@ fast form for, so the JIT does not enter it), `sieve` works in raw memory,
 `maps`, Lua's `strings` and Lox's `equality` are natives, and Erlang's
 `ring` is messages and the scheduler. Compiled Erlang's `nbody` keeps
 values in stack slots (`FP[-3]`) in its largest function, which the JIT
-runs by their handlers. Running an instruction that way costs about as much
+runs by their handlers, so it gains 20–25% where Lua's gains 26–49%. Running an instruction that way costs about as much
 as 20 interpreted ones, so on x86-64 a few programs that do it a lot
 (Erlang's `ring`, compiled Lox's `properties` and `zoo` on the Ryzen) are
 up to 6% slower. x86-64 also has fewer registers to keep a block's values
