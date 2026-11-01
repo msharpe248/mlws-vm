@@ -542,7 +542,8 @@ them by emitting these shapes; nothing else changes.
   `mov R1->Point.x, I0`, `mov F0, R1[I2]`, `mov R1[I2], F0`, `mov I0, R1[3]`,
   `mov I0, R1[I2+1]`, for
   64-bit fields, and `i64`/`f64`/`r` arrays and list elements indexed by a
-  register or a constant; constants stored to fields
+  register or a constant; a byte of a string or byte buffer loaded into an
+  `I` register (`mov I0, R1[I2]`, `i64` or `u64`); constants stored to fields
   (`mov.i64 R0->Point.x, 0`, `mov.r R0->Node.next, null`); and `ldv I0, F0, R1[I2]`
   (or `R1[I2+1]`, `R1[3]`) of an `i64` or `f64` list or array element. Arithmetic
   directly on a field or element works, but takes the general path. Loading

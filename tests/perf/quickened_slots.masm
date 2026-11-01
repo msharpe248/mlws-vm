@@ -3,7 +3,10 @@
 ; calli: the fast handlers only take the common case and hand everything else
 ; (a null, another struct type, a list element of another type, a bad index, a
 ; closure whose parameter banks do not match) to the generic instruction, which
-; raises the usual error.
+; raises the usual error. A load of an element into an I register also takes
+; a byte of a string or byte buffer (as an unsigned value, like the generic
+; mov), and hands an index out of range, a narrower type and a store into a
+; string to the generic mov.
 .include "std/test.inc"
 
 .struct P
@@ -154,5 +157,40 @@
 
     ; ---- a quickened call whose callee returns another type by a tail call ----
     EXPECT_ERROR "E_TYPE", call tail_other () -> (I14)
+
+    ; ---- bytes of strings and byte buffers, into I registers ----
+    mov R14, "a\xC8z"                        ; 'a', 200, 'z'
+    mov I15, 1
+    mov I16, R14[I15]                        ; LDE_I of a string: unsigned
+    ASSERT_EQ I16, 200
+    mov.u64 I16, R14[I15]                    ; u64 too
+    ASSERT_EQ I16, 200
+    mov I16, R14[I15+1]                      ; LDED_I
+    ASSERT_EQ I16, 'z'
+    mov I16, R14[0]                          ; LDEK_I
+    ASSERT_EQ I16, 'a'
+    mov.i8 I16, R14[I15]                     ; narrower: the generic mov, signed
+    ASSERT_EQ I16, -56
+    mov I15, 3
+    EXPECT_ERROR "E_BOUNDS", mov I16, R14[I15]
+    mov I15, -1
+    EXPECT_ERROR "E_BOUNDS", mov I16, R14[I15]
+    EXPECT_ERROR "E_TYPE", mov F9, R14[0]    ; bytes are integers
+    mov I15, 66
+    EXPECT_ERROR "E_TYPE", mov R14[0], I15   ; strings are immutable
+    bufnew R15, 0
+    bufpush R15, 7, 255
+    mov I15, 1
+    mov I16, R15[I15]                        ; LDE_I of a byte buffer
+    ASSERT_EQ I16, 255
+    mov I16, R15[I15-1]
+    ASSERT_EQ I16, 7
+    mov I15, 2                               ; past its length, within its capacity
+    EXPECT_ERROR "E_BOUNDS", mov I16, R15[I15]
+    mov I15, 0
+    mov I16, 9
+    mov R15[I15], I16                        ; a store: the generic mov
+    mov I16, R15[I15]
+    ASSERT_EQ I16, 9
     ret 0
 .endf

@@ -847,7 +847,8 @@ static void jit_global(JComp *j, const Insn *in, uint32_t pc, int tag, unsigned 
 }
 
 /* ---- elements, as ELEM_LOAD and ELEM_STORE: a list element tagged with the
- * instruction's type, or an element of an array of it; S0 the object, ix the
+ * instruction's type, or an element of an array of it, and for a load into
+ * an I register, a byte of a string or byte buffer; S0 the object, ix the
  * index's register; anything else is a side exit. ---- */
 static void jit_elem_access(JBuf *b, bool store, int bank, int val, int ix) { /* at S1 + ix*8 */
     if (store) bank == 1 ? jm_fstx(b, val, JR_S1, ix) : jm_stx(b, val, JR_S1, ix);
@@ -874,10 +875,32 @@ static void jit_elem(JComp *j, const Insn *in, uint32_t pc, int ix, bool store, 
     }
     jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, items));
     jit_elem_access(b, store, bank, val, ix);
-    uint32_t to_done = jm_fwd(b, JC_AL);
+    uint32_t to_done = jm_fwd(b, JC_AL), to_done2 = 0, to_done3 = 0;
     jm_bind(b, to_arr);
     jm_cmpi32(b, JR_S1, OBJ_ARRAY);
-    SIDE_IF(JC_NE);
+    if (!store && bank == 0 && (type == T_I64 || type == T_U64)) {
+        uint32_t is_arr = jm_fwd(b, JC_EQ);
+        jm_cmpi32(b, JR_S1, OBJ_STRING);
+        uint32_t not_str = jm_fwd(b, JC_NE);
+        jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjString, len));
+        jm_cmp(b, ix, JR_S1);
+        SIDE_IF(JC_HS);
+        jm_alui(b, JA_ADD, JR_S1, JR_S0, (int64_t)offsetof(ObjString, data));
+        jm_ld8x(b, val, JR_S1, ix);
+        to_done2 = jm_fwd(b, JC_AL);
+        jm_bind(b, not_str);
+        jm_cmpi32(b, JR_S1, OBJ_BYTES);
+        SIDE_IF(JC_NE);
+        jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjBytes, len));
+        jm_cmp(b, ix, JR_S1);
+        SIDE_IF(JC_HS);
+        jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjBytes, data));
+        jm_ld8x(b, val, JR_S1, ix);
+        to_done3 = jm_fwd(b, JC_AL);
+        jm_bind(b, is_arr);
+    } else {
+        SIDE_IF(JC_NE);
+    }
     jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjArray, len));
     jm_cmp(b, ix, JR_S1);
     SIDE_IF(JC_HS);
@@ -887,6 +910,7 @@ static void jit_elem(JComp *j, const Insn *in, uint32_t pc, int ix, bool store, 
     jm_alui(b, JA_ADD, JR_S1, JR_S0, (int64_t)offsetof(ObjArray, data));
     jit_elem_access(b, store, bank, val, ix);
     jm_bind(b, to_done);
+    if (to_done2) jm_bind(b, to_done2), jm_bind(b, to_done3);
 }
 
 /* A struct in S0 (from R register r), checked as IS_STRUCT checks it: of the

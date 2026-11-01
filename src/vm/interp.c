@@ -1813,6 +1813,24 @@ static MLWS_NOINLINE bool call_rk(Process *p, const Insn *in) {
 #endif
 #define QARGS QARGSN(in)
 typedef QCC int (*QHandler)(QPARAMS);
+/* A byte of a string or byte buffer, for the element load forms (out of line,
+ * so that the list and array paths stay as they are): false for any other
+ * object, or an index out of range, which the generic mov handles. */
+static MLWS_NOINLINE bool elem_byte(const Obj *ob, uint64_t i, int64_t *v) {
+    if (ob->kind == OBJ_STRING) {
+        const ObjString *s = (const ObjString *)ob;
+        if (i >= s->len) return false;
+        *v = (uint8_t)s->data[i];
+        return true;
+    }
+    if (ob->kind == OBJ_BYTES) {
+        const ObjBytes *y = (const ObjBytes *)ob;
+        if (i >= y->len) return false;
+        *v = y->data[i];
+        return true;
+    }
+    return false;
+}
 static const QHandler qhandlers[Q__COUNT];
 static QCC int h_generic(QPARAMS);
 static QCC int h_slice(QPARAMS);

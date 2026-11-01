@@ -57,7 +57,8 @@ The JIT compiles the quickened forms ([PERFORMANCE.md](PERFORMANCE.md#how-the-in
 * compares into a register and compare-and-branch, signed, unsigned and
   float, `jmp`, `jtab`;
 * calls, closure calls, returns and tail calls;
-* struct fields, list and array elements, globals, closure captures, `len`,
+* struct fields, list and array elements, bytes of strings and byte
+  buffers, globals, closure captures, `len`,
   `lnew`, `lpush` into spare capacity, `new`, `mget` of a constant key,
   `ldv`, `typeof`, `isa`, `bisa`, `bnisa`, and a tuple's tag test.
 

@@ -144,7 +144,12 @@
 #define STRUCT_OF(reg) ((ObjStruct *)QR[reg])
 #define IS_STRUCT(o) ((o) && (o)->h.kind == OBJ_STRUCT && (o)->def == in->k.p)
 /* An array element of exactly the instruction's type, or a list element
- * tagged with it (a store retags a list element), at index i. */
+ * tagged with it (a store retags a list element), at index i; into an I
+ * register (the instruction's type is i64 or u64), also a byte of a string or
+ * byte buffer. */
+#define ELEM_BYTE_I(ob, i) if (!elem_byte(ob, i, &QI[in->r[0]])) GENERIC();
+#define ELEM_BYTE_F(ob, i) GENERIC();
+#define ELEM_BYTE_R(ob, i) GENERIC();
 #define ELEM_LOAD(bank, w, i_)                                                \
         {                                                                     \
             Obj *ob = QR[in->r[1]];                                          \
@@ -159,7 +164,7 @@
                 if (i >= l->len || l->tags[i] != in->type) GENERIC();      \
                 QB(bank)[in->r[0]] = l->items[i].w;                             \
             } else {                                                          \
-                GENERIC();                                                 \
+                ELEM_BYTE_##bank(ob, i)                                       \
             }                                                                 \
             NEXT;                                                             \
         }
@@ -244,6 +249,9 @@
         }
 #undef ELEM_LOAD
 #undef ELEM_STORE
+#undef ELEM_BYTE_I
+#undef ELEM_BYTE_F
+#undef ELEM_BYTE_R
 #undef STRUCT_OF
 #undef IS_STRUCT
         QCASE(Q_CALLI_R) {

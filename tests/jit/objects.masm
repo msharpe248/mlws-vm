@@ -15,6 +15,9 @@
 ;     a string and null; ldv of i64, f64 and never-written elements;
 ;   * a tuple's tag test at an element index past 4095 (larger than an arm64
 ;     load's 12-bit offset);
+;   * bytes of a string and a byte buffer, by a register, a register plus an
+;     offset and a constant index, as i64 and u64 (unsigned), and one past a
+;     byte buffer's end;
 ;   * side exits that trap: a struct of another type, an index out of range,
 ;     null, an element of another type, a map value of another type; the
 ;     handler sees the registers the block set before the trap.
@@ -31,6 +34,7 @@
 ; expect-jit: compiled numbers 13
 ; expect-jit: compiled tag 3
 ; expect-jit: compiled trapped 14
+; expect-jit: compiled bytes 20
 ; expect-stdout: walk 46 136 2 87
 ; expect-stdout: globals 4950 25.5 1
 ; expect-stdout: build 200 100 7
@@ -39,6 +43,7 @@
 ; expect-stdout: types 1104017
 ; expect-stdout: numbers 32 5
 ; expect-stdout: tag 1 0
+; expect-stdout: bytes E_BOUNDS 1685 104 456
 ; expect-stdout: trapped E_TYPE 33 E_BOUNDS 33 E_NULL 33 E_TYPE 33 E_TYPE 33
 .include "std/io.inc"
 
@@ -203,6 +208,36 @@ gr:     .i64 0
 1:  ret 1, 0
 .endf
 
+; Bytes of a string and a byte buffer: the sum of s's bytes and of each with
+; the next, s's first byte, the sum of b's bytes, then a read past b's end (a
+; side exit that traps).
+.func bytes(ref s, ref b) -> (i64, i64, i64, ref)
+    mov I1, 0
+    mov I2, 0
+    len I3, s
+    dec I3
+1:  mov I4, s[I2]                       ; a string's byte
+    add I1, I4
+    mov.u64 I4, s[I2+1]                 ; by a register plus an offset
+    add I1, I4
+    inc I2
+    blt I2, I3, 1b
+    mov I5, s[0]                        ; by a constant index
+    mov I6, 0
+    mov I2, 0
+    len I3, b
+2:  mov I4, b[I2]                       ; a byte buffer's byte
+    add I6, I4
+    inc I2
+    blt I2, I3, 2b
+.try 3f
+    mov I4, b[I2]                       ; past the end
+.endtry
+    ret I1, I5, I6, null
+3:  catch R31
+    ret I1, I5, I6, R31->Error.code
+.endf
+
 ; Traps in a block's side exits: the handler sees what the block set.
 .func trapped(ref c, i64 a, i64 k) -> (ref, i64)
 .try 1f
@@ -285,6 +320,12 @@ gr:     .i64 0
     mov R8[4500], "x"
     call tag (R8) -> (I0, I1)
     PRINTLN "tag", I0, I1
+    bufnew R10, 0
+    bufpush R10, 1, 200, 255
+    call bytes ("hi\xC8there", R10) -> (I0, I1, I2, R11)
+    PRINT_S "bytes"
+    call show (R11, I0)
+    PRINTLN "", I1, I2
     PRINT_S "trapped"
     call trapped (R6, 10, 4) -> (R9, I0)
     call show (R9, I0)
