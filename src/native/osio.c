@@ -122,6 +122,9 @@ static ObjBytes *bytes_of(Process *p, const uint8_t *data, size_t n) {
     return b;
 }
 
+/* The unread input: NULL before the first read (an empty input reads none). */
+static uint8_t *unread(const FileH *h) { return h->rbuf ? h->rbuf + h->rpos : NULL; }
+
 /* Read more input into h->rbuf. Returns 1 (got some), 0 (end of input), -1
  * (waiting, or failed: the native returns). */
 static int fill(Process *p, FileH *h) {
@@ -215,7 +218,7 @@ static void fs_read(Process *p, Word *a, Word *r) {
     if (max <= 0 || max > (int64_t)MAX_READ) max = MAX_READ;
     if (h->rpos == h->rlen && fill(p, h) < 0) return;
     size_t n = h->rlen - h->rpos < (size_t)max ? h->rlen - h->rpos : (size_t)max;
-    r[0].r = bytes_of(p, h->rbuf + h->rpos, n); /* empty at the end of input */
+    r[0].r = bytes_of(p, unread(h), n); /* empty at the end of input */
     h->rpos += n;
 }
 
@@ -223,7 +226,7 @@ static void fs_read_line(Process *p, Word *a, Word *r) {
     FileH *h = reader(p, a[0]);
     if (!h) return;
     for (;;) {
-        uint8_t *start = h->rbuf + h->rpos, *nl = h->rlen > h->rpos ? memchr(start, '\n', h->rlen - h->rpos) : NULL;
+        uint8_t *start = unread(h), *nl = h->rlen > h->rpos ? memchr(start, '\n', h->rlen - h->rpos) : NULL;
         if (nl || h->eof) {
             size_t n = nl ? (size_t)(nl - start) : h->rlen - h->rpos;
             if (!nl && !n) {
@@ -247,7 +250,7 @@ static void fs_read_all(Process *p, Word *a, Word *r) {
         if (got < 0) return; /* waiting (what was read so far stays in the buffer) */
         if (got == 0) break;
     }
-    r[0].r = bytes_of(p, h->rbuf + h->rpos, h->rlen - h->rpos);
+    r[0].r = bytes_of(p, unread(h), h->rlen - h->rpos);
     h->rpos = h->rlen = 0;
 }
 
