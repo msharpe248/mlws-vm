@@ -54,13 +54,11 @@ PROC_INLINE void proc_push_frame_fitting(Process *p, Function *fn, const Insn *r
     p->fp = p->sp;
     fr->base = p->rtop;
     p->rtop += fn->rsize;
-    if (fn->rsize) { /* (an empty window: the register stack may not exist yet) */
-        uint64_t *w = p->regs + fr->base;
+    uint64_t *w = p->regs + fr->base;
 #ifdef MLWS_POISON_WINDOWS /* make check-poison: a register read before it is written, but not cleared, shows */
-        memset(w, 0xA5, (size_t)fn->rsize * sizeof *w);
+    memset(w, 0xA5, (size_t)fn->rsize * sizeof *w);
 #endif
-        ZERO_REGS(w + fn->zoff, fn->zlen);
-    }
+    ZERO_REGS(w + fn->zoff, fn->zlen);
     if (p->nframes > p->max_depth) p->max_depth = p->nframes;
 }
 

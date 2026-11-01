@@ -294,7 +294,7 @@ void proc_frame_slow(Process *p, uint32_t words) {
         p->frames = xrealloc(p->frames, p->fcap * sizeof *p->frames);
     }
     p->flimit = p->fcap < p->vm->max_frames ? p->fcap : p->vm->max_frames;
-    if (p->rtop + words > p->rcap) {
+    if (!p->regs || p->rtop + words > p->rcap) { /* (even for an empty window: regs + base is then defined) */
         uint32_t nc = p->rcap ? p->rcap * 2 : 64;
         while (nc < p->rtop + words) nc *= 2;
         p->regs = xrealloc(p->regs, nc * sizeof *p->regs);
