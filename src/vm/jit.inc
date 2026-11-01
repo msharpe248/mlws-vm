@@ -121,6 +121,13 @@ static void a_patch(JBuf *b, size_t at) {
     if ((b->v[at] & 0xFC000000u) == 0x14000000u) b->v[at] |= off & 0x3FFFFFF;
     else b->v[at] |= (off & 0x7FFFF) << 5;
 }
+static uint32_t a_csel(int d, int n, int m, int cond) {
+    return 0x9A800000u | (unsigned)m << 16 | (unsigned)cond << 12 | (unsigned)n << 5 | (unsigned)d;
+}
+static uint32_t a_cset(int d, int cond) { return 0x9A9F07E0u | (unsigned)(cond ^ 1) << 12 | (unsigned)d; }
+#define A_FSQRT 0x1E61C000u
+#define A_FNEG 0x1E614000u
+#define A_FABS 0x1E60C000u
 static uint32_t a_cmp_wi(int n, unsigned imm) { return 0x7100001Fu | imm << 10 | (unsigned)n << 5; }
 static uint32_t a_fmov_dd(int d, int n) { return 0x1E604000u | (unsigned)n << 5 | (unsigned)d; }
 static uint32_t a_subs_wi(int d, int n, unsigned imm) { return 0x71000000u | imm << 10 | (unsigned)n << 5 | (unsigned)d; }
@@ -285,9 +292,17 @@ static bool jit_ends_block(uint16_t x) {
 #undef X
     case Q_BZ_I: case Q_BNZ_I: case Q_JMP: case Q_CALL_R: case Q_RET_R: case Q_RET_RK:
     case Q_BZ_R: case Q_BNZ_R: case Q_BEQ_RR: case Q_BNE_RR: case Q_BEQ_RK: case Q_BNE_RK:
-    case Q_BEQ_EKK: case Q_BNE_EKK: case Q_TCALL_R: return true;
+    case Q_BEQ_EKK: case Q_BNE_EKK: case Q_TCALL_R:
+    case Q_BISA: case Q_BNISA: case Q_BEQ_RG: case Q_BNE_RG:
+    case Q_CALL_RK: case Q_CALLI_R: case Q_CALLI_RK: case Q_JTAB: case Q_TCALLI_R: return true;
     default: return false;
     }
+}
+
+/* A block's end that is a branch, with a target (in Insn.target). */
+static bool jit_branches(uint16_t x) {
+    return jit_ends_block(x) && x != Q_CALL_R && x != Q_CALL_RK && x != Q_CALLI_R && x != Q_CALLI_RK && x != Q_RET_R &&
+           x != Q_RET_RK && x != Q_TCALL_R && x != Q_JTAB && x != Q_TCALLI_R;
 }
 
 static bool jit_handles(uint16_t x) {
@@ -303,7 +318,12 @@ static bool jit_handles(uint16_t x) {
     case Q_REM_IIK: case Q_REM_IK: case Q_DIV_IIK: case Q_DIV_IK: case Q_INC_I: case Q_DEC_I:
     case Q_MOV_RK: case Q_BITCAST_FI: case Q_BITCAST_IF: case Q_CVT_FI: case Q_TYPEOF: case Q_NEW:
     case Q_LDF_I: case Q_LDF_F: case Q_LDF_R: case Q_STF_I: case Q_STF_F: case Q_STF_R:
-    case Q_RET_RK: case Q_LEN: case Q_LNEW:
+    case Q_RET_RK: case Q_LEN: case Q_LNEW: case Q_LPUSH_R: case Q_LPUSH_RK:
+    case Q_LDG_I: case Q_LDG_F: case Q_LDG_R: case Q_STG_I: case Q_STG_F: case Q_STG_R:
+    case Q_ISA: case Q_LDV_E: case Q_LDV_ED: case Q_LDV_EK:
+    case Q_SQRT_F: case Q_SQRT_FF: case Q_NEG_F: case Q_NEG_FF: case Q_ABS_F: case Q_ABS_FF:
+    case Q_LDU_I: case Q_LDU_F: case Q_LDU_R: case Q_STU_I: case Q_STU_F: case Q_STU_R: case Q_STFK:
+    case Q_LDED_I: case Q_LDED_F: case Q_LDED_R: case Q_STED_I: case Q_STED_F: case Q_STED_R:
     case Q_LDE_I: case Q_LDE_F: case Q_LDE_R: case Q_STE_I: case Q_STE_F: case Q_STE_R:
     case Q_LDEK_I: case Q_LDEK_F: case Q_LDEK_R: case Q_STEK_I: case Q_STEK_F: case Q_STEK_R:
         return true;
@@ -470,7 +490,8 @@ static uint32_t jit_call(JBuf *b, JFixes *fx, const Function *caller, const Insn
     jw(b, a_add_lsl3(14, 14, 15));
     for (unsigned k = 0; k < fn->zlen; k++) jw(b, a_str_x(XZR, 14, (fn->zoff + k) * 8u));
     for (int k = 0; k < argc; k++) {
-        jw(b, a_ldr_x(T0, XI, pl->slot[k] * 8u));
+        if (pl->slot[k] == QPLAN_K) a_movk64(b, T0, in->ops[2 + k].kw); /* Q_CALL_RK's constant */
+        else jw(b, a_ldr_x(T0, XI, pl->slot[k] * 8u));
         jw(b, a_str_x(T0, 14, pl->slot[argc + k] * 8u));
     }
     jw(b, a_mov_x(XFR, 17));
@@ -507,6 +528,116 @@ static uint32_t jit_call(JBuf *b, JFixes *fx, const Function *caller, const Insn
         jbranch(b, fx, FX_B, 0, TO_EXIT, 0);
     }
     return c;
+}
+
+/* A closure call (Q_CALLI_R, Q_CALLI_RK) from machine code: the closure is
+ * checked and its frame pushed as call_rk does it (the stacks may grow); 0:
+ * the interpreter's call must do it; otherwise the Ctx has the callee's frame
+ * and windows, and the result is its machine code, or 1 if it has none. */
+static uintptr_t jit_calli_go(Ctx *c, const Insn *in) {
+    Process *p = c->p;
+    if (!call_rk(p, in)) return 0;
+    ctx_load(c);
+    const Function *fn = c->fr->fn;
+    return fn->jit_entry && fn->jit_entry[0] ? (uintptr_t)fn->jit_entry[0] : 1;
+}
+
+static uint32_t jit_calli(JBuf *b, JFixes *fx, const Function *caller, const Insn *in, uint32_t pc) {
+    const QPlan *pl = in->k.p;
+    a_movk64(b, T0, pc + 1); /* the return address; and the count, for a trap */
+    jw(b, a_str_w(T0, XFR, FR_OFF(pc)));
+    jw(b, a_ldr_x(T0, XC, C_OFF(ibase)));
+    jw(b, a_rrr(A_SUB, T0, T0, WL));
+    jw(b, a_str_x(T0, XP, P_OFF(insns)));
+    jw(b, a_mov_x(0, XC));
+    a_movk64(b, 1, (uint64_t)(uintptr_t)in);
+    a_movk64(b, 16, (uint64_t)(uintptr_t)jit_calli_go);
+    jw(b, a_blr(16));
+    jbranch(b, fx, FX_CB, 0xB4000000u | 0, TO_UNDO, pc); /* cbz x0 */
+    jw(b, a_ldr_x(XFR, XC, C_OFF(fr)));
+    jw(b, a_ldr_x(XI, XC, C_OFF(I)));
+    jw(b, a_ldr_x(XF, XC, C_OFF(F)));
+    jw(b, a_ldr_x(XR, XC, C_OFF(R)));
+    jw(b, a_cmpi(0, 1));
+    size_t none = b->n;
+    jw(b, 0x54000000u | C_EQ);
+    jw(b, a_blr(0));
+    uint32_t c = (uint32_t)b->n; /* the continuation, as a direct call's */
+    jw(b, a_ldr_w(T0, XFR, FR_OFF(base)));
+    jw(b, a_ldr_x(14, XP, P_OFF(regs)));
+    jw(b, a_add_lsl3(XI, 14, T0));
+    jit_windows(b, caller);
+    for (int k = 0; k < pl->nres; k++) {
+        jw(b, a_ldr_x(T0, XC, C_OFF(retv) + 8u * (unsigned)k));
+        jw(b, a_str_x(T0, XI, pl->slot[2 * pl->argc + k] * 8u));
+    }
+    jbranch(b, fx, FX_B, 0, TO_BODY, pc + 1);
+    a_patch(b, none); /* pushed, but the callee runs in the interpreter, from its first instruction */
+    jw(b, a_ldr_x(T0, XFR, FR_OFF(fn)));
+    jw(b, a_ldr_x(0, T0, (unsigned)offsetof(Function, code)));
+    jbranch(b, fx, FX_B, 0, TO_EXIT, 0);
+    return c;
+}
+
+/* A closure tail call (Q_TCALLI_R) from machine code, as the handler makes
+ * it; the same results as jit_calli_go. */
+static uintptr_t jit_tcalli_go(Ctx *c, const Insn *in) {
+    Process *p = c->p;
+    Frame *fr = &p->frames[p->nframes - 1];
+    const Operand *qo = in->ops;
+    Obj *ob;
+    memcpy(&ob, &p->regs[fr->base + qo[0].pad], sizeof ob);
+    if (!ob || ob->kind != OBJ_CLOSURE) return 0;
+    ObjClosure *cl = (ObjClosure *)ob;
+    Function *fn = cl->fn;
+    const MFunc *mf = fn->mf;
+    int argc = (int)qo[1].imm;
+    if (argc != mf->nparams || fr->base + fn->rsize > p->rcap) return 0;
+    for (int k = 0; k < argc; k++)
+        if (!wide_type(mf->params[k]) || REG_BANK(qo[2 + k].reg) != (int)type_bank((MlwsType)mf->params[k])) return 0;
+    uint64_t args[MAX_OPERANDS];
+    const uint64_t *ow = p->regs + fr->base;
+    for (int k = 0; k < argc; k++) memcpy(&args[k], &ow[qo[2 + k].pad], 8);
+    const Insn *ri = fr->ret_insn;
+    uint8_t qret = tail_qret(ri, fr->qret, mf);
+    proc_pop_frame(p);
+    proc_push_frame_fitting(p, fn, ri);
+    Frame *nf = &p->frames[p->nframes - 1];
+    nf->closure = &cl->h;
+    nf->qret = qret;
+    uint64_t *nw = p->regs + nf->base;
+    uint32_t cnt[NBANKS] = {0};
+    for (int k = 0; k < argc; k++) {
+        int bk = (int)type_bank((MlwsType)mf->params[k]);
+        memcpy(&nw[fn->roff[bk] + cnt[bk]++], &args[k], 8);
+    }
+    ctx_load(c);
+    return fn->jit_entry && fn->jit_entry[0] ? (uintptr_t)fn->jit_entry[0] : 1;
+}
+
+static void jit_tcalli(JBuf *b, JFixes *fx, const Insn *in, uint32_t pc) {
+    a_movk64(b, T0, pc + 1);
+    jw(b, a_str_w(T0, XFR, FR_OFF(pc)));
+    jw(b, a_ldr_x(T0, XC, C_OFF(ibase)));
+    jw(b, a_rrr(A_SUB, T0, T0, WL));
+    jw(b, a_str_x(T0, XP, P_OFF(insns)));
+    jw(b, a_mov_x(0, XC));
+    a_movk64(b, 1, (uint64_t)(uintptr_t)in);
+    a_movk64(b, 16, (uint64_t)(uintptr_t)jit_tcalli_go);
+    jw(b, a_blr(16));
+    jbranch(b, fx, FX_CB, 0xB4000000u | 0, TO_UNDO, pc); /* cbz x0 */
+    jw(b, a_ldr_x(XFR, XC, C_OFF(fr)));
+    jw(b, a_ldr_x(XI, XC, C_OFF(I)));
+    jw(b, a_ldr_x(XF, XC, C_OFF(F)));
+    jw(b, a_ldr_x(XR, XC, C_OFF(R)));
+    jw(b, a_cmpi(0, 1));
+    size_t none = b->n;
+    jw(b, 0x54000000u | C_EQ);
+    jw(b, a_br(0));
+    a_patch(b, none);
+    jw(b, a_ldr_x(T0, XFR, FR_OFF(fn)));
+    jw(b, a_ldr_x(0, T0, (unsigned)offsetof(Function, code)));
+    jbranch(b, fx, FX_B, 0, TO_EXIT, 0);
 }
 
 static void jit_ret(JBuf *b, JFixes *fx, const Insn *in, uint32_t pc) {
@@ -590,6 +721,36 @@ static void jit_tcall(JBuf *b, JFixes *fx, const Function *caller, const Insn *i
     jw(b, a_br(T0));
     a_movk64(b, 0, (uint64_t)(uintptr_t)fn->code);
     jbranch(b, fx, FX_B, 0, TO_EXIT, 0);
+}
+
+/* ---- globals, as Q_LDG_*, Q_STG_* and GLOBAL_REF: x9 the word's segment,
+ * x16 the word's index in it; the tag checked (tag: 1 must be r, -1 must
+ * not be r, 0 set it to `set`), anything else a side exit. Leaves x9 the
+ * segment's data. ---- */
+static void jit_global(JBuf *b, JFixes *fx, const JCache *jc, const Insn *in, uint32_t pc, int tag, unsigned set) {
+    uint32_t g = (uint32_t)((uint64_t)in->k.i >> 32), off = (uint32_t)in->k.i;
+    jw(b, a_ldr_w(T1, XP, P_OFF(nglobals)));
+    a_movk64(b, T2, g);
+    jw(b, a_cmp_w(T2, T1));
+    jside(b, fx, jc, FX_BCOND, C_HS, pc);
+    jw(b, a_ldr_x(T0, XP, P_OFF(globals)));
+    a_movk64(b, T1, (uint64_t)g * sizeof(Segment));
+    jw(b, a_rrr(A_ADD, T0, T0, T1));
+    jw(b, a_ldr_w(T1, T0, (unsigned)offsetof(Segment, size)));
+    a_movk64(b, T2, (uint64_t)off + 8);
+    jw(b, a_cmp(T1, T2));
+    jside(b, fx, jc, FX_BCOND, C_LO, pc);
+    a_movk64(b, 16, off >> 3);
+    jw(b, a_ldr_x(T1, T0, (unsigned)offsetof(Segment, tags)));
+    if (tag) {
+        jw(b, a_ldrb_r(T2, T1, 16));
+        jw(b, a_cmp_wi(T2, T_R));
+        jside(b, fx, jc, FX_BCOND, tag > 0 ? C_NE : C_EQ, pc);
+    } else {
+        a_movk64(b, T2, set);
+        jw(b, a_strb_r(T2, T1, 16));
+    }
+    jw(b, a_ldr_x(T0, T0, (unsigned)offsetof(Segment, data)));
 }
 
 /* ---- elements, as ELEM_LOAD and ELEM_STORE: a list element tagged with the
@@ -688,6 +849,17 @@ static int jit_branch_cond(uint16_t x, int *kind) {
     case Q_BGE_UK: *kind = 5; return C_HS;
     default: return -1;
     }
+}
+
+/* An element's index register (r[2]), plus Insn.k's offset (R1[I2+d]) in x16. */
+static int jit_index(JBuf *b, JCache *jc, const Insn *in, bool plus) {
+    int ix = jc_get(b, jc, 0, in->r[2]);
+    if (!plus) return ix;
+    int64_t d = in->k.i;
+    if (d >= 0 && d < 4096) jw(b, a_addi(16, ix, (unsigned)d));
+    else if (d < 0 && d > -4096) jw(b, a_subi(16, ix, (unsigned)-d));
+    else a_movk64(b, 16, (uint64_t)d), jw(b, a_rrr(A_ADD, 16, ix, 16));
+    return 16;
 }
 
 static void jit_const_f(JBuf *b, int d, double f) {
@@ -827,6 +999,225 @@ static void jit_insn(JBuf *b, JFixes *fx, JCache *jc, const Function *f, const I
         return;
     case Q_RET_R: case Q_RET_RK: jc_flush(b, jc); jit_ret(b, fx, in, pc); return;
     case Q_TCALL_R: jc_flush(b, jc); jit_tcall(b, fx, f, in, pc); return;
+    case Q_TCALLI_R: jc_flush(b, jc); jit_tcalli(b, fx, in, pc); return;
+    case Q_LDU_I: case Q_LDU_F: case Q_LDU_R: case Q_STU_I: case Q_STU_F: case Q_STU_R: {
+        /* a capture of the frame's closure (UP[u]): of the instruction's type, for a load */
+        bool load = x <= Q_LDU_R;
+        int bank = load ? x - Q_LDU_I : x - Q_STU_I;
+        uint32_t u = in->target;
+        unsigned off = (unsigned)offsetof(ObjClosure, up) + u * 8u;
+        int val = 17;
+        if (!load) {
+            if (bank == 2) jw(b, a_ldr_x(17, XR, in->r[1] * 8u));
+            else val = jc_get(b, jc, bank, in->r[1]);
+        }
+        jw(b, a_ldr_x(T0, XFR, FR_OFF(closure)));
+        jside(b, fx, jc, FX_CB, 0xB4000000u | T0, pc);
+        jw(b, a_ldr_w(T1, T0, (unsigned)offsetof(ObjClosure, nup)));
+        jw(b, a_cmp_wi(T1, u));
+        jside(b, fx, jc, FX_BCOND, C_LS, pc); /* nup <= u */
+        jw(b, a_ldr_x(T1, T0, (unsigned)offsetof(ObjClosure, tags)));
+        if (load) {
+            jw(b, a_ldrb(T2, T1, u));
+            jw(b, a_cmp_wi(T2, in->type));
+            jside(b, fx, jc, FX_BCOND, C_NE, pc);
+            if (bank == 2) jw(b, a_ldr_x(T2, T0, off)), jw(b, a_str_x(T2, XR, in->r[0] * 8u));
+            else d = jc_def(b, jc, bank, in->r[0]), jw(b, bank ? a_ldr_d(d, T0, off) : a_ldr_x(d, T0, off));
+        } else {
+            a_movk64(b, T2, in->type);
+            jw(b, a_strb(T2, T1, u));
+            jw(b, bank == 1 ? a_str_d(val, T0, off) : a_str_x(val, T0, off));
+        }
+        return;
+    }
+    case Q_STFK: { /* a constant to a struct's field: its word in ops[1].kw */
+        unsigned off = (unsigned)offsetof(ObjStruct, fields) + in->target * 8u;
+        jw(b, a_ldr_x(T0, XR, in->r[0] * 8u));
+        jside(b, fx, jc, FX_CB, 0xB4000000u | T0, pc);
+        jw(b, a_ldrb(T1, T0, (unsigned)offsetof(Obj, kind)));
+        jw(b, a_cmp_wi(T1, OBJ_STRUCT));
+        jside(b, fx, jc, FX_BCOND, C_NE, pc);
+        jw(b, a_ldr_x(T1, T0, (unsigned)offsetof(ObjStruct, def)));
+        a_movk64(b, T2, (uint64_t)(uintptr_t)in->k.p);
+        jw(b, a_cmp(T1, T2));
+        jside(b, fx, jc, FX_BCOND, C_NE, pc);
+        a_movk64(b, T1, in->ops[1].kw);
+        jw(b, a_str_x(T1, T0, off));
+        return;
+    }
+    case Q_CALL_RK: jc_flush(b, jc); *cont = jit_call(b, fx, f, in, pc); return;
+    case Q_CALLI_R: case Q_CALLI_RK: jc_flush(b, jc); *cont = jit_calli(b, fx, f, in, pc); return;
+    case Q_ISA:
+        jw(b, a_ldr_x(T0, XR, in->r[1] * 8u));
+        d = jc_def(b, jc, 0, in->r[0]);
+        jw(b, a_mov_x(d, XZR));
+        {
+            size_t z = b->n;
+            jw(b, 0xB4000000u | T0);
+            jw(b, a_ldrb(T1, T0, (unsigned)offsetof(Obj, kind)));
+            jw(b, a_cmp_wi(T1, OBJ_STRUCT));
+            size_t k1 = b->n;
+            jw(b, 0x54000000u | C_NE);
+            jw(b, a_ldr_x(T1, T0, (unsigned)offsetof(ObjStruct, def)));
+            a_movk64(b, T2, (uint64_t)(uintptr_t)in->k.p);
+            jw(b, a_cmp(T1, T2));
+            jw(b, a_cset(d, C_EQ));
+            a_patch(b, z), a_patch(b, k1);
+        }
+        return;
+    case Q_SQRT_F: case Q_SQRT_FF: case Q_NEG_F: case Q_NEG_FF: case Q_ABS_F: case Q_ABS_FF: {
+        bool two = x == Q_SQRT_FF || x == Q_NEG_FF || x == Q_ABS_FF;
+        uint32_t fop = x <= Q_SQRT_FF && x >= Q_SQRT_F ? A_FSQRT : x == Q_NEG_F || x == Q_NEG_FF ? A_FNEG : A_FABS;
+        s1 = jc_get(b, jc, 1, in->r[two ? 1 : 0]);
+        d = jc_def(b, jc, 1, in->r[0]);
+        jw(b, fop | (unsigned)s1 << 5 | (unsigned)d);
+        return;
+    }
+    case Q_JTAB: { /* out of range: on to the next instruction */
+        uint32_t nt = (uint32_t)in->nops - 1;
+        s1 = jc_get(b, jc, 0, in->r[0]);
+        jc_flush(b, jc);
+        a_movk64(b, T1, nt);
+        jw(b, a_cmp(s1, T1));
+        jbranch(b, fx, FX_BCOND, C_HS, TO_BODY, pc + 1);
+        jw(b, 0x10000000u | 3u << 5 | T0); /* adr x9, the table (3 instructions on) */
+        jw(b, 0x8B000800u | (unsigned)s1 << 16 | (unsigned)T0 << 5 | T0); /* add x9, x9, idx, lsl #2 */
+        jw(b, a_br(T0));
+        for (uint32_t k = 0; k < nt; k++) jbranch(b, fx, FX_B, 0, TO_BODY, in->ops[1 + k].rv.target);
+        return;
+    }
+    case Q_LDV_E: case Q_LDV_ED: case Q_LDV_EK: { /* the number half of a value, into the bank its tag picks */
+        int ix;
+        if (x == Q_LDV_EK) {
+            a_movk64(b, 16, in->target), ix = 16;
+        } else {
+            ix = jc_get(b, jc, 0, (int)in->target);
+            int off = (int8_t)in->r[2];
+            if (x == Q_LDV_ED) {
+                jw(b, off >= 0 ? a_addi(16, ix, (unsigned)off) : a_subi(16, ix, (unsigned)-off));
+                ix = 16;
+            }
+        }
+        jw(b, a_ldr_x(T0, XR, (unsigned)in->k.i * 8u));
+        jside(b, fx, jc, FX_CB, 0xB4000000u | T0, pc);
+        jw(b, a_ldrb(T1, T0, (unsigned)offsetof(Obj, kind)));
+        jw(b, a_cmp_wi(T1, OBJ_LIST));
+        size_t to_arr = b->n;
+        jw(b, 0x54000000u | C_NE);
+        jw(b, a_ldr_w(T1, T0, (unsigned)offsetof(ObjList, len)));
+        jw(b, a_cmp(ix, T1));
+        jside(b, fx, jc, FX_BCOND, C_HS, pc);
+        jw(b, a_ldr_x(T1, T0, (unsigned)offsetof(ObjList, tags)));
+        jw(b, a_ldrb_r(T2, T1, ix));
+        jw(b, a_ldr_x(T1, T0, (unsigned)offsetof(ObjList, items)));
+        jw(b, a_ldr_xr(17, T1, ix));
+        size_t to_tag = b->n;
+        jw(b, 0x14000000u);
+        a_patch(b, to_arr);
+        jw(b, a_cmp_wi(T1, OBJ_ARRAY));
+        jside(b, fx, jc, FX_BCOND, C_NE, pc);
+        jw(b, a_ldr_w(T1, T0, (unsigned)offsetof(ObjArray, len)));
+        jw(b, a_cmp(ix, T1));
+        jside(b, fx, jc, FX_BCOND, C_HS, pc);
+        jw(b, a_ldrb(T2, T0, (unsigned)offsetof(ObjArray, elem)));
+        jw(b, a_addi(T1, T0, (unsigned)offsetof(ObjArray, data)));
+        jw(b, a_ldr_xr(17, T1, ix));
+        a_patch(b, to_tag);
+        /* the tag in w11, the word in x17: i64, f64 or none (zeros), else the handler's */
+        jw(b, a_cmp_wi(T2, T_I64));
+        size_t ok1 = b->n;
+        jw(b, 0x54000000u | C_EQ);
+        jw(b, a_cmp_wi(T2, T_F64));
+        size_t ok2 = b->n;
+        jw(b, 0x54000000u | C_EQ);
+        jw(b, a_cmp_wi(T2, T_NONE));
+        jside(b, fx, jc, FX_BCOND, C_NE, pc);
+        a_patch(b, ok1), a_patch(b, ok2);
+        int di = jc_def(b, jc, 0, in->r[0]), df = jc_def(b, jc, 1, in->r[1]);
+        jw(b, a_cmp_wi(T2, T_I64));
+        jw(b, a_csel(di, 17, XZR, C_EQ));
+        jw(b, a_cmp_wi(T2, T_F64));
+        jw(b, a_csel(16, 17, XZR, C_EQ));
+        jw(b, a_fmov_dx(df, 16));
+        return;
+    }
+    case Q_BISA: case Q_BNISA: { /* a struct of the type in k: branch (BISA) or not */
+        jc_flush(b, jc);
+        bool is = x == Q_BISA;
+        jw(b, a_ldr_x(T0, XR, in->r[0] * 8u));
+        size_t z = b->n;
+        if (is) jw(b, 0xB4000000u | T0);
+        else jbranch(b, fx, FX_CB, 0xB4000000u | T0, TO_BODY, t);
+        jw(b, a_ldrb(T1, T0, (unsigned)offsetof(Obj, kind)));
+        jw(b, a_cmp_wi(T1, OBJ_STRUCT));
+        size_t k1 = b->n;
+        if (is) jw(b, 0x54000000u | C_NE);
+        else jbranch(b, fx, FX_BCOND, C_NE, TO_BODY, t);
+        jw(b, a_ldr_x(T1, T0, (unsigned)offsetof(ObjStruct, def)));
+        a_movk64(b, T2, (uint64_t)(uintptr_t)in->k.p);
+        jw(b, a_cmp(T1, T2));
+        jbranch(b, fx, FX_BCOND, is ? C_EQ : C_NE, TO_BODY, t);
+        if (is) a_patch(b, z), a_patch(b, k1);
+        return;
+    }
+    case Q_BEQ_RG: case Q_BNE_RG:
+        jit_global(b, fx, jc, in, pc, 1, 0);
+        jw(b, a_ldr_xr(T1, T0, 16));
+        jc_flush(b, jc);
+        jw(b, a_ldr_x(T0, XR, in->r[0] * 8u));
+        jw(b, a_cmp(T0, T1));
+        jbranch(b, fx, FX_BCOND, x == Q_BEQ_RG ? C_EQ : C_NE, TO_BODY, t);
+        return;
+    case Q_LDG_I: case Q_LDG_F: case Q_LDG_R: {
+        int bank = x - Q_LDG_I;
+        jit_global(b, fx, jc, in, pc, bank == 2 ? 1 : -1, 0);
+        if (bank == 2) jw(b, a_ldr_xr(T1, T0, 16)), jw(b, a_str_x(T1, XR, in->r[0] * 8u));
+        else d = jc_def(b, jc, bank, in->r[0]), jw(b, bank ? a_ldr_dr(d, T0, 16) : a_ldr_xr(d, T0, 16));
+        return;
+    }
+    case Q_STG_I: case Q_STG_F: case Q_STG_R: {
+        int bank = x - Q_STG_I;
+        jit_global(b, fx, jc, in, pc, 0, in->type);
+        if (bank == 2) jw(b, a_ldr_x(T1, XR, in->r[1] * 8u)), jw(b, a_str_xr(T1, T0, 16));
+        else s1 = jc_get(b, jc, bank, in->r[1]), jw(b, bank ? a_str_dr(s1, T0, 16) : a_str_xr(s1, T0, 16));
+        return;
+    }
+    case Q_LPUSH_R: case Q_LPUSH_RK: { /* into the list's spare capacity; growing it is the handler's */
+        unsigned nv = (unsigned)in->nops - 1;
+        jw(b, a_ldr_x(T0, XR, in->r[0] * 8u));
+        jside(b, fx, jc, FX_CB, 0xB4000000u | T0, pc);
+        jw(b, a_ldrb(T1, T0, (unsigned)offsetof(Obj, kind)));
+        jw(b, a_cmp_wi(T1, OBJ_LIST));
+        jside(b, fx, jc, FX_BCOND, C_NE, pc);
+        jw(b, a_ldr_w(T1, T0, (unsigned)offsetof(ObjList, len)));
+        jw(b, a_ldr_w(T2, T0, (unsigned)offsetof(ObjList, cap)));
+        jw(b, 0x4B000000u | (unsigned)T1 << 16 | (unsigned)T2 << 5 | T2); /* sub w11, w11, w10 */
+        jw(b, a_cmp_wi(T2, nv));
+        jside(b, fx, jc, FX_BCOND, C_LO, pc);
+        jw(b, a_ldr_x(16, T0, (unsigned)offsetof(ObjList, items)));
+        jw(b, a_add_lsl3(16, 16, T1));
+        jw(b, a_ldr_x(17, T0, (unsigned)offsetof(ObjList, tags)));
+        jw(b, a_rrr(A_ADD, 17, 17, T1));
+        for (unsigned k = 0; k < nv; k++) {
+            const Operand *a = &in->ops[1 + k];
+            unsigned tg;
+            if (a->mode != OM_REG) {
+                a_movk64(b, T2, a->kw);
+                jw(b, a_str_x(T2, 16, k * 8));
+                tg = a->pad;
+            } else {
+                int bk = REG_BANK(a->reg), r = REG_IDX(a->reg);
+                if (bk == BANK_I) jw(b, a_str_x(jc_get(b, jc, 0, r), 16, k * 8)), tg = T_I64;
+                else if (bk == BANK_F) jw(b, a_str_d(jc_get(b, jc, 1, r), 16, k * 8)), tg = T_F64;
+                else jw(b, a_ldr_x(T2, XR, (unsigned)r * 8)), jw(b, a_str_x(T2, 16, k * 8)), tg = T_R;
+            }
+            a_movk64(b, T2, tg);
+            jw(b, a_strb(T2, 17, k));
+        }
+        jw(b, a_add_wi(T1, T1, nv));
+        jw(b, a_str_w(T1, T0, (unsigned)offsetof(ObjList, len)));
+        return;
+    }
     case Q_LEN: {
         jw(b, a_ldr_x(T0, XR, in->r[1] * 8u));
         jside(b, fx, jc, FX_CB, 0xB4000000u | T0, pc);
@@ -849,11 +1240,12 @@ static void jit_insn(JBuf *b, JFixes *fx, JCache *jc, const Function *f, const I
         jw(b, a_mov_x(d, T2));
         return;
     }
-    case Q_LDE_I: case Q_LDE_F: case Q_LDE_R: case Q_LDEK_I: case Q_LDEK_F: case Q_LDEK_R: {
-        int bank = x >= Q_LDEK_I ? x - Q_LDEK_I : x - Q_LDE_I;
+    case Q_LDE_I: case Q_LDE_F: case Q_LDE_R: case Q_LDEK_I: case Q_LDEK_F: case Q_LDEK_R:
+    case Q_LDED_I: case Q_LDED_F: case Q_LDED_R: {
+        int bank = x >= Q_LDED_I ? x - Q_LDED_I : x >= Q_LDEK_I ? x - Q_LDEK_I : x - Q_LDE_I;
         int ix;
-        if (x >= Q_LDEK_I) a_movk64(b, 16, in->target), ix = 16;
-        else ix = jc_get(b, jc, 0, in->r[2]);
+        if (x >= Q_LDEK_I && x <= Q_LDEK_R) a_movk64(b, 16, in->target), ix = 16;
+        else ix = jit_index(b, jc, in, x >= Q_LDED_I);
         jw(b, a_ldr_x(T0, XR, in->r[1] * 8u));
         jit_elem(b, fx, jc, in, pc, ix, false, bank, bank == 1 ? 0 : 17);
         if (bank == 2) jw(b, a_str_x(17, XR, in->r[0] * 8u));
@@ -861,11 +1253,12 @@ static void jit_insn(JBuf *b, JFixes *fx, JCache *jc, const Function *f, const I
         else d = jc_def(b, jc, 0, in->r[0]), jw(b, a_mov_x(d, 17));
         return;
     }
-    case Q_STE_I: case Q_STE_F: case Q_STE_R: case Q_STEK_I: case Q_STEK_F: case Q_STEK_R: {
-        int bank = x >= Q_STEK_I ? x - Q_STEK_I : x - Q_STE_I;
+    case Q_STE_I: case Q_STE_F: case Q_STE_R: case Q_STEK_I: case Q_STEK_F: case Q_STEK_R:
+    case Q_STED_I: case Q_STED_F: case Q_STED_R: {
+        int bank = x >= Q_STED_I ? x - Q_STED_I : x >= Q_STEK_I ? x - Q_STEK_I : x - Q_STE_I;
         int ix, val;
-        if (x >= Q_STEK_I) a_movk64(b, 16, in->target), ix = 16;
-        else ix = jc_get(b, jc, 0, in->r[2]);
+        if (x >= Q_STEK_I && x <= Q_STEK_R) a_movk64(b, 16, in->target), ix = 16;
+        else ix = jit_index(b, jc, in, x >= Q_STED_I);
         if (bank == 2) jw(b, a_ldr_x(17, XR, in->r[1] * 8u)), val = 17;
         else val = jc_get(b, jc, bank, in->r[1]);
         jw(b, a_ldr_x(T0, XR, in->r[0] * 8u));
@@ -955,8 +1348,10 @@ static bool jit_worth_entering(const Function *f, const uint16_t *xop, uint32_t 
         uint32_t succ[2], ns = 0;
         uint16_t x = xop[pc];
         if (!jit_ends_block(x)) succ[ns++] = pc + 1;
-        else if (x == Q_CALL_R) loop = true; /* (a call goes on in the callee's machine code, if it has some) */
-        else if (x != Q_RET_R) {
+        else if (x == Q_CALL_R || x == Q_CALL_RK || x == Q_CALLI_R || x == Q_CALLI_RK || x == Q_TCALL_R || x == Q_JTAB ||
+                 x == Q_TCALLI_R)
+            loop = true; /* (it goes on in the callee's machine code, if it has some; a jtab: in any case) */ /* (it goes on in the callee's machine code, if it has some) */
+        else if (jit_branches(x)) {
             succ[ns++] = pc + (uint32_t)(int32_t)f->code[pc].target;
             if (x != Q_JMP) succ[ns++] = pc + 1;
         }
@@ -994,7 +1389,10 @@ static void jit_compile(Function *f) {
     uint32_t *rest = xcalloc(n + 1, sizeof *rest);
     for (uint32_t pc = 0; pc < n; pc++) {
         if (pc == 0 || !jit_handles(xop[pc - 1]) || jit_ends_block(xop[pc - 1])) lead[pc] = 1;
-        if (jit_handles(xop[pc]) && jit_ends_block(xop[pc]) && xop[pc] != Q_CALL_R && xop[pc] != Q_RET_R) {
+        if (xop[pc] == Q_JTAB)
+            for (int k = 1; k < f->code[pc].nops; k++)
+                if (f->code[pc].ops[k].rv.target < n) lead[f->code[pc].ops[k].rv.target] = 1;
+        if (jit_handles(xop[pc]) && jit_branches(xop[pc])) {
             uint32_t t = pc + (uint32_t)(int32_t)f->code[pc].target;
             if (t < n) lead[t] = 1;
         }
