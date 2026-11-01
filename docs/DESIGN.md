@@ -128,7 +128,7 @@ what lets the interpreter and the collector run without locks.
 | `src/core/` | Types, the opcode table, the instruction codec, the per-instruction checker, register effects, shared arithmetic, the disassembler, Unicode, versions, SHA-256 |
 | `src/asm/` | Lexer, constant expressions, preprocessor, assembler |
 | `src/loader/` | The `.mlwso` and `.mlwsl` readers and writers |
-| `src/vm/` | Loader and linker, verifier, module cache, processes, coroutines, scheduler, interpreter, extensions, options, the run helper |
+| `src/vm/` | Loader and linker, verifier, module cache, processes, coroutines, scheduler, interpreter, the JIT, extensions, options, the run helper |
 | `src/heap/` | Heap objects, the collector, BigInt and decimal, message copying |
 | `src/opt/` | The optimizer |
 | `src/native/` | Built-in and standard-library natives, the extension API, the FFI |
@@ -805,6 +805,44 @@ The pure arithmetic is `static inline` code in `core/arith.h`:
 traps, and the optimizer refuses to fold it. The interpreter and the
 optimizer's constant folding both use this code, so a folded value is
 always the value the instruction would have computed.
+
+### 8.8 The JIT
+
+The JIT ([JIT.md](JIT.md)) is part of the tail-call interpreter:
+`vm/jit.inc` is included by `interp.c` before the handler table, so it can
+call the handlers and use the `Ctx`. It writes every form once, in a small
+set of operations (`jm_*`: loads and stores, arithmetic, compares, branches
+with fix-ups, calls); `vm/jit_a64.inc` and `vm/jit_x64.inc` encode them for
+arm64 and x86-64. Machine registers hold the `Ctx`, the I window (the F and
+R windows are at fixed offsets from it), the slice's count and the frame;
+the rest are scratch or the register cache.
+
+Two execution opcodes connect it to the interpreter, each keeping the
+instruction's own form in `Function.jit_xop`. `Q_JITC`, on a function's
+first instruction and its loops' heads, counts towards `--jit-hot`
+(`Function.jit_count`); the thread whose count reaches it compiles the
+function under the VM's JIT lock. `Q_JIT`, on the first instruction of each
+block where entering pays, calls `jit_enter`, a few instructions that save
+the callee-saved registers, load the state and jump to the block; the exit
+returns the instruction to go on at, and the slice's count, and the handler
+dispatches it as `NEXT` would. Compiling publishes the code before the
+entries (`Function.jit_entry`, with release order), and the entries before
+the `Q_JIT` opcodes, so a thread that sees one finds the rest.
+
+A compiled function is a sequence of blocks, each with a header that takes
+its length from the count. After the code come stubs: side exits (write
+back the changed registers, give back the block's count, exit at the
+instruction), stops before a block for the interpreter, and, for loops whose
+registers stay in machine registers, the ways out (write back, go on) and a
+way in for each block inside the loop (load them). A call's continuation
+offset goes in the call's `Insn.target` (calls have no label, so it is
+otherwise 0): a return reads it from its frame's `ret_insn`, and 0 means the
+interpreter returns. A stepped instruction calls `jit_step`, which runs its
+handler with no slice left (so the handler stops after it, as at a slice's
+end) and returns the machine code of wherever the frame now is.
+
+Code memory is per VM (`struct Jit`, freed with it), through the platform
+layer (`plat_code_*`, §21).
 
 ## 9. A process in memory
 
@@ -1909,6 +1947,8 @@ cannot express.
 * files, directories, modification times and real paths;
 * processes and pipes; sockets; the poller (kqueue or epoll);
 * dynamic loading;
+* memory for the JIT's machine code (`plat_code_*`): written, then made
+  executable (`MAP_JIT` on Apple silicon; none on Windows);
 * the permission check behind trusted directories (`plat_path_trusted`).
 
 Everything else is plain C11 with `<stdatomic.h>`. Memory is little-endian
@@ -1918,12 +1958,13 @@ Windows implementation is written but untested
 
 ## 22. Testing
 
-**Tests are MLWSVM programs.** `tests/` holds the suite (304 programs) and
+**Tests are MLWSVM programs.** `tests/` holds the suite (311 programs) and
 `examples/` holds self-checking examples, all in documented assembly. The
 test runner reads expectations from comments in each file: expected output
 lines, exit code or error code; VM options; a debugger script; what the
 optimizer must do (`; expect-opt:`, `; expect-insns:`) or must not
-(`; no-opt:`); and skips, each with a reason. Directories whose names start
+(`; no-opt:`); what the JIT must compile (`; expect-jit:`); and skips, each
+with a reason. Directories whose names start
 with `_` hold helper modules.
 
 **The same suite runs in many modes**, each aimed at a class of bug:
@@ -1933,7 +1974,8 @@ with `_` hold helper modules.
 | `make test` | Wrong results |
 | `make check-gc` | A collection at every allocation (freed memory filled with a pattern): missing roots, use after free |
 | `make check-opt` | Every module optimized by every pass, also under GC stress: optimizer bugs, on all the suite's code |
-| `make check-asan` | AddressSanitizer and UBSan, also with every module optimized: memory errors and undefined behaviour in the VM |
+| `make check-jit` | Every function compiled and every block entered (`--jit all`), also under GC stress and optimized, and hot functions: JIT bugs, on all the suite's code |
+| `make check-asan` | AddressSanitizer and UBSan, also under GC stress and with the JIT: memory errors and undefined behaviour in the VM |
 | `make check-tsan` | ThreadSanitizer, on several workers: data races |
 | `make check-poison` | New register windows filled with garbage: registers read before they are written but not cleared |
 | `make check-switch`, `check-loop` | The fallback dispatch builds |
@@ -1943,7 +1985,7 @@ with `_` hold helper modules.
 
 Unicode support is checked against the Unicode Consortium's own
 normalization and segmentation test files. CI runs the modes on Linux (GCC
-and Clang) and macOS (Clang). The compilers project (`mlws-compilers`)
+and Clang) and macOS (Clang), and the JIT's on Linux on arm64. The compilers project (`mlws-compilers`)
 generates large amounts of real code, and its test suites are a second,
 independent test of the VM and the optimizer.
 

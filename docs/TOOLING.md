@@ -22,10 +22,11 @@ dashboard and a `top`-style terminal view.
 
 The profiler, tracer and debugger use one per-instruction hook, which is
 installed only while one of them is active. A program run under them is
-interpreted (the JIT compiles nothing), uses a single worker thread, so traces and profiles are deterministic and the debugger
-can stop the whole program. The monitor needs no hook: the first worker thread
-polls its socket about once a millisecond between time slices, and while it waits
-when idle, so the monitor needs no thread of its own. To answer a request it
+interpreted (the JIT compiles nothing) on a single worker thread, so traces
+and profiles are deterministic and the debugger can stop the whole program.
+The monitor needs no hook: the first worker thread polls its socket about once
+a millisecond between time slices, and while it waits when idle, so the
+monitor needs no thread of its own. To answer a request it
 briefly pauses the other worker threads at their next time-slice boundary ("stop
 the world"), so the numbers it reports are a consistent snapshot.
 

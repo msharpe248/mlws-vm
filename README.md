@@ -101,14 +101,20 @@ base:
   jumps to jumps and unreachable code. `--opt 3` also inlines small functions.
   Each pass can be turned on or off, and a report says
   what each did.
+* **A JIT**: `--jit on` compiles each hot function to arm64 or x86-64 machine
+  code, which runs in mixed mode with the interpreter on the same registers
+  and frames. Calls and loops take 42–78% less time, and most of compiled
+  Lua's benchmarks 22–78% less; results, errors, instruction counts and
+  preemption are the interpreter's.
 * **A module cache**: a `.masm` file is assembled once and its module kept (and
   optimized once, with `--opt`), so a large generated program starts in
   milliseconds on later runs.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 304 test programs, also run under
+* **Tested in its own assembly**: 311 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, with a
-  garbage collection at every allocation, and with every module optimized.
+  garbage collection at every allocation, with every module optimized, and
+  with every function compiled by the JIT.
 
 ## Build and run
 
@@ -117,6 +123,7 @@ make                         # builds ./mlwsvm (a C11 compiler; libffi is used f
 make test                    # runs tests/ and examples/
 make check-gc                # the same, collecting garbage at every allocation
 make check-opt               # the same, with every module optimized (--opt all), also under GC stress
+make check-jit               # the same, with every function and block in machine code (--jit all), and hot functions
 make check-tools             # smoke-test the monitor, top, profiler, tracer, .loc and the module cache
 make bench                   # benchmarks, with output checks (docs/PERFORMANCE.md)
 make check-asan              # test and check-gc, under AddressSanitizer + UBSan
@@ -137,6 +144,7 @@ make check-bindgen           # generate, compare and call bindings for a test he
 ./mlwsvm run examples/http_server.masm 8080     # a supervised HTTP server: a process per connection
 ./mlwsvm run --max-frames 1000000 --quota heap=256M prog.masm   # VM options (docs/TOOLING.md)
 ./mlwsvm run --opt 2 prog.masm         # optimize every module as it loads (docs/OPTIMIZER.md)
+./mlwsvm run --jit on prog.masm        # hot functions as machine code (docs/JIT.md)
 ./mlwsvm opt -O2 -v prog.masm -o prog.mlwso   # optimize ahead of time, with a report of every change
 ./mlwsvm run --profile examples/fib.masm
 ./mlwsvm debug examples/fib.masm          # then: break fib, run, bt, print I0, ...
@@ -164,13 +172,14 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/ERRORS.md](docs/ERRORS.md) | Error codes |
 | [docs/BINARY_FORMAT.md](docs/BINARY_FORMAT.md) | The `.mlwso` file and instruction encoding |
 | [docs/OPTIMIZER.md](docs/OPTIMIZER.md) | The optimizer: its levels and passes, what it keeps the same, its report, and what it gains |
+| [docs/JIT.md](docs/JIT.md) | The JIT: when functions are compiled, what it compiles, how it runs with the interpreter, its memory, platforms, report, tests and gains |
 | [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard, `top`, several programs in one VM, library archives (`mlwsvm lib`), the module cache, VM options, and the bindings generator |
 | [docs/STDLIB.md](docs/STDLIB.md) | The standard library: files, commands, networking, text and JSON, time, hashes, random numbers, encodings, sorting, and how I/O waits |
 | [docs/EMBEDDING.md](docs/EMBEDDING.md) | Running MLWSVM inside a C or C++ program (`libmlwsvm`) |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks and results, how the interpreter and scheduler are made fast, and what is left alone (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M42 and what remains: Windows and the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M43 and what remains: Windows and the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
@@ -180,7 +189,7 @@ src/main.c      the mlwsvm command line
 src/core/       types, opcode table (opcodes.def), instruction codec, shared checker, disassembler, arithmetic semantics, Unicode, version constraints
 src/asm/        lexer, constant expressions, preprocessor (macros etc.), assembler
 src/loader/     .mlwso module and .mlwsl library archive reader/writer
-src/vm/         loader/linker, verifier, module cache, processes and memory, coroutines, scheduler, interpreter, extensions, VM options, run helper
+src/vm/         loader/linker, verifier, module cache, processes and memory, coroutines, scheduler, interpreter, JIT (jit.inc, with jit_a64.inc and jit_x64.inc), extensions, VM options, run helper
 src/heap/       garbage collector, heap objects (strings, bytes, arrays, structs, lists, maps), BigInt and decimal, message copying
 src/opt/        the optimizer: its working form of a function, the passes, the report
 src/native/     built-in and standard-library natives (text, files, the OS and network, module.*), the extension API and the FFI

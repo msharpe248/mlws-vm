@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M42 are complete. What remains is Windows (section 3) and the
+Milestones M0–M43 are complete. What remains is Windows (section 3) and the
 deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M42 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M43 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M42
+## Milestones M11–M43
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -64,6 +64,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M40 Several programs in one VM** (done) | `mlwsvm run a.masm args --also b.masm args`: each program's `main` is a process of its own, with its own `os.args`; every process belongs to its spawner's program; a program's processes stop when its `main` ends, and the run ends with the last program; each program finds its own modules in its own directory first, and the VM knows such a module by its directory and name, so programs from different directories may both have a `main` or a `util`; modules on the library path and library versions are shared, and versions are chosen against every program's `.requires` at once; programs share the name registry, so they can message each other; each waiting `main` gets `E_DEADLOCK`; each process's output goes out a whole line at a time, so programs' lines never mix | `make check-tools` runs five programs at once: messages between them, arguments, the exit status, a program's processes stopped when it ends; programs from two directories with same-named modules, `module.load` from one, the profiler telling them apart, a same-named clash in one directory, and versions chosen the same in either order. `tests/loader/program_local.masm`: a program's module and a library-path module of the same name, loaded side by side. `tests/processes/output_lines.masm`: lines built from several prints, with a switch between any two, come out whole |
 | **M41 The optimizer** (done) | `mlwsvm opt` (ahead of time) and `--opt` (every module as it loads, kept in the module cache): constant folding, constant and copy propagation, algebraic simplification, dead-code and unreachable-code removal, branch threading, inversion and decision, and peephole clean-up at `-O1`; unused functions and smaller register windows at `-O2`; inlining at `-O3`; tail calls only when named. Each pass can be turned on or off (`--opt 3,-inline`), and a report gives each pass's changes and each function's size, with `-v` a log of every change. Folding uses the interpreter's own arithmetic (`src/core/arith.h`); a write that may release an object, a store a handler can see, and anything that can trap are kept | `tests/opt/`: a test per pass, with exact counts (`; expect-opt:`, `; expect-insns:`) and results checked at run time. `make check-opt`: the whole suite with every pass, also with GC stress; `make check-tools`: every module re-encoded byte for byte, the report and the command line. The compilers' suites pass at `--opt 2`, also with GC stress |
 | **M42 Compiled Erlang's shapes** (done) | from the Erlang compiler's profiles: fast forms for `bitcast` between an `I` and an `F` register and of a literal, `typeof` of a register, `beq.r`/`bne.r` of an element at a constant index against a constant (a tuple's tag), and direct tail calls with register and constant arguments. Compiled Erlang's `nbody` and `binarytrees` take 29–39% less time and `sorting` 15–21% less, on the M5, i7 and Ryzen. Other programs run the same handlers, but with GCC their new places in the binary make some compiled Lox benchmarks up to 9% slower; with functions aligned to 64 bytes they are within 1% | `tests/perf/quickened_values.masm`: each form against the generic instruction, with the cases that go to it (another element type, an index past the end, null, a string, a far larger callee window, undeclared results) |
+| **M43 A JIT** (done) | `--jit on`: each function compiled once hot (`--jit-hot`, 1000 calls or loop iterations) to arm64 or x86-64 machine code that runs in mixed mode with the interpreter, on the same windows, frames and heap: the quickened forms and a few generic ones compiled, the rest stepped by their own handlers, side exits to the interpreter where a handler would go generic. A block's registers, and a loop's, stay in machine registers; instruction counts and preemption are the interpreter's. Code memory per VM, written then made executable. `--jit all` compiles every function and enters every block, for testing; `--jit-report` says what it did ([JIT.md](JIT.md)). Calls take 42–60% less time, loops 51–78% less, and compiled Lua's benchmarks other than `strings` 22–78% less, on the M5, i7 and Ryzen; programs whose time is in natives, the collector or the scheduler gain little, and a few are up to 6% slower on x86-64 | `tests/jit/`: each form and side exit, calls and unwinding, loops, hot compiling, four threads compiling at once, a quota stopping at the same instruction, all against the interpreter's results; `make check-jit` (the suite and examples with `--jit all`, also with GC stress and the optimizer, and with `--jit on`) and a JIT run in `check-asan`, in CI on Linux (x86-64 and arm64) and macOS; the compilers' suites with the JIT |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -204,6 +205,10 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 * ~~A bytecode optimizer~~ (M41: done; [OPTIMIZER.md](OPTIMIZER.md)).
   Removing type checks needs the source language's types, so that stays in
   the compilers.
+* ~~A JIT~~ (M43: done; [JIT.md](JIT.md)). It keeps registers in machine
+  registers within a block or a loop, but not across calls, and does not
+  speculate on types or inline; those would be the next steps, if programs
+  show the time in calls and type tests.
 * A generic string replace (every occurrence of one string in another, and
   the count), which the Lua compiler's `gsub` of a plain pattern would use
   instead of its loop. Low priority.

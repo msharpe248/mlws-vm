@@ -572,6 +572,18 @@ the hottest instructions on the general path, with their lines
 Calls cost less with smaller windows, and with fewer registers read before
 they are written, since each call clears those of its callee (section 2).
 
+**With the JIT** (`--jit on`, [JIT.md](JIT.md)) the same shapes become
+machine code, so emitting them pays twice. It also compiles `i64` and `u64`
+arithmetic and compares into a register whose operands are registers,
+constants or captures (`add I1, x, UP[0]`, `slt I0, I1, 10`). Any other
+instruction still runs from the machine code, by its handler, at the cost of
+a few interpreted instructions. A loop keeps its registers in machine
+registers across iterations if every instruction in it is one of the fast
+shapes and none calls (`call`, `new`, `lnew`, `mget`, `jtab`), it is entered
+only at its head, and it uses at most 16 `I` and 16 `F` registers (5 and 13
+on x86-64). `--jit-report -` lists the instructions it stepped most, and
+where its machine code handed back to the interpreter.
+
 Where it matters, prefer one instruction to several (`blt a, b, L` over `slt` +
 `bnz`), and keep hot values in registers rather than in `SP[...]` or globals. See
 [PERFORMANCE.md](PERFORMANCE.md) for measurements.

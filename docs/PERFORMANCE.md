@@ -149,6 +149,7 @@ subtracted):
 |---|---|---|---|---|
 | MLWSVM | **50** | **86** | **92** | **149** |
 | Lua 5.5 | 51 | 213 | 101 | 289 |
+| MLWSVM with its JIT (`--jit on`) | 25 | 19 | 38 | 70 |
 | JVM, interpreter only (`-Xint`) | 90 | 185 | 104 | 396 |
 | CPython | 128 | 1,177 | 186 | 2,374 |
 | JVM with its JIT compiler | 3 | 16 | 8 | 31 |
@@ -156,7 +157,10 @@ subtracted):
 MLWSVM is the fastest of these interpreters on both programs. It runs the
 loop 2.5× faster than Lua and 2.2× faster than the JVM's interpreter on the
 Mac, and `fib` as fast as Lua there and 1.1× faster on the Intel machine: a
-call costs about 7 ns on the Mac, as in Lua. The JIT row is there for scale.
+call costs about 7 ns on the Mac, as in Lua. With its JIT (the medians of
+the next section), MLWSVM takes half the time on `fib` and a fifth on the
+loop. The JVM's JIT row is there for scale: an optimizing compiler removes
+the loop's work and inlines `fib`'s calls.
 [REGISTER_VS_STACK.md](REGISTER_VS_STACK.md) explains these numbers, with the
 instruction counts and listings of each VM's code.
 
@@ -177,6 +181,67 @@ on the Intel one (best of two runs). During a 200-connection run of 600,000
 requests, 40 handlers were made to fail (20 `GET /crash`, 20 `GET /hog`, which
 exhausts its heap quota): every other request was still answered, at 173,000
 requests per second.
+
+## The JIT
+
+With `--jit on` ([JIT.md](JIT.md)), hot functions run as machine code. The
+table gives each program's time on the M5 without and with it, and the
+change it makes on each machine: the same build both ways, medians of five
+interleaved runs. The Erlang, Lua and Lox programs are the compilers'
+benchmarks of the sections above.
+
+| Program | M5, ms (interpreter → JIT) | M5 | i7, GCC | Ryzen, Clang |
+|---|---|---|---|---|
+| bench/fib | 51 → 25 | −52% | −60% | −51% |
+| bench/loop | 86 → 19 | −78% | −54% | −60% |
+| bench/nbody | 99 → 100 | +1% | 0% | 0% |
+| bench/sieve | 622 → 621 | 0% | 0% | −1% |
+| bench/closures | 99 → 42 | −58% | −52% | −52% |
+| bench/maps | 60 → 61 | +1% | −1% | +1% |
+| bench/binarytrees | 94 → 69 | −26% | −26% | −19% |
+| Erlang fib | 36 → 16 | −57% | −58% | −60% |
+| Erlang ring | 259 → 263 | +2% | +4% | +6% |
+| Erlang binarytrees | 652 → 319 | −51% | −50% | −49% |
+| Erlang nbody | 1297 → 1214 | −6% | −3% | +1% |
+| Erlang sorting | 754 → 468 | −38% | −34% | −32% |
+| Lua fib | 52 → 25 | −52% | −59% | −53% |
+| Lua loop | 191 → 63 | −67% | −72% | −78% |
+| Lua methods | 572 → 383 | −33% | −22% | −28% |
+| Lua strings | 356 → 341 | −4% | 0% | −2% |
+| Lua iterate | 85 → 36 | −57% | −59% | −60% |
+| Lua binarytrees | 573 → 363 | −37% | −33% | −37% |
+| Lua nbody | 994 → 509 | −49% | −26% | −39% |
+| Lua spectralnorm | 226 → 97 | −57% | −64% | −64% |
+| Lua fannkuch | 1985 → 741 | −63% | −51% | −67% |
+| Lox binary_trees | 1861 → 1616 | −13% | −8% | −3% |
+| Lox equality | 661 → 663 | 0% | 0% | +1% |
+| Lox fib | 297 → 172 | −42% | −60% | −56% |
+| Lox instantiation | 377 → 377 | 0% | 0% | 0% |
+| Lox invocation | 256 → 208 | −19% | +1% | +1% |
+| Lox method_call | 161 → 144 | −10% | −9% | −3% |
+| Lox properties | 381 → 309 | −19% | −1% | +5% |
+| Lox string_equality | 7.0 → 7.0 | 0% | 0% | −2% |
+| Lox trees | 1842 → 1330 | −28% | −30% | −19% |
+| Lox zoo | 305 → 240 | −22% | −14% | +6% |
+
+Calls and loops gain the most: the machine code has no dispatch, keeps a
+block's registers in machine registers, and a loop's across iterations, and
+pairs its calls and returns for the CPU's return predictor. Field, element
+and capture access gain less, since each still checks its object's type and
+bounds, as the interpreter does.
+
+Where the time is not the interpreter's, the JIT has nothing to remove:
+`bench/nbody` computes on elements in place (operands the interpreter has no
+fast form for, so the JIT does not enter it), `sieve` works in raw memory,
+`maps`, Lua's `strings` and Lox's `equality` are natives, and Erlang's
+`ring` is messages and the scheduler. Compiled Erlang's `nbody` keeps
+values in stack slots (`FP[-3]`) in its largest function, which the JIT
+runs by their handlers. Running an instruction that way costs about as much
+as 20 interpreted ones, so on x86-64 a few programs that do it a lot
+(Erlang's `ring`, compiled Lox's `properties` and `zoo` on the Ryzen) are
+up to 6% slower. x86-64 also has fewer registers to keep a block's values
+in (5 for integers, against 16 on arm64), which is most of why the Lox and
+Lua programs gain less there.
 
 ## How the interpreter is made fast
 
