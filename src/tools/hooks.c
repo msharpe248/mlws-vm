@@ -153,6 +153,8 @@ static void trace_insn(Tools *t, Process *p, Function *f, uint32_t pc) {
     sb_free(&b);
 }
 
+#define PROF_STACK_MAX 128 /* frames in a flame stack */
+
 static void profile_insn(Tools *t, Process *p, Function *f, uint32_t pc) {
     const Insn *in = &f->code[pc];
     t->op_counts[in->op]++;
@@ -165,10 +167,14 @@ static void profile_insn(Tools *t, Process *p, Function *f, uint32_t pc) {
     if (++t->sample_tick < t->sample_every) return;
     t->sample_tick = 0;
     t->samples++;
+    /* The innermost frames only: in a deep recursion, a whole stack would make
+     * each sample's key as long as the stack, and almost every one new. */
     StrBuf b = {0};
-    for (uint32_t i = 0; i < p->nframes; i++) {
+    uint32_t from = p->nframes > PROF_STACK_MAX ? p->nframes - PROF_STACK_MAX : 0;
+    if (from) sb_puts(&b, "[deeper frames]");
+    for (uint32_t i = from; i < p->nframes; i++) {
         const Function *fi = p->frames[i].fn;
-        if (i) sb_putc(&b, ';');
+        if (i || from) sb_putc(&b, ';');
         fn_qualname(&b, fi);
     }
     void *v;

@@ -13,7 +13,14 @@ FLAME=$(mktemp)
 REPORT=$($BIN run --profile --flame "$FLAME" examples/fib.masm 2>&1)  # (no early-exit pipe: let it finish)
 echo "$REPORT" | grep -q "fib.fib" || fail "profile report"
 grep -q "fib.main;fib.fib" "$FLAME" || fail "flame stacks"
-rm -f "$FLAME"
+# A recursion 100,000 deep: each stack keeps its innermost 128 frames, under
+# one for the rest, so the samples there share one short key.
+DEEP=$(mktemp)
+printf '.func down(i64 n) -> i64\n    bz n, 1f\n    dec n\n    call down (n) -> (n)\n1:  ret n\n.endf\n.func main\n    call down (100000) -> (I0)\n    ret 0\n.endf\n' > "$DEEP.masm"
+$BIN run --profile --flame "$FLAME" --max-frames 200000 "$DEEP.masm" >/dev/null 2>&1 || fail "deep recursion profile"
+grep -q '^\[deeper frames\];.*down;.*down [0-9]*$' "$FLAME" || fail "flame: deep stacks not cut"
+[ "$(awk '{ if (length($0) > m) m = length($0) } END { print m }' "$FLAME")" -lt 4000 ] || fail "flame: a stack longer than 128 frames"
+rm -f "$FLAME" "$DEEP" "$DEEP.masm"
 
 # .loc: the profile's program lines, and `dis` printing the runs back
 REPORT=$($BIN run --profile tests/asm/loc.masm 2>&1)

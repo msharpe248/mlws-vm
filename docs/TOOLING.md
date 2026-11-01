@@ -208,7 +208,8 @@ hottest instructions on the general path:
   [TARGETING.md §12](TARGETING.md#12-what-runs-fastest).
 * `--flame FILE` also writes sampled call stacks (one sample every 997
   instructions) in the *collapsed* format, `main;f;g 123`, which
-  `flamegraph.pl` and speedscope read directly.
+  `flamegraph.pl` and speedscope read directly. A stack keeps its innermost
+  128 frames, under one frame named `[deeper frames]` for the rest.
 
 Counts are exact, not sampled; only the flame stacks are sampled.
 
