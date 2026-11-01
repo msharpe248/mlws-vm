@@ -15,6 +15,9 @@
 ;     a string and null; ldv of i64, f64 and never-written elements;
 ;   * a tuple's tag test at an element index past 4095 (larger than an arm64
 ;     load's 12-bit offset);
+;   * constants stored to list and array elements, by a register, a register
+;     plus an offset and a constant index, and to globals, read back; one
+;     past a list's end (a side exit that traps);
 ;   * bytes of a string and a byte buffer, by a register, a register plus an
 ;     offset and a constant index, as i64 and u64 (unsigned), and one past a
 ;     byte buffer's end;
@@ -35,6 +38,7 @@
 ; expect-jit: compiled tag 3
 ; expect-jit: compiled trapped 14
 ; expect-jit: compiled bytes 20
+; expect-jit: compiled consts 23
 ; expect-stdout: walk 46 136 2 87
 ; expect-stdout: globals 4950 25.5 1
 ; expect-stdout: build 200 100 7
@@ -43,6 +47,7 @@
 ; expect-stdout: types 1104017
 ; expect-stdout: numbers 32 5
 ; expect-stdout: tag 1 0
+; expect-stdout: consts E_BOUNDS 25 1.75 11 1
 ; expect-stdout: bytes E_BOUNDS 1685 104 456
 ; expect-stdout: trapped E_TYPE 33 E_BOUNDS 33 E_NULL 33 E_TYPE 33 E_TYPE 33
 .include "std/io.inc"
@@ -208,6 +213,39 @@ gr:     .i64 0
 1:  ret 1, 0
 .endf
 
+; Constants stored to l's elements (it retags them), to a's and to globals,
+; summed back, then one past l's end.
+.func consts(ref l, ref a, i64 n) -> (i64, f64, i64, i64, ref)
+    mov I1, 0
+    mov I2, 0
+1:  mov.i64 l[I2], 3                    ; by a register
+    mov.f64 l[I2+1], 0.5                ; plus an offset
+    mov I3, l[I2]
+    add I1, I3
+    mov.i64 a[I2], 2
+    mov I3, a[I2]
+    add I1, I3
+    add I2, 2
+    blt I2, n, 1b
+    mov.r l[0], null                    ; by a constant index
+    mov.i64 @gi, 11                     ; globals
+    mov.f64 @gf, 1.25
+    mov.r @gr, "g"
+    mov F1, l[1]
+    mov I4, @gi
+    add.f64 F1, @gf
+    mov R1, @gr
+    len I5, R1
+    mov R2, l[0]
+    bnz R2, 2f
+.try 3f
+    mov.i64 l[I2], 0                    ; past the end
+.endtry
+2:  ret I1, F1, I4, I5, null
+3:  catch R31
+    ret I1, F1, I4, I5, R31->Error.code
+.endf
+
 ; Bytes of a string and a byte buffer: the sum of s's bytes and of each with
 ; the next, s's first byte, the sum of b's bytes, then a read past b's end (a
 ; side exit that traps).
@@ -320,6 +358,18 @@ gr:     .i64 0
     mov R8[4500], "x"
     call tag (R8) -> (I0, I1)
     PRINTLN "tag", I0, I1
+    lnew R12
+    anew.i64 R13, 10
+    mov I0, 0
+3:  lpush R12, 0
+    inc I0
+    blt I0, 10, 3b
+    call consts (R12, R13, 10) -> (I0, F0, I1, I2, R14)
+    PRINT_S "consts"
+    call show (R14, I0)
+    PRINT_S " "
+    PRINT_F F0
+    PRINTLN "", I1, I2
     bufnew R10, 0
     bufpush R10, 1, 200, 255
     call bytes ("hi\xC8there", R10) -> (I0, I1, I2, R11)

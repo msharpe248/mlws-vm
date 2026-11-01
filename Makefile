@@ -27,6 +27,10 @@
 CC      ?= cc
 CFLAGS  ?= -O2 -g
 WARN    := -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wno-unused-parameter
+# Every function starts on a 64-byte boundary, so that a change to one handler
+# does not move the others across cache lines: without it, unrelated programs
+# take up to 5% more or less time from one build to the next.
+ALIGN   := -falign-functions=64
 BUILD   ?= build
 BIN     ?= mlwsvm
 
@@ -72,7 +76,7 @@ $(BIN): $(OBJ)
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(WARN) $(CFLAGS) -fPIC $(FFI_CFLAGS) -MMD -MP -c $< -o $@
+	$(CC) $(WARN) $(ALIGN) $(CFLAGS) -fPIC $(FFI_CFLAGS) -MMD -MP -c $< -o $@
 
 # The web dashboard is compiled into the binary (served by --monitor).
 $(BUILD)/embed: build-tools/embed.c

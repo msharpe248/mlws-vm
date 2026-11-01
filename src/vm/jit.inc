@@ -425,6 +425,7 @@ static bool jit_handles(uint16_t x) {
     case Q_ISA: case Q_LDV_E: case Q_LDV_ED: case Q_LDV_EK:
     case Q_SQRT_F: case Q_SQRT_FF: case Q_NEG_F: case Q_NEG_FF: case Q_ABS_F: case Q_ABS_FF:
     case Q_LDU_I: case Q_LDU_F: case Q_LDU_R: case Q_STU_I: case Q_STU_F: case Q_STU_R: case Q_STFK:
+    case Q_STEC: case Q_STECK: case Q_STGK:
     case Q_SEQ_RR: case Q_SNE_RR: case Q_SEQ_RK: case Q_SNE_RK: case Q_MGET_R:
 #define X(N, o) case Q_##N##_FF: case Q_##N##_FK:
         QSET_OPS(X)
@@ -1160,6 +1161,20 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         jm_st(b, JR_S1, JR_S0, off);
         return;
     }
+    case Q_STEC: case Q_STECK: { /* a constant to an element: its word in ops[1].kw */
+        int ix;
+        if (x == Q_STECK) jm_movi(b, JR_S3, in->target), ix = JR_S3;
+        else ix = jit_index(j, in, true);
+        jm_movi(b, JR_S4, in->ops[1].kw);
+        jld_r(j, JR_S0, in->r[0]);
+        jit_elem(j, in, pc, ix, true, 0, JR_S4);
+        return;
+    }
+    case Q_STGK: /* a constant to a global */
+        jit_global(j, in, pc, 0, in->type);
+        jm_movi(b, JR_S1, in->ops[1].kw);
+        jm_stx(b, JR_S1, JR_S0, JR_S3);
+        return;
     case Q_NEW: case Q_LNEW: /* these may trap (a quota), so the frame's pc and the count are up to date */
         jc_flush(j);
         jm_movi(b, JR_S0, pc + 1);

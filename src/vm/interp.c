@@ -1060,6 +1060,10 @@ enum {
     /* The JIT's (jit.inc): the first instruction of a block of machine code
      * worth entering; a count towards compiling the function. Each keeps the
      * instruction's own form in Function.jit_xop. */
+    /* M44: a constant stored to an element by a register (plus a constant,
+     * in k) and by a constant index (in target), and to a global; the
+     * constant's word in ops[1].kw. */
+    Q_STEC, Q_STECK, Q_STGK,
     Q_JIT, Q_JITC,
     Q__COUNT
 };
@@ -1210,17 +1214,36 @@ static int quicken_ubranch(int op) {
     }
 }
 
-/* mov of a constant to a 64-bit struct field: Q_STFK, with the constant as the
- * word it stores in Operand.kw. */
-static void quicken_field_const(Insn *in, MlwsType t) {
+/* mov of a constant to a 64-bit struct field (Q_STFK), an element (Q_STEC by
+ * a register plus a constant, Q_STECK by a constant index) or a global
+ * (Q_STGK), with the constant as the word it stores in Operand.kw. */
+static void quicken_store_const(Insn *in, MlwsType t) {
     Operand *o = in->ops;
     Word w = {0};
-    if (o[0].mode != OM_FIELD || o[1].mode == OM_REG || !const_word(&o[1], t, &w)) return;
-    const FieldRef *f = o[0].rv.ptr;
-    if (f->def->types[f->index] != t) return;
-    in->xop = Q_STFK;
-    in->k.p = f->def;
-    in->target = f->index;
+    if (o[1].mode == OM_REG) return;
+    if (o[0].mode == OM_FIELD) {
+        const FieldRef *f = o[0].rv.ptr;
+        if (f->def->types[f->index] != t || !const_word(&o[1], t, &w)) return;
+        in->xop = Q_STFK;
+        in->k.p = f->def;
+        in->target = f->index;
+    } else if (o[0].mode == OM_ELEM) {
+        if (!const_word(&o[1], t, &w)) return;
+        in->xop = Q_STEC;
+        in->r[2] = (uint8_t)REG_IDX(o[0].ireg);
+        in->k.i = o[0].imm;
+    } else if (o[0].mode == OM_ELEMI && o[0].index <= UINT32_MAX) {
+        if (!const_word(&o[1], t, &w)) return;
+        in->xop = Q_STECK;
+        in->target = (uint32_t)o[0].index;
+    } else if (o[0].mode == OM_GLOBAL || o[0].mode == OM_GLOBALB) {
+        if (!const_word(&o[1], t, &w) || !quicken_global(in, &o[0])) return;
+        in->xop = Q_STGK;
+        memcpy(&o[1].kw, &w, 8);
+        return; /* no object register */
+    } else {
+        return;
+    }
     in->r[0] = (uint8_t)REG_IDX(o[0].reg);
     memcpy(&o[1].kw, &w, 8);
 }
@@ -1614,7 +1637,7 @@ void interp_quicken(Insn *in) {
             }
         }
     /* after the compact copy, which would take the constant for k */
-    if (in->xop == OP_MOV && n == 2 && t != T_P && wide_type(t)) quicken_field_const(in, t);
+    if (in->xop == OP_MOV && n == 2 && t != T_P && wide_type(t)) quicken_store_const(in, t);
     if (in->op == OP_BITCAST && (in->xop == Q_MOV_FK || in->xop == Q_MOV_IK)) { /* a literal's bits */
         Word v = {0};
         if (o[1].mode == OM_IMM) v.i = o[1].imm;
@@ -1759,6 +1782,24 @@ static MLWS_NOINLINE bool call_rk(Process *p, const Insn *in) {
 #define MLWS_THREADED 0
 #endif
 
+/* A byte of a string or byte buffer, for the element load forms: false for
+ * any other object, or an index out of range, which the generic mov handles. */
+static inline bool elem_byte(const Obj *ob, uint64_t i, int64_t *v) {
+    if (ob->kind == OBJ_STRING) {
+        const ObjString *s = (const ObjString *)ob;
+        if (i >= s->len) return false;
+        *v = (uint8_t)s->data[i];
+        return true;
+    }
+    if (ob->kind == OBJ_BYTES) {
+        const ObjBytes *y = (const ObjBytes *)ob;
+        if (i >= y->len) return false;
+        *v = y->data[i];
+        return true;
+    }
+    return false;
+}
+
 #if MLWS_TAILCALL
 /* ---- tail-call dispatch ---------------------------------------------------------
  * Every quickened form is a function of its own (h_Q_*, from qforms.inc) that
@@ -1813,24 +1854,6 @@ static MLWS_NOINLINE bool call_rk(Process *p, const Insn *in) {
 #endif
 #define QARGS QARGSN(in)
 typedef QCC int (*QHandler)(QPARAMS);
-/* A byte of a string or byte buffer, for the element load forms (out of line,
- * so that the list and array paths stay as they are): false for any other
- * object, or an index out of range, which the generic mov handles. */
-static MLWS_NOINLINE bool elem_byte(const Obj *ob, uint64_t i, int64_t *v) {
-    if (ob->kind == OBJ_STRING) {
-        const ObjString *s = (const ObjString *)ob;
-        if (i >= s->len) return false;
-        *v = (uint8_t)s->data[i];
-        return true;
-    }
-    if (ob->kind == OBJ_BYTES) {
-        const ObjBytes *y = (const ObjBytes *)ob;
-        if (i >= y->len) return false;
-        *v = y->data[i];
-        return true;
-    }
-    return false;
-}
 static const QHandler qhandlers[Q__COUNT];
 static QCC int h_generic(QPARAMS);
 static QCC int h_slice(QPARAMS);
@@ -1869,6 +1892,20 @@ static QCC int h_slice(QPARAMS);
         left--;                                                                \
         MUSTTAIL return qhandlers[nx->xop](QARGSN(nx));                        \
     } while (0)
+/* The element loads' bytes of strings and byte buffers, as handlers of their
+ * own that the loads go on to (a call from the loads' handlers would make them
+ * save registers on every element), one per way of indexing. */
+#define X(N, i_)                                                               \
+    static QCC int h_elem_byte_##N(QPARAMS) {                                  \
+        QLOCALS                                                                \
+        if (!elem_byte(QR[in->r[1]], (i_), &QI[in->r[0]])) GENERIC();          \
+        NEXT;                                                                  \
+    }
+X(E, (uint64_t)QI[in->r[2]])
+X(ED, (uint64_t)QI[in->r[2]] + (uint64_t)in->k.i)
+X(EK, (uint64_t)in->target)
+#undef X
+#define ELEM_BYTE_LOAD(N, ob, i) MUSTTAIL return h_elem_byte_##N(QARGS);
 /* Each QCASE ends the previous handler's function and starts the next: the
  * first one ends this placeholder, and the brace after the include the last. */
 #define QCASE(x)                                                               \
@@ -2100,6 +2137,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 #define QPRC p
 #define QFRM fr
 #define GENERIC() goto generic
+#define ELEM_BYTE_LOAD(N, ob, i) if (!elem_byte(ob, i, &QI[in->r[0]])) GENERIC();
 #define JUMP() (pc = in->target)
 #define JUMPTO(t) (pc = (t))
 #define IR(k) QI[in->r[k]]

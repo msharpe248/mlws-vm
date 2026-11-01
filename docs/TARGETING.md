@@ -536,7 +536,8 @@ them by emitting these shapes; nothing else changes.
   the shape of a tuple's tag test).
 * **Globals and closure captures moved to or from a register** of the
   matching bank, for 64-bit types: `mov I0, @count`, `mov @count, I0`,
-  `mov.r R0, @cache`, `mov F0, UP[1]`, `mov UP[0], I1`. A store sets the
+  `mov.r R0, @cache`, `mov F0, UP[1]`, `mov UP[0], I1`, and a constant stored
+  to a global (`mov.r @cache, null`, `mov.i64 @count, 0`). A store sets the
   word's or capture's type; a read of another type takes the general path.
 * **Fields and elements moved to or from a register:** `mov I0, R1->Point.x`,
   `mov R1->Point.x, I0`, `mov F0, R1[I2]`, `mov R1[I2], F0`, `mov I0, R1[3]`,
@@ -544,7 +545,8 @@ them by emitting these shapes; nothing else changes.
   64-bit fields, and `i64`/`f64`/`r` arrays and list elements indexed by a
   register or a constant; a byte of a string or byte buffer loaded into an
   `I` register (`mov I0, R1[I2]`, `i64` or `u64`); constants stored to fields
-  (`mov.i64 R0->Point.x, 0`, `mov.r R0->Node.next, null`); and `ldv I0, F0, R1[I2]`
+  (`mov.i64 R0->Point.x, 0`, `mov.r R0->Node.next, null`) and to elements
+  (`mov.f64 R1[I2], 0.0`, `mov.r R1[I2+1], null`, `mov.i64 R1[0], 1`); and `ldv I0, F0, R1[I2]`
   (or `R1[I2+1]`, `R1[3]`) of an `i64` or `f64` list or array element. Arithmetic
   directly on a field or element works, but takes the general path. Loading
   into registers, computing there and storing back is much faster in a loop:

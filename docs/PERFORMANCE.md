@@ -381,6 +381,12 @@ it measured faster.
    slice counter after a generic instruction instead of keeping it live, and on
    x86 has the generic forms re-read their instruction and frame.
 
+10. **Functions aligned to 64 bytes** (`-falign-functions=64`). Each handler
+   is a function of its own, and without alignment a change to one moves the
+   others across cache lines: unrelated programs took up to 5% more or less
+   time from one build to the next, most on the Ryzen. Aligned, they stay
+   within about 2%, and some run up to 10% faster.
+
 `tests/perf/quickened.masm` checks the arithmetic, branch and call forms
 against the generic semantics at the edges: overflow, negative divisors,
 unsigned compares, `INT64_MIN / -1`, mixed-bank calls, and results written to

@@ -147,10 +147,10 @@
  * tagged with it (a store retags a list element), at index i; into an I
  * register (the instruction's type is i64 or u64), also a byte of a string or
  * byte buffer. */
-#define ELEM_BYTE_I(ob, i) if (!elem_byte(ob, i, &QI[in->r[0]])) GENERIC();
-#define ELEM_BYTE_F(ob, i) GENERIC();
-#define ELEM_BYTE_R(ob, i) GENERIC();
-#define ELEM_LOAD(bank, w, i_)                                                \
+#define ELEM_BYTE_I(N, ob, i) ELEM_BYTE_LOAD(N, ob, i)
+#define ELEM_BYTE_F(N, ob, i) GENERIC();
+#define ELEM_BYTE_R(N, ob, i) GENERIC();
+#define ELEM_LOAD(N, bank, w, i_)                                             \
         {                                                                     \
             Obj *ob = QR[in->r[1]];                                          \
             uint64_t i = (i_);                                                \
@@ -164,7 +164,7 @@
                 if (i >= l->len || l->tags[i] != in->type) GENERIC();      \
                 QB(bank)[in->r[0]] = l->items[i].w;                             \
             } else {                                                          \
-                ELEM_BYTE_##bank(ob, i)                                       \
+                ELEM_BYTE_##bank(N, ob, i)                                    \
             }                                                                 \
             NEXT;                                                             \
         }
@@ -200,11 +200,11 @@
             so->fields[in->target].w = QB(bank)[in->r[1]];                      \
             NEXT;                                                             \
         }                                                                     \
-        QCASE(Q_LDE_##B) ELEM_LOAD(bank, w, (uint64_t)QI[in->r[2]])            \
+        QCASE(Q_LDE_##B) ELEM_LOAD(E, bank, w, (uint64_t)QI[in->r[2]])            \
         QCASE(Q_STE_##B) ELEM_STORE(bank, w, (uint64_t)QI[in->r[2]])           \
-        QCASE(Q_LDED_##B) ELEM_LOAD(bank, w, (uint64_t)QI[in->r[2]] + (uint64_t)in->k.i) \
+        QCASE(Q_LDED_##B) ELEM_LOAD(ED, bank, w, (uint64_t)QI[in->r[2]] + (uint64_t)in->k.i) \
         QCASE(Q_STED_##B) ELEM_STORE(bank, w, (uint64_t)QI[in->r[2]] + (uint64_t)in->k.i) \
-        QCASE(Q_LDEK_##B) ELEM_LOAD(bank, w, (uint64_t)in->target)              \
+        QCASE(Q_LDEK_##B) ELEM_LOAD(EK, bank, w, (uint64_t)in->target)              \
         QCASE(Q_STEK_##B) ELEM_STORE(bank, w, (uint64_t)in->target)             \
         QCASE(Q_LDU_##B) {                                                    \
             const ObjClosure *cl = (const ObjClosure *)QFRM->closure;          \
@@ -245,6 +245,39 @@
             ObjStruct *so = STRUCT_OF(in->r[0]);
             if (!IS_STRUCT(so)) GENERIC();
             memcpy(&so->fields[in->target], &in->ops[1].kw, 8);
+            NEXT;
+        }
+/* mov R0[i], constant: an array element of exactly the instruction's type, or
+ * a list element, which takes the type's tag; the word in Operand.kw. */
+#define ELEM_STORE_K(i_)                                                      \
+        {                                                                     \
+            Obj *ob = QR[in->r[0]];                                          \
+            uint64_t i = (i_);                                                \
+            if (!ob) GENERIC();                                               \
+            if (ob->kind == OBJ_LIST) {                                       \
+                ObjList *l = (ObjList *)ob;                                   \
+                if (i >= l->len) GENERIC();                                   \
+                l->tags[i] = in->type;                                        \
+                memcpy(&l->items[i], &in->ops[1].kw, 8);                      \
+            } else if (ob->kind == OBJ_ARRAY) {                               \
+                ObjArray *a = (ObjArray *)ob;                                 \
+                if (i >= a->len || a->elem != in->type) GENERIC();            \
+                memcpy(&a->data[i], &in->ops[1].kw, 8);                       \
+            } else {                                                          \
+                GENERIC();                                                    \
+            }                                                                 \
+            NEXT;                                                             \
+        }
+        QCASE(Q_STEC) ELEM_STORE_K((uint64_t)QI[in->r[2]] + (uint64_t)in->k.i)
+        QCASE(Q_STECK) ELEM_STORE_K((uint64_t)in->target)
+#undef ELEM_STORE_K
+        QCASE(Q_STGK) { /* mov @g, constant */
+            uint32_t g = (uint32_t)((uint64_t)in->k.i >> 32), off = (uint32_t)in->k.i;
+            if (g >= QPRC->nglobals) GENERIC();
+            Segment *s = &QPRC->globals[g];
+            if (off + 8 > s->size) GENERIC();
+            memcpy(s->data + off, &in->ops[1].kw, 8);
+            s->tags[off >> 3] = in->type;
             NEXT;
         }
 #undef ELEM_LOAD

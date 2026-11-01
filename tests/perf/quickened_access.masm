@@ -1,9 +1,9 @@
 ; The quickened forms for 64-bit globals, elements at a constant index and
 ; closure captures (Q_LDG_I, Q_LDEK_I, Q_LDU_I and the rest in src/vm/interp.c),
-; and for len, must behave exactly like the generic mov and len: they take only
-; a word or slot of the instruction's own type (a store sets it) and hand the
-; rest to the generic instruction, which converts, retags or raises the usual
-; error.
+; constants stored to globals and elements (Q_STGK, Q_STEC, Q_STECK), and for
+; len, must behave exactly like the generic mov and len: they take only a word
+; or slot of the instruction's own type (a store sets it) and hand the rest to
+; the generic instruction, which converts, retags or raises the usual error.
 ; expect-stdout: flushed
 .include "std/test.inc"
 .include "std/io.inc"
@@ -91,6 +91,70 @@ gnone:  .zero 8
     mov F3, @gf                          ; read back as f64 (no conversion)
     bitcast.i64.f64 I4, F3
     ASSERT_EQ I4, 42
+
+    ; ---- constants stored to globals ----
+    mov.i64 @gi, 7                       ; Q_STGK
+    mov I20, @gi
+    ASSERT_EQ I20, 7
+    mov @gi, 9                           ; an untyped constant: i64
+    mov I20, @gi
+    ASSERT_EQ I20, 9
+    mov.f64 @gf, 2.5
+    mov F20, @gf
+    ASSERT_EQ F20, 2.5, f64
+    mov.r @gr, "s"                       ; the word is now a reference
+    mov R20, @gr
+    len I20, R20
+    ASSERT_EQ I20, 1
+    EXPECT_ERROR "E_TYPE", mov I20, @gr
+    mov.r @gr, null
+    mov R20, @gr
+    ASSERT_FALSE R20, r
+    mov.i64 @gr, 3                       ; retagged as an integer
+    mov I20, @gr
+    ASSERT_EQ I20, 3
+
+    ; ---- constants stored to elements ----
+    lnew R20
+    lpush R20, 1, 2, 3
+    mov I21, 1
+    mov.f64 R20[I21], 0.5                ; Q_STEC: retags the list element
+    mov F21, R20[I21]
+    ASSERT_EQ F21, 0.5, f64
+    EXPECT_ERROR "E_TYPE", mov I22, R20[I21]
+    mov.r R20[I21+1], null               ; a register plus an offset
+    mov R21, R20[2]
+    ASSERT_FALSE R21, r
+    mov.r R20[0], "x"                    ; Q_STECK
+    mov R21, R20[0]
+    len I22, R21
+    ASSERT_EQ I22, 1
+    mov R20[I21-1], 42                   ; an untyped constant: i64
+    mov I22, R20[0]
+    ASSERT_EQ I22, 42
+    EXPECT_ERROR "E_BOUNDS", mov.i64 R20[I21+5], 0
+    EXPECT_ERROR "E_BOUNDS", mov.i64 R20[3], 0
+    mov I21, -1
+    EXPECT_ERROR "E_BOUNDS", mov.i64 R20[I21], 0
+    anew.i64 R21, 2
+    mov.i64 R21[1], 6                    ; an array of the constant's type
+    mov I22, R21[1]
+    ASSERT_EQ I22, 6
+    EXPECT_ERROR "E_TYPE", mov.f64 R21[0], 1.5
+    anew.i32 R22, 2
+    mov.i64 R22[1], 0x100000005          ; another integer type: converted
+    mov.i32 I22, R22[1]
+    ASSERT_EQ I22, 5
+    mov R23, null
+    EXPECT_ERROR "E_NULL", mov.i64 R23[0], 1
+    new R23, T
+    EXPECT_ERROR "E_TYPE", mov.i64 R23[0], 1
+    mov R23, "abc"
+    EXPECT_ERROR "E_TYPE", mov.i64 R23[0], 65 ; strings are immutable
+    bufnew R23, 2
+    mov.i64 R23[1], 65                   ; a byte buffer's byte
+    mov I22, R23[1]
+    ASSERT_EQ I22, 65
 
     ; ---- elements at a constant index ----
     lnew R2
