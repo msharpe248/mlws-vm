@@ -8,7 +8,8 @@
  * instruction and each loop's head have the execution opcode Q_JITC, which
  * counts (Function.jit_count) and runs the instruction's own form
  * (Function.jit_xop); the count reaching --jit-hot compiles it. With --jit
- * all, every function is compiled as it is loaded.
+ * all, every function is compiled as it is loaded, and the machine code is
+ * entered at every block, not only where it pays: a test of all of it.
  *
  * Blocks. A function's compiled instructions fall into basic blocks: one
  * starts at the first instruction, at a compiled branch's target, and after a
@@ -1522,7 +1523,7 @@ static void jit_compile(VM *vm, Function *f) {
                 __atomic_store_n(&f->code[pc].target, (uint32_t)(at + cont[pc] - jt->mem), __ATOMIC_RELEASE);
             if (!lead[pc]) continue;
             ent[pc] = at + body[pc]; /* for calls from machine code */
-            enter[pc] = jit_worth_entering(f, xop, pc, mark, stack);
+            enter[pc] = vm->jit_mode == JIT_MODE_ALL || jit_worth_entering(f, xop, pc, mark, stack); /* (all: a test of every block) */
         }
         f->jit_xop = xop;
         f->jit_native = nnat;
@@ -1603,7 +1604,12 @@ static QCC int h_Q_JITC(QPARAMS) {
 }
 
 /* The interpreter reached a block's first instruction: run the machine code
- * from there, then go on with the instruction it stopped at, as NEXT would. */
+ * from there, then go on with the instruction it stopped at, as NEXT would.
+ * (Not checked by clang's -fsanitize=function, which looks for a signature
+ * before the function it calls: machine code has none.) */
+#if defined(__clang__)
+__attribute__((no_sanitize("function")))
+#endif
 static QCC int h_Q_JIT(QPARAMS) {
     uint32_t pc = (uint32_t)(in - QCODE);
     const Function *fn = QFRAME->fn;

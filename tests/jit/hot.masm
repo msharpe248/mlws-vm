@@ -1,0 +1,53 @@
+; With --jit on, a function is compiled once hot (src/vm/jit.inc): when its
+; first instruction and the heads of its loops have together run --jit-hot
+; times. Here, with --jit-hot 10:
+;   * warm, called 10 times, is compiled at its tenth call;
+;   * cold, called 9 times, is not;
+;   * looped, called once, is compiled during its loop, and the rest of the
+;     loop runs in the machine code (the frame and registers are the
+;     interpreter's, so it goes on where it was);
+; and every result is the interpreter's.
+; option: --jit on
+; option: --jit-hot 10
+; expect-jit: compiled warm 2
+; expect-jit: compiled cold 0
+; expect-jit: compiled looped 6
+; expect-stdout: hot 55 45 499500
+.include "std/io.inc"
+
+.func warm(i64 a) -> i64
+    add I1, a, 1
+    ret I1
+.endf
+
+.func cold(i64 a) -> i64
+    add I1, a, 1
+    ret I1
+.endf
+
+.func looped(i64 n) -> i64
+    mov I1, 0
+    mov I2, 0
+1:  add I1, I2
+    inc I2
+    blt I2, n, 1b
+    ret I1
+.endf
+
+.func main
+    mov I0, 0
+    mov I1, 0
+1:  call warm (I1) -> (I2)
+    add I0, I2
+    inc I1
+    blt I1, 10, 1b
+    mov I3, 0
+    mov I1, 0
+2:  call cold (I1) -> (I2)
+    add I3, I2
+    inc I1
+    blt I1, 9, 2b
+    call looped (1000) -> (I4)
+    PRINTLN "hot", I0, I3, I4
+    ret 0
+.endf

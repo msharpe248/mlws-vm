@@ -1,0 +1,223 @@
+; Calls, returns and tail calls between machine code (src/vm/jit.inc), and
+; between machine code and the interpreter, must behave exactly as the
+; interpreter's: main prints what each case returns, and the expected lines
+; are the interpreter's. Covered:
+;   * recursion 90,000 deep: the stacks grow (a call stops for the
+;     interpreter, which grows them), and on x86-64 the machine stack's
+;     limit hands deep calls to the interpreter;
+;   * mutual recursion; constants as arguments; several results;
+;   * tail calls to the function itself, to another function, and to one
+;     with a larger register window, a million long (no frames pile up);
+;   * closure calls and closure tail calls, with captures; a closure call of
+;     something that is not a closure (the interpreter's error);
+;   * a call the interpreter makes (its argument is a field) to machine code,
+;     whose return goes back to the interpreter;
+;   * a throw and a trap three frames down, caught by the caller of those
+;     frames: frames that machine code pushed are unwound, and the machine
+;     code goes on after the catch;
+;   * a generator coroutine whose body runs in machine code between yields.
+; With --jit all the machine code is entered at every block.
+; option: --jit all
+; expect-jit: compiled sum 6
+; expect-jit: compiled even 5
+; expect-jit: compiled spin 5
+; expect-jit: compiled ping 4
+; expect-jit: compiled pong 2
+; expect-jit: compiled widen 6
+; expect-jit: compiled adder 6
+; expect-jit: compiled twice 2
+; expect-jit: compiled down 8
+; expect-jit: compiled gen 5
+; expect-stdout: sum 4050045000
+; expect-stdout: parity 1 0
+; expect-stdout: three 7 -7 49
+; expect-stdout: tails 1000000 1000000 500000500000
+; expect-stdout: closures 12 115 1 E_TYPE
+; expect-stdout: field 903
+; expect-stdout: unwind thrown 12 E_DIV_ZERO 12
+; expect-stdout: generator 4950 100
+.include "std/io.inc"
+
+.struct Box
+    n: i64
+.ends
+
+; n + (n-1) + ... + 1, not a tail call: n frames deep.
+.func sum(i64 n) -> i64
+    bz n, 1f
+    sub I1, n, 1
+    call sum (I1) -> (I2)
+    add I2, n
+    ret I2
+1:  ret 0
+.endf
+
+.func even(i64 n) -> i64
+    bz n, 1f
+    sub I1, n, 1
+    call odd (I1) -> (I2)
+    ret I2
+1:  ret 1
+.endf
+
+.func odd(i64 n) -> i64
+    bz n, 1f
+    sub I1, n, 1
+    call even (I1) -> (I2)
+    ret I2
+1:  ret 0
+.endf
+
+.func three(i64 a, i64 b) -> (i64, i64, i64)
+    sub I2, b, a
+    mul I3, a, a
+    ret a, I2, I3
+.endf
+
+; Counts n down by tail calls to itself.
+.func spin(i64 n, i64 acc) -> i64
+    bz n, 1f
+    sub I2, n, 1
+    add I3, acc, 1
+    tcall spin (I2, I3)
+1:  ret acc
+.endf
+
+; Tail calls back and forth, adding n to acc each time.
+.func ping(i64 n, i64 acc) -> i64
+    bz n, 1f
+    add I2, acc, n
+    tcall pong (n, I2)
+1:  ret acc
+.endf
+
+.func pong(i64 n, i64 acc) -> i64
+    sub I2, n, 1
+    tcall ping (I2, acc)
+.endf
+
+; A tail call to a function with a far larger window than this one's.
+.func narrow(i64 n) -> i64
+    tcall widen (n, 7)
+.endf
+
+.func widen(i64 n, i64 k) -> i64
+    mov I30, n
+    mov F30, 1.5
+    mov R30, "wide"
+    add I29, I30, k
+    sub I29, 7
+    ret I29
+.endf
+
+; A closure: adds its capture (UP[0]) and counts its calls in UP[1].
+.func adder(i64 x) -> i64
+    mov I1, UP[0]
+    add I1, x
+    mov I2, UP[1]
+    inc I2
+    mov UP[1], I2
+    ret I1
+.endf
+
+; Calls f, then tail-calls it: f(f(x)).
+.func twice(ref f, i64 x) -> i64
+    calli f (x) -> (I1)
+    tcalli f (I1)
+.endf
+
+; A throw and a trap, three frames below the function that catches them.
+.func down(i64 n, i64 how) -> i64
+    bz n, 1f
+    sub I3, n, 1
+    call down (I3, how) -> (I2)
+    add I2, 1
+    ret I2
+1:  bz how, 2f
+    mov I3, 0
+    div I4, 10, I3                     ; (stepped) traps E_DIV_ZERO
+    ret I4
+2:  throw "thrown"
+.endf
+
+.func catcher(i64 how) -> (ref, i64)
+    mov I5, 12
+.try 1f
+    call down (3, how) -> (I6)
+.endtry
+    ret null, 0
+1:  catch R1
+    bz how, 2f
+    mov R1, R1->Error.code
+2:  ret R1, I5
+.endf
+
+; A generator: yields 0 .. n-1, then returns n.
+.func gen(i64 n) -> i64
+    mov I1, 0
+1:  bge I1, n, 2f
+    coyield (I1)
+    inc I1
+    jmp 1b
+2:  ret n
+.endf
+
+.func main
+    call sum (90000) -> (I0)
+    PRINTLN "sum", I0
+    call even (1001) -> (I0)
+    call even (1000) -> (I1)
+    PRINTLN "parity", I1, I0
+    call three (7, 0) -> (I0, I1, I2)
+    PRINTLN "three", I0, I1, I2
+    call spin (1000000, 0) -> (I0)
+    call narrow (1000000) -> (I1)
+    call ping (1000000, 0) -> (I2)
+    PRINTLN "tails", I0, I1, I2
+    closure adder (10, 0) -> (R0)
+    calli R0 (2) -> (I0)
+    call twice (R0, 95) -> (I1)
+    closure adder (0, 0) -> (R1)
+    calli R1 (1) -> (I3)
+    calli R1 (1) -> (I3)
+    calli R1 (1) -> (I3)
+    mov R2, "not a closure"
+.try 9f
+    calli R2 (1) -> (I4)
+.endtry
+9:  catch R3
+    PRINT_S "closures"
+    PRINT_S " "
+    PRINT_I I0
+    PRINT_S " "
+    PRINT_I I1
+    PRINT_S " "
+    PRINT_I I3
+    PRINT_S " "
+    ncall "io.print_s" (R3->Error.code)
+    NL
+    new R4, Box
+    mov.i64 R4->Box.n, 42
+    call sum (R4->Box.n) -> (I0)       ; the interpreter's call: its argument is a field
+    PRINTLN "field", I0
+    call catcher (0) -> (R5, I0)
+    call catcher (1) -> (R6, I1)
+    PRINT_S "unwind "
+    ncall "io.print_s" (R5)
+    PRINT_S " "
+    PRINT_I I0
+    PRINT_S " "
+    ncall "io.print_s" (R6)
+    PRINTLN "", I1
+    closure gen -> (R7)
+    conew R8, R7
+    mov I0, 0
+    coresume R8 (100) -> (I1)
+1:  costatus I2, R8
+    beq I2, 3, 2f                      ; dead: it returned
+    add I0, I1
+    coresume R8 -> (I1)
+    jmp 1b
+2:  PRINTLN "generator", I0, I1
+    ret 0
+.endf

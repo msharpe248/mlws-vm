@@ -15,6 +15,9 @@
  *   ; expect-insns: <function> <n>                   (repeatable: its instructions once optimized)
  *   ; no-opt: <reason>                               (not optimized by MLWSVM_OPT or --opt on the
  *                                                       command line; its own `; option: --opt` still applies)
+ *   ; expect-jit: compiled <function> <n>            (repeatable: the JIT gave n of its instructions
+ *                                                       machine code; checked where there is a JIT)
+ *   ; expect-jit: steps <n>                          (the machine code stepped n instructions)
  *
  * Directories whose name starts with '_' hold helper modules and are skipped.
  *
@@ -43,6 +46,7 @@ typedef struct {
     StrVec opt_want; /* "pass n" */
     StrVec insns_want; /* "function n" */
     bool no_opt;
+    StrVec jit_want; /* "compiled function n", "steps n" */
 } Expect;
 
 static void capture(void *ctx, const char *s, size_t n) { sb_putn(ctx, s, n); }
@@ -134,6 +138,8 @@ static void parse_expect(const char *text, Expect *e) {
             VEC_PUSH(e->opt_want, xstrdup(v));
         } else if ((v = after_key(line, "expect-insns:"))) {
             VEC_PUSH(e->insns_want, xstrdup(v));
+        } else if ((v = after_key(line, "expect-jit:"))) {
+            VEC_PUSH(e->jit_want, xstrdup(v));
         } else if ((v = after_key(line, "no-opt:"))) {
             e->no_opt = true;
         } else if ((v = after_key(line, "debug-script:"))) {
@@ -202,7 +208,34 @@ static void check_opt(const Expect *e, const OptReport *rep, const char *path, S
     }
 }
 
+/* What the JIT compiled and stepped (where this build has one). */
+static void check_jit(const Expect *e, VM *vm, StrBuf *why) {
+    for (size_t k = 0; k < e->jit_want.n && !why->n; k++) {
+        char name[128];
+        long long want;
+        const char *line = e->jit_want.v[k];
+        if (sscanf(line, "compiled %127s %lld", name, &want) == 2) {
+            const Function *f = NULL;
+            for (size_t i = 0; i < vm->mods.n && !f; i++) {
+                const LModule *lm = vm->mods.v[i];
+                for (uint32_t q = 0; q < lm->m->nfuncs && !f; q++)
+                    if (!strcmp(lm->funcs[q].name, name)) f = &lm->funcs[q];
+            }
+            if (!f) sb_printf(why, "expect-jit: no function '%s'", name);
+            else if ((long long)f->jit_native != want)
+                sb_printf(why, "expect-jit: %s has %u instructions with machine code, expected %lld", name, f->jit_native, want);
+        } else if (sscanf(line, "steps %lld", &want) == 1) {
+            if ((long long)interp_jit_steps(vm) != want)
+                sb_printf(why, "expect-jit: %llu instructions stepped, expected %lld", (unsigned long long)interp_jit_steps(vm), want);
+        } else {
+            sb_printf(why, "bad '; expect-jit:' line: %s (expected compiled FUNCTION N, or steps N)", line);
+        }
+    }
+}
+
 static void free_expect(Expect *e) {
+    for (size_t k = 0; k < e->jit_want.n; k++) free(e->jit_want.v[k]);
+    VEC_FREE(e->jit_want);
     for (size_t k = 0; k < e->opt_want.n; k++) free(e->opt_want.v[k]);
     VEC_FREE(e->opt_want);
     for (size_t k = 0; k < e->insns_want.n; k++) free(e->insns_want.v[k]);
@@ -285,6 +318,8 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
             if (!vm_set_option(vm, e.options.v[k], e.options.v[k + 1], &oerr)) sb_printf(&why, "%s", oerr.msg);
         if (e.option_error && !why.n) sb_printf(&why, "bad '; option:' line: %s (expected --name value)", e.option_error);
         if (e.threads > 0) vm->threads = e.threads; /* the test needs this many */
+        bool want_jit = e.jit_want.n && interp_jit_available() && vm->jit_mode;
+        if (want_jit) vm->jit_stats = true;
         StrBuf out = {0};
         vm->out = capture;
         vm->out_ctx = &out;
@@ -314,6 +349,7 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
             sb_printf(&why, "exit code %lld, expected %lld", (long long)r.exit_code, (long long)e.exit_want);
         }
         if (!why.n && want_opt) check_opt(&e, vm->opt_report, path, &why);
+        if (!why.n && want_jit) check_jit(&e, vm, &why);
         if (!why.n && e.has_stdout && strcmp(out.s ? out.s : "", e.stdout_want.s) != 0) {
             sb_printf(&why, "stdout mismatch\n--- expected ---\n%s--- got ---\n%s", e.stdout_want.s, out.s ? out.s : "");
         }

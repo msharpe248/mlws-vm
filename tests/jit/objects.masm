@@ -1,0 +1,300 @@
+; The JIT's machine code for fields, elements, globals, lists, maps and type
+; tests (src/vm/jit.inc) must do exactly what the interpreter does: it takes
+; the case the quickened handler takes, and anything else is a side exit,
+; where the interpreter runs the instruction, with every register the block
+; changed so far written back first. main prints what each function returns,
+; and the expected lines are the interpreter's. Covered:
+;   * list and array elements by a register, a register plus an offset and a
+;     constant index, loads and stores, i64, f64 and references; struct
+;     fields of each bank, and a constant stored to one; globals of each
+;     bank, and a branch on a reference global;
+;   * lists made with a capacity and pushed past it (a side exit grows
+;     them), len of a list, string and array, and of a map (a side exit);
+;   * mget of a constant key with a default, present and missing;
+;   * isa, bisa, bnisa and typeof on a struct of the type, of another type,
+;     a string and null; ldv of i64, f64 and never-written elements;
+;   * a tuple's tag test at an element index past 4095 (larger than an arm64
+;     load's 12-bit offset);
+;   * side exits that trap: a struct of another type, an index out of range,
+;     null, an element of another type, a map value of another type; the
+;     handler sees the registers the block set before the trap.
+; With --jit all the machine code is entered at every block, so each
+; function runs in it when called from machine code.
+; option: --jit all
+; expect-jit: compiled walk 29
+; expect-jit: compiled globals 18
+; expect-jit: compiled build 9
+; expect-jit: compiled lens 9
+; expect-jit: compiled lookup 5
+; expect-jit: compiled types 26
+; expect-jit: compiled numbers 13
+; expect-jit: compiled tag 3
+; expect-jit: compiled trapped 14
+; expect-stdout: walk 46 136 2 87
+; expect-stdout: globals 4950 25.5 1
+; expect-stdout: build 200 100 7
+; expect-stdout: lens 11 5 11 2 34
+; expect-stdout: lookup 1 1
+; expect-stdout: types 1104017
+; expect-stdout: numbers 32 5
+; expect-stdout: tag 1 0
+; expect-stdout: trapped E_TYPE 33 E_BOUNDS 33 E_NULL 33 E_TYPE 33 E_TYPE 33
+.include "std/io.inc"
+
+.struct Cell
+    i: i64
+    f: f64
+    r: ref
+.ends
+
+.struct Other
+    i: i64
+.ends
+
+gi:     .i64 0
+gf:     .f64 0.5
+gr:     .i64 0
+
+; Through every element and field form, n times.
+.func walk(ref li, ref lf, ref arr, ref cell, i64 n) -> (i64, i64, i64, f64)
+    mov I1, 0
+    mov F1, 0.0
+    mov I2, 0
+1:  mov I3, li[I2]                      ; a list's i64 element
+    add I1, I3
+    mov F2, lf[I2]                      ; a list's f64 element
+    add.f64 F1, F2
+    mov I4, arr[I2]                     ; an i64 array's
+    add I1, I4
+    mov I5, li[I2+1]                    ; at an offset
+    add I1, I5
+    mov li[I2], I1                      ; stores
+    mov arr[I2+1], I2
+    mov I6, cell->Cell.i                ; fields
+    add I6, 1
+    mov cell->Cell.i, I6
+    mov F3, cell->Cell.f
+    add.f64 F3, 0.5
+    mov cell->Cell.f, F3
+    inc I2
+    blt I2, n, 1b
+    mov I7, li[0]                       ; constant indices
+    mov I8, arr[3]
+    mov F4, lf[1]
+    add.f64 F1, F4
+    mov I9, cell->Cell.i
+    mov.i64 cell->Cell.i, 87            ; a constant to a field
+    mov I10, cell->Cell.i
+    ret I1, I8, I10, F1
+.endf
+
+; Globals of each bank, read and written in a loop; a branch on a reference
+; global.
+.func globals(i64 n) -> (i64, f64, i64)
+    mov I1, 0
+1:  mov I2, @gi
+    add I2, I1
+    mov @gi, I2
+    mov F2, @gf
+    add.f64 F2, 0.25
+    mov @gf, F2
+    inc I1
+    blt I1, n, 1b
+    lnew R1
+    mov @gr, R1
+    mov R2, @gr
+    mov I4, 0
+    bne.r R1, @gr, 2f
+    mov I4, 1
+2:  mov I3, @gi
+    mov F3, @gf
+    ret I3, F3, I4
+.endf
+
+; A list made with room for 4, pushed 2n values: past its capacity, a side
+; exit lets the interpreter grow it.
+.func build(i64 n) -> (i64, i64, i64)
+    lnew R1, 4
+    mov I1, 0
+1:  lpush R1, I1
+    lpush R1, 7
+    inc I1
+    blt I1, n, 1b
+    len I2, R1
+    mov I3, R1[I2-1]
+    ret I2, I1, I3
+.endf
+
+; len of a list, a string and an array, then of a map: a side exit, with
+; I5 and I6 set in the block before it.
+.func lens(ref l, ref s, ref a, ref m) -> (i64, i64, i64, i64, i64)
+    len I1, l
+    len I2, s
+    len I3, a
+    mov I5, 10
+    add I6, I1, I5
+    len I4, m
+    add I7, I6, I4
+    add I7, I1
+    ret I1, I2, I3, I4, I7
+.endf
+
+; mget of a constant key: present, and missing with a default.
+.func lookup(ref m, ref want) -> (i64, i64)
+    mget.r R1, m, "k"
+    seq.r I1, R1, want
+    mget.r R2, m, "nothing", null
+    seq.r I2, R2, null
+    ret I1, I2
+.endf
+
+; Type tests on each kind of reference, as digits of one number.
+.func types(ref cell, ref other, ref s, ref nothing) -> i64
+    isa I1, cell, Cell
+    isa I2, other, Cell
+    isa I3, nothing, Cell
+    typeof I4, cell
+    typeof I5, s
+    typeof I6, nothing
+    mul I1, 100000
+    mul I2, 10000
+    mul I4, 1000
+    mul I5, 10
+    add I1, I2
+    add I1, I3
+    add I1, I4
+    add I1, I5
+    add I1, I6
+    bisa cell, Cell, 1f
+    add I1, 7
+1:  bisa other, Cell, 2f
+    add I1, 7
+2:  bnisa nothing, Cell, 3f
+    add I1, 700
+3:  bnisa cell, Cell, 4f
+    add I1, 1000000
+4:  bnisa s, Cell, 5f
+    add I1, 7000
+5:  ret I1
+.endf
+
+; ldv: the number half of i64, f64 and never-written elements.
+.func numbers(ref l, i64 n) -> (i64, f64)
+    mov I1, 0
+    mov F1, 0.0
+    mov I2, 0
+1:  ldv I3, F3, l[I2]
+    add I1, I3
+    add.f64 F1, F3
+    inc I2
+    blt I2, n, 1b
+    ldv I4, F4, l[1]
+    add I1, I4
+    ldv I5, F5, l[I2-2]
+    add.f64 F1, F5
+    ret I1, F1
+.endf
+
+; A tuple's tag, at an element index past 4095.
+.func tag(ref t) -> (i64, i64)
+    beq.r t[4500], "x", 1f
+    ret 0, 0
+1:  ret 1, 0
+.endf
+
+; Traps in a block's side exits: the handler sees what the block set.
+.func trapped(ref c, i64 a, i64 k) -> (ref, i64)
+.try 1f
+    add I2, a, 1
+    mul I3, I2, 2
+    jtab k, 2f, 3f, 4f, 5f
+    mov I4, c->Cell.i                   ; k 4: c is an Other
+    ret null, 0
+2:  mov I4, c[I2]                       ; k 0: past the end
+    ret null, 0
+3:  mov I4, c->Cell.i                   ; k 1: c is null
+    ret null, 0
+4:  mov F4, c[0]                        ; k 2: an i64 element read as f64
+    ret null, 0
+5:  mget.r R4, c, "n", null               ; k 3: an i64 value read as a reference
+    ret null, 0
+.endtry
+1:  catch R31
+    add I3, I2
+    ret R31->Error.code, I3
+.endf
+
+.func show(ref code, i64 n)
+    PRINT_S " "
+    ncall "io.print_s" (code)
+    PRINT_S " "
+    PRINT_I n
+    ret
+.endf
+
+.func main
+    lnew R1
+    lnew R2
+    anew.i64 R3, 11
+    mov I0, 0
+1:  lpush R1, I0
+    cvt.f64.i64 F0, I0
+    lpush R2, F0
+    mov R3[I0], I0
+    inc I0
+    blt I0, 11, 1b
+    new R4, Cell
+    mov.f64 R4->Cell.f, 0.5
+    call walk (R1, R2, R3, R4, 10) -> (I0, I1, I2, F0)
+    PRINT_S "walk"
+    ncall "io.print_c" (' ')
+    PRINT_F F0
+    PRINTLN "", I0, I1, I2
+    call globals (100) -> (I0, F0, I1)
+    PRINT_S "globals "
+    PRINT_I I0
+    PRINT_S " "
+    PRINT_F F0
+    PRINTLN "", I1
+    call build (100) -> (I0, I1, I2)
+    PRINTLN "build", I0, I1, I2
+    mnew R5
+    mset R5, "k", R4
+    mset R5, "n", 1
+    call lens (R1, "hello", R3, R5) -> (I0, I1, I2, I3, I4)
+    PRINTLN "lens", I0, I1, I2, I3, I4
+    call lookup (R5, R4) -> (I0, I1)
+    PRINTLN "lookup", I0, I1
+    new R6, Other
+    call types (R4, R6, "s", null) -> (I0)
+    PRINTLN "types", I0
+    lnew R7
+    lpush R7, 5, 1.5, 7, 2.5, 9, 0.5, 11
+    call numbers (R7, 7) -> (I0, F0)
+    PRINT_S "numbers "
+    PRINT_I I0
+    PRINT_S " "
+    PRINT_F F0
+    NL
+    lnew R8
+    mov I0, 0
+2:  lpush R8, "y"
+    inc I0
+    blt I0, 5000, 2b
+    mov R8[4500], "x"
+    call tag (R8) -> (I0, I1)
+    PRINTLN "tag", I0, I1
+    PRINT_S "trapped"
+    call trapped (R6, 10, 4) -> (R9, I0)
+    call show (R9, I0)
+    call trapped (R1, 10, 0) -> (R9, I0)
+    call show (R9, I0)
+    call trapped (null, 10, 1) -> (R9, I0)
+    call show (R9, I0)
+    call trapped (R1, 10, 2) -> (R9, I0)
+    call show (R9, I0)
+    call trapped (R5, 10, 3) -> (R9, I0)
+    call show (R9, I0)
+    NL
+    ret 0
+.endf

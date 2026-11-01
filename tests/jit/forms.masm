@@ -1,0 +1,329 @@
+; The JIT's machine code for the arithmetic, conversion, comparison and
+; branch forms (src/vm/jit.inc) must compute exactly what the interpreter
+; does: main prints what each function returns, and the expected lines are
+; the interpreter's. The functions are made of forms the JIT compiles
+; (expect-jit counts them), except the few marked "stepped": instructions
+; with no quickened form, which the machine code runs by their handlers.
+; Covered: the integer operations with registers and constants, wrapping at
+; the 64-bit limits; shifts by counts past 63 (taken modulo 64); division
+; and remainder by constants of either sign (C's truncation); the float
+; operations, sqrt, neg and abs, with -0.0 and NaN; conversions and bit
+; casts; compares into registers and branches, signed, unsigned and float (a
+; NaN compares false, except for "not equal"); a jump table, in range and
+; out of it; and a block with more live registers than the register cache
+; has machine registers.
+; With --jit all the machine code is entered at every block.
+; option: --jit all
+; expect-jit: compiled ints 23
+; expect-jit: compiled shifts 10
+; expect-jit: compiled divs 10
+; expect-jit: compiled floats 15
+; expect-jit: compiled convert 7
+; expect-jit: compiled compare 18
+; expect-jit: compiled branches 32
+; expect-jit: compiled table 9
+; expect-jit: compiled spill 74
+; expect-stdout: ints 9223372036854775803 9223372036853775802 -2000017 4000068000289
+; expect-stdout: shifts 81985529216486895 6230900220451880960 0 3952824732037017344
+; expect-stdout: divs -14 -2 14 -2 -25 -3 -3 0 -14
+; expect-stdout: floats 0.6875 -0 1.4142135623730951 -0.6875 0.6875 0.15
+; expect-stdout: nan 1
+; expect-stdout: convert -3 4609434218613702656 1.5 4.611686018427388e+18
+; expect-stdout: compare 111 1101 11 0
+; expect-stdout: branches -154 0 1
+; expect-stdout: table 111 -1
+; expect-stdout: spill 563
+.include "std/io.inc"
+
+.macro SHOWF v
+    ncall "io.print_c" (' ')
+    ncall "io.print_f" (\v)
+.endm
+
+; I registers with registers and constants, wrapping at the limits.
+.func ints(i64 a, i64 b) -> (i64, i64, i64, i64)
+    add I2, a, b
+    sub I3, I2, 7
+    mul I4, I3, b
+    and I5, I4, 0x5555555555555555
+    or I6, I5, a
+    xor I7, I6, b
+    add I8, a, -1                      ; a constant that does not fit 12 bits either way
+    add I8, 9223372036854775807        ; INT64_MAX: wraps
+    sub I9, I8, a
+    mul I9, -3
+    xor I9, I7
+    and I9, I3
+    or I9, I8
+    inc I9
+    dec I9
+    dec I9
+    sub I9, 1000000
+    mov I10, I9
+    add I10, I10
+    sub I10, b
+    mov I11, I10
+    mul I11, I11
+    ret I8, I9, I10, I11
+.endf
+
+; Shifts: logical and arithmetic, by registers and constants; a count of 64
+; or more is taken modulo 64.
+.func shifts(i64 a, i64 n) -> (i64, i64, i64, i64)
+    shr I2, a, n
+    shl I3, a, 16
+    sar I4, a, 63
+    mov I5, 68
+    shl I5, a, I5                      ; 68 & 63 = 4
+    sar I6, I3, 1
+    shr I6, n
+    shl I6, 3
+    xor I6, I5
+    ret I2, I3, I4, I6
+.endf
+
+; Division and remainder by constants, as C truncates them.
+.func divs(i64 a, i64 b) -> (i64, i64, i64, i64, i64, i64, i64, i64, i64)
+    div I2, a, 7
+    rem I3, a, 7
+    div I4, a, -7
+    rem I5, a, -7
+    mov I6, a
+    div I6, 4
+    rem I7, b, 9
+    mov I8, b
+    rem I8, 1
+    ret I2, I3, I4, I5, I6, I7, I7, I8, I2
+.endf
+
+; F registers with registers and constants; -0.0 and NaN.
+.func floats(f64 x, f64 y) -> (f64, f64, f64, f64, f64, f64, i64)
+    add.f64 F2, x, y
+    mul.f64 F3, F2, 2.5
+    sub.f64 F4, 1.0, F3                ; a constant first
+    div.f64 F5, F4, -4.0
+    mul.f64 F6, x, -0.0
+    sqrt F7, 2.0                       ; (stepped: of a constant)
+    neg F8, F5
+    abs F9, F8
+    mov F10, x
+    sub.f64 F10, F10, F10
+    add.f64 F10, 0.15
+    mov F11, F9
+    neg F11
+    div.f64 F12, F6, F6                ; 0/0: a NaN
+    sne.f64 I0, F12, F12
+    ret F5, F6, F7, F11, F9, F10, I0
+.endf
+
+; Conversions and bit casts between the banks.
+.func convert(i64 a, f64 x) -> (i64, i64, f64, f64)
+    bitcast.f64.i64 F2, a
+    bitcast.i64.f64 I2, x
+    cvt.f64.i64 F3, a
+    mov I3, -3
+    mov F4, 1.5
+    mov I4, I3
+    ret I4, I2, F4, F3
+.endf
+
+; Compares into a register: signed, unsigned, float, references.
+.func compare(i64 a, i64 b, f64 x, f64 y, ref s) -> (i64, i64, i64, i64)
+    slt I2, a, b                       ; (the integer compares are stepped)
+    sle I3, a, a
+    sgt I4, b, a
+    sge.u64 I5, a, b                   ; -1 as unsigned is the largest
+    slt.f64 I6, x, y
+    sle.f64 I7, y, x
+    seq.f64 I8, x, 2.0
+    sgt.f64 I9, x, y
+    sge.f64 I10, x, x
+    seq.r I11, s, s
+    sne.r I12, s, null
+    mul I2, 100
+    mul I3, 10
+    add I2, I3
+    add I2, I4                         ; 111
+    mul I5, 1000
+    mul I6, 100
+    add I5, I6
+    add I5, I8                         ; 1101 when x == 2.0, x < y
+    mul I11, 10
+    add I11, I12
+    ret I2, I5, I11, I7
+.endf
+
+; Branches: signed and unsigned, against registers and constants, floats
+; (NaN is unordered), zero tests. Each taken branch adds its bit.
+.func branches(i64 a, i64 b, f64 x, f64 nan) -> (i64, i64, i64)
+    mov I2, 0
+    blt a, b, 1f
+    add I2, 1
+1:  bge a, b, 2f
+    add I2, 2
+2:  blt.u64 a, b, 3f                   ; unsigned: -1 is not below 5
+    add I2, 4
+3:  bgt.u64 a, b, 4f
+    add I2, 8
+4:  beq b, 5, 5f
+    add I2, 16
+5:  bne b, 5, 6f
+    add I2, 32
+6:  bz a, 7f
+    add I2, 64
+7:  bnz b, 8f
+    add I2, 128
+8:  blt.f64 nan, x, 9f                 ; false: unordered
+    add I2, 256
+9:  bge.f64 nan, x, 10f                ; false
+    sub I2, 512
+10: bne.f64 nan, nan, 11f              ; true
+    add I2, 1024
+11: ble.f64 x, 2.0, 12f
+    add I2, 2048
+12: mov I3, 0
+    beq.f64 nan, nan, 13f              ; false
+    mov I3, 0
+13: mov I4, 1
+    ble.u64 b, 5, 14f
+    mov I4, 2
+14: ret I2, I3, I4
+.endf
+
+; A jump table: each index, and one out of range (it falls through).
+.func table(i64 i) -> i64
+    jtab i, 1f, 2f, 3f
+    mov I1, -1
+    ret I1
+1:  mov I1, 1
+    ret I1
+2:  mov I1, 10
+    ret I1
+3:  mov I1, 100
+    ret I1
+.endf
+
+; More live registers than the cache's machine registers: values move in and
+; out of them, and all are right at the end.
+.func spill(i64 a) -> i64
+    add I1, a, 1
+    add I2, a, 2
+    add I3, a, 3
+    add I4, a, 4
+    add I5, a, 5
+    add I6, a, 6
+    add I7, a, 7
+    add I8, a, 8
+    add I9, a, 9
+    add I10, a, 10
+    add I11, a, 11
+    add I12, a, 12
+    add I13, a, 13
+    add I14, a, 14
+    add I15, a, 15
+    add I16, a, 16
+    add I17, a, 17
+    add I18, a, 18
+    add I19, a, 19
+    add I20, a, 20
+    mov F1, 1.0
+    mov F2, 2.0
+    mov F3, 3.0
+    mov F4, 4.0
+    mov F5, 5.0
+    mov F6, 6.0
+    mov F7, 7.0
+    mov F8, 8.0
+    mov F9, 9.0
+    mov F10, 10.0
+    mov F11, 11.0
+    mov F12, 12.0
+    mov F13, 13.0
+    mov F14, 14.0
+    mov F15, 15.0
+    mov F16, 16.0
+    mov F17, 17.0
+    add.f64 F1, F17
+    add.f64 F1, F16
+    add.f64 F1, F15
+    add.f64 F1, F14
+    add.f64 F1, F13
+    add.f64 F1, F12
+    add.f64 F1, F11
+    add.f64 F1, F10
+    add.f64 F1, F2
+    add.f64 F1, F3
+    add.f64 F1, F4
+    add.f64 F1, F5
+    add.f64 F1, F6
+    add.f64 F1, F7
+    add.f64 F1, F8
+    add.f64 F1, F9
+    cvt.i64.f64 I21, F1                ; (stepped: the block ends)
+    add I21, I1
+    add I21, I2
+    add I21, I3
+    add I21, I4
+    add I21, I5
+    add I21, I6
+    add I21, I7
+    add I21, I8
+    add I21, I9
+    add I21, I10
+    add I21, I11
+    add I21, I12
+    add I21, I13
+    add I21, I14
+    add I21, I15
+    add I21, I16
+    add I21, I17
+    add I21, I18
+    add I21, I19
+    add I21, I20
+    ret I21
+.endf
+
+.func main
+    call ints (-3, 5) -> (I0, I1, I2, I3)
+    PRINTLN "ints", I0, I1, I2, I3
+    call shifts (0x123456789ABCDEF0, 68) -> (I0, I1, I2, I3)
+    PRINTLN "shifts", I0, I1, I2, I3
+    call divs (-100, -93) -> (I0, I1, I2, I3, I4, I5, I6, I7, I8)
+    PRINTLN "divs", I0, I1, I2, I3, I4, I5, I6, I7, I8
+    call floats (0.5, 1.0) -> (F0, F1, F2, F3, F4, F5, I0)
+    PRINT_S "floats"
+    SHOWF F0
+    SHOWF F1
+    SHOWF F2
+    SHOWF F3
+    SHOWF F4
+    SHOWF F5
+    NL
+    PRINTLN "nan", I0
+    call convert (0x4000000000000000, 1.5) -> (I0, I1, F0, F1)
+    PRINT_S "convert"
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I0)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I1)
+    SHOWF F0
+    SHOWF F1
+    NL
+    call compare (-1, 5, 2.0, 3.0, "s") -> (I0, I1, I2, I3)
+    PRINTLN "compare", I0, I1, I2, I3
+    mov F1, 0.0
+    div.f64 F1, F1, F1
+    call branches (-1, 5, 2.0, F1) -> (I0, I1, I2)
+    PRINTLN "branches", I0, I1, I2
+    mov I4, 0
+    mov I5, 0
+1:  call table (I5) -> (I6)
+    add I4, I6
+    inc I5
+    blt I5, 3, 1b
+    call table (3) -> (I7)
+    PRINTLN "table", I4, I7
+    call spill (10) -> (I0)
+    PRINTLN "spill", I0
+    ret 0
+.endf

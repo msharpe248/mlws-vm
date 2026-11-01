@@ -6,7 +6,9 @@
 #   make check-tools  smoke-test --monitor, top, --profile and --trace
 #   make check-gc     run the tests with a garbage collection at every allocation
 #   make check-opt    run the tests with every module optimized (--opt all), also with GC stress
-#   make check-asan   build with AddressSanitizer + UBSan and run the tests (normal and GC stress)
+#   make check-jit    run the tests with the JIT: every function compiled and entered at every
+#                     block (--jit all), also with GC stress and optimized; then hot functions
+#   make check-asan   build with AddressSanitizer + UBSan and run the tests (normal, GC stress, JIT)
 #   make check-switch build with switch dispatch instead of threaded code (as MSVC would) and run the tests
 #   make check-loop   build with the threaded dispatch loop instead of tail calls (as GCC before 15 would) and run the tests
 #   make check-poison build with every new register window filled with garbage before the
@@ -61,7 +63,7 @@ DL_LIBS := -ldl -lpthread
 endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: check-opt all test test-ext test-libs check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
+.PHONY: check-jit check-opt all test test-ext test-libs check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
 
 all: $(BIN)
 
@@ -169,12 +171,25 @@ check-opt: $(BIN) test-ext
 	MLWSVM_OPT=all ./$(BIN) test tests examples
 	MLWSVM_TEST_TIMEOUT=$(STRESS_TIMEOUT) MLWSVM_OPT=all MLWSVM_GC_STRESS=1 ./$(BIN) test tests examples
 
+# The tests with the JIT (docs/JIT.md): every function compiled as it is
+# loaded and its machine code entered at every block (--jit all), plainly,
+# with GC stress and with every module optimized; then functions compiled
+# once hot (--jit on) after two calls or loop iterations, also on one worker
+# thread. In a build without a JIT they run in the interpreter.
+check-jit: $(BIN) test-ext
+	MLWSVM_JIT=all ./$(BIN) test tests examples
+	MLWSVM_TEST_TIMEOUT=$(STRESS_TIMEOUT) MLWSVM_JIT=all MLWSVM_GC_STRESS=1 ./$(BIN) test tests examples
+	MLWSVM_JIT=all MLWSVM_OPT=all ./$(BIN) test tests examples
+	MLWSVM_JIT=on MLWSVM_JIT_HOT=2 ./$(BIN) test tests examples
+	MLWSVM_JIT=on MLWSVM_JIT_HOT=2 MLWSVM_THREADS=1 ./$(BIN) test tests examples
+
 check-asan: test-ext
 	$(MAKE) BUILD=build-asan BIN=mlwsvm-asan \
 	    CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
 	    LDFLAGS="-fsanitize=address,undefined"
 	$(ASAN_ENV) ./mlwsvm-asan test tests examples
 	$(ASAN_ENV) MLWSVM_TEST_TIMEOUT=$(STRESS_TIMEOUT) MLWSVM_GC_STRESS=1 ./mlwsvm-asan test tests examples
+	$(ASAN_ENV) MLWSVM_JIT=all ./mlwsvm-asan test tests examples
 	$(MAKE) BUILD=build-asan BIN=mlwsvm-asan \
 	    CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
 	    LDFLAGS="-fsanitize=address,undefined" build-asan/embed-host

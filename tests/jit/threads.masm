@@ -1,0 +1,49 @@
+; Processes on four worker threads run the same functions while one of the
+; threads compiles them (src/vm/jit.inc, --jit on): the others go on in the
+; interpreter, then in the machine code once it is installed; every process
+; gets the interpreter's result. Each of 16 processes sums work(i) for i in
+; 0 .. 1999 (work loops i times) and sends the sum back.
+; threads: 4
+; option: --jit on
+; option: --jit-hot 50
+; expect-stdout: 21413296160
+.include "std/io.inc"
+
+.func work(i64 n) -> i64
+    mov I1, 0
+    mov I2, 0
+1:  bge I2, n, 2f
+    add I1, I2
+    xor I3, I1, n
+    and I3, 7
+    add I1, I3
+    inc I2
+    jmp 1b
+2:  ret I1
+.endf
+
+.func worker(i64 parent)
+    mov I1, 0
+    mov I2, 0
+1:  call work (I2) -> (I3)
+    add I1, I3
+    inc I2
+    blt I2, 2000, 1b
+    send parent, I1
+    ret
+.endf
+
+.func main
+    mov I0, 0
+1:  spawn worker (PID)
+    inc I0
+    blt I0, 16, 1b
+    mov I1, 0
+    mov I0, 0
+2:  recv I2
+    add I1, I2
+    inc I0
+    blt I0, 16, 2b
+    PRINTLN_I I1
+    ret 0
+.endf
