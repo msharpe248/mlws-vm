@@ -1926,7 +1926,7 @@ void interp_jit_report(VM *vm, FILE *out) {
         for (int x = 0; x < Q__COUNT; x++)
             if (stops[x] && (best < 0 || stops[x] > stops[best])) best = x;
         if (best < 0) break;
-        if (!k) fprintf(out, "  most common stops (where the interpreter took over):\n");
+        if (!k) fprintf(out, "  most common stops (where the interpreter took over, a time slice's end included):\n");
         fprintf(out, "    %12llu  %s (form %d)\n", (unsigned long long)stops[best], op_info[jt->opof[best]].mnem, best);
         stops[best] = 0;
     }

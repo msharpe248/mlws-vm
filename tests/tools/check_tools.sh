@@ -347,6 +347,18 @@ rm -rf "${ODIR:?}"
 N=$($BIN run --trace - --trace-limit 5 examples/hello.masm 2>&1 >/dev/null | grep -c '^\[1\]')
 [ "$N" = 5 ] || fail "trace limit (got $N lines)"
 
+# --jit-report: what the JIT compiled (fib, after 2 calls; main runs once),
+# or that this build has no JIT; under the profiler's hook it compiles
+# nothing, so the profile is the interpreter's.
+OUT=$($BIN run --jit on --jit-hot 2 --jit-report - examples/fib.masm 2>&1 >/dev/null)
+if ! echo "$OUT" | grep -q "not in this build"; then
+    echo "$OUT" | grep -q "^mlwsvm jit (.*): a function compiled after 2 calls" || fail "--jit-report ($OUT)"
+    echo "$OUT" | grep -q "functions compiled  1$" || fail "--jit-report: fib alone ($OUT)"
+    OUT=$($BIN run --jit on --jit-hot 2 --jit-report - --profile examples/fib.masm 2>&1 >/dev/null)
+    echo "$OUT" | grep -q "fib.fib" || fail "--profile with --jit on ($OUT)"
+    echo "$OUT" | grep -q "^  nothing compiled" || fail "--jit under the profiler compiled something ($OUT)"
+fi
+
 # --monitor + --hold, then query it
 $BIN run --monitor 127.0.0.1:$PORT --hold examples/workers.masm >/dev/null 2>&1 &
 VMPID=$!
@@ -365,4 +377,4 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
 fi
-echo "check-tools: profile, .loc, cache, lib, --also, opt, trace, monitor, top OK"
+echo "check-tools: profile, .loc, cache, lib, --also, opt, trace, jit, monitor, top OK"
