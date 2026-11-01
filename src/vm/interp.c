@@ -53,6 +53,7 @@ typedef struct {
     uint32_t budget;   /* instructions the slice may run */
     uint32_t hleft;    /* with a tool's hook: instructions left (the handlers' `left` stays 0) */
     bool hooked;
+    uint64_t retv[MAX_OPERANDS]; /* values returned from machine code to machine code (jit.inc) */
 #endif
 } Ctx;
 
@@ -1050,6 +1051,7 @@ enum {
      * beq.r and bne.r of an element at a constant index (R0[2]) against a
      * constant; direct tail calls with register and constant arguments. */
     Q_BITCAST_FI, Q_BITCAST_IF, Q_TYPEOF, Q_BEQ_EKK, Q_BNE_EKK, Q_TCALL_R,
+    Q_JIT, /* an instruction with machine code (jit.inc) */
     Q__COUNT
 };
 
@@ -1945,6 +1947,8 @@ static QCC QNOSP int h_generic(QPARAMS) {
     MUSTTAIL return qhandlers[nx->xop](QARGSN(nx));
 }
 
+#include "jit.inc"
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 #ifdef __clang__
@@ -1957,6 +1961,9 @@ static const QHandler qhandlers[Q__COUNT] = {
 #define QL(x) [x] = h_##x,
 #include "qlist.inc"
 #undef QL
+#if MLWS_JIT
+    [Q_JIT] = h_Q_JIT,
+#endif
 };
 #pragma GCC diagnostic pop
 
@@ -2180,3 +2187,7 @@ int interp_run(Process *p, uint32_t budget) {
         }
     }
 }
+
+#if !MLWS_TAILCALL /* the JIT needs the tail-call build (jit.inc) */
+void interp_jit_function(Function *f) { (void)f; }
+#endif

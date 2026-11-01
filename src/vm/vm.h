@@ -97,6 +97,10 @@ typedef struct Function {
      * register k of that bank; R is always cleared): what makes the run
      * longer, shown by the profiler. */
     uint32_t read_first[NBANKS];
+    /* The JIT's (interp.c, jit.inc): each instruction's machine-code entry, or
+     * NULL, and its quickened form; both NULL when it compiled nothing. */
+    void **jit_entry;
+    uint16_t *jit_xop;
 } Function;
 
 enum { LM_LOADING = 1, LM_READY = 2, LM_FAILED = 3 }; /* FAILED: a load at run time that did not link */
@@ -646,6 +650,7 @@ int interp_run(Process *p, uint32_t budget); /* SLICE_* */
 /* Pick a specialised handler for common instruction shapes (after verification). */
 void interp_quicken(Insn *in);
 void interp_quicken_function(Function *f);
+void interp_jit_function(Function *f); /* after quickening: machine code, with MLWSVM_JIT */
 /* Push a frame running closure cl with its arguments bound (proc_callback). */
 void interp_enter(Process *p, ObjClosure *cl, const Word *args);
 

@@ -69,6 +69,8 @@ static void lmodule_free(LModule *lm) {
             free(f->code);
             free(f->bp);
             free(f->prof);
+            free(f->jit_entry);
+            free(f->jit_xop);
         }
         free(lm->funcs);
     }

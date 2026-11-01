@@ -317,7 +317,7 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
     if (!vm_verify_module(vm, lm, err)) return false;
     for (uint32_t i = 0; i < m->nfuncs; i++) {
         Function *f = &lm->funcs[i];
-        if (f->target == f) interp_quicken_function(f);
+        if (f->target == f) interp_quicken_function(f), interp_jit_function(f);
     }
     return true;
 }
