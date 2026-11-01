@@ -53,9 +53,13 @@ typedef struct {
     uint32_t budget;   /* instructions the slice may run */
     uint32_t hleft;    /* with a tool's hook: instructions left (the handlers' `left` stays 0) */
     bool hooked;
-    uint64_t retv[MAX_OPERANDS]; /* values returned from machine code to machine code (jit.inc) */
-    const Insn *jnext; /* jit_step's: where to go on (jit.inc) */
+    /* the JIT's (jit.inc): values passed between machine code (results, a
+     * tail call's arguments); where a stepped instruction goes on, or its
+     * status; on x86-64, the machine stack's base and limit in machine code */
+    uint64_t retv[MAX_OPERANDS];
+    const Insn *jnext;
     int jstatus;
+    uint64_t jbase, jlimit;
 #endif
 } Ctx;
 
@@ -1053,7 +1057,10 @@ enum {
      * beq.r and bne.r of an element at a constant index (R0[2]) against a
      * constant; direct tail calls with register and constant arguments. */
     Q_BITCAST_FI, Q_BITCAST_IF, Q_TYPEOF, Q_BEQ_EKK, Q_BNE_EKK, Q_TCALL_R,
-    Q_JIT, /* an instruction with machine code (jit.inc) */
+    /* The JIT's (jit.inc): the first instruction of a block of machine code
+     * worth entering; a count towards compiling the function. Each keeps the
+     * instruction's own form in Function.jit_xop. */
+    Q_JIT, Q_JITC,
     Q__COUNT
 };
 
@@ -1964,7 +1971,7 @@ static const QHandler qhandlers[Q__COUNT] = {
 #include "qlist.inc"
 #undef QL
 #if MLWS_JIT
-    [Q_JIT] = h_Q_JIT,
+    [Q_JIT] = h_Q_JIT, [Q_JITC] = h_Q_JITC,
 #endif
 };
 #pragma GCC diagnostic pop
@@ -2190,6 +2197,13 @@ int interp_run(Process *p, uint32_t budget) {
     }
 }
 
-#if !MLWS_TAILCALL /* the JIT needs the tail-call build (jit.inc) */
-void interp_jit_function(Function *f) { (void)f; }
+#ifndef MLWS_JIT /* the JIT needs arm64 or x86-64, and the tail-call build (jit.inc) */
+void interp_jit_function(VM *vm, Function *f) { (void)vm, (void)f; }
+void interp_jit_free(VM *vm) { (void)vm; }
+void interp_jit_report(VM *vm, FILE *out) {
+    (void)vm;
+    fprintf(out, "mlwsvm jit: not in this build (it needs arm64 or x86-64, and the tail-call interpreter)\n");
+}
+bool interp_jit_available(void) { return false; }
+uint64_t interp_jit_steps(const VM *vm) { return (void)vm, 0; }
 #endif

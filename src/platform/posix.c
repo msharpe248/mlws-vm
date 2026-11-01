@@ -19,6 +19,7 @@
 #endif
 #include <poll.h>
 #include <signal.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <limits.h>
 #include <sys/stat.h>
@@ -26,6 +27,10 @@
 #include <unistd.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#endif
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <libkern/OSCacheControl.h>
+#define CODE_MAP_JIT 1 /* Apple silicon: MAP_JIT memory, writable or executable per thread */
 #endif
 
 char *plat_realpath(const char *path) {
@@ -340,6 +345,45 @@ int plat_cpu_count(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (int)n : 1;
 }
+
+/* ---- memory for machine code ----
+ * On Apple silicon, MAP_JIT memory is writable or executable for each thread
+ * in turn; elsewhere each piece has pages of its own, written, then made
+ * executable. */
+void *plat_code_reserve(size_t size) {
+#ifdef CODE_MAP_JIT
+    void *m = mmap(NULL, size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
+#else
+    void *m = mmap(NULL, size, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+#endif
+    return m == MAP_FAILED ? NULL : m;
+}
+
+size_t plat_code_align(void) {
+#ifdef CODE_MAP_JIT
+    return 16;
+#else
+    return (size_t)sysconf(_SC_PAGESIZE);
+#endif
+}
+
+bool plat_code_write(void *at, const void *src, size_t n) {
+#ifdef CODE_MAP_JIT
+    pthread_jit_write_protect_np(0);
+    memcpy(at, src, n);
+    pthread_jit_write_protect_np(1);
+    sys_icache_invalidate(at, n);
+#else
+    size_t page = plat_code_align(), len = (n + page - 1) & ~(page - 1);
+    if (mprotect(at, len, PROT_READ | PROT_WRITE)) return false;
+    memcpy(at, src, n);
+    if (mprotect(at, len, PROT_READ | PROT_EXEC)) return false;
+    __builtin___clear_cache((char *)at, (char *)at + n);
+#endif
+    return true;
+}
+
+void plat_code_free(void *region, size_t size) { munmap(region, size); }
 #else
 typedef int mlwsvm_posix_unused; /* ISO C forbids an empty translation unit */
 #endif

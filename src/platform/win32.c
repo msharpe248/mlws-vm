@@ -229,6 +229,12 @@ void plat_cond_broadcast(PlatCond *c) { WakeAllConditionVariable(&c->c); }
 
 void plat_thread_detach(PlatThread *t) { CloseHandle(t->h); }
 
+/* No JIT on Windows (src/vm/jit.inc): no memory for machine code. */
+void *plat_code_reserve(size_t size) { return (void)size, NULL; }
+bool plat_code_write(void *at, const void *src, size_t n) { return (void)at, (void)src, (void)n, false; }
+void plat_code_free(void *region, size_t size) { (void)region, (void)size; }
+size_t plat_code_align(void) { return 16; }
+
 void *plat_dlopen(const char *path, char *err, size_t errlen) {
     HMODULE h = path ? LoadLibraryA(path) : GetModuleHandleA(NULL);
     if (!h && err) snprintf(err, errlen, "LoadLibrary failed (error %lu)", (unsigned long)GetLastError());

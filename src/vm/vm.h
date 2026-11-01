@@ -97,10 +97,16 @@ typedef struct Function {
      * register k of that bank; R is always cleared): what makes the run
      * longer, shown by the profiler. */
     uint32_t read_first[NBANKS];
-    /* The JIT's (interp.c, jit.inc): each instruction's machine-code entry, or
-     * NULL, and its quickened form; both NULL when it compiled nothing. */
+    /* The JIT's (interp.c, jit.inc, docs/JIT.md): each instruction's
+     * machine-code entry, or NULL (NULL until compiled); each instruction's
+     * quickened form, under Q_JIT and Q_JITC; calls and loop iterations
+     * towards compiling it; its instructions with machine code; JIT_COMPILED,
+     * JIT_NONE (nothing to compile, or no room), or 0. */
     void **jit_entry;
     uint16_t *jit_xop;
+    uint32_t jit_count;
+    uint32_t jit_native;
+    uint8_t jit_state;
 } Function;
 
 enum { LM_LOADING = 1, LM_READY = 2, LM_FAILED = 3 }; /* FAILED: a load at run time that did not link */
@@ -262,6 +268,14 @@ typedef struct VM {
     OptConfig opt;               /* --opt: the passes; none by default */
     OptReport *opt_report;       /* what they did, if --opt-report (or a test) asks */
     char *opt_report_path;       /* --opt-report FILE, or "-" for stderr: written by vm_free */
+    /* the JIT (interp.c, jit.inc, docs/JIT.md) */
+    uint8_t jit_mode;            /* --jit: JIT_MODE_OFF, _ON (hot functions) or _ALL (every function, at load) */
+    uint32_t jit_hot;            /* --jit-hot: calls or loop iterations before a function is compiled */
+    char *jit_report_path;       /* --jit-report FILE, or "-": written by vm_free */
+    bool jit_stats;              /* count entries, steps and stops (a test's expect-jit) */
+    bool jit_failed;             /* no code memory */
+    struct Jit *jit;             /* its code memory, once something is compiled */
+    struct PlatLock *jit_lock;   /* compiling */
     int cache_state;             /* 0 not looked at yet, 1 cache_dir in use, -1 off */
     char *cache_dir;
     bool warned_unsafe;
@@ -650,7 +664,14 @@ int interp_run(Process *p, uint32_t budget); /* SLICE_* */
 /* Pick a specialised handler for common instruction shapes (after verification). */
 void interp_quicken(Insn *in);
 void interp_quicken_function(Function *f);
-void interp_jit_function(Function *f); /* after quickening: machine code, with MLWSVM_JIT */
+/* The JIT (jit.inc, docs/JIT.md). */
+enum { JIT_MODE_OFF, JIT_MODE_ON, JIT_MODE_ALL };
+#define JIT_HOT_DEFAULT 1000
+void interp_jit_function(VM *vm, Function *f); /* after quickening: compile it, or count towards it */
+void interp_jit_free(VM *vm);
+void interp_jit_report(VM *vm, FILE *out);
+bool interp_jit_available(void); /* in this build, on this machine */
+uint64_t interp_jit_steps(const VM *vm);
 /* Push a frame running closure cl with its arguments bound (proc_callback). */
 void interp_enter(Process *p, ObjClosure *cl, const Word *args);
 

@@ -57,6 +57,15 @@ void plat_cond_broadcast(PlatCond *c);
 int plat_cpu_count(void);
 void plat_thread_detach(PlatThread *t); /* let it run on; its resources go when it ends */
 
+/* Memory for machine code (the JIT, src/vm/jit.inc): a region reserved once,
+ * into which pieces of code are written and then made executable, never
+ * writable and executable at once. Each piece starts at a multiple of
+ * plat_code_align() and is not written again. */
+void *plat_code_reserve(size_t size); /* NULL: none to be had */
+bool plat_code_write(void *at, const void *src, size_t n);
+void plat_code_free(void *region, size_t size);
+size_t plat_code_align(void);
+
 /* Shared libraries (native extensions and the FFI). */
 void *plat_dlopen(const char *path, char *err, size_t errlen); /* NULL: the program's own symbols */
 void *plat_dlsym(void *lib, const char *name);

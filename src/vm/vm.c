@@ -55,6 +55,8 @@ VM *vm_new(void) {
     const char *unsafe = getenv("MLWSVM_UNSAFE_NATIVE");
     vm->unsafe_native = unsafe && *unsafe && strcmp(unsafe, "0") != 0;
     vm->out_lock = plat_lock_new();
+    vm->jit_lock = plat_lock_new();
+    vm->jit_hot = JIT_HOT_DEFAULT;
     op_init();
     natives_register_builtin(vm);
     return vm;
@@ -113,8 +115,21 @@ void vm_free(VM *vm) {
         fprintf(stderr, "mlwsvm: a blocking native call did not return; leaving it running\n");
         return;
     }
+    if (vm->jit_report_path) {
+        bool to_err = !strcmp(vm->jit_report_path, "-");
+        FILE *f = to_err ? stderr : fopen(vm->jit_report_path, "w");
+        if (f) {
+            fflush(stdout);
+            interp_jit_report(vm, f);
+            if (!to_err) fclose(f);
+        } else {
+            fprintf(stderr, "mlwsvm: cannot write the JIT's report to %s\n", vm->jit_report_path);
+        }
+        free(vm->jit_report_path);
+    }
     ext_free_all(vm);
     for (size_t i = 0; i < vm->mods.n; i++) lmodule_free(vm->mods.v[i]);
+    interp_jit_free(vm);
     VEC_FREE(vm->mods);
     smap_free(&vm->modmap);
     for (size_t i = 0; i < vm->archives.n; i++) lib_free(vm->archives.v[i]);
@@ -153,6 +168,7 @@ void vm_free(VM *vm) {
     plat_lock_free(vm->lock);
     plat_lock_free(vm->mods_lock);
     plat_lock_free(vm->out_lock);
+    plat_lock_free(vm->jit_lock);
     free(vm);
 }
 

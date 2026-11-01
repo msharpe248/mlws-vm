@@ -11,13 +11,14 @@
 
 typedef enum {
     OPT_STACK_WORDS, OPT_THREADS, OPT_MAX_FRAMES, OPT_SLICE, OPT_GC_MIN, OPT_QUOTA, OPT_EXT_PATH, OPT_LIB_PATH,
-    OPT_OPT, OPT_OPT_REPORT,
+    OPT_OPT, OPT_OPT_REPORT, OPT_JIT, OPT_JIT_HOT, OPT_JIT_REPORT,
     OPT__COUNT
 } OptId;
 
 static const char *const OPT_NAMES[OPT__COUNT] = {"stack-words", "threads", "max-frames", "slice",
                                                   "gc-min",      "quota",   "ext-path", "lib-path",
-                                                  "opt",         "opt-report"};
+                                                  "opt",         "opt-report", "jit",      "jit-hot",
+                                                  "jit-report"};
 
 static int opt_find(const char *name) {
     for (int i = 0; i < OPT__COUNT; i++)
@@ -157,6 +158,20 @@ bool vm_set_option(VM *vm, const char *name, const char *value, MlwsError *err) 
         free(vm->opt_report_path);
         vm->opt_report_path = xstrdup(value);
         if (!vm->opt_report) vm->opt_report = xcalloc(1, sizeof *vm->opt_report);
+        return true;
+    case OPT_JIT: /* off, on (hot functions), all (every function as it is loaded); 0 and 1 too */
+        if (!strcmp(value, "off") || !strcmp(value, "0")) vm->jit_mode = JIT_MODE_OFF;
+        else if (!strcmp(value, "on") || !strcmp(value, "1")) vm->jit_mode = JIT_MODE_ON;
+        else if (!strcmp(value, "all")) vm->jit_mode = JIT_MODE_ALL;
+        else return mlws_err(err, "E_BAD_OPTION", "--jit: expected off, on or all, got '%s'", value), false;
+        return true;
+    case OPT_JIT_HOT:
+        if (!parse_range(name, value, false, 1, UINT32_MAX, &n, err)) return false;
+        vm->jit_hot = (uint32_t)n;
+        return true;
+    case OPT_JIT_REPORT: /* where vm_free writes what the JIT did */
+        free(vm->jit_report_path);
+        vm->jit_report_path = xstrdup(value);
         return true;
     default: return mlws_err(err, "E_BAD_OPTION", "unknown option --%s", name), false;
     }
