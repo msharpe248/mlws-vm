@@ -54,6 +54,8 @@ typedef struct {
     uint32_t hleft;    /* with a tool's hook: instructions left (the handlers' `left` stays 0) */
     bool hooked;
     uint64_t retv[MAX_OPERANDS]; /* values returned from machine code to machine code (jit.inc) */
+    const Insn *jnext; /* jit_step's: where to go on (jit.inc) */
+    int jstatus;
 #endif
 } Ctx;
 

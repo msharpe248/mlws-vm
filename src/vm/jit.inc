@@ -331,6 +331,44 @@ static bool jit_handles(uint16_t x) {
     }
 }
 
+/* An instruction the JIT does not compile is still run from the machine code
+ * (`stepped`), by its own handler: called with no slice left, a handler runs
+ * its instruction and stops before the next (h_slice). Except yield and sleep,
+ * whose stop is the point. */
+static bool jit_steps(const Insn *in, uint16_t x) {
+    return !jit_handles(x) && in->op != OP_YIELD && in->op != OP_SLEEP && in->op != OP_BREAK;
+}
+
+typedef struct {
+    void *native;  /* the machine code to go on in, or NULL: stop (at Ctx.jnext, or with Ctx.jstatus if NULL) */
+    uint64_t left;
+} JitStep;
+
+static JitStep jit_step(Ctx *c, const Insn *in, uint32_t left) {
+    Process *p = c->p;
+    ctx_load(c);
+    c->code = c->fr->fn->code;
+    uint64_t ib = c->ibase;
+    c->ibase = ib - left; /* the handler's count, with no slice left, as the interpreter's */
+    uint16_t x = in->xop == Q_JIT ? c->fr->fn->jit_xop[in - c->code] : in->xop;
+#if QWIDE
+    int st = qhandlers[x](c, in, 0, c->I, c->F, c->R, c->fr, c->code);
+#else
+    int st = qhandlers[x](c, in, 0, c->I, c->F, c->R);
+#endif
+    c->ibase = ib;
+    uint64_t nl = p->insns <= ib ? ib - p->insns : 0;
+    if (st != SLICE_YIELD) { /* done, blocked, failed, ...: as the handler says */
+        c->jnext = NULL, c->jstatus = st;
+        return (JitStep){NULL, nl};
+    }
+    ctx_load(c); /* on wherever it left off: the next instruction, or a branch's target or a callee */
+    const Function *fn = c->fr->fn;
+    uint32_t npc = c->fr->pc;
+    c->jnext = fn->code + npc;
+    return (JitStep){fn->jit_entry ? fn->jit_entry[npc] : NULL, nl};
+}
+
 /* ---- set-up: the code memory, and the entry and exit ---- */
 static uint32_t *jit_alloc(size_t words) {
     size_t bytes = (words * 4 + 15) & ~(size_t)15;
@@ -1338,7 +1376,7 @@ static void jit_insn(JBuf *b, JFixes *fx, JCache *jc, const Function *f, const I
  * would be slower than the interpreter alone. */
 #define JIT_RUN_MIN 16
 static bool jit_worth_entering(const Function *f, const uint16_t *xop, uint32_t L, uint8_t *mark, uint32_t *stack) {
-    uint32_t n = f->ncode, sp = 0, seen = 0;
+    uint32_t n = f->ncode, sp = 0, seen = 0, stepped = 0;
     bool loop = false;
     memset(mark, 0, n);
     stack[sp++] = L;
@@ -1347,7 +1385,8 @@ static bool jit_worth_entering(const Function *f, const uint16_t *xop, uint32_t 
         uint32_t pc = stack[sp - 1];
         uint32_t succ[2], ns = 0;
         uint16_t x = xop[pc];
-        if (!jit_ends_block(x)) succ[ns++] = pc + 1;
+        if (!jit_handles(x)) succ[ns++] = pc + 1; /* stepped: on to the next, if it does not branch */
+        else if (!jit_ends_block(x)) succ[ns++] = pc + 1;
         else if (x == Q_CALL_R || x == Q_CALL_RK || x == Q_CALLI_R || x == Q_CALLI_RK || x == Q_TCALL_R || x == Q_JTAB ||
                  x == Q_TCALLI_R)
             loop = true; /* (it goes on in the callee's machine code, if it has some; a jtab: in any case) */ /* (it goes on in the callee's machine code, if it has some) */
@@ -1358,17 +1397,18 @@ static bool jit_worth_entering(const Function *f, const uint16_t *xop, uint32_t 
         bool pushed = false;
         for (uint32_t k = 0; k < ns && !pushed; k++) {
             uint32_t t = succ[k];
-            if (t >= n || !jit_handles(xop[t])) continue;
+            if (t >= n || (!jit_handles(xop[t]) && !jit_steps(&f->code[t], xop[t]))) continue;
             if (mark[t] == 1) loop = true;
             if (mark[t]) continue;
             mark[t] = 1;
             stack[sp++] = t;
-            seen++;
+            if (jit_handles(xop[t])) seen++;
+            else stepped++;
             pushed = true;
         }
         if (!pushed) mark[pc] = 2, sp--;
     }
-    return loop || seen + 1 >= JIT_RUN_MIN;
+    return (loop || seen + 1 >= JIT_RUN_MIN) && seen + 1 >= 2 * stepped; /* (a step costs as much as an entry) */
 }
 
 static void jit_compile(Function *f) {
@@ -1398,6 +1438,7 @@ static void jit_compile(Function *f) {
         }
     }
     for (uint32_t pc = n; pc-- > 0;) {
+        if (jit_steps(&f->code[pc], xop[pc])) rest[pc] = 1;
         if (!jit_handles(xop[pc])) continue;
         bool last = pc + 1 >= n || lead[pc + 1] || !jit_handles(xop[pc + 1]) || jit_ends_block(xop[pc]);
         rest[pc] = last ? 1 : rest[pc + 1] + 1;
@@ -1416,6 +1457,25 @@ static void jit_compile(Function *f) {
     uint32_t nnat = 0;
     for (uint32_t pc = 0; pc < n; pc++) {
         body[pc] = (uint32_t)b.n;
+        if (jit_steps(&f->code[pc], xop[pc])) { /* a block of its own: counted, then run by its handler */
+            jw(&b, a_subs_wi(WL, WL, 1));
+            jbranch(&b, &fx, FX_BCOND, C_LO, TO_UNDO, pc);
+            jw(&b, a_mov_x(0, XC));
+            a_movk64(&b, 1, (uint64_t)(uintptr_t)&f->code[pc]);
+            jw(&b, a_mov_w(2, WL));
+            a_movk64(&b, 16, (uint64_t)(uintptr_t)jit_step);
+            jw(&b, a_blr(16));
+            jw(&b, a_mov_w(WL, 1));
+            jw(&b, 0xB4000000u | 6u << 5 | 0); /* cbz x0: stop */
+            jw(&b, a_ldr_x(XFR, XC, C_OFF(fr)));
+            jw(&b, a_ldr_x(XI, XC, C_OFF(I)));
+            jw(&b, a_ldr_x(XF, XC, C_OFF(F)));
+            jw(&b, a_ldr_x(XR, XC, C_OFF(R)));
+            jw(&b, a_br(0));
+            jw(&b, a_ldr_x(0, XC, C_OFF(jnext)));
+            jbranch(&b, &fx, FX_B, 0, TO_EXIT, 0);
+            continue;
+        }
         if (!jit_handles(xop[pc])) { /* the interpreter's: stop here */
             a_movk64(&b, 0, (uint64_t)(uintptr_t)&f->code[pc]);
             jbranch(&b, &fx, FX_B, 0, TO_EXIT, 0);
@@ -1441,7 +1501,7 @@ static void jit_compile(Function *f) {
         jbranch(&b, &fx, FX_B, 0, TO_EXIT, 0);
     }
     for (uint32_t pc = 0; pc < n; pc++) { /* give the count back and stop before pc */
-        if (!jit_handles(xop[pc])) continue;
+        if (!jit_handles(xop[pc]) && !jit_steps(&f->code[pc], xop[pc])) continue;
         undo[pc] = (uint32_t)b.n;
         jw(&b, a_add_wi(WL, WL, rest[pc]));
         a_movk64(&b, 0, (uint64_t)(uintptr_t)&f->code[pc]);
@@ -1473,6 +1533,9 @@ static void jit_compile(Function *f) {
             ent[pc] = at + body[pc]; /* for calls from machine code */
             if (jit_worth_entering(f, xop, pc, mark, stack)) f->code[pc].xop = Q_JIT;
         }
+        for (uint32_t pc = 0; pc < n; pc++) {
+            if (jit_steps(&f->code[pc], xop[pc])) ent[pc] = at + body[pc];
+        }
         free(mark), free(stack);
         f->jit_xop = xop;
         f->jit_entry = ent;
@@ -1501,7 +1564,7 @@ static QCC int h_Q_JIT(QPARAMS) {
     const Function *fn = QFRAME->fn;
     if (c->hooked) MUSTTAIL return qhandlers[fn->jit_xop[pc]](QARGS); /* a tool sees each instruction */
     JitExit r = jit_enter(c, left + 1, fn->jit_entry[pc]);
-    if (jit_mode == 2) {
+    if (jit_mode == 2 && r.in) {
         jit_entries++, jit_ran += left + 1 - (uint32_t)r.left;
         const Process *pp = c->p;
         const Function *sf = pp->frames[pp->nframes - 1].fn;
@@ -1509,10 +1572,11 @@ static QCC int h_Q_JIT(QPARAMS) {
         jit_stops[sx]++, jit_stop_op[sx] = r.in->op;
     }
     left = (uint32_t)r.left;
+    const Insn *nx = r.in;
+    if (!nx) return c->jstatus; /* a stepped instruction ended the slice (its handler's state is the process's) */
     ctx_load(c); /* the machine code kept the frame and windows to itself */
     I = c->I, F = c->F, R = c->R;
     QSETFRAME();
-    const Insn *nx = r.in;
     if (__builtin_expect(left == 0, 0)) MUSTTAIL return h_slice(QARGSN(nx));
     left--;
     uint16_t x = nx->xop;
