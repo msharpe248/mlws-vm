@@ -47,6 +47,7 @@ static uint64_t jit_nfuncs, jit_ninsns, jit_nnative, jit_bytes;
 static uint64_t jit_entries, jit_ran; /* MLWSVM_JIT=2: entries into machine code, instructions run there */
 static uint64_t jit_stops[Q__COUNT]; /* MLWSVM_JIT=2: what the machine code stopped at, by form */
 static uint16_t jit_stop_op[Q__COUNT];
+static uint64_t jit_steps_by[Q__COUNT], jit_nsteps; /* MLWSVM_JIT=2: instructions stepped, by form */
 
 enum { XC = 19, XI = 20, XF = 21, XR = 22, WL = 23, XFR = 24, XP = 25, XM = 26, T0 = 9, T1 = 10, T2 = 11 };
 #define XZR 31
@@ -323,6 +324,13 @@ static bool jit_handles(uint16_t x) {
     case Q_ISA: case Q_LDV_E: case Q_LDV_ED: case Q_LDV_EK:
     case Q_SQRT_F: case Q_SQRT_FF: case Q_NEG_F: case Q_NEG_FF: case Q_ABS_F: case Q_ABS_FF:
     case Q_LDU_I: case Q_LDU_F: case Q_LDU_R: case Q_STU_I: case Q_STU_F: case Q_STU_R: case Q_STFK:
+    case Q_SEQ_RR: case Q_SNE_RR: case Q_SEQ_RK: case Q_SNE_RK: case Q_MGET_R:
+#define X(N, o) case Q_##N##_FF: case Q_##N##_FK:
+        QSET_OPS(X)
+#undef X
+#define X(N, e) case Q_##N##_III: case Q_##N##_IIK: case Q_##N##_II: case Q_##N##_IK:
+        QSHIFT_OPS(X)
+#undef X
     case Q_LDED_I: case Q_LDED_F: case Q_LDED_R: case Q_STED_I: case Q_STED_F: case Q_STED_R:
     case Q_LDE_I: case Q_LDE_F: case Q_LDE_R: case Q_STE_I: case Q_STE_F: case Q_STE_R:
     case Q_LDEK_I: case Q_LDEK_F: case Q_LDEK_R: case Q_STEK_I: case Q_STEK_F: case Q_STEK_R:
@@ -351,6 +359,7 @@ static JitStep jit_step(Ctx *c, const Insn *in, uint32_t left) {
     uint64_t ib = c->ibase;
     c->ibase = ib - left; /* the handler's count, with no slice left, as the interpreter's */
     uint16_t x = in->xop == Q_JIT ? c->fr->fn->jit_xop[in - c->code] : in->xop;
+    if (jit_mode == 2) jit_nsteps++, jit_steps_by[x]++, jit_stop_op[x] = in->op;
 #if QWIDE
     int st = qhandlers[x](c, in, 0, c->I, c->F, c->R, c->fr, c->code);
 #else
@@ -408,6 +417,16 @@ static void jit_summary(void) {
     fprintf(stderr, "jit: %llu entries, %llu instructions run in machine code (%.1f per entry)\n",
             (unsigned long long)jit_entries, (unsigned long long)jit_ran,
             jit_entries ? (double)jit_ran / (double)jit_entries : 0.0);
+    fprintf(stderr, "jit: %llu instructions stepped\n", (unsigned long long)jit_nsteps);
+    for (int k = 0; k < 8; k++) {
+        int best = -1;
+        for (int x = 0; x < Q__COUNT; x++)
+            if (jit_steps_by[x] && (best < 0 || jit_steps_by[x] > jit_steps_by[best])) best = x;
+        if (best < 0) break;
+        fprintf(stderr, "  stepped %10llu times %s (form %d)\n", (unsigned long long)jit_steps_by[best],
+                op_info[jit_stop_op[best]].mnem, best);
+        jit_steps_by[best] = 0;
+    }
     for (int k = 0; k < 15; k++) {
         int best = -1;
         for (int x = 0; x < Q__COUNT; x++)
@@ -900,6 +919,19 @@ static int jit_index(JBuf *b, JCache *jc, const Insn *in, bool plus) {
     return 16;
 }
 
+/* Q_MGET_R's lookup, for the machine code: ok 0 is the handler's case. */
+typedef struct {
+    uint64_t val, ok;
+} JitWord;
+static JitWord jit_mget(const Obj *ob, const Insn *in) {
+    if (!ob || ob->kind != OBJ_MAP) return (JitWord){0, 0};
+    Word key;
+    key.r = (Obj *)in->k.p;
+    const MapEntry *e = map_find((ObjMap *)ob, key, T_R);
+    if (e) return e->vtag == T_R ? (JitWord){(uint64_t)(uintptr_t)e->val.r, 1} : (JitWord){0, 0};
+    return in->nops < 4 ? (JitWord){0, 0} : (JitWord){0, 1};
+}
+
 static void jit_const_f(JBuf *b, int d, double f) {
     uint64_t bits;
     memcpy(&bits, &f, 8);
@@ -1038,6 +1070,47 @@ static void jit_insn(JBuf *b, JFixes *fx, JCache *jc, const Function *f, const I
     case Q_RET_R: case Q_RET_RK: jc_flush(b, jc); jit_ret(b, fx, in, pc); return;
     case Q_TCALL_R: jc_flush(b, jc); jit_tcall(b, fx, f, in, pc); return;
     case Q_TCALLI_R: jc_flush(b, jc); jit_tcalli(b, fx, in, pc); return;
+    case Q_MGET_R:
+        jc_flush(b, jc);
+        jw(b, a_ldr_x(0, XR, in->r[1] * 8u));
+        a_movk64(b, 1, (uint64_t)(uintptr_t)in);
+        a_movk64(b, 16, (uint64_t)(uintptr_t)jit_mget);
+        jw(b, a_blr(16));
+        jside(b, fx, jc, FX_CB, 0xB4000000u | 1, pc); /* cbz x1 */
+        jw(b, a_str_x(0, XR, in->r[0] * 8u));
+        return;
+    case Q_SEQ_RR: case Q_SNE_RR: case Q_SEQ_RK: case Q_SNE_RK:
+        jw(b, a_ldr_x(T0, XR, in->r[1] * 8u));
+        if (x == Q_SEQ_RR || x == Q_SNE_RR) jw(b, a_ldr_x(T1, XR, in->r[2] * 8u));
+        else a_movk64(b, T1, (uint64_t)(uintptr_t)in->k.p);
+        d = jc_def(b, jc, 0, in->r[0]);
+        jw(b, a_cmp(T0, T1));
+        jw(b, a_cset(d, x == Q_SEQ_RR || x == Q_SEQ_RK ? C_EQ : C_NE));
+        return;
+#define X(N, c)                                                                \
+    case Q_##N##_FF: case Q_##N##_FK:                                          \
+        s1 = jc_get(b, jc, 1, in->r[1]);                                       \
+        if (x == Q_##N##_FK) jit_const_f(b, 1, in->k.f), s2 = 1;               \
+        else s2 = jc_get(b, jc, 1, in->r[2]);                                  \
+        d = jc_def(b, jc, 0, in->r[0]);                                        \
+        jw(b, a_fcmp(s1, s2));                                                 \
+        jw(b, a_cset(d, c));                                                   \
+        return;
+        X(SEQ, C_EQ) X(SNE, C_NE) X(SLT, C_MI) X(SLE, C_LS) X(SGT, C_GT) X(SGE, C_GE)
+#undef X
+#define X(N, op)                                                               \
+    case Q_##N##_III: case Q_##N##_IIK: case Q_##N##_II: case Q_##N##_IK: {    \
+        bool three = x == Q_##N##_III || x == Q_##N##_IIK;                     \
+        bool kk = x == Q_##N##_IIK || x == Q_##N##_IK;                         \
+        s1 = jc_get(b, jc, 0, in->r[three ? 1 : 0]);                           \
+        if (kk) a_movk64(b, T1, (uint64_t)in->k.i), s2 = T1;                   \
+        else s2 = jc_get(b, jc, 0, in->r[three ? 2 : 1]);                      \
+        d = jc_def(b, jc, 0, in->r[0]);                                        \
+        jw(b, a_rrr(op, d, s1, s2)); /* (the count modulo 64, as shiftop) */   \
+        return;                                                                \
+    }
+        X(SHL, 0x9AC02000u) X(SHR, 0x9AC02400u) X(SAR, 0x9AC02800u)
+#undef X
     case Q_LDU_I: case Q_LDU_F: case Q_LDU_R: case Q_STU_I: case Q_STU_F: case Q_STU_R: {
         /* a capture of the frame's closure (UP[u]): of the instruction's type, for a load */
         bool load = x <= Q_LDU_R;
@@ -1375,6 +1448,7 @@ static void jit_insn(JBuf *b, JFixes *fx, JCache *jc, const Function *f, const I
  * interpreter, so a short run between two instructions the interpreter runs
  * would be slower than the interpreter alone. */
 #define JIT_RUN_MIN 16
+#define JIT_STEP_COST 32
 static bool jit_worth_entering(const Function *f, const uint16_t *xop, uint32_t L, uint8_t *mark, uint32_t *stack) {
     uint32_t n = f->ncode, sp = 0, seen = 0, stepped = 0;
     bool loop = false;
@@ -1408,7 +1482,9 @@ static bool jit_worth_entering(const Function *f, const uint16_t *xop, uint32_t 
         }
         if (!pushed) mark[pc] = 2, sp--;
     }
-    return (loop || seen + 1 >= JIT_RUN_MIN) && seen + 1 >= 2 * stepped; /* (a step costs as much as an entry) */
+    /* A step costs about as much as 20 instructions in the interpreter, and
+     * the machine code saves about half of each instruction's cost. */
+    return (loop || seen + 1 >= JIT_RUN_MIN) && seen + 1 >= JIT_STEP_COST * stepped;
 }
 
 static void jit_compile(Function *f) {
