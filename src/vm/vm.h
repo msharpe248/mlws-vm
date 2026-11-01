@@ -100,12 +100,14 @@ typedef struct Function {
     /* The JIT's (interp.c, jit.inc, docs/JIT.md): each instruction's
      * machine-code entry, or NULL (NULL until compiled); each instruction's
      * quickened form, under Q_JIT and Q_JITC; calls and loop iterations
-     * towards compiling it; its instructions with machine code; JIT_COMPILED,
-     * JIT_NONE (nothing to compile, or no room), or 0. */
+     * towards compiling it; its instructions with machine code, and loops
+     * with their registers in machine registers; JIT_COMPILED, JIT_NONE
+     * (nothing to compile, or no room), or 0. */
     void **jit_entry;
     uint16_t *jit_xop;
     uint32_t jit_count;
     uint32_t jit_native;
+    uint16_t jit_loops;
     uint8_t jit_state;
 } Function;
 

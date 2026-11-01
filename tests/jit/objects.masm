@@ -21,6 +21,7 @@
 ; With --jit all the machine code is entered at every block, so each
 ; function runs in it when called from machine code.
 ; option: --jit all
+; no-opt: expect-jit counts the instructions as written
 ; expect-jit: compiled walk 29
 ; expect-jit: compiled globals 18
 ; expect-jit: compiled build 9

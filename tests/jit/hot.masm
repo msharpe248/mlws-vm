@@ -8,6 +8,7 @@
 ;     interpreter's, so it goes on where it was);
 ; and every result is the interpreter's.
 ; option: --jit on
+; no-opt: expect-jit counts the instructions as written
 ; option: --jit-hot 10
 ; expect-jit: compiled warm 2
 ; expect-jit: compiled cold 0

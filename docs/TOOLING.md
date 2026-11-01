@@ -18,10 +18,11 @@ dashboard and a `top`-style terminal view.
 | Bindings generator | `mlwsvm bindgen [-l LIB] [-p PREFIX] [-o OUT] header.h` | — |
 | Libraries | `mlwsvm lib build DIR \| info FILE \| list` | — |
 | Optimizer | `mlwsvm opt -O2 prog.masm`, or `mlwsvm run --opt 2 prog.masm` ([OPTIMIZER.md](OPTIMIZER.md)) | none |
+| JIT | `mlwsvm run --jit on [--jit-report -] prog.masm` ([JIT.md](JIT.md)) | none |
 
 The profiler, tracer and debugger use one per-instruction hook, which is
-installed only while one of them is active. A program run under them uses a
-single worker thread, so traces and profiles are deterministic and the debugger
+installed only while one of them is active. A program run under them is
+interpreted (the JIT compiles nothing), uses a single worker thread, so traces and profiles are deterministic and the debugger
 can stop the whole program. The monitor needs no hook: the first worker thread
 polls its socket about once a millisecond between time slices, and while it waits
 when idle, so the monitor needs no thread of its own. To answer a request it
@@ -128,6 +129,9 @@ a test file's own lines override both.
 | `--lib-path DIR[:DIR]` | (none) | more library directories (for modules and library archives), searched after the program's own |
 | `--opt LIST` | `0` (off) | optimize every module as it is loaded: a level `0` to `3`, and passes to add or (`-name`) leave out, e.g. `2`, `3`, `3,tailcall`, `fold,dce` ([OPTIMIZER.md](OPTIMIZER.md)) |
 | `--opt-report FILE\|-` | (none) | when the run ends, write the optimizer's report of the modules it loaded to FILE (`-`: stderr) |
+| `--jit off\|on\|all` | `off` | machine code for each function once it is hot (`on`), or for every function as it is loaded, entered at every block (`all`, for tests); `0` and `1` too ([JIT.md](JIT.md)) |
+| `--jit-hot N` | 1000 | with `--jit on`, the calls and loop iterations after which a function is compiled |
+| `--jit-report FILE\|-` | (none) | when the run ends, write what the JIT compiled, and where its machine code stopped for the interpreter, to FILE (`-`: stderr) |
 
 Sizes take an optional `K`, `M` or `G` suffix (powers of 1024). A bad value is
 an error (exit code 2) on the command line, a failing test in a test file, and a

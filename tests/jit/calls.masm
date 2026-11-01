@@ -18,6 +18,7 @@
 ;   * a generator coroutine whose body runs in machine code between yields.
 ; With --jit all the machine code is entered at every block.
 ; option: --jit all
+; no-opt: expect-jit counts the instructions as written
 ; expect-jit: compiled sum 6
 ; expect-jit: compiled even 5
 ; expect-jit: compiled spin 5

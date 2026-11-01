@@ -1,0 +1,157 @@
+; A loop whose instructions are all compiled and call nothing keeps its I
+; and F registers in machine registers from one iteration to the next
+; (src/vm/jit.inc, jit_loops): loaded on the way in, written back on every
+; way out. Each must give the interpreter's results (the expected lines):
+;   * a loop of one block, and of several blocks with branches out of the
+;     middle (each way out writes the registers back);
+;   * a side exit inside a loop that traps: the handler sees the registers
+;     the loop had set;
+;   * a slice of 7 instructions, so the machine code stops at blocks inside
+;     loops and the interpreter enters them again there (each such block has
+;     its own way in, which loads the loop's registers);
+;   * nested loops (the inner keeps its registers), floats, and generic
+;     instructions with captures inside a closure's loop, with a capture of
+;     another type (a side exit to the interpreter's conversion or error).
+; Each loop has at most five I registers, as many as x86-64 keeps (arm64
+; keeps 16). With --jit all the machine code is entered at every block.
+; option: --jit all
+; no-opt: expect-jit counts the instructions as written
+; expect-jit: loops one 1
+; expect-jit: loops middle 1
+; expect-jit: loops trapped 1
+; expect-jit: loops nested 1
+; expect-jit: loops floats 1
+; expect-jit: loops addup 1
+; option: --slice 7
+; expect-stdout: one 4999950000
+; expect-stdout: middle 1242 46 7
+; expect-stdout: middle -1 997 0
+; expect-stdout: trapped E_BOUNDS 10 45
+; expect-stdout: nested 249500250000
+; expect-stdout: floats 1.6439345666815615 1000
+; expect-stdout: captures 504500 E_TYPE
+.include "std/io.inc"
+
+; One block: sum 0 .. n-1.
+.func one(i64 n) -> i64
+    mov I1, 0
+    mov I2, 0
+1:  add I1, I2
+    inc I2
+    blt I2, n, 1b
+    ret I1
+.endf
+
+; Several blocks, with a branch out of the loop's middle when the sum passes
+; a limit, and another when i is a multiple of 997 past the start.
+.func middle(i64 n, i64 limit) -> (i64, i64, i64)
+    mov I2, 0
+    mov I3, 1
+1:  add I2, I3
+    bgt I2, limit, 2f                  ; out of the middle
+    rem I4, I3, 997
+    bz I4, 3f                          ; out of the middle, another way
+    mul I4, I3, 3
+    and I4, 7
+    add I2, I4
+    inc I3
+    blt I3, n, 1b
+    ret I2, I3, I4
+2:  ret I2, I3, I4
+3:  mov I2, -1
+    ret I2, I3, I4
+.endf
+
+; A trap in the loop: l[i] past the end; the handler reads i and the sum.
+.func trapped(ref l) -> (ref, i64, i64)
+    mov I1, 0
+    mov I2, 0
+.try 2f
+1:  mov I3, l[I2]
+    add I1, I3
+    inc I2
+    jmp 1b
+.endtry
+2:  catch R1
+    ret R1->Error.code, I2, I1
+.endf
+
+; Nested loops: the sum of i*j for i, j below n.
+.func nested(i64 n) -> i64
+    mov I1, 0
+    mov I2, 0
+1:  mov I3, 0
+2:  mul I4, I2, I3
+    add I1, I4
+    inc I3
+    blt I3, n, 2b
+    inc I2
+    blt I2, n, 1b
+    ret I1
+.endf
+
+; Floats: the sum of 1/k^2 for k = 1 .. n.
+.func floats(i64 n) -> (f64, i64)
+    mov F1, 0.0
+    mov I1, 1
+1:  cvt.f64.i64 F2, I1
+    mul.f64 F3, F2, F2
+    div.f64 F4, 1.0, F3
+    add.f64 F1, F4
+    inc I1
+    ble I1, n, 1b
+    dec I1
+    ret F1, I1
+.endf
+
+; A closure's loop adding its capture (UP[0], an i64) n times, with the
+; generic add of a register and a capture.
+.func addup(i64 n) -> i64
+    mov I1, 0
+    mov I2, 0
+1:  add I1, I1, UP[0]
+    add I1, I2
+    inc I2
+    blt I2, n, 1b
+    ret I1
+.endf
+
+.func main
+    call one (100000) -> (I0)
+    PRINTLN "one", I0
+    call middle (100000, 1234) -> (I0, I1, I2)
+    PRINTLN "middle", I0, I1, I2
+    call middle (100000, 100000000) -> (I0, I1, I2)
+    PRINTLN "middle", I0, I1, I2
+    lnew R0
+    mov I0, 0
+1:  lpush R0, I0
+    inc I0
+    blt I0, 10, 1b
+    call trapped (R0) -> (R1, I0, I1)
+    PRINT_S "trapped "
+    ncall "io.print_s" (R1)
+    PRINTLN "", I0, I1
+    call nested (1000) -> (I0)
+    PRINTLN "nested", I0
+    call floats (1000) -> (F0, I0)
+    PRINT_S "floats "
+    PRINT_F F0
+    PRINTLN "", I0
+    closure addup (5) -> (R2)
+    calli R2 (1000) -> (I0)
+    closure addup (2.5) -> (R3)
+    mov R4, "none"
+.try 2f
+    calli R3 (1000) -> (I1)
+.endtry
+    jmp 3f
+2:  catch R5
+    mov R4, R5->Error.code
+3:  PRINT_S "captures "
+    PRINT_I I0
+    PRINT_S " "
+    ncall "io.print_s" (R4)
+    NL
+    ret 0
+.endf

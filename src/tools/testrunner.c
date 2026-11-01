@@ -17,6 +17,8 @@
  *                                                       command line; its own `; option: --opt` still applies)
  *   ; expect-jit: compiled <function> <n>            (repeatable: the JIT gave n of its instructions
  *                                                       machine code; checked where there is a JIT)
+ *   ; expect-jit: loops <function> <n>               (n of its loops keep their registers in
+ *                                                       machine registers)
  *   ; expect-jit: steps <n>                          (the machine code stepped n instructions)
  *
  * Directories whose name starts with '_' hold helper modules and are skipped.
@@ -214,7 +216,8 @@ static void check_jit(const Expect *e, VM *vm, StrBuf *why) {
         char name[128];
         long long want;
         const char *line = e->jit_want.v[k];
-        if (sscanf(line, "compiled %127s %lld", name, &want) == 2) {
+        bool loops = sscanf(line, "loops %127s %lld", name, &want) == 2;
+        if (loops || sscanf(line, "compiled %127s %lld", name, &want) == 2) {
             const Function *f = NULL;
             for (size_t i = 0; i < vm->mods.n && !f; i++) {
                 const LModule *lm = vm->mods.v[i];
@@ -222,13 +225,16 @@ static void check_jit(const Expect *e, VM *vm, StrBuf *why) {
                     if (!strcmp(lm->funcs[q].name, name)) f = &lm->funcs[q];
             }
             if (!f) sb_printf(why, "expect-jit: no function '%s'", name);
-            else if ((long long)f->jit_native != want)
+            else if (loops && (long long)f->jit_loops != want)
+                sb_printf(why, "expect-jit: %s has %u loops with their registers in machine registers, expected %lld", name,
+                          f->jit_loops, want);
+            else if (!loops && (long long)f->jit_native != want)
                 sb_printf(why, "expect-jit: %s has %u instructions with machine code, expected %lld", name, f->jit_native, want);
         } else if (sscanf(line, "steps %lld", &want) == 1) {
             if ((long long)interp_jit_steps(vm) != want)
                 sb_printf(why, "expect-jit: %llu instructions stepped, expected %lld", (unsigned long long)interp_jit_steps(vm), want);
         } else {
-            sb_printf(why, "bad '; expect-jit:' line: %s (expected compiled FUNCTION N, or steps N)", line);
+            sb_printf(why, "bad '; expect-jit:' line: %s (expected compiled FUNCTION N, loops FUNCTION N, or steps N)", line);
         }
     }
 }

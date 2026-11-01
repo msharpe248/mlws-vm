@@ -8,18 +8,20 @@
 ; the 64-bit limits; shifts by counts past 63 (taken modulo 64); division
 ; and remainder by constants of either sign (C's truncation); the float
 ; operations, sqrt, neg and abs, with -0.0 and NaN; conversions and bit
-; casts; compares into registers and branches, signed, unsigned and float (a
+; casts; compares into registers (the integer ones generic instructions the
+; JIT compiles itself) and branches, signed, unsigned and float (a
 ; NaN compares false, except for "not equal"); a jump table, in range and
 ; out of it; and a block with more live registers than the register cache
 ; has machine registers.
 ; With --jit all the machine code is entered at every block.
 ; option: --jit all
+; no-opt: expect-jit counts the instructions as written
 ; expect-jit: compiled ints 23
 ; expect-jit: compiled shifts 10
 ; expect-jit: compiled divs 10
 ; expect-jit: compiled floats 15
 ; expect-jit: compiled convert 7
-; expect-jit: compiled compare 18
+; expect-jit: compiled compare 22
 ; expect-jit: compiled branches 32
 ; expect-jit: compiled table 9
 ; expect-jit: compiled spill 74
@@ -129,7 +131,7 @@
 
 ; Compares into a register: signed, unsigned, float, references.
 .func compare(i64 a, i64 b, f64 x, f64 y, ref s) -> (i64, i64, i64, i64)
-    slt I2, a, b                       ; (the integer compares are stepped)
+    slt I2, a, b                       ; (generic: no quickened form, compiled from its operands)
     sle I3, a, a
     sgt I4, b, a
     sge.u64 I5, a, b                   ; -1 as unsigned is the largest
