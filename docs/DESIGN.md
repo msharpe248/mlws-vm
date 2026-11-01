@@ -665,15 +665,17 @@ bank. Among the shapes:
 * moves between registers, of constants, and of 64-bit globals;
 * compare-and-branch, null tests, `jmp`, `jtab`;
 * field and element loads and stores, closure captures (`UP[n]`);
-* calls, closure calls and returns, with registers or constants;
-* `new`, `lnew`, `lpush`, `len`, `mget`, `isa` and `bisa`, `cvt.f64.i64`.
+* calls, closure calls, tail calls and returns, with registers or constants;
+* `new`, `lnew`, `lpush`, `len`, `mget`, `isa` and `bisa`, `typeof`,
+  `cvt.f64.i64`, and `bitcast` between the `I` and `F` banks;
+* a list or array element at a constant index tested against a constant.
 
 A shape qualifies only when its generic meaning is trivially the same: no
 width canonicalisation, and no trap that cannot be checked cheaply. A
 handler that meets anything unusual (a null object, another struct type, an
 index out of range) hands the instruction to the generic form, which
 raises the usual error. The shapes were chosen from profiles of compiled
-Lox and Lua ([PERFORMANCE.md](PERFORMANCE.md#how-the-interpreter-is-made-fast)).
+Lox, Lua and Erlang ([PERFORMANCE.md](PERFORMANCE.md#how-the-interpreter-is-made-fast)).
 
 When the form is chosen, the operands the handler needs are copied into the
 `Insn` itself: register indices to `r[]`, a label to `target` (relative to
@@ -1916,7 +1918,7 @@ Windows implementation is written but untested
 
 ## 22. Testing
 
-**Tests are MLWSVM programs.** `tests/` holds the suite (303 programs) and
+**Tests are MLWSVM programs.** `tests/` holds the suite (304 programs) and
 `examples/` holds self-checking examples, all in documented assembly. The
 test runner reads expectations from comments in each file: expected output
 lines, exit code or error code; VM options; a debugger script; what the

@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M41 are complete. What remains is Windows (section 3) and the
+Milestones M0–M42 are complete. What remains is Windows (section 3) and the
 deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M41 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M42 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M41
+## Milestones M11–M42
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -63,6 +63,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M39 Loading modules at run time** (done) | `module.load` loads a module and its imports while the program runs, as an import of the calling module would (library versions, privacy, verification), and `module.function` gives closures for its exported functions; `module.loaded`, `module.exports`. Loaded modules stay until the VM ends. Processes started before a load get the new module's globals when they first use them; loads from many threads are serialized; a failed load leaves nothing half loaded; loading is an OS call for quotas | Loading from 16 processes on several threads at once, under ThreadSanitizer; a failed load retried; a process started before the load counting in its own copy of the module's global |
 | **M40 Several programs in one VM** (done) | `mlwsvm run a.masm args --also b.masm args`: each program's `main` is a process of its own, with its own `os.args`; every process belongs to its spawner's program; a program's processes stop when its `main` ends, and the run ends with the last program; each program finds its own modules in its own directory first, and the VM knows such a module by its directory and name, so programs from different directories may both have a `main` or a `util`; modules on the library path and library versions are shared, and versions are chosen against every program's `.requires` at once; programs share the name registry, so they can message each other; each waiting `main` gets `E_DEADLOCK`; each process's output goes out a whole line at a time, so programs' lines never mix | `make check-tools` runs five programs at once: messages between them, arguments, the exit status, a program's processes stopped when it ends; programs from two directories with same-named modules, `module.load` from one, the profiler telling them apart, a same-named clash in one directory, and versions chosen the same in either order. `tests/loader/program_local.masm`: a program's module and a library-path module of the same name, loaded side by side. `tests/processes/output_lines.masm`: lines built from several prints, with a switch between any two, come out whole |
 | **M41 The optimizer** (done) | `mlwsvm opt` (ahead of time) and `--opt` (every module as it loads, kept in the module cache): constant folding, constant and copy propagation, algebraic simplification, dead-code and unreachable-code removal, branch threading, inversion and decision, and peephole clean-up at `-O1`; unused functions and smaller register windows at `-O2`; inlining at `-O3`; tail calls only when named. Each pass can be turned on or off (`--opt 3,-inline`), and a report gives each pass's changes and each function's size, with `-v` a log of every change. Folding uses the interpreter's own arithmetic (`src/core/arith.h`); a write that may release an object, a store a handler can see, and anything that can trap are kept | `tests/opt/`: a test per pass, with exact counts (`; expect-opt:`, `; expect-insns:`) and results checked at run time. `make check-opt`: the whole suite with every pass, also with GC stress; `make check-tools`: every module re-encoded byte for byte, the report and the command line. The compilers' suites pass at `--opt 2`, also with GC stress |
+| **M42 Compiled Erlang's shapes** (done) | from the Erlang compiler's profiles: fast forms for `bitcast` between an `I` and an `F` register and of a literal, `typeof` of a register, `beq.r`/`bne.r` of an element at a constant index against a constant (a tuple's tag), and direct tail calls with register and constant arguments. Compiled Erlang's `nbody` and `binarytrees` take 29–39% less time and `sorting` 15–21% less, on the M5, i7 and Ryzen. Other programs run the same handlers, but with GCC their new places in the binary make some compiled Lox benchmarks up to 9% slower; with functions aligned to 64 bytes they are within 1% | `tests/perf/quickened_values.masm`: each form against the generic instruction, with the cases that go to it (another element type, an index past the end, null, a string, a far larger callee window, undeclared results) |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -210,6 +211,6 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 ## 5. The scripting language
 
 A separate project (`mlws-compilers`) that targets MLWSVM's assembly
-([TARGETING.md](TARGETING.md)): compilers for brainfuck, Lox and Lua. Their
-generated code drives the decisions in section 4, as it did for M24, M25,
-M29 and M41.
+([TARGETING.md](TARGETING.md)): compilers for brainfuck, Lox, Lua and
+Erlang. Their generated code drives the decisions in section 4, as it did for
+M24, M25, M29, M41 and M42.

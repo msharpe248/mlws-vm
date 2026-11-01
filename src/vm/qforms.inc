@@ -304,17 +304,8 @@
             uint64_t args[MAX_OPERANDS];
             const uint64_t *ow = QPRC->regs + QFRM->base;
             for (int k = 0; k < argc; k++) memcpy(&args[k], &ow[qo[2 + k].pad], 8);
-            /* The caller's quickened call copies the results straight across
-             * only if they suit this callee too. */
             const Insn *ri = QFRM->ret_insn;
-            uint8_t qret = QFRM->qret;
-            if (qret) {
-                int cargc = (int)ri->ops[1].imm, nres = ri->nops - 2 - cargc;
-                if (nres > mf->nrets || (nres && !(mf->flags & MF_RETS_DECLARED))) qret = 0;
-                for (int k = 0; k < nres && qret; k++)
-                    if (!wide_type(mf->rets[k]) || REG_BANK(ri->ops[2 + cargc + k].reg) != (int)type_bank((MlwsType)mf->rets[k]))
-                        qret = 0;
-            }
+            uint8_t qret = tail_qret(ri, QFRM->qret, mf);
             proc_pop_frame(QPRC);
             proc_push_frame_fitting(QPRC, fn, ri);
             Frame *nf = &QPRC->frames[QPRC->nframes - 1];
@@ -325,6 +316,40 @@
             for (int k = 0; k < argc; k++) {
                 uint32_t d;
                 switch (REG_BANK(qo[2 + k].reg)) {
+                case BANK_I: d = ni++; break;
+                case BANK_F: d = nfl++; break;
+                case BANK_R: d = nr++; break;
+                default: d = np++; break;
+                }
+                memcpy(&nw[d], &args[k], 8);
+            }
+            ctx_set(QCTX, nf, fn, nw);
+            RELOAD();
+            NEXT;
+        }
+        QCASE(Q_TCALL_R) {
+            /* A direct tail call, as Q_TCALLI_R: the callee's frame replaces
+             * this one. A constant argument's word is its operand's kw. */
+            const Operand *qo = in->ops;
+            Function *fn = qo[0].rv.ptr;
+            const MFunc *mf = fn->mf;
+            int argc = (int)qo[1].imm;
+            if (QFRM->base + fn->rsize > QPRC->rcap) GENERIC();
+            SPILL();
+            uint64_t args[MAX_OPERANDS];
+            const uint64_t *ow = QPRC->regs + QFRM->base;
+            for (int k = 0; k < argc; k++) memcpy(&args[k], qo[2 + k].mode == OM_REG ? &ow[qo[2 + k].pad] : &qo[2 + k].kw, 8);
+            const Insn *ri = QFRM->ret_insn;
+            uint8_t qret = tail_qret(ri, QFRM->qret, mf);
+            proc_pop_frame(QPRC);
+            proc_push_frame_fitting(QPRC, fn, ri);
+            Frame *nf = &QPRC->frames[QPRC->nframes - 1];
+            nf->qret = qret;
+            uint64_t *nw = QPRC->regs + nf->base;
+            uint32_t ni = 0, nfl = fn->roff[BANK_F], nr = fn->roff[BANK_R], np = fn->roff[BANK_P];
+            for (int k = 0; k < argc; k++) {
+                uint32_t d;
+                switch (type_bank((MlwsType)mf->params[k])) {
                 case BANK_I: d = ni++; break;
                 case BANK_F: d = nfl++; break;
                 case BANK_R: d = nr++; break;
@@ -486,6 +511,38 @@
                 GENERIC();
             NEXT;
         }
+        QCASE(Q_TYPEOF) {
+            const Obj *ob = QR[in->r[1]];
+            IR(0) = ob ? ob->kind : OBJ_NULL;
+            NEXT;
+        }
+        QCASE(Q_BITCAST_FI) memcpy(&FR(0), &IR(1), 8); NEXT;
+        QCASE(Q_BITCAST_IF) memcpy(&IR(0), &FR(1), 8); NEXT;
+/* R0[i] (i in r[1..2]) against the constant in k: a list element tagged r,
+ * or an element of an r array; anything else goes to the generic branch. */
+#define ELEM_REF_BRANCH(cmp)                                                  \
+        {                                                                     \
+            const Obj *ob = QR[in->r[0]];                                     \
+            uint32_t i = in->r[1] | (uint32_t)in->r[2] << 8;                  \
+            const Obj *v;                                                     \
+            if (!ob) GENERIC();                                               \
+            if (ob->kind == OBJ_LIST) {                                       \
+                const ObjList *l = (const ObjList *)ob;                       \
+                if (i >= l->len || l->tags[i] != T_R) GENERIC();              \
+                v = l->items[i].r;                                            \
+            } else if (ob->kind == OBJ_ARRAY) {                               \
+                const ObjArray *a = (const ObjArray *)ob;                     \
+                if (i >= a->len || a->elem != T_R) GENERIC();                 \
+                v = a->data[i].r;                                             \
+            } else {                                                          \
+                GENERIC();                                                    \
+            }                                                                 \
+            if (v cmp (const Obj *)in->k.p) JUMP();                           \
+            NEXT;                                                             \
+        }
+        QCASE(Q_BEQ_EKK) ELEM_REF_BRANCH(==)
+        QCASE(Q_BNE_EKK) ELEM_REF_BRANCH(!=)
+#undef ELEM_REF_BRANCH
         QCASE(Q_ISA) {
             const Obj *ob = QR[in->r[1]];
             QI[in->r[0]] = ob && ob->kind == OBJ_STRUCT && ((const ObjStruct *)ob)->def == in->k.p;

@@ -114,6 +114,32 @@ and `iterate` 12% less. The rest gain up to 6%. Code that spends its time in
 calls through closures, allocation and table checks has less for it to
 remove.
 
+### Compiled Erlang
+
+The Erlang compiler in `mlws-compilers`, also in development, makes each
+Erlang process an MLWSVM process and keeps each value in an `I` and an `R`
+register: a small integer in `I` with a null `R`, a float as its bits in `I`
+with a marker in `R`, or an object in `R`. Tuples are lists. Its benchmarks
+(`make bench` there), as whole runs in seconds, best of three on the M5,
+against Erlang/OTP 29 with its JIT running the same source (start-up
+included on both sides):
+
+| Benchmark | MLWSVM | Erlang/OTP 29 |
+|---|---|---|
+| fib | 0.04 | 0.08 |
+| ring | 0.33 | 0.26 |
+| binarytrees | 0.65 | 0.13 |
+| nbody | 1.31 | 0.14 |
+| sorting | 0.76 | 0.11 |
+
+BEAM compiles to machine code here, so its loops are not a fair match for an
+interpreter. `ring`, which passes a message round a ring of a thousand
+processes a thousand times, measures the scheduler and mailboxes more than
+code; most of what MLWSVM runs there is the compiler's selective receive,
+written in VM code around `recv`. In `nbody` every float operation unpacks
+and repacks a float's bits, and the values it keeps live outgrow the
+register banks, so some go to the stack.
+
 ### Against other virtual machines
 
 The same `fib` and `loop` programs on Lua 5.5, the JVM and CPython
@@ -184,7 +210,12 @@ it measured faster.
    and branch in one. A sixth: `lpush` with constants among its values, the
    shape of a table constructor's keys and values (each constant's word and
    type worked out at load time), which took 16% off compiled Lua's
-   `methods`. The profiler lists the
+   `methods`. A seventh, from the Erlang compiler's profiles: `bitcast`
+   between an `I` and an `F` register (the compiler keeps a float's bits in
+   an `I` register), `typeof` of a register, `beq.r`/`bne.r` of an element at
+   a constant index against a constant (a tuple's tag), and direct tail calls
+   with registers and constants as arguments. These took 29–39% off its
+   `binarytrees` and `nbody` and 15–21% off `sorting`. The profiler lists the
    instructions that still run generically, which is how these were chosen. A
    shape qualifies only when its generic semantics are trivially the same: no
    width canonicalisation, and no trap that cannot be checked cheaply. The disassembler, tracer, profiler and debugger see the real opcode.

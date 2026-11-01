@@ -1,0 +1,291 @@
+; The quickened forms added for compiled Erlang's code (M42 in src/vm/interp.c)
+; must behave exactly like the generic instructions:
+;   * bitcast between an I and an F register, both ways, and of a literal (a
+;     mov of its bits): every bit kept, a NaN's sign and payload too;
+;   * typeof of a register, for null and each kind of object;
+;   * beq.r and bne.r of an element at a constant index against a constant (a
+;     tuple's tag, an atom): a list element tagged r or an element of an r
+;     array; anything else (another element type, an index past the end, a
+;     null or a string) goes to the generic branch, which reads null from an
+;     untyped element and raises the usual errors;
+;   * a direct tail call (tcall) with register and constant arguments: the
+;     callee's frame replaces the caller's, the arguments read before the
+;     window is reused, the results copied straight across only if they suit
+;     the new callee, and no frames added however long the chain.
+.include "std/test.inc"
+
+.struct Pair
+    a: i64
+.ends
+
+.macro EXPECT_ERROR code, insn...
+.try .Lh\@
+    \insn
+.endtry
+    FAIL "an error was expected"
+.Lh\@:
+    catch R31
+    strcmp I31, R31->Error.code, \code
+    ASSERT_EQ I31, 0
+.endm
+
+; ---- bitcast ----
+
+.func bits
+    ; a value through F and back, each bit as it was
+    mov I0, 0x400921FB54442D18         ; pi
+    bitcast.f64.i64 F0, I0
+    ASSERT_EQ F0, 3.141592653589793
+    bitcast.i64.f64 I1, F0
+    ASSERT_EQ I1, 0x400921FB54442D18
+    ; -0.0 and a NaN with its sign set and a payload
+    mov F1, -0.0
+    bitcast.u64.f64 I2, F1
+    ASSERT_EQ I2, 0x8000000000000000, u64
+    mov I3, 0xFFF0000000000123
+    bitcast.f64.u64 F2, I3
+    bne.f64 F2, F2, 1f                 ; a NaN is not equal to itself
+    FAIL "not a NaN"
+1:  bitcast.i64.f64 I4, F2
+    ASSERT_EQ I4, 0xFFF0000000000123
+    ; in place
+    mov I5, 0x3FF8000000000000
+    bitcast.f64.i64 F3, I5
+    bitcast.i64.f64 I5, F3
+    ASSERT_EQ I5, 0x3FF8000000000000
+    ; literals: the integer's bits as a float, and the float's bits
+    bitcast.f64.i64 F4, 4602678819172646912
+    ASSERT_EQ F4, 0.5
+    bitcast.f64.u64 F5, 0x7FF0000000000000
+    ASSERT_EQ F5, inf
+    bitcast.i64.f64 I6, 0.5
+    ASSERT_EQ I6, 4602678819172646912
+    bitcast.u64.f64 I7, -2.0
+    ASSERT_EQ I7, 0xC000000000000000, u64
+    ret
+.endf
+
+; ---- typeof ----
+
+.func coro_body
+    ret
+.endf
+
+.func kinds
+    mov.r R0, null
+    typeof I0, R0
+    ASSERT_EQ I0, 0
+    mov R1, "s"
+    typeof I0, R1
+    ASSERT_EQ I0, 1
+    anew.r R2, 2
+    typeof I0, R2
+    ASSERT_EQ I0, 3
+    new R3, Pair
+    typeof I0, R3
+    ASSERT_EQ I0, 4
+    lnew R4
+    typeof I0, R4
+    ASSERT_EQ I0, 5
+    mnew R5
+    typeof I0, R5
+    ASSERT_EQ I0, 6
+    closure coro_body () -> (R6)
+    typeof I0, R6
+    ASSERT_EQ I0, 7
+    conew R7, R6
+    typeof I0, R7
+    ASSERT_EQ I0, 11
+    lpush R4, R1
+    typeof I1, R4[0]                   ; not a register: the generic form
+    ASSERT_EQ I1, 1
+    ret
+.endf
+
+; ---- element against a constant ----
+
+; 1 if R[i] is "ok", else 0: the shapes for a tuple's tag, both senses.
+.func is_ok0(ref t) -> i64
+    beq.r R0[0], "ok", 1f
+    ret 0
+1:  ret 1
+.endf
+
+.func not_ok2(ref t) -> i64
+    bne.r R0[2], "ok", 1f
+    ret 0
+1:  ret 1
+.endf
+
+.func is_null1(ref t) -> i64
+    beq.r R0[1], null, 1f
+    ret 0
+1:  ret 1
+.endf
+
+.func far(ref t) -> i64                ; an index past 255: two bytes of it
+    beq.r R0[300], "ok", 1f
+    ret 0
+1:  ret 1
+.endf
+
+.func elements
+    lnew R0, 3
+    mov.r R9, null                     ; (a null literal would be pushed as i64 0)
+    lpush R0, "ok", R9, "error"
+    call is_ok0 (R0) -> (I0)
+    ASSERT_EQ I0, 1
+    call not_ok2 (R0) -> (I0)
+    ASSERT_EQ I0, 1
+    call is_null1 (R0) -> (I0)
+    ASSERT_EQ I0, 1
+    ; a string with the same text is another object: the compare is identity
+    strcat R1, "o", "k"
+    mov R0[0], R1
+    call is_ok0 (R0) -> (I0)
+    ASSERT_EQ I0, 0
+    mov R0[2], "ok"
+    call not_ok2 (R0) -> (I0)
+    ASSERT_EQ I0, 0
+    ; an r array
+    anew.r R2, 3
+    mov R2[0], "ok"
+    call is_ok0 (R2) -> (I0)
+    ASSERT_EQ I0, 1
+    call is_null1 (R2) -> (I0)         ; elements start null
+    ASSERT_EQ I0, 1
+    ; a long list, past one byte of index
+    lnew R3, 301
+    resize R3, 301
+    mov R3[300], "ok"
+    call far (R3) -> (I0)
+    ASSERT_EQ I0, 1
+    ; the generic branch: an untyped element reads null
+    lnew R4
+    resize R4, 2
+    call is_null1 (R4) -> (I0)
+    ASSERT_EQ I0, 1
+    ; and its errors
+    lnew R5
+    lpush R5, 5
+    EXPECT_ERROR "E_TYPE", call is_ok0 (R5) -> (I0)
+    anew.i64 R6, 1
+    EXPECT_ERROR "E_TYPE", call is_ok0 (R6) -> (I0)
+    lnew R7
+    EXPECT_ERROR "E_BOUNDS", call is_ok0 (R7) -> (I0)
+    mov.r R8, null
+    EXPECT_ERROR "E_NULL", call is_ok0 (R8) -> (I0)
+    EXPECT_ERROR "E_TYPE", call is_ok0 ("text") -> (I0)
+    ret
+.endf
+
+; ---- direct tail calls ----
+
+.func minus(i64 a, i64 b) -> i64
+    sub I2, a, b
+    ret I2
+.endf
+
+; The arguments swapped: each one's slot in the new window is the other's in
+; the old one.
+.func swapped(i64 a, i64 b) -> i64
+    tcall minus (b, a)
+.endf
+
+; n down to 0 by tail calls, summing: a million frames if they stacked up.
+.func down(i64 n, i64 acc) -> i64
+    bz n, 1f
+    add acc, n
+    dec n
+    tcall down (n, acc)
+1:  ret acc
+.endf
+
+; One argument of each bank, and constants of each.
+.func mixed(f64 x, ref s, i64 k) -> (f64, ref, i64)
+    mul.f64 F1, x, 2.0
+    ret F1, s, k
+.endf
+
+.func to_mixed(i64 k, ref s, f64 x) -> (f64, ref, i64)
+    tcall mixed (x, s, k)
+.endf
+
+.func to_mixed_k(i64 k) -> (f64, ref, i64)
+    tcall mixed (0.75, "k", k)
+.endf
+
+.func to_mixed_kk -> (f64, ref, i64)
+    tcall mixed (3, null, -4)          ; an integer literal for an f64
+.endf
+
+; A callee with a far larger register window than its tail caller.
+.func wide(i64 a) -> i64
+    mov I31, a
+    mov F31, 1.5
+    mov R31, "wide"
+    add I30, I31, 1
+    ret I30
+.endf
+
+.func narrow(i64 a) -> i64
+    tcall wide (a)
+.endf
+
+; Results not declared: the caller's quickened call cannot take them straight
+; across from this callee, so its ret takes the generic path.
+.func undeclared(i64 a)
+    add I1, a, 100
+    ret I1
+.endf
+
+.func to_undeclared(i64 a) -> i64
+    tcall undeclared (a)
+.endf
+
+; A process whose entry function tail-calls: its frame has no caller.
+.func reporter(i64 parent, i64 v)
+    send parent, v
+    ret
+.endf
+
+.func entry(i64 parent)
+    tcall reporter (parent, 77)
+.endf
+
+.func tailcalls
+    call swapped (10, 3) -> (I0)       ; minus(3, 10)
+    ASSERT_EQ I0, -7
+    call down (1000000, 0) -> (I1)
+    ASSERT_EQ I1, 500000500000
+    call to_mixed (9, "s", 1.25) -> (F0, R0, I2)
+    ASSERT_EQ F0, 2.5
+    strcmp I3, R0, "s"
+    ASSERT_EQ I3, 0
+    ASSERT_EQ I2, 9
+    call to_mixed_k (5) -> (F0, R0, I2)
+    ASSERT_EQ F0, 1.5
+    strcmp I3, R0, "k"
+    ASSERT_EQ I3, 0
+    ASSERT_EQ I2, 5
+    call to_mixed_kk () -> (F0, R0, I2)
+    ASSERT_EQ F0, 6.0
+    ASSERT_FALSE R0
+    ASSERT_EQ I2, -4
+    call narrow (41) -> (I4)
+    ASSERT_EQ I4, 42
+    call to_undeclared (1) -> (I5)
+    ASSERT_EQ I5, 101
+    spawn entry (PID)
+    recv I6
+    ASSERT_EQ I6, 77
+    ret
+.endf
+
+.func main
+    call bits
+    call kinds
+    call elements
+    call tailcalls
+    ret 0
+.endf

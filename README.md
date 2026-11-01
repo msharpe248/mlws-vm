@@ -106,7 +106,7 @@ base:
   milliseconds on later runs.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 303 test programs, also run under
+* **Tested in its own assembly**: 304 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, with a
   garbage collection at every allocation, and with every module optimized.
 
@@ -170,7 +170,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks and results, how the interpreter and scheduler are made fast, and what is left alone (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M41 and what remains: Windows and the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M42 and what remains: Windows and the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout

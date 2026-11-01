@@ -509,7 +509,9 @@ them by emitting these shapes; nothing else changes.
   `f64` in `F` registers, with register or constant operands (`add I0, I1, I2`,
   `add I0, 1`, `mul F0, F1, 2.0`, `div F0, 1.0, F1`), shifts (`shl I0, I1, 3`,
   `sar I0, I1`), `sqrt`, `neg` and `abs` of `f64` registers (`sqrt F0` in place,
-  or `sqrt F0, F1`), `cvt.f64.i64 F0, I0`, and compare-and-branch on them
+  or `sqrt F0, F1`), `cvt.f64.i64 F0, I0`, `bitcast` between an `I` and an `F`
+  register or of a literal (`bitcast.f64.i64 F0, I0`, `bitcast.i64.f64 I0, F0`,
+  `bitcast.f64.i64 F0, 4602678819172646912`), and compare-and-branch on them
   (`blt I0, I1, L`, `bge F0, 0.5, L`), signed or unsigned (`bge.u64 I0, I1, L`:
   one bounds check for `0 <= i < n`). Narrow types (`i32`, `u8`, ...) take the
   general path, because they must wrap.
@@ -523,11 +525,15 @@ them by emitting these shapes; nothing else changes.
   arguments work, but take the general path; move them into registers first in
   hot code. Closure calls and tail calls (`calli R0 (I1, 0.0) -> (I2)`,
   `tcalli R0 (I1, F1)`) are fast when the closure's parameter and result types
-  fit, checked per call. `ret` is fast with registers and constants of the
-  declared result types (`ret F1, null`). `jtab` on a register is fast.
+  fit, checked per call. A direct tail call is fast with registers and
+  constants as arguments (`tcall loop (I1, 0, R2)`). `ret` is fast with
+  registers and constants of the declared result types (`ret F1, null`).
+  `jtab` on a register is fast.
 * **References:** `mov.r R0, null`, `mov.r R0, "text"`, and `beq.r`/`bne.r` of
   a register against a register, a constant or a global
-  (`bne.r R0, @cache, L`, the shape of an inline cache).
+  (`bne.r R0, @cache, L`, the shape of an inline cache), or of a list or `r`
+  array element at a constant index against a constant (`bne.r R0[0], "nil", L`,
+  the shape of a tuple's tag test).
 * **Globals and closure captures moved to or from a register** of the
   matching bank, for 64-bit types: `mov I0, @count`, `mov @count, I0`,
   `mov.r R0, @cache`, `mov F0, UP[1]`, `mov UP[0], I1`. A store sets the
@@ -550,7 +556,8 @@ them by emitting these shapes; nothing else changes.
   it is known.
 * **Objects:** `new R0, Point`; `lnew R0` and `lnew R0, 8`; `isa I0, R0, Point`,
   and `bisa`/`bnisa R0, Point, L`, which branch on it in one instruction;
-  `len I0, R0`; `tagof I0, R1[I2]`; null tests `bz R0, L` and `bnz R0, L`;
+  `len I0, R0`; `typeof I0, R0`; `tagof I0, R1[I2]`; null tests `bz R0, L`
+  and `bnz R0, L`;
   `mget.r R0, R1, "name", null`, a reference looked up by a constant string key
   with a null default (an object whose fields are a map); and `mget` of a key
   in any register into a register of each bank, with or without a constant

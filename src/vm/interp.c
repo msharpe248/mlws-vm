@@ -1045,6 +1045,11 @@ enum {
 #define X(N, e) Q_##N##_III, Q_##N##_IIK, Q_##N##_II, Q_##N##_IK,
     QSHIFT_OPS(X)
 #undef X
+    /* M42: shapes from compiled Erlang's profile: bitcast between an I and an
+     * F register (of a constant, a mov of its bits); typeof of a register;
+     * beq.r and bne.r of an element at a constant index (R0[2]) against a
+     * constant; direct tail calls with register and constant arguments. */
+    Q_BITCAST_FI, Q_BITCAST_IF, Q_TYPEOF, Q_BEQ_EKK, Q_BNE_EKK, Q_TCALL_R,
     Q__COUNT
 };
 
@@ -1362,6 +1367,17 @@ void interp_quicken(Insn *in) {
         if (regs) in->xop = Q_TCALLI_R;
         break;
     }
+    case OP_TCALL: { /* registers of the parameters' banks, or constants (their words in kw) */
+        const MFunc *mf = ((const Function *)o[0].rv.ptr)->mf;
+        int argc = (int)o[1].imm;
+        bool rk = argc == mf->nparams;
+        for (int k = 0; k < argc && rk; k++) rk = reg_or_const(&o[2 + k], mf->params[k]);
+        if (!rk) break;
+        in->xop = Q_TCALL_R;
+        for (int k = 0; k < argc; k++)
+            if (o[2 + k].mode != OM_REG) quicken_const_word(&o[2 + k], mf->params[k]);
+        break;
+    }
     case OP_NEW:
         if (n == 2 && RREG(0)) {
             in->xop = Q_NEW;
@@ -1394,6 +1410,18 @@ void interp_quicken(Insn *in) {
         break;
     case OP_CVT:
         if (n == 2 && t == T_F64 && in->type2 == T_I64 && FREG(0) && IREG(1)) in->xop = Q_CVT_FI;
+        break;
+    case OP_BITCAST: /* the 64 bits as they are; of a literal, a mov of its bits (set below) */
+        if (n == 2 && t == T_F64 && (in->type2 == T_I64 || in->type2 == T_U64) && FREG(0)) {
+            if (IREG(1)) in->xop = Q_BITCAST_FI;
+            else if (KINT(1)) in->xop = Q_MOV_FK;
+        } else if (n == 2 && i64 && in->type2 == T_F64 && IREG(0)) {
+            if (FREG(1)) in->xop = Q_BITCAST_IF;
+            else if (o[1].mode == OM_FIMM) in->xop = Q_MOV_IK;
+        }
+        break;
+    case OP_TYPEOF:
+        if (IREG(0) && RREG(1)) in->xop = Q_TYPEOF;
         break;
     case OP_JMP: in->xop = Q_JMP; break;
     case OP_CALL:
@@ -1458,6 +1486,14 @@ void interp_quicken(Insn *in) {
             } else if (quicken_global(in, &o[1])) {                            \
                 in->xop = eq ? Q_BEQ_RG : Q_BNE_RG;                            \
             }                                                                  \
+        } else if (t == T_R && (in->op == OP_BEQ || in->op == OP_BNE) && o[0].mode == OM_ELEMI && \
+                   o[0].index <= UINT16_MAX && KREF(1)) {                      \
+            /* R0[i] against a constant: the object's register in r[0], i in r[1..2] */ \
+            in->xop = in->op == OP_BEQ ? Q_BEQ_EKK : Q_BNE_EKK;                \
+            in->k.p = o[1].mode == OM_CONST ? o[1].rv.ptr : NULL;              \
+            in->r[0] = (uint8_t)REG_IDX(o[0].reg);                             \
+            in->r[1] = (uint8_t)o[0].index;                                    \
+            in->r[2] = (uint8_t)(o[0].index >> 8);                             \
         }                                                                      \
         break;
         QBRANCH_OPS(X)
@@ -1568,6 +1604,13 @@ void interp_quicken(Insn *in) {
         }
     /* after the compact copy, which would take the constant for k */
     if (in->xop == OP_MOV && n == 2 && t != T_P && wide_type(t)) quicken_field_const(in, t);
+    if (in->op == OP_BITCAST && (in->xop == Q_MOV_FK || in->xop == Q_MOV_IK)) { /* a literal's bits */
+        Word v = {0};
+        if (o[1].mode == OM_IMM) v.i = o[1].imm;
+        else v.f = o[1].f;
+        Word w = arith_bitcast(t, (MlwsType)in->type2, v);
+        memcpy(&in->k, &w, 8);
+    }
 #undef IREG
 #undef FREG
 #undef RREG
@@ -1629,6 +1672,19 @@ void interp_enter(Process *p, ObjClosure *cl, const Word *args) {
     p->frames[p->nframes - 1].closure = &cl->h;
     ctx_load(&c);
     bind_args(&c, NULL, cl->fn->mf->params, cl->fn->mf->nparams, args);
+}
+
+/* For a tail call to fn from a frame whose qret is qret: whether the caller's
+ * quickened call (ri) may still copy the results straight across, which it may
+ * only if they suit fn too. */
+static inline uint8_t tail_qret(const Insn *ri, uint8_t qret, const MFunc *mf) {
+    if (!qret) return 0;
+    int cargc = (int)ri->ops[1].imm, nres = ri->nops - 2 - cargc;
+    if (nres > mf->nrets || (nres && !(mf->flags & MF_RETS_DECLARED))) return 0;
+    for (int k = 0; k < nres; k++)
+        if (!wide_type(mf->rets[k]) || REG_BANK(ri->ops[2 + cargc + k].reg) != (int)type_bank((MlwsType)mf->rets[k]))
+            return 0;
+    return 1;
 }
 
 /* Q_CALLI_RK: a closure call with constants among its arguments, checked
