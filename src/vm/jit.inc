@@ -1493,7 +1493,8 @@ static bool jit_worth_entering(const Function *f, const uint16_t *xop, uint32_t 
         uint32_t succ[2], ns = 0;
         uint16_t x = xop[pc];
         if (!jit_handles(x) || !jit_ends_block(x)) succ[ns++] = pc + 1; /* (a stepped one: on, if it does not branch) */
-        else if (jit_calls(x) || x == Q_JTAB) loop = true; /* it goes on in the callee's machine code, if it has some */
+        else if (x == Q_RET_R || x == Q_RET_RK) { /* a stop: the caller has machine code only if it was compiled */
+        } else if (jit_calls(x) || x == Q_JTAB) loop = true; /* it goes on in the callee's machine code, if it has some */
         else if (jit_branches(x)) {
             succ[ns++] = pc + (uint32_t)(int32_t)f->code[pc].target;
             if (x != Q_JMP) succ[ns++] = pc + 1;
