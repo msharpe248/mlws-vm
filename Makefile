@@ -68,6 +68,13 @@ FFI_CFLAGS := -I$(SDK_FFI)
 FFI_LIBS := -lffi
 endif
 endif
+# On Windows libffi is linked in, so that mlwsvm.exe needs no DLL of MSYS2's.
+ifeq ($(OS),Windows_NT)
+ifneq ($(FFI_LIBS),)
+FFI_LIBS := $(shell pkg-config --variable=libdir libffi)/libffi.a
+FFI_CFLAGS += -DFFI_STATIC_BUILD
+endif
+endif
 ifneq ($(FFI_LIBS),)
 FFI_CFLAGS += -DMLWS_HAVE_FFI
 endif
@@ -141,6 +148,9 @@ check-embed: $(BUILD)/embed-host
 
 # Native extensions: the demo (extensions/demo) is the example and the test fixture.
 EXT_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O2 -g -fPIC -shared -pthread -Iinclude
+ifeq ($(OS),Windows_NT)
+EXT_CFLAGS += -static # (winpthreads linked in: the extension loads without MSYS2's DLLs)
+endif
 build/ext/demo.mlwsx: extensions/demo/demo.c include/mlwsvm/mlwsvm.h
 	@mkdir -p $(dir $@)
 	$(CC) $(EXT_CFLAGS) -o $@ $<

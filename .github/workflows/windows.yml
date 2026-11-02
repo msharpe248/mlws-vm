@@ -44,6 +44,32 @@ jobs:
         if: ${{ !cancelled() }}
         run: make CC=clang test
 
+      # mlwsvm.exe and lib/ in a directory of their own, run from PowerShell
+      # with only Windows' own directories on PATH: no DLL of MSYS2's may be
+      # needed. The tests that start POSIX commands (tests/os) stay out.
+      - name: Runs on its own (no MSYS2)
+        if: ${{ !cancelled() }}
+        run: |
+          llvm-objdump -p mlwsvm.exe build/ext/demo.mlwsx | grep "DLL Name" | tee build/dlls.txt
+          if grep -vi -E "DLL Name: (kernel32|advapi32|ws2_32|bcrypt|api-ms-win-crt-[a-z0-9-]+)\.dll" build/dlls.txt; then
+            echo "a DLL that is not Windows' own (above)"; exit 1
+          fi
+
+      - name: Runs on its own (PowerShell, Windows' PATH)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:RUNNER_TEMP "mlwsvm"
+          New-Item -ItemType Directory -Force $dist | Out-Null
+          Copy-Item mlwsvm.exe $dist
+          Copy-Item -Recurse lib (Join-Path $dist "lib")
+          $env:PATH = "C:\Windows\system32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0"
+          $vm = Join-Path $dist "mlwsvm.exe"
+          & $vm version; if ($LASTEXITCODE) { exit 1 }
+          & $vm run examples\hello.masm; if ($LASTEXITCODE) { exit 1 }
+          & $vm run --jit on examples\fib.masm; if ($LASTEXITCODE) { exit 1 }
+          & $vm test tests\basic tests\objects tests\processes tests\net tests\native tests\jit tests\lib tests\text examples\hello.masm; if ($LASTEXITCODE) { exit 1 }
+
       - name: Embedding library and example host
         if: ${{ !cancelled() }}
         run: make CC=clang lib check-embed

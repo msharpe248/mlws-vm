@@ -207,7 +207,9 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 ```
 
 On Windows, build in [MSYS2](https://www.msys2.org/)'s CLANG64 shell, where
-the same `make` targets work (all but `check-asan` and `check-tsan`):
+the same `make` targets work (all but `check-asan` and `check-tsan`). MSYS2 is
+needed only to build: `mlwsvm.exe` uses no DLL but Windows' own (libffi is
+linked in), and runs anywhere with the `lib` directory beside it.
 
 ```sh
 pacman -S make diffutils mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-libffi mingw-w64-clang-x86_64-pkgconf
