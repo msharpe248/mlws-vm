@@ -386,8 +386,12 @@ deliberate, checked act:
    never runs the extension's code.
 3. **Safe permissions.** The directory, its manifest and each extension must not
    be writable by other users, and must be owned by the current user or the
-   administrator; this is the check SSH makes of `~/.ssh`. Otherwise nothing in
-   the directory is trusted.
+   administrator; this is the check SSH makes of `~/.ssh`. On Windows the
+   owner must be the user or an administrator (the Administrators group,
+   SYSTEM or TrustedInstaller), and no entry of the access control list may
+   let another account write; `mlwsvm ext` gives the directory and the files
+   it writes a list of their own. Otherwise nothing in the directory is
+   trusted.
 4. **FFI libraries by name.** `.extern` may only load libraries that a trusted
    manifest allows: `mlwsvm ext allow-ffi libm`, or `-` for the program's own
    symbols.
@@ -398,8 +402,7 @@ deliberate, checked act:
    checks 1–4, with a warning. Do not use it to run code you don't trust.
 
 What this cannot protect against is a trusted library that is itself buggy or
-malicious: trusting it means trusting it completely. Windows checks only that
-the file exists for now: ACL checks are still to do.
+malicious: trusting it means trusting it completely.
 
 ### `mlwsvm ext`
 

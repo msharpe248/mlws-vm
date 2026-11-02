@@ -515,7 +515,7 @@ static bool do_include(PP *pp, const PLine *ln, const LineHead *h) {
     char *want = xstrdup(toks.v[0].sval);
     tokvec_free(&toks);
     char *found = NULL;
-    if (want[0] == '/') {
+    if (path_is_absolute(want)) {
         if (file_exists(want)) found = xstrdup(want);
     } else {
         char *dir = path_dirname(ln->loc.file);

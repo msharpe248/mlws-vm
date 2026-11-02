@@ -1,14 +1,15 @@
 ; The declarative FFI: `.extern` makes a C function callable as a native, with
 ; no glue code. Libraries must be allowed in a trusted TRUSTED manifest
 ; (`mlwsvm ext allow-ffi libm`); "" is the program's own symbols (the C library).
+; The math library is libm.so.6 on Linux, libm on macOS and ucrtbase on Windows.
 ; requires: ffi
 ; option: --ext-path build/test-ext
 ; expect-stdout: 0.5 * 2^4
 .include "std/test.inc"
 .include "std/io.inc"
-.extern m.pow, "libm.so.6|libm", "pow" (f64, f64) -> (f64)
-.extern m.frexp, "libm.so.6|libm", "frexp" (f64, out i32) -> (f64)
-.extern m.sqrtf, "libm.so.6|libm", "sqrtf" (f32) -> (f32)
+.extern m.pow, "libm.so.6|libm|ucrtbase", "pow" (f64, f64) -> (f64)
+.extern m.frexp, "libm.so.6|libm|ucrtbase", "frexp" (f64, out i32) -> (f64)
+.extern m.sqrtf, "libm.so.6|libm|ucrtbase", "sqrtf" (f32) -> (f32)
 .extern c.strlen, "", "strlen" (cstr) -> (u64)
 .extern c.abs, "", "abs" (i32) -> (i32)
 .extern c.atoi, "", "atoi" (cstr) -> (i32)

@@ -277,11 +277,23 @@ const char *path_basename(const char *path) {
     return slash ? slash + 1 : path;
 }
 
+bool path_is_absolute(const char *path) {
+#ifdef _WIN32
+    if (path[0] == '\\') return true;
+    if (path[0] && path[1] == ':' && (path[2] == '/' || path[2] == '\\')) return true;
+#endif
+    return path[0] == '/';
+}
+
 char *path_join(const char *a, const char *b) {
-    if (!a || !*a || b[0] == '/') return xstrdup(b);
+    if (!a || !*a || path_is_absolute(b)) return xstrdup(b);
     StrBuf s = {0};
     sb_puts(&s, a);
-    if (s.s[s.n - 1] != '/') sb_putc(&s, '/');
+    bool sep = s.s[s.n - 1] == '/';
+#ifdef _WIN32
+    sep = sep || s.s[s.n - 1] == '\\';
+#endif
+    if (!sep) sb_putc(&s, '/');
     sb_puts(&s, b);
     return s.s;
 }

@@ -47,7 +47,7 @@ rmdir "$TMPD"
 # or an entry that is damaged, means assembling again; --no-cache makes none;
 # with --opt, optimized modules are kept and found by content
 CDIR=$(mktemp -d)
-mkdir "$CDIR/src" "$CDIR/cache"
+mkdir "$CDIR/src" # (the cache directory is the VM's to make: private, so trusted)
 printf '.include "val.inc"\n.include "std/io.inc"\n.func main\n    PRINTLN_I VAL\n    ret 0\n.endf\n' > "$CDIR/src/prog.masm"
 printf '.const VAL = 1\n' > "$CDIR/src/val.inc"
 OUT=$(MLWSVM_CACHE="$CDIR/cache" $BIN run "$CDIR/src/prog.masm")
@@ -284,7 +284,7 @@ for want in "x: util of x, fmt of x" "y: util of y, fmt of y" "x/other: util of 
 done
 # Tools tell same-named modules apart by their files.
 OUT=$(MLWSVM_NO_CACHE=1 $BIN run --profile "$PDIR/x/main.masm" --also "$PDIR/y/main.masm" 2>&1)
-echo "$OUT" | grep -q "util.who \[$PDIR/y/util.masm\]" || fail "--also: profile without util's file ($OUT)"
+echo "$OUT" | grep -q "util.who \[.*/y/util.masm\]" || fail "--also: profile without util's file ($OUT)"
 # Two programs of one directory naming the same module: an error that says how to fix it.
 printf '.module main\n.func main\n    ret 0\n.endf\n' > "$PDIR/x/alt.masm"
 set +e
@@ -371,19 +371,26 @@ $BIN run --no-cache "$FDIR/a.masm" >/dev/null || fail "fuzz --emit: the program 
 $BIN fuzz --list | grep -q "^jit-verify " || fail "fuzz --list"
 $BIN fuzz -n 20 --seed 1 -j 4 --out "$FDIR/out" 2>"$FDIR/log" || fail "fuzz: $(tail -3 "$FDIR/log")"
 grep -q "20 programs (seeds 1-20), 220 runs, 0 skipped, 0 failed" "$FDIR/log" || fail "fuzz: $(tail -1 "$FDIR/log")"
-REAL="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
-{
-    echo '#!/bin/sh'
-    echo 'for a; do f=$a; done'
-    echo 'case " $* " in *" --jit "*) grep -q MARK "$f" && echo miscompiled;; esac'
-    echo "exec \"$REAL\" \"\$@\""
-} > "$FDIR/vm"
-chmod +x "$FDIR/vm"
-awk '{ print } /^\.func f0/ { print "    nop                                ; MARK" }' "$FDIR/a.masm" > "$FDIR/c.masm"
-$BIN fuzz --vm "$FDIR/vm" --reduce "$FDIR/c.masm" --modes jit --out "$FDIR/out" 2>"$FDIR/log" ||
-    fail "fuzz --reduce: $(tail -2 "$FDIR/log")"
-grep -q MARK "$FDIR/c.reduced.masm" || fail "fuzz --reduce lost the marked line"
-[ "$(wc -l < "$FDIR/c.reduced.masm")" -lt 10 ] || fail "fuzz --reduce left $(wc -l < "$FDIR/c.reduced.masm") lines"
+# (Not on Windows, which cannot start the shell script that stands in for a
+# VM here as a program.)
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*) ;;
+*)
+    REAL="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
+    {
+        echo '#!/bin/sh'
+        echo 'for a; do f=$a; done'
+        echo 'case " $* " in *" --jit "*) grep -q MARK "$f" && echo miscompiled;; esac'
+        echo "exec \"$REAL\" \"\$@\""
+    } > "$FDIR/vm"
+    chmod +x "$FDIR/vm"
+    awk '{ print } /^\.func f0/ { print "    nop                                ; MARK" }' "$FDIR/a.masm" > "$FDIR/c.masm"
+    $BIN fuzz --vm "$FDIR/vm" --reduce "$FDIR/c.masm" --modes jit --out "$FDIR/out" 2>"$FDIR/log" ||
+        fail "fuzz --reduce: $(tail -2 "$FDIR/log")"
+    grep -q MARK "$FDIR/c.reduced.masm" || fail "fuzz --reduce lost the marked line"
+    [ "$(wc -l < "$FDIR/c.reduced.masm")" -lt 10 ] || fail "fuzz --reduce left $(wc -l < "$FDIR/c.reduced.masm") lines"
+    ;;
+esac
 rm -rf "${FDIR:?}"
 
 # --trace with a limit

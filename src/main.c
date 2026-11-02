@@ -428,6 +428,7 @@ static int cmd_dis(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+    plat_stdio_init();
     if (argc < 2) {
         usage(stderr);
         return 2;

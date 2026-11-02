@@ -8,6 +8,7 @@
  *   ; threads: <n>                                   (run on n worker threads)
  *   ; option: --<name> <value>                       (repeatable: a VM option, as on the command line)
  *   ; requires: ffi                                  (skipped in a build without libffi)
+ *   ; requires: posix | windows                      (skipped on other systems)
  *   ; debug-script: <debugger command>                (repeatable: run under
  *                                                       `mlwsvm debug`; stdout is the transcript)
  *   ; expect-opt: <pass> <n>                         (repeatable: the optimizer made exactly n
@@ -158,8 +159,15 @@ static void parse_expect(const char *text, Expect *e) {
             } else if (!e->option_error) {
                 e->option_error = xstrdup(v);
             }
-        } else if ((v = after_key(line, "requires:"))) { /* a build feature: "ffi" */
+        } else if ((v = after_key(line, "requires:"))) { /* a build feature (ffi) or a system */
+#ifdef _WIN32
+            bool windows = true;
+#else
+            bool windows = false;
+#endif
             if (!strncmp(v, "ffi", 3) && !ffi_available() && !e->skip) e->skip = xstrdup("built without libffi");
+            if (!strncmp(v, "posix", 5) && windows && !e->skip) e->skip = xstrdup("POSIX only");
+            if (!strncmp(v, "windows", 7) && !windows && !e->skip) e->skip = xstrdup("Windows only");
         } else if ((v = after_key(line, "skip:"))) {
             free(e->skip);
             e->skip = xstrdup(v);

@@ -1,6 +1,7 @@
 ; A C call marked `blocking` runs on the I/O thread pool, like a BLOCKING
 ; extension native: 6 processes each sleep 100 ms in usleep at once.
 ; requires: ffi
+; requires: posix
 ; option: --ext-path build/test-ext
 ; threads: 1
 .include "std/test.inc"

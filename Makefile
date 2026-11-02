@@ -37,7 +37,12 @@ WARN    := -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wno-unused-parameter
 # take up to 5% more or less time from one build to the next.
 ALIGN   := -falign-functions=64
 BUILD   ?= build
-BIN     ?= mlwsvm
+# Windows (MSYS2's CLANG64 environment): programs end in .exe, and the
+# libraries are Winsock and the random-number API.
+ifeq ($(OS),Windows_NT)
+EXE     := .exe
+endif
+BIN     ?= mlwsvm$(EXE)
 
 SRC := $(wildcard src/*.c src/*/*.c)
 
@@ -70,6 +75,9 @@ endif
 ifeq ($(shell uname -s),Linux)
 DL_LIBS := -ldl -lpthread
 endif
+ifeq ($(OS),Windows_NT)
+DL_LIBS := -lws2_32 -lbcrypt
+endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
 .PHONY: check-fuzz release-check check-jit check-opt all test test-ext test-libs check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
@@ -84,11 +92,11 @@ $(BUILD)/%.o: %.c
 	$(CC) $(WARN) $(ALIGN) $(CFLAGS) -fPIC $(FFI_CFLAGS) -MMD -MP -c $< -o $@
 
 # The web dashboard is compiled into the binary (served by --monitor).
-$(BUILD)/embed: build-tools/embed.c
+$(BUILD)/embed$(EXE): build-tools/embed.c
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -o $@ $<
 
-$(BUILD)/gen/dashboard.c: web/dashboard.html $(BUILD)/embed
+$(BUILD)/gen/dashboard.c: web/dashboard.html $(BUILD)/embed$(EXE)
 	@mkdir -p $(dir $@)
 	$(BUILD)/embed web/dashboard.html DASHBOARD_HTML > $@
 
@@ -103,6 +111,9 @@ LIB_LIBS := -lm $(FFI_LIBS) $(DL_LIBS) -lpthread
 ifeq ($(shell uname -s),Darwin)
 SHLIB := $(BUILD)/libmlwsvm.dylib
 SHLIB_FLAGS := -dynamiclib -install_name @rpath/libmlwsvm.dylib
+else ifeq ($(OS),Windows_NT)
+SHLIB := $(BUILD)/libmlwsvm.dll
+SHLIB_FLAGS := -shared
 else
 SHLIB := $(BUILD)/libmlwsvm.so
 SHLIB_FLAGS := -shared
@@ -134,6 +145,18 @@ build/ext/demo.mlwsx: extensions/demo/demo.c include/mlwsvm/mlwsvm.h
 	@mkdir -p $(dir $@)
 	$(CC) $(EXT_CFLAGS) -o $@ $<
 
+# Let every user write to a directory (Windows: an access control entry for Everyone).
+ifeq ($(OS),Windows_NT)
+WORLD_WRITABLE = MSYS2_ARG_CONV_EXCL='*' icacls $(1) /grant '*S-1-1-0:(OI)(CI)W' >/dev/null
+else
+WORLD_WRITABLE = chmod o+w $(1)
+endif
+
+# The Windows libraries the FFI tests call (C runtimes, Winsock).
+ifeq ($(OS),Windows_NT)
+WIN_FFI_LIBS := ucrtbase msvcrt ws2_32
+endif
+
 # Trusted extension directories for tests/native: a good one, and three that
 # must be refused (not in TRUSTED, changed since installed, writable by others).
 TEST_EXT := build/test-ext
@@ -146,13 +169,13 @@ test-libs: $(BIN)
 test-ext: $(BIN) build/ext/demo.mlwsx test-libs
 	@rm -rf build/test-ext build/test-ext-unlisted build/test-ext-tampered build/test-ext-open
 	@./$(BIN) ext install --dir $(TEST_EXT) build/ext/demo.mlwsx >/dev/null
-	@./$(BIN) ext allow-ffi --dir $(TEST_EXT) - libm libm.so.6 >/dev/null
+	@./$(BIN) ext allow-ffi --dir $(TEST_EXT) - libm libm.so.6 $(WIN_FFI_LIBS) >/dev/null
 	@./$(BIN) ext allow-ffi --dir build/test-ext-unlisted libm >/dev/null
 	@cp build/ext/demo.mlwsx build/test-ext-unlisted/
 	@./$(BIN) ext install --dir build/test-ext-tampered build/ext/demo.mlwsx >/dev/null
 	@printf 'x' >> build/test-ext-tampered/demo.mlwsx
 	@./$(BIN) ext install --dir build/test-ext-open build/ext/demo.mlwsx >/dev/null
-	@chmod o+w build/test-ext-open
+	@$(call WORLD_WRITABLE,build/test-ext-open)
 
 test: $(BIN) test-ext
 	./$(BIN) test tests examples
@@ -161,13 +184,19 @@ check-tools: $(BIN)
 	sh tests/tools/check_tools.sh ./$(BIN)
 
 # Generate bindings for tests/_bindgen/libc.h (needs clang), compare them with
-# the expected output, and call them.
+# the expected output, and call them. Windows (LLP64, another C library) has
+# a header of its own.
+ifeq ($(OS),Windows_NT)
+BINDGEN_DIR := tests/_bindgen/win
+else
+BINDGEN_DIR := tests/_bindgen
+endif
 check-bindgen: $(BIN) test-ext
 	@mkdir -p build/bindgen
 	@if ! command -v clang >/dev/null 2>&1; then echo "check-bindgen: skipped (no clang)"; exit 0; fi; \
-	./$(BIN) bindgen -l "" -p c -o build/bindgen/libc.inc tests/_bindgen/libc.h 2>/dev/null && \
-	diff -u tests/_bindgen/libc.expected build/bindgen/libc.inc && \
-	./$(BIN) run -L build/bindgen --ext-path $(TEST_EXT) tests/_bindgen/use.masm && \
+	./$(BIN) bindgen -l "" -p c -o build/bindgen/libc.inc $(BINDGEN_DIR)/libc.h 2>/dev/null && \
+	diff -u $(BINDGEN_DIR)/libc.expected build/bindgen/libc.inc && \
+	./$(BIN) run -L build/bindgen --ext-path $(TEST_EXT) $(BINDGEN_DIR)/use.masm && \
 	echo "check-bindgen: OK"
 
 check-gc: $(BIN) test-ext

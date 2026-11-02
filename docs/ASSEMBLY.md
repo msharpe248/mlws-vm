@@ -768,6 +768,7 @@ Expectations are written as comments in the test file:
 ; threads: 4                              (run on this many worker threads, whatever --threads says)
 ; option: --max-frames 500               (repeatable: a VM option, as on the command line)
 ; requires: ffi                           (skip unless built with libffi)
+; requires: posix                         (skip on Windows; `windows`: skip elsewhere)
 ; debug-script: break main               (repeatable: run under the debugger; stdout = transcript)
 ; expect-opt: dce 5                       (repeatable: the optimizer made exactly 5 dce changes here)
 ; expect-insns: main 7                    (repeatable: main's instructions once optimized)

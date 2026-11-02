@@ -37,9 +37,19 @@
  * struct of another type, an index out of range, a tag that is not the
  * instruction's type) is a side exit: the machine code stops before the
  * instruction, for the interpreter to run it. */
-#if MLWS_TAILCALL && (defined(__aarch64__) || defined(__x86_64__)) && !defined(_WIN32)
+#if MLWS_TAILCALL && (defined(__aarch64__) || defined(__x86_64__)) && (!defined(_WIN32) || defined(__x86_64__))
 #define MLWS_JIT 1
 #include "../platform/platform.h"
+
+/* The C functions the machine code calls, and the entry it is called at,
+ * use System V's convention on Windows too (Clang's sysv_abi): one encoder
+ * serves both, and the C code around a call saves what Windows' convention
+ * keeps and System V's does not (rsi, rdi, xmm6-15). */
+#ifdef _WIN32
+#define JIT_CC __attribute__((sysv_abi))
+#else
+#define JIT_CC
+#endif
 
 typedef struct {
     uint8_t *v;
@@ -80,7 +90,7 @@ typedef struct Jit Jit;
 struct Jit {
     uint8_t *mem, *top, *end;
     size_t align;
-    JitExit (*enter)(Ctx *c, uint32_t left, void *target);
+    JIT_CC JitExit (*enter)(Ctx *c, uint32_t left, void *target);
     uint8_t *exit;
     bool no_memory;
     bool stats; /* count entries, steps and stops (--jit-report) */
@@ -150,7 +160,7 @@ static Jit *jit_get(VM *vm) { /* (under vm->jit_lock) */
         return NULL;
     }
     jit_dump("jit_enter", &b);
-    jt->enter = (JitExit(*)(Ctx *, uint32_t, void *))(void *)at;
+    jt->enter = (JIT_CC JitExit(*)(Ctx *, uint32_t, void *))(void *)at;
     jt->exit = at + exit_at;
     free(b.v);
     vm->jit = jt;
@@ -574,7 +584,7 @@ typedef struct {
     uint64_t left;
 } JitStep;
 
-static JitStep jit_step(Ctx *c, const Insn *in, uint32_t left) {
+static JIT_CC JitStep jit_step(Ctx *c, const Insn *in, uint32_t left) {
     Process *p = c->p;
     ctx_load(c);
     c->code = c->fr->fn->code;
@@ -735,7 +745,7 @@ static void jit_sync_insns(JComp *j, uint32_t also) {
  * checked and its frame pushed as call_rk does it (the stacks may grow); 0:
  * the interpreter's call must do it; otherwise the Ctx has the callee's frame
  * and windows, and the result is its machine code, or 1 if it has none. */
-static uintptr_t jit_calli_go(Ctx *c, const Insn *in) {
+static JIT_CC uintptr_t jit_calli_go(Ctx *c, const Insn *in) {
     Process *p = c->p;
     if (!call_rk(p, in)) return 0;
     ctx_load(c);
@@ -777,7 +787,7 @@ static uint32_t jit_calli(JComp *j, const Insn *in, uint32_t pc) {
 
 /* A closure tail call (Q_TCALLI_R) from machine code, as the handler makes
  * it; the same results as jit_calli_go. */
-static uintptr_t jit_tcalli_go(Ctx *c, const Insn *in) {
+static JIT_CC uintptr_t jit_tcalli_go(Ctx *c, const Insn *in) {
     Process *p = c->p;
     Frame *fr = &p->frames[p->nframes - 1];
     const Operand *qo = in->ops;
@@ -858,7 +868,7 @@ static void jit_ret(JComp *j, const Insn *in, uint32_t pc) {
 /* A direct tail call (Q_TCALL_R): the callee's frame replaces this one at
  * the same base, as in the handler. The arguments go through Ctx.retv, since
  * the callee's window is this one's. */
-static uint8_t jit_tail_qret(const Frame *fr, const Function *fn) { return tail_qret(fr->ret_insn, fr->qret, fn->mf); }
+static JIT_CC uint8_t jit_tail_qret(const Frame *fr, const Function *fn) { return tail_qret(fr->ret_insn, fr->qret, fn->mf); }
 
 static void jit_tcall(JComp *j, const Insn *in, uint32_t pc) {
     JBuf *b = &j->b;
@@ -1222,7 +1232,7 @@ static int jit_index(JComp *j, const Insn *in, bool plus) {
 typedef struct {
     uint64_t val, ok;
 } JitWord;
-static JitWord jit_mget(const Obj *ob, const Insn *in) {
+static JIT_CC JitWord jit_mget(const Obj *ob, const Insn *in) {
     if (!ob || ob->kind != OBJ_MAP) return (JitWord){0, 0};
     Word key;
     key.r = (Obj *)in->k.p;
@@ -1233,6 +1243,14 @@ static JitWord jit_mget(const Obj *ob, const Insn *in) {
 
 /* Q_MGETV_*'s, by a key in a register (its bits in key, its type in
  * Insn.target), of a value of type tag, or the default in Insn.k. */
+#ifdef _WIN32
+static JIT_CC ObjStruct *jit_struct_new(Process *p, const StructDef *def) { return struct_new(p, def); }
+static JIT_CC ObjList *jit_list_new(Process *p, int64_t cap) { return list_new(p, cap); }
+#else
+#define jit_struct_new struct_new
+#define jit_list_new list_new
+#endif
+
 static JitWord jit_mgetv(const Obj *ob, const Insn *in, uint64_t key, uint8_t tag) {
     if (!ob || ob->kind != OBJ_MAP) return (JitWord){0, 0};
     Word k;
@@ -1244,9 +1262,9 @@ static JitWord jit_mgetv(const Obj *ob, const Insn *in, uint64_t key, uint8_t ta
     memcpy(&d, &in->k, 8);
     return (JitWord){d, 1};
 }
-static JitWord jit_mgetv_i(const Obj *ob, const Insn *in, uint64_t key) { return jit_mgetv(ob, in, key, T_I64); }
-static JitWord jit_mgetv_f(const Obj *ob, const Insn *in, uint64_t key) { return jit_mgetv(ob, in, key, T_F64); }
-static JitWord jit_mgetv_r(const Obj *ob, const Insn *in, uint64_t key) { return jit_mgetv(ob, in, key, T_R); }
+static JIT_CC JitWord jit_mgetv_i(const Obj *ob, const Insn *in, uint64_t key) { return jit_mgetv(ob, in, key, T_I64); }
+static JIT_CC JitWord jit_mgetv_f(const Obj *ob, const Insn *in, uint64_t key) { return jit_mgetv(ob, in, key, T_F64); }
+static JIT_CC JitWord jit_mgetv_r(const Obj *ob, const Insn *in, uint64_t key) { return jit_mgetv(ob, in, key, T_R); }
 
 /* A generic instruction's operand (jit_gen_operand) in a machine register:
  * an I register's, or the constant or capture in `into`. */
@@ -1429,7 +1447,7 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         jit_sync_insns(j, j->rest[pc] - 1); /* the rest of the block, not yet run */
         jm_mov(b, JR_A0, jm_proc(b, JR_S3));
         jm_movi(b, JR_A1, x == Q_NEW ? (uint64_t)(uintptr_t)in->k.p : (uint64_t)in->k.i);
-        jm_ccall(b, x == Q_NEW ? (const void *)struct_new : (const void *)list_new);
+        jm_ccall(b, x == Q_NEW ? (const void *)jit_struct_new : (const void *)jit_list_new);
         if (done) jm_bind(b, done);
         jst_r(j, JR_R0, in->r[0]);
         j->jc.rk[in->r[0]] = (JRKnown){x == Q_NEW ? OBJ_STRUCT : OBJ_LIST, true, x == Q_NEW ? in->k.p : NULL};

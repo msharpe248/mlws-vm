@@ -46,10 +46,11 @@ static bool write_lines(const char *dir, const StrVec *lines) {
     char *tmp = path_join(dir, "TRUSTED.tmp");
     FILE *f = fopen(tmp, "w");
     bool ok = f != NULL;
+    int err;
     if (f) {
         fputs(HEADER, f);
         for (size_t i = 0; i < lines->n; i++) fprintf(f, "%s\n", lines->v[i]);
-        ok = fclose(f) == 0 && plat_restrict_writes(tmp) && rename(tmp, path) == 0;
+        ok = fclose(f) == 0 && plat_restrict_writes(tmp) && plat_rename(tmp, path, &err);
     }
     if (!ok) fprintf(stderr, "mlwsvm ext: cannot write %s\n", path);
     free(path);

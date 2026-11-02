@@ -14,6 +14,7 @@
 ;
 ; Here the C library is pthreads: a new thread runs the callback.
 ; requires: ffi
+; requires: posix
 ; option: --ext-path build/test-ext
 .include "std/test.inc"
 ; void *(*start_routine)(void *): the argument is passed as a u64 (a pointer

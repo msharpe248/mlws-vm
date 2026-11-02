@@ -60,7 +60,7 @@ passes did.
 
 | Setting | Effect |
 |---|---|
-| `MLWSVM_CACHE=DIR` | where the entries go (default: `$XDG_CACHE_HOME/mlwsvm`, else `~/.cache/mlwsvm`) |
+| `MLWSVM_CACHE=DIR` | where the entries go (default: `$XDG_CACHE_HOME/mlwsvm`, else `~/.cache/mlwsvm`; on Windows `%LOCALAPPDATA%\mlwsvm`) |
 | `MLWSVM_NO_CACHE=1`, `mlwsvm run --no-cache` | assemble every time, and keep nothing |
 
 The directory is created usable by its owner only, and is not used at all if it

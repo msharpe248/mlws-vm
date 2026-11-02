@@ -183,6 +183,8 @@ void plat_sock_close(int fd) { close(fd); }
 
 bool plat_is_tty(void) { return isatty(1); }
 
+void plat_stdio_init(void) {}
+
 struct PlatThread {
     pthread_t t;
     void (*fn)(void *);

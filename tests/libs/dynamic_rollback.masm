@@ -6,7 +6,8 @@
 ; used to, and then wants1, which needs greet ^1.0, could not be loaded
 ; (no version of greet met both). What a failed load leaves loaded keeps
 ; its constraints and its library versions.
-; option: --lib-path tests/libs/_dyn:build/test-libs
+; option: --lib-path tests/libs/_dyn
+; option: --lib-path build/test-libs
 .include "std/test.inc"
 
 .func main

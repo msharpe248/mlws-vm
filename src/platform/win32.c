@@ -1,54 +1,182 @@
-/* win32.c - platform layer for Windows. Not yet exercised by CI; kept in step
- * with posix.c so the rest of the code base stays OS-independent. */
+/* win32.c - platform layer for Windows: paths, clocks, threads, shared
+ * libraries, the trust checks on directories, memory for machine code, and the
+ * monitor's TCP. File, process and socket I/O and the poller are in
+ * win32_io.c. Strings are UTF-8, converted to UTF-16 for Windows' wide APIs. */
 #ifdef _WIN32
-#include "platform.h"
+#include "win32.h"
 
-#include <sys/stat.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include <fcntl.h>
 #include <io.h>
-#include <windows.h>
+#include <sddl.h>
+#include <aclapi.h>
+
+/* ---- UTF-8 <-> UTF-16 ---------------------------------------------------------- */
+
+wchar_t *w_str(const char *s) {
+    if (!s) return NULL;
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (n <= 0) n = 1;
+    wchar_t *w = xmalloc((size_t)n * sizeof *w);
+    if (!MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n)) w[0] = 0;
+    return w;
+}
+
+char *u_str(const wchar_t *w) {
+    if (!w) return NULL;
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+    if (n <= 0) n = 1;
+    char *s = xmalloc((size_t)n);
+    if (!WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL)) s[0] = 0;
+    return s;
+}
+
+/* ---- descriptors ------------------------------------------------------------------
+ * A two-level table, so an entry never moves: chunks of 1024 entries, made as
+ * needed and kept. Freed numbers are reused, lowest last. */
+#define WFD_CHUNK 1024
+#define WFD_CHUNKS 1024
+static WFd *wfd_chunks[WFD_CHUNKS];
+static SRWLOCK wfd_lock = SRWLOCK_INIT;
+static int wfd_top = 3; /* 0-2: the standard handles */
+static VEC(int) wfd_free;
+static INIT_ONCE std_once = INIT_ONCE_STATIC_INIT;
+
+static WFd *slot(int fd) {
+    WFd *c = wfd_chunks[fd / WFD_CHUNK];
+    return c ? &c[fd % WFD_CHUNK] : NULL;
+}
+
+static int kind_of_handle(HANDLE h) {
+    switch (GetFileType(h)) {
+    case FILE_TYPE_DISK: return WFD_FILE;
+    case FILE_TYPE_PIPE: return WFD_PIPE;
+    default: return WFD_CHAR;
+    }
+}
+
+static BOOL CALLBACK std_init(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
+    (void)once, (void)arg, (void)ctx;
+    wfd_chunks[0] = xcalloc(WFD_CHUNK, sizeof(WFd));
+    static const DWORD which[3] = {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+    for (int i = 0; i < 3; i++) {
+        HANDLE h = GetStdHandle(which[i]);
+        if (h == NULL || h == INVALID_HANDLE_VALUE) continue;
+        wfd_chunks[0][i].kind = kind_of_handle(h);
+        wfd_chunks[0][i].h = h;
+    }
+    return TRUE;
+}
+
+int wfd_new(int kind, HANDLE h, SOCKET s) {
+    InitOnceExecuteOnce(&std_once, std_init, NULL, NULL);
+    AcquireSRWLockExclusive(&wfd_lock);
+    int fd = -1;
+    if (wfd_free.n) fd = wfd_free.v[--wfd_free.n];
+    else if (wfd_top < WFD_CHUNK * WFD_CHUNKS) {
+        fd = wfd_top++;
+        if (!wfd_chunks[fd / WFD_CHUNK]) wfd_chunks[fd / WFD_CHUNK] = xcalloc(WFD_CHUNK, sizeof(WFd));
+    }
+    if (fd >= 0) *slot(fd) = (WFd){kind, h, s, false};
+    ReleaseSRWLockExclusive(&wfd_lock);
+    return fd;
+}
+
+WFd *wfd_get(int fd) {
+    InitOnceExecuteOnce(&std_once, std_init, NULL, NULL);
+    if (fd < 0 || fd >= WFD_CHUNK * WFD_CHUNKS) return NULL;
+    WFd *e = slot(fd);
+    return e && e->kind ? e : NULL;
+}
+
+void wfd_release(int fd) {
+    WFd *e = wfd_get(fd);
+    if (!e) return;
+    AcquireSRWLockExclusive(&wfd_lock);
+    e->kind = 0;
+    if (fd >= 3) VEC_PUSH(wfd_free, fd);
+    ReleaseSRWLockExclusive(&wfd_lock);
+}
+
+static BOOL CALLBACK wsa_start(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
+    (void)once, (void)arg, (void)ctx;
+    WSADATA w;
+    WSAStartup(MAKEWORD(2, 2), &w);
+    return TRUE;
+}
+
+void wsa_init(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    InitOnceExecuteOnce(&once, wsa_start, NULL, NULL);
+}
+
+/* ---- paths ------------------------------------------------------------------------ */
+
+static bool attrs(const char *path, WIN32_FILE_ATTRIBUTE_DATA *a) {
+    wchar_t *w = w_str(path);
+    bool ok = GetFileAttributesExW(w, GetFileExInfoStandard, a);
+    free(w);
+    return ok;
+}
 
 char *plat_realpath(const char *path) {
-    char buf[MAX_PATH];
-    if (!_fullpath(buf, path, sizeof buf)) return NULL;
-    if (GetFileAttributesA(buf) == INVALID_FILE_ATTRIBUTES) return NULL;
-    return xstrdup(buf);
+    wchar_t *w = w_str(path), buf[32768];
+    DWORD n = GetFullPathNameW(w, 32768, buf, NULL);
+    free(w);
+    if (n == 0 || n >= 32768) return NULL;
+    if (GetFileAttributesW(buf) == INVALID_FILE_ATTRIBUTES) return NULL;
+    return u_str(buf);
+}
+
+int64_t win_filetime_ns(FILETIME ft) {
+    uint64_t t = (uint64_t)ft.dwHighDateTime << 32 | ft.dwLowDateTime;
+    return ((int64_t)t - 116444736000000000ll) * 100;
 }
 
 int64_t plat_mtime(const char *path) {
-    struct _stat64 st;
-    if (_stat64(path, &st) != 0) return -1;
-    return (int64_t)st.st_mtime;
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!attrs(path, &a)) return -1;
+    return win_filetime_ns(a.ftLastWriteTime) / 1000000000;
 }
 
 bool plat_is_dir(const char *path) {
-    DWORD a = GetFileAttributesA(path);
-    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    return attrs(path, &a) && (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
 }
 
 bool plat_list_dir(const char *path, char ***names, size_t *n) {
     char *pat = path_join(path, "*");
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pat, &fd);
+    wchar_t *w = w_str(pat);
     free(pat);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(w, &fd);
+    free(w);
     if (h == INVALID_HANDLE_VALUE) return false;
     VEC(char *) v = {0};
     do {
-        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-        VEC_PUSH(v, xstrdup(fd.cFileName));
-    } while (FindNextFileA(h, &fd));
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+        VEC_PUSH(v, u_str(fd.cFileName));
+    } while (FindNextFileW(h, &fd));
     FindClose(h);
     *names = v.v;
     *n = v.n;
     return true;
 }
 
+char *plat_exe_path(const char *argv0) {
+    wchar_t buf[32768];
+    DWORD n = GetModuleFileNameW(NULL, buf, 32768);
+    if (n > 0 && n < 32768) return u_str(buf);
+    return argv0 ? plat_realpath(argv0) : NULL;
+}
+
+char plat_path_sep(void) { return ';'; }
+
+/* ---- clocks -------------------------------------------------------------------------- */
+
 int64_t plat_wall_ns(void) {
-    FILETIME ft; /* 100 ns units since 1601 */
+    FILETIME ft;
     GetSystemTimePreciseAsFileTime(&ft);
-    uint64_t t = (uint64_t)ft.dwHighDateTime << 32 | ft.dwLowDateTime;
-    return (int64_t)(t - 116444736000000000ull) * 100;
+    return win_filetime_ns(ft);
 }
 
 int64_t plat_local_offset_s(int64_t secs) {
@@ -64,27 +192,27 @@ uint64_t plat_now_ns(void) {
     LARGE_INTEGER c;
     if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&c);
-    return (uint64_t)(c.QuadPart * 1000000000.0 / (double)freq.QuadPart);
+    uint64_t f = (uint64_t)freq.QuadPart, t = (uint64_t)c.QuadPart;
+    return t / f * 1000000000u + t % f * 1000000000u / f;
 }
 
-void plat_sleep_ns(uint64_t ns) { Sleep((DWORD)((ns + 999999) / 1000000)); }
-
-char *plat_exe_path(const char *argv0) {
-    char buf[MAX_PATH];
-    DWORD n = GetModuleFileNameA(NULL, buf, sizeof buf);
-    if (n > 0 && n < sizeof buf) return xstrdup(buf);
-    return argv0 ? plat_realpath(argv0) : NULL;
+/* A high-resolution timer where there is one (Windows 10 1803 and later):
+ * Sleep() rounds up to the scheduler's 15.6 ms tick. */
+void plat_sleep_ns(uint64_t ns) {
+    static MLWS_THREAD_LOCAL HANDLE timer;
+    if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    LARGE_INTEGER due;
+    due.QuadPart = -(LONGLONG)((ns + 99) / 100); /* relative, in 100 ns units */
+    if (timer && SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) WaitForSingleObject(timer, INFINITE);
+    else Sleep((DWORD)((ns + 999999) / 1000000));
 }
 
-char plat_path_sep(void) { return ';'; }
+/* ---- the monitor's TCP (descriptors from the table) ------------------------------ */
 
-static void wsa_init(void) {
-    static bool done;
-    if (!done) {
-        WSADATA w;
-        WSAStartup(MAKEWORD(2, 2), &w);
-        done = true;
-    }
+static int socket_fd(SOCKET s) {
+    int fd = wfd_new(WFD_SOCKET, NULL, s);
+    if (fd < 0) closesocket(s);
+    return fd;
 }
 
 int plat_tcp_listen(const char *host, int port, char *err, size_t errlen) {
@@ -97,22 +225,25 @@ int plat_tcp_listen(const char *host, int port, char *err, size_t errlen) {
         snprintf(err, errlen, "bad IPv4 address '%s'", host);
         return -1;
     }
-    SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+    SOCKET s = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
     if (s == INVALID_SOCKET || bind(s, (struct sockaddr *)&a, sizeof a) != 0 || listen(s, 16) != 0) {
         snprintf(err, errlen, "cannot listen on %s:%d", host, port);
+        if (s != INVALID_SOCKET) closesocket(s);
         return -1;
     }
     u_long nb = 1;
     ioctlsocket(s, FIONBIO, &nb);
-    return (int)s;
+    return socket_fd(s);
 }
 
 int plat_tcp_accept(int listen_fd) {
-    SOCKET c = accept((SOCKET)listen_fd, NULL, NULL);
+    WFd *e = wfd_get(listen_fd);
+    if (!e || e->kind != WFD_SOCKET) return -1;
+    SOCKET c = accept(e->s, NULL, NULL);
     if (c == INVALID_SOCKET) return -1;
     u_long nb = 0;
     ioctlsocket(c, FIONBIO, &nb);
-    return (int)c;
+    return socket_fd(c);
 }
 
 int plat_tcp_connect(const char *host, int port) {
@@ -122,26 +253,46 @@ int plat_tcp_connect(const char *host, int port) {
     a.sin_family = AF_INET;
     a.sin_port = htons((u_short)port);
     if (inet_pton(AF_INET, host, &a.sin_addr) != 1) return -1;
-    SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s == INVALID_SOCKET || connect(s, (struct sockaddr *)&a, sizeof a) != 0) return -1;
-    return (int)s;
+    SOCKET s = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+    if (s == INVALID_SOCKET) return -1;
+    if (connect(s, (struct sockaddr *)&a, sizeof a) != 0) {
+        closesocket(s);
+        return -1;
+    }
+    return socket_fd(s);
 }
 
+/* A pipe has no readiness to wait for: look at it every millisecond. */
 bool plat_wait_readable(int fd, uint64_t timeout_ns) {
-    WSAPOLLFD pf = {(SOCKET)fd, POLLRDNORM, 0};
-    return WSAPoll(&pf, 1, (INT)((timeout_ns + 999999) / 1000000)) > 0;
+    WFd *e = wfd_get(fd);
+    if (!e) return false;
+    if (e->kind == WFD_SOCKET) {
+        WSAPOLLFD pf = {e->s, POLLRDNORM, 0};
+        return WSAPoll(&pf, 1, (INT)((timeout_ns + 999999) / 1000000)) > 0;
+    }
+    if (e->kind != WFD_PIPE) return true;
+    uint64_t end = plat_now_ns() + timeout_ns;
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(e->h, NULL, 0, NULL, &avail, NULL) || avail) return true; /* data, or the end */
+        if (plat_now_ns() >= end) return false;
+        plat_sleep_ns(1000000);
+    }
 }
 
 long plat_sock_read(int fd, void *buf, size_t n, uint64_t timeout_ns) {
-    if (!plat_wait_readable(fd, timeout_ns)) return -1;
-    int r = recv((SOCKET)fd, buf, (int)n, 0);
+    WFd *e = wfd_get(fd);
+    if (!e || e->kind != WFD_SOCKET || !plat_wait_readable(fd, timeout_ns)) return -1;
+    int r = recv(e->s, buf, (int)(n > INT_MAX ? INT_MAX : n), 0);
     return r < 0 ? -1 : (long)r;
 }
 
 bool plat_sock_write_all(int fd, const void *buf, size_t n) {
+    WFd *e = wfd_get(fd);
+    if (!e || e->kind != WFD_SOCKET) return false;
     const char *p = buf;
     while (n) {
-        int w = send((SOCKET)fd, p, (int)n, 0);
+        int w = send(e->s, p, (int)(n > INT_MAX ? INT_MAX : n), 0);
         if (w <= 0) return false;
         p += w;
         n -= (size_t)w;
@@ -149,9 +300,18 @@ bool plat_sock_write_all(int fd, const void *buf, size_t n) {
     return true;
 }
 
-void plat_sock_close(int fd) { closesocket((SOCKET)fd); }
+void plat_sock_close(int fd) { plat_fd_close(fd); }
 
 bool plat_is_tty(void) { return _isatty(1) != 0; }
+
+void plat_stdio_init(void) {
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+    SetConsoleOutputCP(CP_UTF8);
+}
+
+/* ---- threads --------------------------------------------------------------------------- */
 
 struct PlatThread {
     HANDLE h;
@@ -227,92 +387,209 @@ void plat_cond_wait(PlatCond *c, PlatMutex *m, uint64_t timeout_ns) {
 void plat_cond_signal(PlatCond *c) { WakeConditionVariable(&c->c); }
 void plat_cond_broadcast(PlatCond *c) { WakeAllConditionVariable(&c->c); }
 
+/* The PlatThread struct is still read by thread_main; it is leaked deliberately. */
 void plat_thread_detach(PlatThread *t) { CloseHandle(t->h); }
 
-/* No JIT on Windows (src/vm/jit.inc): no memory for machine code. */
-void *plat_code_reserve(size_t size) { return (void)size, NULL; }
-bool plat_code_write(void *at, const void *src, size_t n) { return (void)at, (void)src, (void)n, false; }
-void plat_code_free(void *region, size_t size) { (void)region, (void)size; }
-size_t plat_code_align(void) { return 16; }
+int plat_cpu_count(void) {
+    DWORD n = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    return n > 0 ? (int)n : 1;
+}
 
+/* ---- memory for machine code: each piece has pages of its own, written, then
+ * made executable ---- */
+
+void *plat_code_reserve(size_t size) { return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS); }
+
+size_t plat_code_align(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwPageSize;
+}
+
+bool plat_code_write(void *at, const void *src, size_t n) {
+    size_t page = plat_code_align(), len = (n + page - 1) & ~(page - 1);
+    DWORD old;
+    if (!VirtualAlloc(at, len, MEM_COMMIT, PAGE_READWRITE)) return false;
+    memcpy(at, src, n);
+    if (!VirtualProtect(at, len, PAGE_EXECUTE_READ, &old)) return false;
+    return FlushInstructionCache(GetCurrentProcess(), at, n);
+}
+
+void plat_code_free(void *region, size_t size) { (void)size, VirtualFree(region, 0, MEM_RELEASE); }
+
+/* ---- shared libraries ------------------------------------------------------------------- */
+
+static void last_error_text(char *buf, size_t n, DWORD e) {
+    wchar_t w[512];
+    DWORD k = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, e, 0, w, 512, NULL);
+    while (k && (w[k - 1] == L'\r' || w[k - 1] == L'\n' || w[k - 1] == L'.' || w[k - 1] == L' ')) w[--k] = 0;
+    if (!k) {
+        snprintf(buf, n, "error %lu", (unsigned long)e);
+        return;
+    }
+    char *u = u_str(w);
+    snprintf(buf, n, "%s", u);
+    free(u);
+}
+
+/* A path is made absolute, with backslashes, and the libraries it needs are
+ * looked for next to it first; a bare name is looked for as LoadLibrary
+ * does (the program's directory, the system's, then PATH). */
 void *plat_dlopen(const char *path, char *err, size_t errlen) {
-    HMODULE h = path ? LoadLibraryA(path) : GetModuleHandleA(NULL);
-    if (!h && err) snprintf(err, errlen, "LoadLibrary failed (error %lu)", (unsigned long)GetLastError());
+    if (!path) return (void *)GetModuleHandleW(NULL);
+    wchar_t *w = w_str(path), full[32768];
+    HMODULE h;
+    if (strpbrk(path, "/\\:")) {
+        DWORD n = GetFullPathNameW(w, 32768, full, NULL);
+        h = n > 0 && n < 32768 ? LoadLibraryExW(full, NULL, LOAD_WITH_ALTERED_SEARCH_PATH) : NULL;
+    } else {
+        h = LoadLibraryW(w);
+    }
+    free(w);
+    if (!h && err) {
+        char text[400];
+        last_error_text(text, sizeof text, GetLastError());
+        snprintf(err, errlen, "%s: %s", path, text);
+    }
     return (void *)h;
 }
 
+/* The program's own symbols (lib NULL) are its exports, then the C library's,
+ * as dlsym(RTLD_DEFAULT) finds libc's on POSIX. */
 void *plat_dlsym(void *lib, const char *name) {
-    return (void *)GetProcAddress(lib ? (HMODULE)lib : GetModuleHandleA(NULL), name);
+    if (lib) return (void *)GetProcAddress((HMODULE)lib, name);
+    static const wchar_t *const libs[] = {NULL, L"ucrtbase.dll", L"msvcrt.dll", L"kernel32.dll"};
+    for (size_t i = 0; i < sizeof libs / sizeof libs[0]; i++) {
+        HMODULE m = GetModuleHandleW(libs[i]);
+        void *f = m ? (void *)GetProcAddress(m, name) : NULL;
+        if (f) return f;
+    }
+    return NULL;
 }
 
 const char *plat_dl_suffix(void) { return ".dll"; }
 
-bool plat_path_trusted(const char *path, char *why, size_t whylen) {
-    /* TODO: check the file's ACL. Until then, only existence is checked. */
-    DWORD a = GetFileAttributesA(path);
-    if (a == INVALID_FILE_ATTRIBUTES) {
-        snprintf(why, whylen, "%s: not found", path);
-        return false;
-    }
+/* ---- trust: owners and access control lists -------------------------------------------
+ * A path is trusted if its owner is the current user or an administrator (the
+ * Administrators group, SYSTEM or TrustedInstaller), and no one else may write
+ * to it: no entry of its access control list allows writing to another
+ * account. A directory made private, or whose writes are restricted, gets a
+ * list of its own (not inherited) that allows only those. */
+
+static bool sid_string(PSID sid, char *buf, size_t n) {
+    wchar_t *w = NULL;
+    if (!ConvertSidToStringSidW(sid, &w)) return false;
+    char *u = u_str(w);
+    snprintf(buf, n, "%s", u);
+    free(u);
+    LocalFree(w);
     return true;
 }
 
-bool plat_mkdir(const char *path) { return CreateDirectoryA(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS; }
-
-bool plat_mkdir_private(const char *path) { return plat_mkdir(path); } /* (ACLs: see ROADMAP 1.5) */
-
-bool plat_restrict_writes(const char *path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
-
-/* ---- I/O: not yet implemented on Windows (an IOCP poller is on the roadmap) ---- */
-
-int plat_last_error(void) { return (int)GetLastError(); }
-const char *plat_err_code(int err) { return err == ERROR_FILE_NOT_FOUND ? "E_NOT_FOUND" : "E_IO"; }
-const char *plat_err_text(int err) { (void)err; return "not supported on Windows yet"; }
-int plat_file_open(const char *path, int mode, int *err) { (void)path, (void)mode; *err = ERROR_NOT_SUPPORTED; return -1; }
-long plat_fd_read(int fd, void *buf, size_t n, int *err) { (void)fd, (void)buf, (void)n; *err = ERROR_NOT_SUPPORTED; return PLAT_IO_ERR; }
-long plat_fd_write(int fd, const void *buf, size_t n, int *err) { (void)fd, (void)buf, (void)n; *err = ERROR_NOT_SUPPORTED; return PLAT_IO_ERR; }
-bool plat_fd_close(int fd) { (void)fd; return false; }
-bool plat_fd_pollable(int fd) { (void)fd; return false; }
-bool plat_fd_set_nonblocking(int fd, bool on) { (void)fd, (void)on; return false; }
-int64_t plat_fd_seek(int fd, int64_t off, int whence, int *err) { (void)fd, (void)off, (void)whence; *err = ERROR_NOT_SUPPORTED; return -1; }
-bool plat_stat(const char *path, bool follow, PlatStat *st, int *err) { (void)path, (void)follow, (void)st; *err = ERROR_NOT_SUPPORTED; return false; }
-bool plat_remove(const char *path, int *err) { (void)path; *err = ERROR_NOT_SUPPORTED; return false; }
-bool plat_rmdir(const char *path, int *err) { (void)path; *err = ERROR_NOT_SUPPORTED; return false; }
-bool plat_rename(const char *a, const char *b, int *err) { (void)a, (void)b; *err = ERROR_NOT_SUPPORTED; return false; }
-bool plat_mkdir_err(const char *path, int *err) { (void)path; *err = ERROR_NOT_SUPPORTED; return false; }
-char *plat_getcwd(void) { return NULL; }
-char *const *plat_environ(void) { return _environ; }
-void plat_unsetenv(const char *name) { _putenv_s(name, ""); }
-const char *plat_os_name(void) { return "windows"; }
-bool plat_spawn(char *const argv[], int pipes, PlatChild *c, int *err) { (void)argv, (void)pipes, (void)c; *err = ERROR_NOT_SUPPORTED; return false; }
-bool plat_wait_child(int64_t pid, int *code, int *err) { (void)pid, (void)code; *err = ERROR_NOT_SUPPORTED; return false; }
-bool plat_signal_child(int64_t pid, int sig) { (void)pid, (void)sig; return false; }
-void plat_ignore_sigpipe(void) {}
-void plat_raise_fd_limit(void) {}
-bool plat_host_numeric(const char *host) { (void)host; return true; }
-int plat_sock_listen(const char *host, int port, int *err) { (void)host, (void)port; *err = ERROR_NOT_SUPPORTED; return -1; }
-int plat_sock_accept(int lfd, int *err) { (void)lfd; *err = ERROR_NOT_SUPPORTED; return PLAT_IO_ERR; }
-int plat_sock_connect(const char *host, int port, int64_t t, int *err) { (void)host, (void)port, (void)t; *err = ERROR_NOT_SUPPORTED; return -1; }
-int plat_sock_port(int fd) { (void)fd; return -1; }
-bool plat_sock_peer(int fd, char *ip, size_t n, int *port) { (void)fd, (void)ip, (void)n, (void)port; return false; }
-bool plat_sock_shutdown_write(int fd) { (void)fd; return false; }
-bool plat_resolve(const char *name, char ***a, size_t *n, int *err) { (void)name, (void)a, (void)n; *err = ERROR_NOT_SUPPORTED; return false; }
-int plat_udp_open(const char *host, int port, int *err) { (void)host, (void)port; *err = ERROR_NOT_SUPPORTED; return -1; }
-long plat_udp_send(int fd, const char *h, int port, const void *b, size_t n, int *err) { (void)fd, (void)h, (void)port, (void)b, (void)n; *err = ERROR_NOT_SUPPORTED; return PLAT_IO_ERR; }
-long plat_udp_recv(int fd, void *b, size_t n, char *ip, size_t l, int *port, int *err) { (void)fd, (void)b, (void)n, (void)ip, (void)l, (void)port; *err = ERROR_NOT_SUPPORTED; return PLAT_IO_ERR; }
-bool plat_random_bytes(void *buf, size_t n) { (void)buf, (void)n; return false; }
-PlatPoller *plat_poller_new(void) { return NULL; }
-void plat_poller_free(PlatPoller *p) { (void)p; }
-bool plat_poller_arm(PlatPoller *p, int fd, int events, uint64_t token) { (void)p, (void)fd, (void)events, (void)token; return false; }
-void plat_poller_forget(PlatPoller *p, int fd) { (void)p, (void)fd; }
-int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_ns) { (void)p, (void)tokens, (void)max, (void)timeout_ns; return 0; }
-void plat_poller_wake(PlatPoller *p) { (void)p; }
-
-int plat_cpu_count(void) {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    return si.dwNumberOfProcessors > 0 ? (int)si.dwNumberOfProcessors : 1;
+static bool user_sid(char *buf, size_t n) {
+    HANDLE tok;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) return false;
+    union {
+        TOKEN_USER u;
+        char space[256];
+    } info;
+    DWORD len;
+    bool ok = GetTokenInformation(tok, TokenUser, &info, sizeof info, &len) && sid_string(info.u.User.Sid, buf, n);
+    CloseHandle(tok);
+    return ok;
 }
+
+static bool admin_sid(const char *s) {
+    return !strcmp(s, "S-1-5-32-544") /* Administrators */ || !strcmp(s, "S-1-5-18") /* SYSTEM */ ||
+           !strcmp(s, "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464") /* TrustedInstaller */;
+}
+
+/* Rights that change a file or a directory's contents, or who may. */
+#define WRITE_RIGHTS                                                                                       \
+    (FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | \
+     GENERIC_ALL)
+
+bool plat_path_trusted(const char *path, char *why, size_t whylen) {
+    wchar_t *w = w_str(path);
+    PSID owner = NULL;
+    PACL dacl = NULL;
+    PSECURITY_DESCRIPTOR sd = NULL;
+    DWORD rc = GetNamedSecurityInfoW(w, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                                     &owner, NULL, &dacl, NULL, &sd);
+    free(w);
+    if (rc != ERROR_SUCCESS) {
+        char text[300];
+        last_error_text(text, sizeof text, rc);
+        snprintf(why, whylen, "%s: %s", path, text);
+        return false;
+    }
+    char me[200] = "", who[200] = "";
+    bool ok = user_sid(me, sizeof me) && sid_string(owner, who, sizeof who);
+    if (ok && strcmp(who, me) && !admin_sid(who)) {
+        snprintf(why, whylen, "%s is owned by another user (%s)", path, who);
+        ok = false;
+    } else if (ok && !dacl) {
+        snprintf(why, whylen, "%s is writable by other users (it has no access control list)", path);
+        ok = false;
+    }
+    for (DWORD i = 0; ok && i < dacl->AceCount; i++) {
+        ACE_HEADER *ace;
+        if (!GetAce(dacl, i, (void **)&ace) || ace->AceType != ACCESS_ALLOWED_ACE_TYPE) continue;
+        if (ace->AceFlags & INHERIT_ONLY_ACE) continue; /* for what is made inside it, not for it */
+        ACCESS_ALLOWED_ACE *a = (ACCESS_ALLOWED_ACE *)ace;
+        if (!(a->Mask & WRITE_RIGHTS)) continue;
+        char s[200];
+        if (!sid_string((PSID)&a->SidStart, s, sizeof s) || !strcmp(s, me) || !strcmp(s, who) || admin_sid(s) ||
+            !strcmp(s, "S-1-3-0") /* CREATOR OWNER */ || !strcmp(s, "S-1-3-4") /* OWNER RIGHTS */)
+            continue;
+        snprintf(why, whylen, "%s is writable by other users (%s)", path, s);
+        ok = false;
+    }
+    if (!me[0]) snprintf(why, whylen, "%s: cannot tell who the current user is", path);
+    LocalFree(sd);
+    return ok;
+}
+
+/* Give a file or directory an access control list of its own: the current
+ * user, SYSTEM and Administrators may do anything; other users may read (and
+ * run, and list) it if `readable`. */
+static bool set_private_acl(const char *path, bool readable) {
+    char me[200], sddl[600];
+    if (!user_sid(me, sizeof me)) return false;
+    snprintf(sddl, sizeof sddl, "D:P(A;OICI;FA;;;%s)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)%s", me,
+             readable ? "(A;OICI;0x1200a9;;;BU)" : "");
+    wchar_t *wsddl = w_str(sddl), *w = w_str(path);
+    PSECURITY_DESCRIPTOR sd = NULL;
+    PACL dacl = NULL;
+    BOOL present = FALSE, defaulted = FALSE;
+    bool ok = ConvertStringSecurityDescriptorToSecurityDescriptorW(wsddl, SDDL_REVISION_1, &sd, NULL) &&
+              GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted) &&
+              SetNamedSecurityInfoW(w, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                    NULL, NULL, dacl, NULL) == ERROR_SUCCESS;
+    if (sd) LocalFree(sd);
+    free(wsddl);
+    free(w);
+    return ok;
+}
+
+bool plat_mkdir(const char *path) {
+    wchar_t *w = w_str(path);
+    bool ok = CreateDirectoryW(w, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
+    free(w);
+    return ok;
+}
+
+/* Made private when it is made; one that exists already is left as it is
+ * (plat_path_trusted then decides), as mkdir(path, 0700) does on POSIX. */
+bool plat_mkdir_private(const char *path) {
+    wchar_t *w = w_str(path);
+    bool made = CreateDirectoryW(w, NULL);
+    bool exists = made || GetLastError() == ERROR_ALREADY_EXISTS;
+    free(w);
+    return exists && (!made || set_private_acl(path, false));
+}
+
+bool plat_restrict_writes(const char *path) { return set_private_acl(path, true); }
 #else
 typedef int mlwsvm_win32_unused; /* ISO C forbids an empty translation unit */
 #endif
