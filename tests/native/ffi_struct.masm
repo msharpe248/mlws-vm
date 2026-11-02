@@ -12,6 +12,7 @@
 ;                 extra result, a new S
 ; and a function may return a struct by value: `-> (struct S)`.
 ; requires: ffi
+; requires: posix
 ; option: --ext-path build/test-ext
 .include "std/test.inc"
 

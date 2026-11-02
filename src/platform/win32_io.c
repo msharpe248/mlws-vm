@@ -703,10 +703,11 @@ bool plat_random_bytes(void *buf, size_t n) {
 }
 
 /* ---- the poller ----------------------------------------------------------------------
- * The waits armed (one-shot), under a lock. plat_poller_wait polls the
- * sockets among them, and a UDP socket of its own on the loopback address
- * that plat_poller_wake sends a byte to, with WSAPoll; while it waits for a
- * pipe, it wakes every millisecond to look at it. */
+ * The waits armed (one-shot), under a lock, with an index from descriptor to
+ * wait. plat_poller_wait polls the sockets among them, and a UDP socket of
+ * its own on the loopback address that plat_poller_wake sends a byte to, with
+ * WSAPoll; while it waits for a pipe, it wakes every millisecond to look at
+ * it. */
 
 #define PIPE_LOOK_MS 1
 
@@ -720,9 +721,12 @@ typedef struct {
 struct PlatPoller {
     SRWLOCK lock;
     VEC(Arm) arms;
+    VEC(uint32_t) at; /* by descriptor: 1 + its wait's index in arms, or 0 */
     SOCKET wake;
     struct sockaddr_in wake_addr;
     volatile LONG woken;
+    VEC(WSAPOLLFD) pfd; /* the set being polled (the wait's: one thread waits) */
+    VEC(int) pfd_fd;
 };
 
 PlatPoller *plat_poller_new(void) {
@@ -747,16 +751,34 @@ void plat_poller_free(PlatPoller *p) {
     if (!p) return;
     closesocket(p->wake);
     VEC_FREE(p->arms);
+    VEC_FREE(p->at);
+    VEC_FREE(p->pfd);
+    VEC_FREE(p->pfd_fd);
     free(p);
+}
+
+/* The index of fd's wait, or -1. The lock is held. */
+static long arm_find(PlatPoller *p, int fd) {
+    return fd >= 0 && (size_t)fd < p->at.n ? (long)p->at.v[fd] - 1 : -1;
+}
+
+static void arm_remove(PlatPoller *p, size_t i) {
+    p->at.v[p->arms.v[i].fd] = 0;
+    p->arms.v[i] = p->arms.v[--p->arms.n];
+    if (i < p->arms.n) p->at.v[p->arms.v[i].fd] = (uint32_t)i + 1;
 }
 
 bool plat_poller_arm(PlatPoller *p, int fd, int events, uint64_t token) {
     WFd *e = wfd_get(fd);
     if (!e || (e->kind != WFD_SOCKET && e->kind != WFD_PIPE)) return false;
     AcquireSRWLockExclusive(&p->lock);
-    size_t i = 0;
-    while (i < p->arms.n && p->arms.v[i].fd != fd) i++;
-    if (i == p->arms.n) VEC_PUSH(p->arms, ((Arm){0}));
+    long i = arm_find(p, fd);
+    if (i < 0) {
+        while (p->at.n <= (size_t)fd) VEC_PUSH(p->at, 0);
+        VEC_PUSH(p->arms, ((Arm){0}));
+        i = (long)p->arms.n - 1;
+        p->at.v[fd] = (uint32_t)i + 1;
+    }
     p->arms.v[i] = (Arm){fd, events, token, false};
     ReleaseSRWLockExclusive(&p->lock);
     plat_poller_wake(p); /* so a wait in progress polls it too */
@@ -764,16 +786,11 @@ bool plat_poller_arm(PlatPoller *p, int fd, int events, uint64_t token) {
 }
 
 void plat_poller_forget(PlatPoller *p, int fd) {
-    bool found = false;
     AcquireSRWLockExclusive(&p->lock);
-    for (size_t i = 0; i < p->arms.n; i++)
-        if (p->arms.v[i].fd == fd) {
-            p->arms.v[i] = p->arms.v[--p->arms.n];
-            found = true;
-            break;
-        }
+    long i = arm_find(p, fd);
+    if (i >= 0) arm_remove(p, (size_t)i);
     ReleaseSRWLockExclusive(&p->lock);
-    if (found) plat_poller_wake(p); /* stop polling the socket before it is closed */
+    if (i >= 0) plat_poller_wake(p); /* stop polling the socket before it is closed */
 }
 
 static bool pipe_ready(const Arm *a, HANDLE h) {
@@ -782,35 +799,34 @@ static bool pipe_ready(const Arm *a, HANDLE h) {
     return !PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL) || avail > 0; /* data, or the other end closed */
 }
 
+/* A descriptor closed while it was waited for is reported ready: whoever
+ * waited finds out. */
 int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_ns) {
     uint64_t start = plat_now_ns();
-    VEC(WSAPOLLFD) pfd = {0};
-    VEC(int) pfd_fd = {0};
     int k = 0;
     for (;;) {
-        pfd.n = pfd_fd.n = 0;
-        VEC_PUSH(pfd, ((WSAPOLLFD){p->wake, POLLRDNORM, 0}));
-        VEC_PUSH(pfd_fd, -1);
+        p->pfd.n = p->pfd_fd.n = 0;
+        VEC_PUSH(p->pfd, ((WSAPOLLFD){p->wake, POLLRDNORM, 0}));
+        VEC_PUSH(p->pfd_fd, -1);
         bool pipes = false;
         AcquireSRWLockExclusive(&p->lock);
         for (size_t i = 0; i < p->arms.n; i++) {
             Arm *a = &p->arms.v[i];
             WFd *e = wfd_get(a->fd);
-            if (!e) continue;
-            if (e->kind == WFD_PIPE) {
-                pipes = true;
+            if (e && e->kind == WFD_SOCKET) {
+                VEC_PUSH(p->pfd, ((WSAPOLLFD){e->s, (short)(a->events & PLAT_POLL_WRITE ? POLLWRNORM : POLLRDNORM), 0}));
+                VEC_PUSH(p->pfd_fd, a->fd);
+            } else {
+                pipes = true; /* (or closed) */
                 a->seen = true;
-                continue;
             }
-            VEC_PUSH(pfd, ((WSAPOLLFD){e->s, (short)(a->events & PLAT_POLL_WRITE ? POLLWRNORM : POLLRDNORM), 0}));
-            VEC_PUSH(pfd_fd, a->fd);
         }
         ReleaseSRWLockExclusive(&p->lock);
         int64_t left = timeout_ns < 0 ? -1 : timeout_ns - (int64_t)(plat_now_ns() - start);
-        int ms = left < 0 ? (timeout_ns < 0 ? -1 : 0) : (int)((left + 999999) / 1000000);
+        int ms = timeout_ns < 0 ? -1 : left <= 0 ? 0 : (int)((left + 999999) / 1000000);
         if (pipes && (ms < 0 || ms > PIPE_LOOK_MS)) ms = PIPE_LOOK_MS;
-        int n = WSAPoll(pfd.v, (ULONG)pfd.n, ms);
-        bool woken = n > 0 && pfd.v[0].revents;
+        int n = WSAPoll(p->pfd.v, (ULONG)p->pfd.n, ms);
+        bool woken = n > 0 && p->pfd.v[0].revents;
         if (woken) { /* cleared first: a wake-up from now on sends another byte */
             InterlockedExchange(&p->woken, 0);
             char drain[64];
@@ -818,27 +834,32 @@ int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_n
             }
         }
         AcquireSRWLockExclusive(&p->lock);
-        for (size_t i = 0; i < p->arms.n && k < max;) {
+        for (size_t j = 1; n > 0 && j < p->pfd.n && k < max; j++) {
+            if (!p->pfd.v[j].revents) continue;
+            long i = arm_find(p, p->pfd_fd.v[j]);
+            WFd *e = wfd_get(p->pfd_fd.v[j]);
+            if (i < 0 || !e || e->kind != WFD_SOCKET || e->s != p->pfd.v[j].fd) continue; /* since forgotten */
+            tokens[k++] = p->arms.v[i].token;
+            arm_remove(p, (size_t)i);
+        }
+        for (size_t i = 0; pipes && i < p->arms.n && k < max;) {
             Arm *a = &p->arms.v[i];
             WFd *e = wfd_get(a->fd);
-            bool ready = !e; /* closed while armed: let it find out */
-            if (e && e->kind == WFD_PIPE) ready = pipe_ready(a, e->h);
-            else if (e && n > 0)
-                for (size_t j = 1; j < pfd.n && !ready; j++)
-                    ready = pfd_fd.v[j] == a->fd && pfd.v[j].revents && pfd.v[j].fd == e->s;
-            if (!ready) {
+            if (e && e->kind == WFD_SOCKET) {
+                i++;
+                continue;
+            }
+            if (e && !pipe_ready(a, e->h)) {
                 i++;
                 continue;
             }
             tokens[k++] = a->token;
-            p->arms.v[i] = p->arms.v[--p->arms.n];
+            arm_remove(p, i);
         }
         ReleaseSRWLockExclusive(&p->lock);
         bool out_of_time = timeout_ns >= 0 && (int64_t)(plat_now_ns() - start) >= timeout_ns;
         if (k || woken || out_of_time || n < 0) break;
     }
-    VEC_FREE(pfd);
-    VEC_FREE(pfd_fd);
     return k;
 }
 

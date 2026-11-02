@@ -11,6 +11,7 @@
 ; collected or released with foreign.release (once; later uses see a released
 ; handle). It is how C resources get the same lifetime rules as MLWSVM objects.
 ; requires: ffi
+; requires: posix
 ; option: --ext-path build/test-ext
 .include "std/test.inc"
 .extern c.snprintf, "", "snprintf" (buf, u64, cstr, ..., i64, f64, cstr) -> (i32)

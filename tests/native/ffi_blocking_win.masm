@@ -1,0 +1,30 @@
+; A C call marked `blocking` runs on the I/O thread pool, like a BLOCKING
+; extension native: 6 processes each sleep 100 ms in Sleep at once. (Windows'
+; ffi_blocking: Sleep, in kernel32, takes milliseconds.)
+; requires: ffi
+; requires: windows
+; option: --ext-path build/test-ext
+; threads: 1
+.include "std/test.inc"
+.extern c.Sleep, "", "Sleep" (u32), blocking
+.func sleeper(i64 parent)
+    ncall "c.Sleep" (100)
+    send parent, 0
+    ret
+.endf
+.func main
+    ncall "time.now_ns" () -> (I0)
+    mov I1, 0
+1:  spawn sleeper (PID)
+    inc I1
+    blt I1, 6, 1b
+    mov I1, 0
+2:  recv I2
+    ASSERT_EQ I2, 0
+    inc I1
+    blt I1, 6, 2b
+    ncall "time.now_ns" () -> (I3)
+    sub I3, I0
+    ASSERT_LT I3, 450000000            ; in parallel: not 600 ms
+    ret 0
+.endf

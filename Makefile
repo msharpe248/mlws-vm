@@ -152,6 +152,11 @@ else
 WORLD_WRITABLE = chmod o+w $(1)
 endif
 
+# The Windows libraries the FFI tests call (C runtimes, Winsock).
+ifeq ($(OS),Windows_NT)
+WIN_FFI_LIBS := ucrtbase msvcrt ws2_32
+endif
+
 # Trusted extension directories for tests/native: a good one, and three that
 # must be refused (not in TRUSTED, changed since installed, writable by others).
 TEST_EXT := build/test-ext
@@ -164,7 +169,7 @@ test-libs: $(BIN)
 test-ext: $(BIN) build/ext/demo.mlwsx test-libs
 	@rm -rf build/test-ext build/test-ext-unlisted build/test-ext-tampered build/test-ext-open
 	@./$(BIN) ext install --dir $(TEST_EXT) build/ext/demo.mlwsx >/dev/null
-	@./$(BIN) ext allow-ffi --dir $(TEST_EXT) - libm libm.so.6 >/dev/null
+	@./$(BIN) ext allow-ffi --dir $(TEST_EXT) - libm libm.so.6 $(WIN_FFI_LIBS) >/dev/null
 	@./$(BIN) ext allow-ffi --dir build/test-ext-unlisted libm >/dev/null
 	@cp build/ext/demo.mlwsx build/test-ext-unlisted/
 	@./$(BIN) ext install --dir build/test-ext-tampered build/ext/demo.mlwsx >/dev/null

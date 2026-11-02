@@ -1,0 +1,41 @@
+; Async callbacks: C calling back later, from any thread (Windows'
+; ffi_async_callback, which says what they are). Here a new thread from
+; CreateThread runs the callback; its DWORD result is the thread's exit
+; code, which nothing reads.
+; requires: ffi
+; requires: windows
+; option: --ext-path build/test-ext
+.include "std/test.inc"
+; DWORD WINAPI (*start)(LPVOID): the argument is passed as a u64.
+.callback start_t (u64), async
+; CreateThread(attributes, stack size, start, argument, flags, out thread id)
+.extern c.CreateThread, "", "CreateThread" (ptr, u64, callback start_t, u64, u32, ptr) -> (u64)
+.extern c.WaitForSingleObject, "", "WaitForSingleObject" (u64, u32) -> (u32), blocking
+.extern c.CloseHandle, "", "CloseHandle" (u64) -> (i32)
+
+.func main
+    mov I0, PID
+    ncall "ffi.async_callback" ("start_t", I0) -> (R0)
+    ncall "c.CreateThread" (null, 0, R0, 4242, 0, null) -> (I1)
+    ASSERT_NE I1, 0
+    recv R1                            ; waits for the other thread's call
+    strcmp I3, R1->Callback.name, "start_t"
+    ASSERT_EQ I3, 0
+    mov R2, R1->Callback.args
+    ASSERT_EQ R2[0], 4242
+    ncall "c.WaitForSingleObject" (I1, 0xFFFFFFFF) -> (I4)  ; INFINITE
+    ASSERT_EQ I4, 0                    ; WAIT_OBJECT_0: the thread ended
+    ncall "c.CloseHandle" (I1) -> (I5)
+    ASSERT_NE I5, 0
+
+    ; a released callback handle can no longer be passed to C
+    ncall "foreign.release" (R0)
+.try h
+    ncall "c.CreateThread" (null, 0, R0, 1, 0, null) -> (I1)
+.endtry
+    FAIL "a released callback was passed to C"
+h:  catch R3
+    strcmp I5, R3->Error.code, "E_TYPE"
+    ASSERT_EQ I5, 0
+    ret 0
+.endf
