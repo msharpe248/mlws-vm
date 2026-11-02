@@ -39,8 +39,7 @@ jobs:
       - name: Diagnostics (while porting)
         continue-on-error: true
         run: |
-          timeout 20 ./mlwsvm run --threads 2 tests/_diag/idle.masm || echo "exit $?"
-          timeout 20 ./mlwsvm run --threads 1 tests/_diag/idle.masm || echo "exit $?"
+          MLWSVM_DEBUG_POLL=1 timeout 20 ./mlwsvm run --threads 1 tests/_diag/idle.masm 2>&1 | head -80 || echo "exit $?"
 
       - name: Tests (suite only, while porting)
         run: MLWSVM_TEST_TIMEOUT=120 ./mlwsvm test tests examples 2>&1 | tail -400

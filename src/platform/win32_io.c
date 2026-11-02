@@ -711,6 +711,9 @@ bool plat_random_bytes(void *buf, size_t n) {
 
 #define PIPE_LOOK_MS 1
 
+static int poll_debug = -1; /* MLWSVM_DEBUG_POLL=1: log to stderr (while porting) */
+#define PDBG(...) do { if (poll_debug < 0) poll_debug = getenv("MLWSVM_DEBUG_POLL") != NULL; if (poll_debug) fprintf(stderr, "poll: " __VA_ARGS__); } while (0)
+
 typedef struct {
     int fd;
     int events;
@@ -780,6 +783,7 @@ bool plat_poller_arm(PlatPoller *p, int fd, int events, uint64_t token) {
         p->at.v[fd] = (uint32_t)i + 1;
     }
     p->arms.v[i] = (Arm){fd, events, token, false};
+    PDBG("arm fd %d kind %d ev %d token %llx (%zu armed)\n", fd, e->kind, events, (unsigned long long)token, p->arms.n);
     ReleaseSRWLockExclusive(&p->lock);
     plat_poller_wake(p); /* so a wait in progress polls it too */
     return true;
@@ -825,7 +829,11 @@ int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_n
         int64_t left = timeout_ns < 0 ? -1 : timeout_ns - (int64_t)(plat_now_ns() - start);
         int ms = timeout_ns < 0 ? -1 : left <= 0 ? 0 : (int)((left + 999999) / 1000000);
         if (pipes && (ms < 0 || ms > PIPE_LOOK_MS)) ms = PIPE_LOOK_MS;
+        PDBG("WSAPoll %zu sockets, %d ms\n", p->pfd.n, ms);
         int n = WSAPoll(p->pfd.v, (ULONG)p->pfd.n, ms);
+        PDBG("WSAPoll -> %d (error %d)", n, n < 0 ? WSAGetLastError() : 0);
+        for (size_t j = 0; j < p->pfd.n; j++) PDBG(" [fd %d: %x]", p->pfd_fd.v[j], p->pfd.v[j].revents);
+        PDBG("\n");
         bool woken = n > 0 && p->pfd.v[0].revents;
         /* Drained, then cleared: a wake-up before the clear armed a wait the
          * next wait's set will have; one after it sends another byte. (The
@@ -861,6 +869,7 @@ int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_n
             arm_remove(p, i);
         }
         ReleaseSRWLockExclusive(&p->lock);
+        PDBG("ready %d, woken %d\n", k, woken);
         bool out_of_time = timeout_ns >= 0 && (int64_t)(plat_now_ns() - start) >= timeout_ns;
         if (k || woken || out_of_time || n < 0) break;
     }
