@@ -496,8 +496,10 @@ young object is recorded for the minor sweep), and Erlang's `ring` pays for
 the barrier on its mailbox: up to 4% slower. Interpreted, the same programs
 gain about two-thirds as much.
 
-* **The young generation** starts at `--gc-min` (1 MB) per process, so a
-  process that keeps little stays small, and doubles, up to 16 MB, while a
+* **The young generation** starts at `--gc-min` (64 KB) per process, so a
+  process that keeps little stays small and in the caches (Erlang's `ring`,
+  1,000 processes, takes 10% less time than with 1 MB), and doubles, up to
+  16 MB, while a
   minor collection promotes more than an eighth of it: a program that builds
   structures larger than the young generation (`binarytrees`' trees) would
   otherwise promote them, and they would die old. It also grows to the size

@@ -8,7 +8,7 @@
 #include "../platform/platform.h"
 #include "numeric.h"
 
-#define GC_MIN_THRESHOLD (1u << 20)
+#define GC_MIN_THRESHOLD (64u << 10) /* the young generation's start: in the caches, for many processes */
 #define GC_NURSERY_MAX (16u << 20)
 
 size_t obj_footprint(const Obj *o) {

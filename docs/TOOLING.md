@@ -124,7 +124,7 @@ a test file's own lines override both.
 | `--stack-words N` | 131072 | each process's data stack, in 8-byte words |
 | `--max-frames N` | 100000 | call depth limit (`E_CALL_DEPTH`) |
 | `--slice N` | 2000 | time slice, in instructions, before another process gets a turn |
-| `--gc-min BYTES` | 1M | the young generation's starting size: what a process allocates between minor collections (it grows while too much of it survives) |
+| `--gc-min BYTES` | 64K | the young generation's starting size: what a process allocates between minor collections (it grows while too much of it survives) |
 | `--quota LIST` | unlimited | starting limits for every process, e.g. `heap=64M,raw=1G,mailbox=1000,insns=5000000,foreign=0,os=0`; any subset, `unlimited` resets one |
 | `--ext-path DIR[:DIR]` | (none) | trusted native-extension directories, searched before `lib/ext` ([EXTENDING.md](EXTENDING.md)) |
 | `--lib-path DIR[:DIR]` | (none) | more library directories (for modules and library archives), searched after the program's own |

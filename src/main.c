@@ -26,7 +26,7 @@ static void usage(FILE *f) {
           "        --stack-words N                 data stack per process, in 8-byte words (131072)\n"
           "        --max-frames N                  call depth limit (100000)\n"
           "        --slice N                       time slice, in instructions (2000)\n"
-          "        --gc-min BYTES                  smallest heap that triggers a collection (1M)\n"
+          "        --gc-min BYTES                  young generation to start with (64K)\n"
           "        --quota heap=B,raw=B,mailbox=N,insns=N,foreign=N,os=N   starting limits for every process\n"
           "        --ext-path DIR[:DIR]            trusted extension directories, before lib/ext\n"
           "        --lib-path DIR[:DIR]            more directories to find imports in (as -L DIR)\n"

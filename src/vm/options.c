@@ -122,7 +122,7 @@ bool vm_set_option(VM *vm, const char *name, const char *value, MlwsError *err) 
         return true;
     case OPT_GC_MIN:
         if (!parse_range(name, value, true, 0, UINT64_MAX, &n, err)) return false;
-        vm->gc_min_threshold = n; /* 0: the default (1 MiB) */
+        vm->gc_min_threshold = n; /* 0: the default (64 KiB) */
         return true;
     case OPT_QUOTA: return parse_quota(vm, value, err);
     case OPT_EXT_PATH: { /* trusted extension directories, searched in order; ':'-separated (';' on Windows) */

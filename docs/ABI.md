@@ -362,7 +362,7 @@ exception is constant-pool strings, which are immutable and immortal.
 
 * **Collector.** Precise, non-moving, generational mark-sweep. A minor
   collection, of the objects allocated since the last one, starts when the
-  process has allocated its young generation's size (from 1 MiB, *option*
+  process has allocated its young generation's size (from 64 KiB, *option*
   `--gc-min`, growing to 16 MiB while much of it survives); one of the whole
   heap when what has survived has doubled, or as a heap quota approaches.
   `gc.collect` requests one of the whole heap.

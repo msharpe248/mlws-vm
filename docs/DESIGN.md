@@ -1143,7 +1143,7 @@ near, or `gc.collect` asked for the whole heap (*major*).
 `gc_threshold(live)` sets `next_gc` after each collection:
 
 * the heap plus the young generation's size (`Process.nursery`): from the
-  minimum (`--gc-min`, 1 MiB), doubled (up to 16 MiB) while a minor
+  minimum (`--gc-min`, 64 KiB), doubled (up to 16 MiB) while a minor
   collection promotes more than an eighth of it, and grown to the size of
   the old objects a minor collection rescanned (up to the old generation's);
 * with a heap quota, no more than three quarters of it, but always room for

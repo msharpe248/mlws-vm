@@ -37,8 +37,8 @@
     ASSERT_EQ I30, 0
 .endm
 
-; About 4 MB of garbage: several minor collections (the nursery starts at
-; 1 MB).
+; About 4 MB of garbage: several minor collections (the young generation
+; starts at 64 KB).
 .func garbage
     mov I0, 0
 1:  tostr R0, I0
