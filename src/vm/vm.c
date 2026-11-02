@@ -44,7 +44,8 @@ VM *vm_new(void) {
     vm->start_ns = plat_now_ns();
     for (int i = 0; i < QUOTA__COUNT; i++) vm->default_quota[i] = UINT64_MAX;
     const char *no_slabs = getenv("MLWSVM_NO_SLABS");
-    vm->slabs = gc_slabs_enabled() && !(no_slabs && *no_slabs && strcmp(no_slabs, "0"));
+    const char *slabs = getenv("MLWSVM_SLABS"); /* =1: the chunks even under ASan (its leak check sees owners' buffers) */
+    vm->slabs = (gc_slabs_enabled() || (slabs && *slabs && strcmp(slabs, "0"))) && !(no_slabs && *no_slabs && strcmp(no_slabs, "0"));
     const char *stress = getenv("MLWSVM_GC_STRESS");
     vm->gc_stress = stress && *stress && strcmp(stress, "0") != 0;
     const char *verify = getenv("MLWSVM_GC_VERIFY");

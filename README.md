@@ -55,7 +55,8 @@ base:
 * **Rich heap types with a garbage collector**: strings, byte buffers, typed
   arrays, structs declared in assembly (`R0->Point.x`), dynamically typed lists,
   insertion-ordered maps, closures, BigInts (`123n`) and exact decimals (`19.99d`).
-  The collector is a precise, generational mark-sweep, one per process.
+  The collector is precise and generational, one per process, and allocates
+  by bumping a pointer through the free lines of its chunks (mark-region).
 * **Many isolated processes, in parallel**: preemptive scheduling on one worker
   thread per core with work stealing, `spawn`/`send`/`recv` with deep-copied
   messages, timeouts, Erlang-style `link`/`monitor` supervision, and per-process
@@ -111,7 +112,7 @@ base:
   milliseconds on later runs.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 312 test programs, also run under
+* **Tested in its own assembly**: 314 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, with a
   garbage collection at every allocation, with every module optimized, and
   with every function compiled by the JIT. A differential fuzzer (`mlwsvm
@@ -130,32 +131,31 @@ Apple M5 Pro. Every engine printed the same output.
 
 | Lua | MLWSVM | MLWSVM JIT | Lua 5.5 | LuaJIT 2.1 |
 |---|---|---|---|---|
-| fib (32) | 62 | **35** | 54 | 10 |
-| loop (30,000,000 iterations) | 197 | **54** | 220 | 17 |
-| methods (2M method calls and objects) | 572 | 380 | **366** | 71 |
-| strings (format, gmatch, gsub) | 230 | 166 | **135** | 100 |
-| iterate (pairs, ipairs) | 73 | **34** | 58 | 6 |
-| binarytrees (15) | 389 | **246** | 389 | 148 |
-| nbody (500,000) | 867 | 421 | **412** | 25 |
-| spectralnorm (500) | 237 | **99** | 184 | 9 |
-| fannkuch (10) | 2,008 | **693** | 832 | 125 |
+| fib (32) | 62 | **36** | 54 | 10 |
+| loop (30,000,000 iterations) | 205 | **55** | 220 | 17 |
+| methods (2M method calls and objects) | 542 | **361** | 366 | 71 |
+| strings (format, gmatch, gsub) | 229 | 164 | **135** | 100 |
+| iterate (pairs, ipairs) | 73 | **35** | 58 | 6 |
+| binarytrees (15) | 335 | **189** | 389 | 148 |
+| nbody (500,000) | 878 | 420 | **412** | 25 |
+| spectralnorm (500) | 228 | **101** | 184 | 9 |
+| fannkuch (10) | 2,004 | **690** | 832 | 125 |
 
 | Erlang | MLWSVM | MLWSVM JIT | Erlang/OTP 29 (JIT) |
 |---|---|---|---|
 | fib (30) | 41 | **22** | 90 |
 | ring (1,000 processes, 1,000,000 messages) | 237 | **220** | 265 |
-| binarytrees (16) | 597 | 283 | **129** |
-| nbody (100,000 steps) | 511 | 233 | **148** |
-| sorting (200,000 integers, maps) | 712 | 407 | **115** |
+| binarytrees (16) | 565 | 249 | **129** |
+| nbody (100,000 steps) | 490 | 210 | **148** |
+| sorting (200,000 integers, maps) | 666 | 366 | **115** |
 
 Bold marks the faster of MLWSVM's JIT and the reference interpreter or
-BEAM; LuaJIT is there for scale. With its JIT, MLWSVM runs six of the nine
+BEAM; LuaJIT is there for scale. With its JIT, MLWSVM runs seven of the nine
 Lua programs faster than Lua 5.5, which is faster where the time goes to its
-C library (`strings`) or to tables of floats (`nbody`), and a little on
-`methods`. LuaJIT, a tracing JIT that specializes code to the types it sees,
-is 1.7–17× faster than MLWSVM's JIT. BEAM's times include its start-up of
+C library (`strings`) or to tables of floats (`nbody`). LuaJIT, a tracing JIT that specializes code to the types it sees,
+is 1.3–17× faster than MLWSVM's JIT. BEAM's times include its start-up of
 about 80 ms, which is most of its `fib` and almost a third of its `ring`.
-Its code is 1.6–3.5× faster than MLWSVM's JIT on the other three. Start-up
+Its code is 1.4–3.2× faster than MLWSVM's JIT on the other three. Start-up
 is 3 ms for MLWSVM (with the module cache) and 2 ms for Lua.
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) has the benchmarks on three
 machines, the JIT's effect on each, the collector, and comparisons with the

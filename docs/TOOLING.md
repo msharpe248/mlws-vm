@@ -152,9 +152,11 @@ instruction boundary after an allocation (every eighth collection of the
 whole heap, the rest minor); `MLWSVM_GC_VERIFY=1` (or `--gc-verify`) checks each minor
 collection against a walk of the whole heap, and aborts naming the object
 that holds a young one without having been remembered (a missing write
-barrier); and `MLWSVM_NO_SLABS=1` allocates every object with
+barrier); `MLWSVM_NO_SLABS=1` allocates every object with
 `malloc` instead of the small-object allocator
-([PERFORMANCE.md](PERFORMANCE.md#the-small-object-allocator)). For
+([PERFORMANCE.md](PERFORMANCE.md#the-small-object-allocator)); and
+`MLWSVM_SLABS=1` uses that allocator even in an AddressSanitizer build, which
+otherwise uses `malloc`, so that its leak check sees what dead objects own. For
 development, `mlwsvm run --unsafe-native` (or `MLWSVM_UNSAFE_NATIVE=1`) loads
 native code without the trust checks ([EXTENDING.md](EXTENDING.md#security)).
 
@@ -172,7 +174,9 @@ innermost 40 and outermost 10 frames.
 
 Printed on stderr when the program ends: instructions and speed of `main`, call
 depth, stack peak, raw-memory allocations and anything leaked, heap peak and final
-size, objects allocated and collected, GC count and time, processes spawned,
+size, objects allocated and collected, GC count and time, the memory the
+small objects' chunks take and how much of it the last collection found in
+use (DESIGN.md §11), processes spawned,
 the most alive at once, time slices, and instructions across all processes.
 
 ## Profiler: `--profile`

@@ -60,8 +60,10 @@ The JIT compiles the quickened forms ([PERFORMANCE.md](PERFORMANCE.md#how-the-in
 * struct fields, list and array elements, bytes of strings and byte
   buffers, globals, closure captures, `len`,
   constants stored to fields, elements and globals,
-  `lnew`, `lpush` into spare capacity, `new`, `mget` of a constant key or a
-  key in a register,
+  `new` and `lnew` (for a struct, and for a list whose storage is inside
+  it, the allocator's pointer bump in machine code: DESIGN.md §11.2),
+  `lpush` into spare capacity, `mget` of a constant key or a key in a
+  register,
   `ldv`, `typeof`, `isa`, `bisa`, `bnisa`, and a tuple's tag test.
 
 It also compiles a few generic instructions that have no quickened form,
@@ -211,7 +213,7 @@ only for a report.
 machines, for the benchmarks and the compilers' programs. Calls (`fib`) take
 43–67% less time, loops (`loop`, `fannkuch`, `spectralnorm`) 49–79% less,
 and field and element access (`nbody`, `methods`, compiled Lox's `trees`)
-26–56% less. Where the time goes to natives (`maps`), raw memory (`sieve`)
+26–60% less. Where the time goes to natives (`maps`), raw memory (`sieve`)
 or the scheduler (Erlang's `ring`), the JIT changes little.
 
 ## Design

@@ -17,6 +17,7 @@ typedef struct {
     uint64_t stack_peak_bytes;
     uint32_t max_depth;
     uint64_t heap_peak, heap_live, gc_count, gc_majors, gc_ns, objects_allocated, objects_freed;
+    uint64_t chunk_bytes, chunk_lines, chunk_lines_used; /* the small objects' chunks, and their lines in use */
     uint64_t spawned, max_live, slices, total_insns; /* all processes */
     /* the function's results; a reference comes back as text (malloc'd): a
      * string or byte buffer as itself, anything else as `tostr` shows it */

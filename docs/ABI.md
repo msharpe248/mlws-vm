@@ -360,15 +360,15 @@ Objects (strings, byte buffers, arrays, structs, lists, maps) live on the heap o
 the process that created them. Processes never share heap objects; the only
 exception is constant-pool strings, which are immutable and immortal.
 
-* **Collector.** Precise, non-moving, generational mark-sweep. A minor
+* **Collector.** Precise, non-moving, generational mark-region. A minor
   collection, of the objects allocated since the last one, starts when the
   process has allocated its young generation's size (from 64 KiB, *option*
   `--gc-min`, growing to 16 MiB while much of it survives); one of the whole
   heap when what has survived has doubled, or as a heap quota approaches.
   `gc.collect` requests one of the whole heap.
-* **Allocation.** Objects of up to 256 bytes are carved from the process's own
-  chunks, in 16-byte size classes with a free list each; larger ones use
-  `malloc`. A list keeps its values and their type tags in one block: inside
+* **Allocation.** Objects of up to 256 bytes are bump-allocated from the
+  process's own chunks, into the lines no surviving object is on; larger
+  ones use `malloc`. A list keeps its values and their type tags in one block: inside
   the list's own allocation if it is made with a capacity of up to 24
   (`lnew R0, 4`), otherwise a buffer, which also comes from the process's
   chunks while it is small. `MLWSVM_NO_SLABS=1`

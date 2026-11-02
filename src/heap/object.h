@@ -30,13 +30,14 @@ enum {
 #define OBJF_OLD 0x08        /* survived a collection: a minor collection neither marks nor frees it (gc.c) */
 #define OBJF_REMEMBERED 0x10 /* old, and written since the last collection (Process.remset) */
 #define OBJF_VERIFY 0x20     /* reached by gc_verify's walk */
+#define OBJF_OWNS 0x40       /* in the chunks, and owns memory besides itself: on an owner list (gc.c) */
 
 typedef struct Obj {
     uint8_t kind;
     uint8_t flags;
-    uint16_t slab; /* its size class + 1, if it was carved from its process's chunks (gc.c); 0: malloc */
-    uint32_t pad2;
-    struct Obj *next; /* heap list */
+    uint16_t slab; /* its size in 16-byte granules, if it is in its process's chunks (gc.c); 0: from malloc */
+    uint32_t off;  /* in the chunks: its offset in its chunk */
+    struct Obj *next; /* heap list (objects from malloc) */
 } Obj;
 
 /* Immutable UTF-8 (by convention) byte string, NUL-terminated for C. */

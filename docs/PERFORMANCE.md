@@ -87,19 +87,19 @@ interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | JIT, M5 | Lua 5.5, M5 | MLWSVM, i7 | JIT, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|---|---|
-| loop | 197 | 54 | 220 | 339 | 106 | 290 |
-| iterate | 73 | 34 | 58 | 114 | 54 | 80 |
-| fib | 62 | 35 | 54 | 114 | 56 | 102 |
-| methods | 572 | 380 | 366 | 1,044 | 773 | 567 |
-| strings | 230 | 166 | 135 | 402 | 305 | 213 |
-| binarytrees (15) | 389 | 246 | 389 | 726 | 471 | 578 |
-| nbody (500,000) | 867 | 421 | 412 | 1,365 | 962 | 591 |
-| spectralnorm (500) | 237 | 99 | 184 | 387 | 153 | 269 |
-| fannkuch (10) | 2,008 | 693 | 832 | 3,025 | 1,529 | 1,157 |
+| loop | 205 | 55 | 220 | 344 | 105 | 290 |
+| iterate | 73 | 35 | 58 | 113 | 54 | 80 |
+| fib | 62 | 36 | 54 | 106 | 51 | 102 |
+| methods | 542 | 361 | 366 | 960 | 683 | 567 |
+| strings | 229 | 164 | 135 | 401 | 303 | 213 |
+| binarytrees (15) | 335 | 189 | 389 | 563 | 305 | 578 |
+| nbody (500,000) | 878 | 420 | 412 | 1,379 | 960 | 591 |
+| spectralnorm (500) | 228 | 101 | 184 | 385 | 139 | 269 |
+| fannkuch (10) | 2,004 | 690 | 832 | 3,027 | 1,547 | 1,157 |
 
-Interpreted, `loop` takes less time than in Lua, and `binarytrees` as much
-on the M5; with the JIT, six of the nine take less time than in Lua on the
-M5, and five on the i7. Without start-up, interpreted `fib` runs in 50 ms
+Interpreted, `loop` and `binarytrees` take less time than in Lua on the M5,
+and `binarytrees` on the i7 too; with the JIT, seven of the nine take less
+time than in Lua on the M5, and five on the i7. Without start-up, interpreted `fib` runs in 50 ms
 on the M5, as fast as Lua: its typed copy executes fewer instructions than
 Lua's bytecode does. Counted with Lua's
 own instruction hook, the others execute 1.7 to 5.2 times as many, and each
@@ -131,9 +131,9 @@ included on both sides; Erlang's is about 0.08 s):
 |---|---|---|---|
 | fib | 0.04 | 0.02 | 0.09 |
 | ring | 0.24 | 0.22 | 0.27 |
-| binarytrees | 0.60 | 0.28 | 0.13 |
-| nbody | 0.51 | 0.23 | 0.15 |
-| sorting | 0.71 | 0.41 | 0.12 |
+| binarytrees | 0.57 | 0.25 | 0.13 |
+| nbody | 0.49 | 0.21 | 0.15 |
+| sorting | 0.67 | 0.37 | 0.12 |
 
 BEAM compiles to machine code here, so its loops are not a fair match for an
 interpreter. `ring`, which passes a message round a ring of a thousand
@@ -200,26 +200,26 @@ benchmarks of the sections above.
 | bench/nbody | 99 → 99 | 0% | +2% | 0% |
 | bench/sieve | 621 → 618 | 0% | 0% | −3% |
 | bench/closures | 100 → 42 | −58% | −54% | −62% |
-| bench/maps | 39 → 39 | 0% | 0% | 0% |
-| bench/binarytrees | 94 → 70 | −26% | −29% | −27% |
+| bench/maps | 35 → 33 | −3% | 0% | +2% |
+| bench/binarytrees | 81 → 59 | −27% | −29% | −27% |
 | Erlang fib | 34 → 15 | −57% | −67% | −61% |
 | Erlang ring | 196 → 176 | −10% | −2% | −5% |
-| Erlang binarytrees | 583 → 270 | −54% | −56% | −56% |
-| Erlang nbody | 495 → 222 | −55% | −49% | −56% |
-| Erlang sorting | 689 → 390 | −43% | −41% | −43% |
+| Erlang binarytrees | 556 → 233 | −58% | −59% | −61% |
+| Erlang nbody | 478 → 194 | −59% | −52% | −60% |
+| Erlang sorting | 644 → 347 | −46% | −45% | −47% |
 | Lua fib | 51 → 24 | −52% | −62% | −62% |
 | Lua loop | 186 → 42 | −77% | −72% | −75% |
-| Lua methods | 560 → 364 | −35% | −26% | −26% |
+| Lua methods | 527 → 344 | −35% | −28% | −36% |
 | Lua strings | 216 → 152 | −30% | −24% | −28% |
 | Lua iterate | 61 → 23 | −62% | −61% | −59% |
-| Lua binarytrees | 373 → 230 | −38% | −37% | −40% |
+| Lua binarytrees | 320 → 172 | −46% | −47% | −52% |
 | Lua nbody | 846 → 405 | −52% | −31% | −45% |
 | Lua spectralnorm | 214 → 88 | −59% | −64% | −66% |
 | Lua fannkuch | 1981 → 674 | −66% | −49% | −59% |
-| Lox binary_trees | 763 → 453 | −41% | −42% | −37% |
+| Lox binary_trees | 697 → 388 | −44% | −46% | −41% |
 | Lox equality | 129 → 63 | −51% | −53% | −50% |
 | Lox fib | 297 → 170 | −43% | −62% | −60% |
-| Lox instantiation | 354 → 269 | −24% | −21% | −24% |
+| Lox instantiation | 292 → 188 | −36% | −21% | −29% |
 | Lox invocation | 253 → 192 | −24% | −17% | −15% |
 | Lox method_call | 154 → 100 | −35% | −32% | −28% |
 | Lox properties | 378 → 271 | −28% | −18% | −13% |
@@ -416,33 +416,41 @@ stack costs proportionally more.
 
 ### The small-object allocator
 
-Every object up to 256 bytes comes from its process's own chunks, in 16-byte
-size classes with a free list each:
+Every object up to 256 bytes comes from its process's own chunks, by bumping
+a pointer:
 
-* **Allocation** pops the class's free list, or carves from the current chunk.
-  There is no lock and no `malloc` call.
-* **The sweep walks the chunks in address order.** A chunk holds only objects,
-  one after another, each starting with its header, which gives its size; a
-  free one keeps its header and is marked free. So the sweep reads memory in
-  order instead of following a list from object to object, and rebuilds each
-  class's free list in address order as it goes, so that the program then
-  allocates through memory in order too. Objects from `malloc` are on a list
-  of their own. This cut collection time by 31% in compiled Lua's `strings`
-  and by 21% in a program with 200,000 long-lived lists; `binarytrees`, whose
-  sweep frees most of what it visits, did not change.
+* **Allocation** takes the next bytes of the current hole, a run of 128-byte
+  lines that no object surviving the last collection is on. The hole is
+  zeroed 2 KiB at a time ahead of the allocator, so an object needs no
+  `memset` of its own. There is no lock, no `malloc` call and no free list.
+  The fast path is inline wherever an object is made, and the JIT emits it
+  for `new` and for `lnew` of a list whose storage is inside it: a compare
+  of the hole's room, a compare of the heap against one limit that is both
+  the next collection's threshold and the heap quota, the bump, the header
+  and two counts. Allocating 50 million two-field structs, nothing kept,
+  takes 146 ms with the JIT on the M5, against 369 ms with the free lists
+  this replaced.
+* **The dead are never visited.** A collection marks what survives and the
+  lines it lies on; every other line is free for the next cycle. Only the
+  objects that own memory besides themselves (byte buffers, maps, lists
+  whose storage is a buffer, coroutines, foreign handles) are on lists of
+  their own, which a collection walks to free what the dead ones own. With
+  nothing kept, a program that allocates 1.6 GB spends 1.4 ms in 20,833
+  collections, against 81 ms when each dead object went back on a free list.
 * **List storage.** A list keeps its values and their type tags in one block.
   A list made with a capacity of up to 24 has it inside its own allocation, so
   `lnew R0, 4` is one allocation; any other list, or one that outgrows that,
-  has a buffer, carved from separate chunks of the same kind while it is small
-  (up to 28 values), so making or growing a short list calls no `malloc`
-  either. Storage inside the list took 2–4% off compiled Lua's `binarytrees`,
-  whose inner nodes are a table and a list of two. With a
-  buffer each for values and tags from `malloc`, and the sweep following a
-  list, compiled Lua's `methods` spent two to three times as long collecting
-  and took 6–14% longer, and a program that makes 20 million short lists
-  alongside 200,000 long-lived ones took 1.8–2.4 times as long.
+  has a buffer, carved from separate chunks with a free list per size class
+  while it is small (up to 28 values), so making or growing a short list
+  calls no `malloc` either.
 * **Chunks** start at 1 KiB and double up to 64 KiB, so ten thousand small
-  processes stay small.
+  processes stay small. Lines are 128 bytes: 64-byte lines made more, smaller
+  holes and more refills, and 256-byte lines gained no more than noise. The
+  price of not moving objects is that a line stays in use while any object
+  on it lives (until the next collection of the whole heap, for an old one);
+  the peak memory footprint of compiled Erlang's `binarytrees` and `sorting`
+  is no larger than with the free lists. `--stats` shows the chunks' size
+  and how many of their lines were in use at the last collection.
 * **Small processes.** A process that is waiting in `recv` takes about 4.3 KB
   (100,000 of them, measured on the M5): its `Process` record (3 KB), room for
   8 frames and 64 register words, which double when a call needs more, and no
@@ -453,15 +461,13 @@ size classes with a free list each:
   copied, and only the copies (built in a scratch heap that uses `malloc`) are
   adopted by the receiver. So a process's chunks are simply freed with it. The
   object header records which allocator an object came from.
-* **Zeroing** a new object uses one fixed-size `memset` per size class, which
-  the compiler inlines into stores.
 
 `MLWSVM_NO_SLABS=1` uses `malloc` for every object instead, for comparisons:
 
 | Benchmark | Mac | Intel | AMD |
 |---|---|---|---|
-| binarytrees, with the allocator / with `malloc` | 116 / 126 | 237 / 301 | 229 / 294 |
-| maps, with the allocator / with `malloc` | 61 / 61 | 102 / 135 | 108 / 145 |
+| binarytrees, with the allocator / with `malloc` | 79 / 103 | 144 / 222 | 144 / 219 |
+| maps, with the allocator / with `malloc` | 34 / 42 | 68 / 111 | 78 / 116 |
 
 macOS gains less because its own allocator's small-object zone is already very
 fast. AddressSanitizer builds always use `malloc`, so that it sees each
@@ -470,18 +476,18 @@ are filled with a garbage pattern, so a use after a free fails loudly there too.
 
 ### The collector
 
-The collector is a non-moving, generational mark-and-sweep, one per process
-([DESIGN.md §11](DESIGN.md#11-the-heap-and-the-collector)). An object that survives
-a collection is old. A minor collection marks only the young objects, from
-the roots and from the old objects written since the last collection (the
-remembered set), and frees the young ones it did not reach; it walks neither
-the old objects nor the chunks. A collection of the whole heap runs when the
-old objects have doubled.
+The collector is a non-moving, generational mark-region collector, one per
+process ([DESIGN.md §11](DESIGN.md#11-the-heap-and-the-collector)). An object
+that survives a collection is old. A minor collection marks only the young
+objects, from the roots and from the old objects written since the last
+collection (the remembered set); it walks neither the old objects nor the
+dead young ones. A collection of the whole heap runs when the old objects
+have doubled.
 
-Most of a collection's time used to be re-marking and re-sweeping what
-long-lived data a program keeps, at every collection. Against the collector
-that collected the whole heap each time, with the JIT, on the M5 / i7 /
-Ryzen:
+Most of a collection's time used to be re-marking what long-lived data a
+program keeps, at every collection, and then visiting every dead object to
+free it. Generations removed the first: against the collector that collected
+the whole heap each time, with the JIT, on the M5 / i7 / Ryzen:
 
 | Program | M5 | i7, GCC | Ryzen, Clang |
 |---|---|---|---|
@@ -491,10 +497,29 @@ Ryzen:
 | Lox binary_trees | −14% | −20% | −10% |
 | bench/binarytrees | +1% | −13% | −12% |
 
-Programs that keep almost nothing pay a little more per allocation (each
-young object is recorded for the minor sweep), and Erlang's `ring` pays for
-the barrier on its mailbox: up to 4% slower. Interpreted, the same programs
-gain about two-thirds as much.
+Lines and bump allocation removed the second, and most of allocation's own
+cost. Against the free lists and the sweep of the young they replaced, with
+the JIT:
+
+| Program | M5 | i7, GCC | Ryzen, Clang |
+|---|---|---|---|
+| Lua binarytrees | −25% | −36% | −34% |
+| Lox instantiation | −28% | −29% | −37% |
+| Lox binary_trees | −13% | −19% | −17% |
+| Erlang sorting | −9% | −15% | −13% |
+| Erlang binarytrees | −13% | −14% | −12% |
+| Erlang nbody | −11% | −10% | −13% |
+| Lua methods | −6% | −12% | −15% |
+| bench/binarytrees | −11% | −15% | −14% |
+| bench/maps | −12% | −12% | −7% |
+
+Interpreted, they gain about two-thirds as much (Lua `binarytrees` −14% /
+−24% / −19%, Lox `instantiation` −18% / −30% / −33%). Programs that allocate
+little do not change, beyond the code-layout effects every change to the
+interpreter has on the i7 (compiled Lua's `loop`, which allocates nothing,
+runs 20% slower interpreted there, and as fast as before, or faster, with
+the `Process` record 64, 192 or 512 bytes larger). Erlang's `ring` pays for the barrier on its
+mailbox, up to 4% against no generations.
 
 * **The young generation** starts at `--gc-min` (64 KB) per process, so a
   process that keeps little stays small and in the caches (Erlang's `ring`,
@@ -514,9 +539,12 @@ gain about two-thirds as much.
   in the same block, and otherwise leaves for the interpreter, once per
   object between collections. Stores of null, numbers and constants never
   remember anything.
-* **The free lists.** A minor collection pushes the slots it frees on the
-  front of their lists, so the last freed, still in the cache, is the first
-  reused: 5% faster on the M5 than keeping them in address order.
+* **The order of the chunks.** After a minor collection the allocator goes
+  first through the chunks it used last, the most recent first, whose memory
+  is the likeliest to be in the caches.
+* **A collection that is due** runs at the next safepoint, up to a time slice
+  later. Until then the fast path checks only the heap quota: otherwise every
+  allocation in between would take the slow path.
 
 * **Near a heap quota.** The collection threshold is capped at three-quarters
   of the process's heap quota, so the collector runs before the quota is hit.

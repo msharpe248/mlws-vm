@@ -1,0 +1,73 @@
+; The collector's chunks are divided into 128-byte lines (src/heap/gc.c). A
+; collection marks the lines its surviving objects lie on, and the allocator
+; then bump-allocates into the holes, the runs of lines no survivor is on,
+; without touching the dead objects there again. Here long-lived arrays of
+; every size the chunks hold (32 to 256 bytes, most spanning two or three
+; lines) and one just too big for them (264 bytes, from malloc) are kept
+; among many dead ones, through many minor collections and several of the
+; whole heap, so that later objects go into the holes between them; and an
+; old object is given a young string, made in such a hole, at every step.
+; Every value kept must still be there at the end.
+; make check-gc runs it with a collection at every allocation (each fills
+; the free lines with garbage before they are used again), and with
+; MLWSVM_GC_VERIFY=1, which checks each minor collection's marking.
+.include "std/test.inc"
+
+.struct Box
+    item: ref
+.ends
+
+; Garbage: arrays of 1 to 30 elements (32 to 264 bytes) and strings.
+.func churn(i64 n)
+    mov I1, 0
+1:  rem I2, I1, 30
+    inc I2
+    anew.i64 R0, I2
+    tostr R1, I1
+    inc I1
+    blt I1, n, 1b
+    ret
+.endf
+
+.func main
+    lnew R0                            ; the arrays kept
+    new R1, Box                        ; old, from the collection below
+    ncall "gc.collect" ()
+    nop                                ; (it runs before this)
+    mov I0, 0                          ; the step
+1:  rem I1, I0, 30
+    inc I1                             ; a length of 1 to 30
+    anew.i64 R2, I1
+    mov R2[0], I0                      ; its first and last elements: the step
+    sub I2, I1, 1
+    mov R2[I2], I0
+    lpush R0, R2
+    tostr R3, I0
+    mov R1->Box.item, R3               ; a young string into the old box
+    call churn (100)
+    mov R4, R1->Box.item               ; still there after the garbage
+    tostr R5, I0
+    strcmp I3, R4, R5
+    ASSERT_EQ I3, 0
+    rem I3, I0, 100
+    bnz I3, 2f
+    ncall "gc.collect" ()              ; the whole heap, now and then
+    nop
+2:  inc I0
+    blt I0, 600, 1b
+    ; every array kept, with its length and values
+    mov I0, 0
+3:  mov R2, R0[I0]
+    len I1, R2
+    rem I4, I0, 30
+    inc I4
+    ASSERT_EQ I1, I4
+    ASSERT_EQ R2[0], I0
+    sub I2, I1, 1
+    ASSERT_EQ R2[I2], I0
+    inc I0
+    blt I0, 600, 3b
+    ncall "gc.collections" () -> (I6)
+    ASSERT_GT I6, 20
+    ret 0
+.endf

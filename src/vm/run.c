@@ -55,13 +55,14 @@ static void program_result(VM *vm, Process *p, RunResult *res, uint64_t wall_ns)
     res->raw_leaked = p->raw_bytes;
     res->stack_peak_bytes = p->stack.size - p->stack_low_off;
     res->max_depth = p->max_depth;
-    res->heap_peak = p->heap_peak;
+    res->heap_peak = gc_heap_peak(p);
     res->heap_live = p->heap_bytes;
     res->gc_count = p->gc_count;
     res->gc_majors = p->gc_majors;
     res->gc_ns = p->gc_ns;
     res->objects_allocated = p->objects_allocated;
     res->objects_freed = p->gc_freed_objects;
+    gc_chunk_usage(p, &res->chunk_bytes, &res->chunk_lines, &res->chunk_lines_used);
     if (vm->exit_requested) { /* os.exit, from any process: the whole run ends with its code */
         res->status = RUN_OK;
         res->exit_code = vm->exit_code;

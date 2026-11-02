@@ -481,12 +481,11 @@ struct Process {
     VEC(uint32_t) handle_free;
     VEC(Obj *) markstack;
     /* generations (gc.c): an object that survives a collection is old */
-    VEC(Obj *) young;   /* the objects from the chunks allocated since the last collection */
     Obj *heap_old;      /* the first object of `heap` that was there at the last collection */
     VEC(Obj *) remset;  /* old objects that may hold young ones (written since the last collection) */
     uint64_t old_bytes, next_major, gc_majors;
     uint64_t nursery;   /* what is allocated between minor collections: from --gc-min, doubled while too much survives */
-    bool gc_minor, gc_major_req, gc_verifying;
+    bool gc_major_req, gc_verifying;
     Obj *gc_parent;     /* gc_verify: the object being scanned */
     Obj *exception; /* being thrown or just caught (a GC root) */
     uint64_t exceptions_thrown;
@@ -541,9 +540,22 @@ struct Process {
     VEC(Obj *) pins;             /* objects C may be using during the call: GC roots */
     /* the small-object allocator (gc.c) */
     bool slabs;                  /* small objects come from this process's chunks */
-    void *slab_free[16];         /* a free list per 16-byte size class */
+    uint8_t mark_bit;            /* what OBJF_MARK reads as in a live old object: flipped by each major collection */
+    unsigned char *bump, *bump_lim, *hole_end; /* the hole being allocated into: next free byte, end of the zeroed part, end */
+    unsigned char *bump_base;    /* the start of its chunk's data */
+    uint64_t alloc_limit;        /* the fast path allocates while heap_bytes stays below this (heap.h) */
+    struct Chunk *bump_chunk;    /* the chunk holding it */
+    uint32_t bump_line;          /* the line of bump_chunk to look for the next hole from */
+    VEC(struct Chunk *) recycle; /* the chunks with free lines, in the order to allocate into them */
+    size_t recycle_i;            /* the next one: those before it were allocated into since the last collection */
     struct Chunk *chunks;
     uint32_t chunk_next;         /* the size of the next chunk */
+    uint64_t chunk_bytes;        /* the chunks' total size */
+    VEC(Obj *) young_owners, old_owners; /* chunk objects that own memory besides themselves (OBJF_OWNS) */
+    uint64_t young_plain_bytes;  /* the bytes of the chunk objects allocated since the last collection, but owners */
+    uint64_t gc_allocated0;      /* objects_allocated at the last collection */
+    uint64_t old_count;          /* the objects that survived a collection */
+    uint64_t gc_live, gc_live_bytes, gc_kept_bytes; /* counted by marking: objects, their bytes, young plain bytes */
     void *buf_free[16];          /* the same for objects' own buffers (a list's storage) */
     struct Chunk *bchunks;
     uint32_t bchunk_next;

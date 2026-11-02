@@ -855,7 +855,7 @@ process has. Grouped by purpose:
 |---|---|---|
 | The running context | `regs`, `rcap`, `rtop` (the register stack); `frames`, `nframes`, `fcap`, `flimit`; `stack` (a `Segment`), `sp`, `fp` | §9.2–9.5 |
 | Memory | `globals[nglobals]` (one segment per module), `old_globals`; `raw` (segments), `rawfree` | §10 |
-| The heap | `heap` (the `malloc` list), `chunks`, `slab_free[16]`, `bchunks`, `buf_free[16]`, `heap_bytes`, `next_gc`, `gc_pending`, `markstack`; `handles`, `handle_free` | §11 |
+| The heap | `heap` (the `malloc` list), `chunks`, the hole being allocated into (`bump`, `bump_lim`, `hole_end`), `recycle`, the owner lists, `bchunks`, `buf_free[16]`, `heap_bytes`, `alloc_limit`, `next_gc`, `gc_pending`, `markstack`, `remset`; `handles`, `handle_free` | §11 |
 | Exceptions | `jb` (the slice's jump buffer), `exception`, `err`, `backtrace` | §12 |
 | Messages and scheduling | `lock`; `mbox` (taken messages), `inbox` (delivered, not yet taken), `mcount`; `links`, `monitors`; `wake_at`; kill flags; `quota[6]`; `reply` | §13, §14 |
 | Native calls | `cur_native`, `in_foreign`, `native_req`, `bcall` (a call on the I/O pool), `fdwait`; `cb_base`, `pins` | §15, §17 |
@@ -1056,10 +1056,10 @@ Every object starts with a 16-byte header:
 ```c
 typedef struct Obj {
     uint8_t kind;        /* OBJ_STRING ... OBJ_CORO, also what typeof returns */
-    uint8_t flags;       /* IMMORTAL, MARK, BORROWED */
-    uint16_t slab;       /* its size class + 1 if carved from the process's chunks; 0: malloc */
-    uint32_t pad2;
-    struct Obj *next;    /* the malloc list, or a free list */
+    uint8_t flags;       /* IMMORTAL, MARK, OLD, REMEMBERED, OWNS, BORROWED */
+    uint16_t slab;       /* its size in 16-byte granules if in the process's chunks; 0: malloc */
+    uint32_t off;        /* in the chunks: its offset in its chunk */
+    struct Obj *next;    /* the malloc list */
 } Obj;
 ```
 
@@ -1111,19 +1111,35 @@ entries: dense, in insertion order        index: power of two, open addressing
 
 Every object is made by `gc_alloc(p, kind, size)`:
 
-* **Up to 256 bytes**, from the process's own chunks, in 16 size classes of
-  16 bytes. The class's free list is popped, or the object is carved from
-  the newest chunk. A chunk is a header and then objects back to back;
-  chunks grow from 1 KiB to 64 KiB, so a small process stays small. The
-  object is zeroed with a constant-size `memset` per class, which the
-  compiler inlines. There is no lock and no `malloc`.
+* **Up to 256 bytes**, from the process's own chunks, by bumping a pointer.
+  A chunk is divided into lines of 128 bytes, each with a mark byte, which
+  a collection sets when an object on that line survives it (an object may
+  span lines). The runs of unmarked lines are the *holes*. The allocator
+  takes the next 16-byte-rounded bytes of the hole it is in; when that is
+  used up, it finds the next hole that fits, in the same chunk, then in the
+  next chunk with free lines, then in a new chunk. Chunks grow from 1 KiB to
+  64 KiB, so a small process stays small. A hole is zeroed 2 KiB at a time,
+  ahead of the allocator, not object by object. There is no lock and no
+  `malloc`.
 * **Larger objects** come from `malloc`, on the process's `heap` list.
 * **Buffers** an object owns (a list's storage) come from separate buffer
-  chunks with the same 16 classes, while they are small and the object
-  itself came from a chunk.
+  chunks, with a free list for each of 16 size classes of 16 bytes, while
+  they are small and the object itself came from a chunk.
+* **Owners.** An object in the chunks that owns memory besides itself is on
+  an owner list (`OBJF_OWNS`): byte buffers, maps, foreign handles and
+  coroutines from the start, and a list when it first gets a buffer. A
+  collection walks these lists to free what the dead ones own (§11.5).
+
+The fast path is inline (heap.h): an object that fits in the zeroed part of
+the hole, owns nothing, and keeps `heap_bytes` below `Process.alloc_limit`
+(the next collection's threshold, or once one is due, the heap quota) is
+the pointer bump, its header, and the counts. The JIT emits the same for
+`new` and for an `lnew` whose storage is inside the list. Everything else
+goes through `gc_alloc_slow`.
 
 AddressSanitizer builds and `MLWSVM_NO_SLABS=1` use `malloc` for everything,
-so each object's lifetime is visible.
+so each object's lifetime is visible. `MLWSVM_SLABS=1` uses the chunks even
+under AddressSanitizer, for its leak check (`make check-asan`).
 
 `gc_account(p, bytes)` charges each allocation to `heap_bytes`. It sets
 `gc_pending` when the heap reaches `next_gc` (or always, under
@@ -1131,7 +1147,10 @@ so each object's lifetime is visible.
 while the VM builds an `Error` or foreign code runs. Whatever grows is made
 consistent before it is charged, since the trap can come from the charge;
 `gc_alloc` checks the quota before it makes the object, so a trap never
-leaves the sweep an object its constructor did not finish.
+leaves the collector an object its constructor did not finish. The bytes of
+the young objects in the chunks that own nothing are also counted on their
+own (`young_plain_bytes`), since a minor collection never visits the dead
+ones (§11.5).
 
 ### 11.3 Generations, and when to collect
 
@@ -1185,50 +1204,68 @@ remembered objects, and marks no old object):
    callback, a blocking call's arguments and results;
 6. the messages in the mailbox.
 
-Marking is iterative: `mark` sets an object's mark bit and pushes it on
+Marking is iterative: `mark` marks an object and pushes it on
 `markstack`; the loop pops objects and scans them by kind, marking what
 they refer to. Immortal objects are never marked, so they are never
 written, which is what makes sharing them between threads safe. The cost
 is proportional to the root words scanned plus the live objects and their
 references.
 
+**Marked means old.** Marking an object sets `OBJF_OLD` and makes its
+`OBJF_MARK` bit equal to `Process.mark_bit`; every live old object has the
+current bit. A minor collection therefore skips every old object, and
+promotes each young one it marks. A major collection first flips
+`mark_bit`, so that every old object reads as unmarked, and clears the
+chunks' line marks: no pass is needed to clear marks afterwards. Marking
+also sets the marks of the lines the object lies on, and counts the
+objects and bytes it keeps.
+
 The collector is **precise**: it knows which words are references from the
 register bank, the memory tags, array and field types, and list and map
 tags. No integer ever keeps an object alive.
 
-### 11.5 Sweeping
+### 11.5 Reclaiming
 
-A minor collection sweeps only the young: the objects of the chunks
-allocated since the last collection (each recorded in `Process.young` as it
-is allocated) and the head of the `malloc` list, back to the object that
-was first at the last collection (`Process.heap_old`): a marked one becomes
-old, an unmarked one is freed, onto the front of its class's free list. A
-major collection sweeps everything:
+Nothing is swept object by object. A dead object in the chunks is never
+touched again: its lines are free once no survivor is on them.
 
-1. **The chunks**, each in address order. Each object's header gives its
-   size, so the sweep steps from object to object without a list. A marked
-   object is unmarked and old. An unmarked one releases what it owns (a foreign
-   object's finalizer runs, a coroutine's context is freed, a list's or
-   map's buffers are freed), is subtracted from `heap_bytes`, and becomes a
-   free slot. Each class's free list is rebuilt in the order the sweep
-   meets the slots, so later allocations run through memory in order.
-2. **The `malloc` list**: unmarked objects are released and freed.
+* **A minor collection** walks only the young owners (an unmarked one
+  releases what it owns: a foreign object's finalizer runs, a coroutine's
+  context is freed, a list's or map's buffers are freed; a marked one moves
+  to the old owners) and the head of the `malloc` list, back to the object
+  that was first at the last collection (`Process.heap_old`), freeing the
+  unmarked. `heap_bytes` loses the young plain bytes less those marking
+  kept. The chunks allocated into since the last collection are checked
+  for free lines.
+* **A major collection** walks every owner and the whole `malloc` list the
+  same way, and `heap_bytes` becomes the bytes marking counted. Every chunk
+  is checked for free lines.
 
-Then `next_gc` is set from what is left. When a process ends, its foreign
-objects are finalized first (so its files and sockets close before its
-`Down` messages go out), and then its chunks are freed whole.
+The chunks with free lines are the allocator's next ones, those used most
+recently first. Under `--gc-stress` the free lines are filled with a garbage
+pattern (the allocator zeroes them again), so a use after a free fails
+loudly. `--stats` shows the chunks' size and how many of their lines the
+last collection found in use. Then `next_gc` is set from what is left. When
+a process ends, its foreign objects are finalized first (so its files and
+sockets close before its `Down` messages go out), and then its chunks are
+freed whole.
 
 ### 11.6 Why this collector
 
-It is a non-moving, non-incremental, generational mark-sweep, one per
-process, with a write barrier and no locks. A heap belongs to one process
-and is collected only on its own thread, between instructions, so the
-collector never needs to stop another thread or find roots in C code.
-Generations pay where programs keep data a while: a collection of the whole
-heap re-marked and re-swept it every time, which was most of the collector's
-cost in compiled Lua's and Erlang's `binarytrees`, `sorting` and Lox's
-`binary_trees` ([PERFORMANCE.md](PERFORMANCE.md#the-collector)). Objects do
-not move, so the dead still cost a free each.
+It is a non-moving, non-incremental, generational mark-region collector
+(Immix's lines, without its evacuation), one per process, with a write
+barrier and no locks. A heap belongs to one process and is collected only
+on its own thread, between instructions, so the collector never needs to
+stop another thread or find roots in C code. Generations pay where programs
+keep data a while: a collection of the whole heap re-marked it every time.
+Lines make allocation a pointer bump and make a minor collection's cost
+that of what survives: the dead young objects, most of what is allocated,
+cost nothing ([PERFORMANCE.md](PERFORMANCE.md#the-collector)). Objects do
+not move, because C code relies on their addresses: a native that calls
+back into VM code (`list.sort`, FFI callbacks) holds pointers across
+collections, and maps hash other objects by address. The price is that a
+line stays in use while any object on it lives, until the next collection
+of the whole heap for an old one.
 
 ### 11.7 Immortal constants
 
@@ -1995,7 +2032,7 @@ Windows implementation is written but untested
 
 ## 22. Testing
 
-**Tests are MLWSVM programs.** `tests/` holds the suite (312 programs) and
+**Tests are MLWSVM programs.** `tests/` holds the suite (314 programs) and
 `examples/` holds self-checking examples, all in documented assembly. The
 test runner reads expectations from comments in each file: expected output
 lines, exit code or error code; VM options; a debugger script; what the

@@ -67,7 +67,7 @@ static void proc_json(StrBuf *b, const Process *p, bool detail) {
               "\"stack_bytes\":%u,\"depth\":%u,\"mailbox\":%zu,\"msgs_sent\":%llu,\"msgs_received\":%llu,"
               "\"gc_count\":%llu,\"gc_ns\":%llu,\"exceptions\":%llu,\"objects\":%llu",
               (unsigned long long)p->insns, (unsigned long long)p->cpu_ns, (unsigned long long)p->heap_bytes,
-              (unsigned long long)p->heap_peak, (unsigned long long)p->raw_bytes, stack_bytes(p), p->nframes,
+              (unsigned long long)gc_heap_peak(p), (unsigned long long)p->raw_bytes, stack_bytes(p), p->nframes,
               (size_t)p->mcount, (unsigned long long)p->msgs_sent, (unsigned long long)p->msgs_received,
               (unsigned long long)p->gc_count, (unsigned long long)p->gc_ns, (unsigned long long)p->exceptions_thrown,
               (unsigned long long)(p->objects_allocated - p->gc_freed_objects));

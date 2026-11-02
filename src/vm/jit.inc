@@ -946,6 +946,63 @@ static void jit_global(JComp *j, const Insn *in, uint32_t pc, int tag, unsigned 
     jm_ld(b, JR_S0, JR_S0, (int64_t)offsetof(Segment, data));
 }
 
+/* new (a struct) or lnew (a list with its storage inside it): the allocator's
+ * fast path (heap.h, gc_alloc) in machine code, the object in R0. It takes
+ * the next bytes of the hole being allocated into, if they are there and
+ * the heap stays below Process.alloc_limit; else it goes to what follows,
+ * the call of the C function, and returns the branch from its end to after
+ * that (0: no fast path for this one). */
+static uint32_t jit_alloc(JComp *j, const Insn *in, bool st) {
+    JBuf *b = &j->b;
+    int64_t cap = st ? 0 : in->k.i;
+    if (!st && (cap <= 0 || cap > LIST_INLINE_MAX)) return 0;
+    const StructDef *def = in->k.p;
+    size_t size = st ? sizeof(ObjStruct) + def->nfields * sizeof(Word) : sizeof(ObjList) + (size_t)cap * (sizeof(Word) + 1);
+    if (size > GC_SMALL_MAX) return 0;
+    size_t n = (size + 15) & ~(size_t)15;
+    int P = jm_proc(b, JR_S3);
+    jm_ld(b, JR_S0, P, P_OFF(bump));
+    jm_ld(b, JR_S1, P, P_OFF(bump_lim));
+    jm_alu(b, JA_SUB, JR_S1, JR_S1, JR_S0);
+    jm_cmpi(b, JR_S1, (int64_t)n);
+    uint32_t full = jm_fwd(b, JC_LO);
+    jm_ld(b, JR_S1, P, P_OFF(heap_bytes));
+    jm_alui(b, JA_ADD, JR_S1, JR_S1, (int64_t)size);
+    jm_ld(b, JR_S2, P, P_OFF(alloc_limit));
+    jm_cmp(b, JR_S1, JR_S2);
+    uint32_t limit = jm_fwd(b, JC_HS);
+    jm_st(b, JR_S1, P, P_OFF(heap_bytes));
+    jm_alui(b, JA_ADD, JR_S1, JR_S0, (int64_t)n);
+    jm_st(b, JR_S1, P, P_OFF(bump));
+    jm_ld(b, JR_S1, P, P_OFF(bump_base));
+    jm_alu(b, JA_SUB, JR_S1, JR_S0, JR_S1);
+    jm_st32(b, JR_S1, JR_S0, (int64_t)offsetof(Obj, off));
+    jm_movi(b, JR_S1, (st ? OBJ_STRUCT : OBJ_LIST) | (uint64_t)(n / 16) << 16); /* kind, no flags, slab */
+    jm_st32(b, JR_S1, JR_S0, 0);
+    jm_ld(b, JR_S1, P, P_OFF(young_plain_bytes));
+    jm_alui(b, JA_ADD, JR_S1, JR_S1, (int64_t)size);
+    jm_st(b, JR_S1, P, P_OFF(young_plain_bytes));
+    jm_ld(b, JR_S1, P, P_OFF(objects_allocated));
+    jm_alui(b, JA_ADD, JR_S1, JR_S1, 1);
+    jm_st(b, JR_S1, P, P_OFF(objects_allocated));
+    if (st) {
+        jm_movi(b, JR_S1, (uint64_t)(uintptr_t)def);
+        jm_st(b, JR_S1, JR_S0, (int64_t)offsetof(ObjStruct, def));
+    } else { /* (the rest of the hole is zeroed: no length, no elements) */
+        jm_alui(b, JA_ADD, JR_S1, JR_S0, (int64_t)sizeof(ObjList));
+        jm_st(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, items));
+        jm_alui(b, JA_ADD, JR_S1, JR_S0, (int64_t)(sizeof(ObjList) + (size_t)cap * sizeof(Word)));
+        jm_st(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, tags));
+        jm_movi(b, JR_S1, (uint64_t)cap);
+        jm_st32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, cap));
+    }
+    jm_mov(b, JR_R0, JR_S0);
+    uint32_t done = jm_fwd(b, JC_AL);
+    jm_bind(b, full);
+    jm_bind(b, limit);
+    return done;
+}
+
 /* The write barrier (heap.h, gc_write), before a store of the object in v
  * into the object in o: a young one into an old object not yet remembered is
  * a side exit, where the interpreter stores it and remembers the object. t:
@@ -1364,17 +1421,20 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         jm_movi(b, JR_S1, in->ops[1].kw);
         jm_stx(b, JR_S1, JR_S0, JR_S3);
         return;
-    case Q_NEW: case Q_LNEW: /* these may trap (a quota), so the frame's pc and the count are up to date */
+    case Q_NEW: case Q_LNEW: { /* the C functions may trap (a quota), so the frame's pc and the count are up to date */
         jc_flush(j);
+        uint32_t done = jit_alloc(j, in, x == Q_NEW);
         jm_movi(b, JR_S0, pc + 1);
         jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
         jit_sync_insns(j, j->rest[pc] - 1); /* the rest of the block, not yet run */
         jm_mov(b, JR_A0, jm_proc(b, JR_S3));
         jm_movi(b, JR_A1, x == Q_NEW ? (uint64_t)(uintptr_t)in->k.p : (uint64_t)in->k.i);
         jm_ccall(b, x == Q_NEW ? (const void *)struct_new : (const void *)list_new);
+        if (done) jm_bind(b, done);
         jst_r(j, JR_R0, in->r[0]);
         j->jc.rk[in->r[0]] = (JRKnown){x == Q_NEW ? OBJ_STRUCT : OBJ_LIST, true, x == Q_NEW ? in->k.p : NULL};
         return;
+    }
     case Q_MGET_R:
         jc_flush(j);
         jld_r(j, JR_A0, in->r[1]);

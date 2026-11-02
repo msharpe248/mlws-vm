@@ -202,6 +202,9 @@ check-fuzz: $(BIN)
 release-check:
 	sh tests/release-check.sh -c $(CC)
 
+# AddressSanitizer and UBSan. One run also uses the chunk allocator, which
+# ASan builds otherwise leave out (MLWSVM_SLABS=1): the leak check then sees
+# any buffer of a dead object that the collector failed to free.
 check-asan: test-ext
 	$(MAKE) BUILD=build-asan BIN=mlwsvm-asan \
 	    CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
@@ -209,6 +212,7 @@ check-asan: test-ext
 	$(ASAN_ENV) ./mlwsvm-asan test tests examples
 	$(ASAN_ENV) MLWSVM_TEST_TIMEOUT=$(STRESS_TIMEOUT) MLWSVM_GC_STRESS=1 ./mlwsvm-asan test tests examples
 	$(ASAN_ENV) MLWSVM_JIT=all ./mlwsvm-asan test tests examples
+	$(ASAN_ENV) MLWSVM_SLABS=1 MLWSVM_JIT=all ./mlwsvm-asan test tests examples
 	$(ASAN_ENV) ./mlwsvm-asan fuzz -n 100 --seed 1 --out build/fuzz-asan
 	$(MAKE) BUILD=build-asan BIN=mlwsvm-asan \
 	    CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \

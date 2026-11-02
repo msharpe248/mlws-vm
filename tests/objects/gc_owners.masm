@@ -1,0 +1,82 @@
+; Some objects own memory besides themselves: a byte buffer's bytes, a map's
+; entries, a list's storage (once it is not inside the list), a coroutine's
+; stack. The collector never touches other dead objects, so these are on
+; owner lists (src/heap/gc.c), which each collection walks to free what the
+; dead ones own. Here every kind dies young (freed by a minor collection)
+; and old (freed by a collection of the whole heap), and the heap's
+; accounting (gc.heap_bytes) must stay right:
+;   * through many minor collections of dead owners and other garbage, it
+;     stays near what is live: it neither grows nor goes below zero;
+;   * after the old ones die and the whole heap is collected, it is back to
+;     exactly what it was before any were made.
+; make check-asan runs it with the chunk allocator under LeakSanitizer
+; (MLWSVM_SLABS=1), which reports anything owned that is never freed.
+.include "std/test.inc"
+
+; A coroutine with something on its stack, suspended.
+.func holder(ref s)
+    push s
+    coyield ()
+    pop R1
+    ret R1
+.endf
+
+; One of each owner, kept in list l if it is not null, plus plain garbage.
+.func owners(ref l, i64 i)
+    bufnew R1, 100                     ; a byte buffer's bytes
+    mnew R2                            ; a map's entries
+    mset R2, "k", i
+    lnew R3                            ; a list that outgrows itself
+    mov I1, 0
+1:  lpush R3, I1
+    inc I1
+    blt I1, 30, 1b
+    lnew R4, 100                       ; a list with its storage outside it
+    closure holder -> (R5)
+    conew R6, R5                       ; a coroutine, with its stack in use
+    tostr R7, i
+    coresume R6 (R7)
+    new R8, Box                        ; and plain garbage
+    tostr R9, i
+    bz l, 2f
+    lpush l, R1, R2, R3, R4, R6
+2:  ret
+.endf
+
+.struct Box
+    item: ref
+.ends
+
+.func main
+    ncall "gc.collect" ()
+    nop                                ; (it runs before this)
+    ncall "gc.heap_bytes" () -> (I10)  ; what is live to start with
+    ; dying young: many minor collections, no collection of the whole heap
+    mov R0, null
+    mov I0, 0
+1:  call owners (R0, I0)
+    inc I0
+    blt I0, 20000, 1b
+    ncall "gc.collections" () -> (I1)
+    ASSERT_GT I1, 10
+    ncall "gc.heap_bytes" () -> (I2)
+    ASSERT_GT I2, 0                    ; (an over-count of what was freed would wrap)
+    sub I3, I2, I10
+    ASSERT_LT I3, 20000000             ; over 200 MB were allocated (young: up to 16 MB)
+    ; dying old
+    lnew R0
+    mov I0, 0
+2:  call owners (R0, I0)
+    inc I0
+    blt I0, 1000, 2b
+    ncall "gc.collect" ()              ; all of them old now
+    nop
+    len I4, R0
+    ASSERT_EQ I4, 5000
+    mov R0, null
+    ncall "gc.collect" ()              ; and freed
+    nop
+    ncall "gc.heap_bytes" () -> (I5)
+    ASSERT_EQ I5, I10
+    ret 0
+.endf

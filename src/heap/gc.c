@@ -1,4 +1,5 @@
-/* gc.c - precise, non-moving mark-sweep collector, one heap per process.
+/* gc.c - precise, non-moving, generational mark-region collector, one heap
+ * per process.
  *
  * Roots: the R register stack (every live frame's window), reference-tagged
  * words of the data stack and of every global segment, and the handle table.
@@ -59,29 +60,55 @@ static void quota_check(Process *p, uint64_t bytes) {
         vm_trap(p, "E_QUOTA", "heap quota of %llu bytes exceeded", (unsigned long long)p->quota[QUOTA_HEAP]);
 }
 
-void gc_account(Process *p, int64_t delta) {
-    p->heap_bytes = (uint64_t)((int64_t)p->heap_bytes + delta);
+/* The heap's peak is updated lazily: the fast path of gc_alloc never shrinks
+ * the heap, so its largest size is seen before anything does (here, and at a
+ * collection's start). */
+static void note_peak(Process *p) {
     if (p->heap_bytes > p->heap_peak) p->heap_peak = p->heap_bytes;
+}
+
+uint64_t gc_heap_peak(const Process *p) { return p->heap_bytes > p->heap_peak ? p->heap_bytes : p->heap_peak; }
+
+/* What gc_alloc's fast path checks: below the next collection's threshold
+ * (once one is due, it runs at the next safepoint: only the quota then),
+ * and within the quota (none under GC stress, which collects at every
+ * allocation). */
+static void set_alloc_limit(Process *p) {
+    uint64_t q = p->quota[QUOTA_HEAP], l = p->gc_pending ? UINT64_MAX : p->next_gc;
+    if (q < l) l = q + 1;
+    p->alloc_limit = p->vm->gc_stress ? 0 : l;
+}
+
+void gc_account(Process *p, int64_t delta) {
+    note_peak(p);
+    p->heap_bytes = (uint64_t)((int64_t)p->heap_bytes + delta);
+    note_peak(p);
     if (p->heap_bytes >= p->next_gc || p->vm->gc_stress) p->gc_pending = true;
     if (delta > 0) quota_check(p, p->heap_bytes);
 }
 
 /* ---- the small-object allocator ------------------------------------------------------
  *
- * Objects up to SLAB_MAX bytes are carved from the process's own chunks, in
- * 16-byte size classes with a free list each: no malloc call and no malloc
- * lock. Chunks start small (a process may hold only a few objects) and double
- * up to 64 KiB.
+ * Objects up to SLAB_MAX bytes are bump-allocated from the process's own
+ * chunks: no malloc call, no lock, no free list. Chunks start small (a
+ * process may hold only a few objects) and double up to 64 KiB.
  *
- * A chunk holds nothing but objects, one after another up to `used`, each
- * starting with its header, whose `slab` gives its size. A free one keeps its
- * header, with kind OBJK_FREE and its free list's link in `next`. So a sweep
- * walks the chunks in address order instead of following a list through
- * memory, and rebuilds the free lists in address order as it goes, so that the
- * program then allocates through memory in order too. Objects from malloc (too
- * big for a class, or allocated without the chunks) are on the list
- * Process.heap instead. Objects' own small buffers (a list's storage) come
- * from chunks of their own, which have no headers to walk.
+ * A chunk is divided into lines of LINE bytes, each with a mark byte, set by
+ * a collection when an object on that line survives it (objects may span
+ * lines). The allocator moves through the holes, the runs of lines no
+ * survivor marked, zeroing a little ahead of itself, and each object takes the
+ * next bytes of the hole. So an object that dies young is never touched
+ * again: a collection marks what survives, and every line it did not mark is
+ * free for the next cycle. These are Immix's lines without its evacuation:
+ * nothing moves, since C code and map keys rely on objects' addresses.
+ *
+ * An object that owns memory besides itself (a byte buffer's bytes, a map's
+ * entries, a list's storage, a foreign handle's resource, a coroutine's
+ * stack) is on an owner list, which a collection walks to free what the dead
+ * ones own. Objects from malloc (too big for a chunk, or allocated without
+ * chunks) are on the list Process.heap instead. Objects' own small buffers (a
+ * list's storage) come from chunks of their own, with a free list per 16-byte
+ * size class.
  *
  * A process's objects never move to another heap (messages are copied), so its
  * chunks are freed with it. Objects that do move are those built in a
@@ -91,11 +118,17 @@ void gc_account(Process *p, int64_t delta) {
 #define SLAB_CLASSES (SLAB_MAX / SLAB_GRAIN)
 #define CHUNK_MIN 1024
 #define CHUNK_MAX 65536
-#define OBJK_FREE 0xFF /* the kind of a free slot in a chunk */
+#define LINE_SHIFT 7
+#define LINE (1u << LINE_SHIFT)
+#define ZERO_STEP 2048 /* how far ahead of the allocator a hole is zeroed at a time */
+/* The kinds that always own memory besides themselves (a list may come to). */
+#define OWNER_KINDS (1u << OBJ_BYTES | 1u << OBJ_MAP | 1u << OBJ_FOREIGN | 1u << OBJ_CORO)
 
 typedef struct Chunk {
     struct Chunk *next;
-    size_t size, used, pad;
+    uint32_t size, used;  /* used: buffer chunks only */
+    uint32_t nlines, pad;
+    uint8_t *lines;       /* object chunks: a mark byte per line, after the data */
     unsigned char data[]; /* 16-byte aligned: malloc's alignment, after a 32-byte header */
 } Chunk;
 
@@ -118,56 +151,131 @@ static void *chunk_carve(Chunk **chunks, uint32_t *next_size, size_t n) {
         size_t size = *next_size ? *next_size : CHUNK_MIN;
         *next_size = (uint32_t)(size < CHUNK_MAX ? size * 2 : size);
         c = xmalloc(sizeof(Chunk) + size);
-        c->size = size;
+        c->size = (uint32_t)size;
         c->used = 0;
+        c->lines = NULL;
         c->next = *chunks;
         *chunks = c;
     }
     void *b = c->data + c->used;
-    c->used += n;
+    c->used += (uint32_t)n;
     return b;
+}
+
+static Chunk *chunk_new(Process *p) {
+    uint32_t size = p->chunk_next ? p->chunk_next : CHUNK_MIN;
+    p->chunk_next = size < CHUNK_MAX ? size * 2 : size;
+    uint32_t nlines = size >> LINE_SHIFT;
+    Chunk *c = xmalloc(sizeof(Chunk) + size + nlines);
+    c->size = size;
+    c->used = 0;
+    c->nlines = nlines;
+    c->lines = c->data + size;
+    memset(c->lines, 0, nlines);
+    c->next = p->chunks;
+    p->chunks = c;
+    p->chunk_bytes += size;
+    return c;
+}
+
+/* The next hole of at least n bytes in the chunk being allocated into. */
+static bool next_hole(Process *p, size_t n) {
+    Chunk *c = p->bump_chunk;
+    uint32_t l = p->bump_line;
+    while (l < c->nlines) {
+        while (l < c->nlines && c->lines[l]) l++;
+        uint32_t start = l;
+        while (l < c->nlines && !c->lines[l]) l++;
+        if ((size_t)(l - start) << LINE_SHIFT >= n) {
+            p->bump = p->bump_lim = c->data + ((size_t)start << LINE_SHIFT);
+            p->hole_end = c->data + ((size_t)l << LINE_SHIFT);
+            p->bump_line = l;
+            return true;
+        }
+    }
+    p->bump_line = l;
+    return false;
+}
+
+/* The allocator's slow path: n more bytes zeroed, in this hole, or the next
+ * hole that fits, in this chunk, the next chunk with free lines, or a new one. */
+static MLWS_NOINLINE unsigned char *bump_refill(Process *p, size_t n) {
+    for (;;) {
+        if (p->bump && (size_t)(p->hole_end - p->bump) >= n) {
+            unsigned char *lim = p->bump_lim + ZERO_STEP;
+            if (lim < p->bump + n) lim = p->bump + n;
+            if (lim > p->hole_end) lim = p->hole_end;
+            memset(p->bump_lim, 0, (size_t)(lim - p->bump_lim));
+            p->bump_lim = lim;
+            return p->bump;
+        }
+        if (p->bump_chunk && next_hole(p, n)) continue;
+        Chunk *c;
+        if (p->recycle_i < p->recycle.n) {
+            c = p->recycle.v[p->recycle_i++];
+        } else {
+            c = chunk_new(p);
+            VEC_PUSH(p->recycle, c);
+            p->recycle_i = p->recycle.n;
+        }
+        p->bump_chunk = c;
+        p->bump_base = c->data;
+        p->bump_line = 0;
+        p->bump = p->bump_lim = p->hole_end = NULL;
+    }
+}
+
+/* o, in the chunks, owns memory besides itself from now on: a collection
+ * that finds it dead must free that. */
+static void gc_own(Process *p, Obj *o) {
+    o->flags |= OBJF_OWNS;
+    if (o->flags & OBJF_OLD) VEC_PUSH(p->old_owners, o);
+    else VEC_PUSH(p->young_owners, o);
 }
 
 Obj *gc_alloc_unaccounted(Process *p, uint8_t kind, size_t size) {
     Obj *o;
     if (p->slabs && size <= SLAB_MAX) {
-        unsigned cls = (unsigned)((size - 1) / SLAB_GRAIN);
-        void *b = p->slab_free[cls];
-        if (b) p->slab_free[cls] = ((Obj *)b)->next;
-        else b = chunk_carve(&p->chunks, &p->chunk_next, (size_t)(cls + 1) * SLAB_GRAIN);
-        switch (cls) { /* a constant size for each class: the compiler inlines the stores */
-#define ZERO(k) case k: memset(b, 0, (k + 1) * SLAB_GRAIN); break;
-            ZERO(0) ZERO(1) ZERO(2) ZERO(3) ZERO(4) ZERO(5) ZERO(6) ZERO(7)
-            ZERO(8) ZERO(9) ZERO(10) ZERO(11) ZERO(12) ZERO(13) ZERO(14) ZERO(15)
-#undef ZERO
-        }
-        o = b;
-        o->slab = (uint16_t)(cls + 1);
-        VEC_PUSH(p->young, o);
+        size_t n = (size + SLAB_GRAIN - 1) & ~(size_t)(SLAB_GRAIN - 1);
+        unsigned char *b = p->bump;
+        if (__builtin_expect((size_t)(p->bump_lim - b) < n, 0)) b = bump_refill(p, n);
+        p->bump = b + n;
+        o = (Obj *)b;
+        o->kind = kind;
+        o->slab = (uint16_t)(n / SLAB_GRAIN);
+        o->off = (uint32_t)(b - p->bump_base);
+        if ((1u << kind) & OWNER_KINDS) gc_own(p, o);
+        else p->young_plain_bytes += size;
     } else {
         o = xcalloc(1, size);
+        o->kind = kind;
         o->next = p->heap;
         p->heap = o;
     }
-    o->kind = kind;
     p->objects_allocated++;
     if (!p->next_gc) p->next_gc = gc_threshold(p, 0);
     return o;
 }
 
 /* The quota is checked first: a trap after the object is linked would leave
- * the sweep an object its constructor never set up (a struct with no def). */
-Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
+ * the collector an object its constructor never set up (a struct with no def). */
+Obj *gc_alloc_slow(Process *p, uint8_t kind, size_t size) {
     quota_check(p, p->heap_bytes + size);
     Obj *o = gc_alloc_unaccounted(p, kind, size);
     gc_account(p, (int64_t)size);
+    set_alloc_limit(p);
     return o;
 }
 
 /* An object's own buffer of n zeroed bytes (a list's storage): from p's buffer
  * chunks if the object came from the object chunks and the buffer is small,
- * else from malloc. The same test in gc_buf_free tells which. */
-void *gc_buf_alloc(Process *p, const Obj *o, size_t n) {
+ * else from malloc. The same test in gc_buf_free tells which. Either way, an
+ * object in the chunks becomes an owner. */
+void *gc_buf_alloc(Process *p, Obj *o, size_t n) {
+    if (o->slab && !(o->flags & OBJF_OWNS)) {
+        if (!(o->flags & OBJF_OLD)) p->young_plain_bytes -= obj_footprint(o); /* counted as an owner now */
+        gc_own(p, o);
+    }
     if (!o->slab || n > SLAB_MAX) return xcalloc(1, n);
     unsigned cls = (unsigned)((n - 1) / SLAB_GRAIN);
     void *b = p->buf_free[cls];
@@ -232,29 +340,52 @@ void gc_adopt(Process *p, Obj *list, uint64_t bytes, uint64_t nobjs) {
     tail->next = p->heap;
     p->heap = list;
     p->objects_allocated += nobjs;
-    if (!p->next_gc) p->next_gc = gc_threshold(p, 0);
+    if (!p->next_gc) p->next_gc = gc_threshold(p, 0), set_alloc_limit(p);
     /* Like gc_account, but never traps: a heap quota is caught at the next allocation. */
     p->heap_bytes += bytes;
-    if (p->heap_bytes > p->heap_peak) p->heap_peak = p->heap_bytes;
+    note_peak(p);
     if (p->heap_bytes >= p->next_gc || p->vm->gc_stress) p->gc_pending = true;
 }
 
 static void verify_reach(Process *p, Obj *o);
 
-/* A minor collection marks only young objects: an old one is live until the
- * next major collection, and the young ones it holds are found from the
- * remembered set. */
+static MLWS_COLD void footprint_drift(const Obj *o, size_t fp) {
+    fprintf(stderr, "mlwsvm: gc verify: a %s of %zu bytes was allocated as %u granules (its accounting drifted)\n",
+            obj_kind_name(o->kind), fp, o->slab);
+    abort();
+}
+
+/* Marking makes an object old: its flags become OLD plus the current mark
+ * bit. A minor collection skips every old object (each has the current bit),
+ * so it marks only young ones, and finds those an old one holds from the
+ * remembered set. A major collection first flips the bit, so that every old
+ * object reads as unmarked; no pass is needed to clear the marks after.
+ * Marking also marks the lines an object of the chunks lies on, and counts
+ * what it keeps. */
 static void mark(Process *p, Obj *o) {
     if (!o) return;
     if (p->gc_verifying) {
         verify_reach(p, o);
         return;
     }
-    if ((o->flags & (OBJF_MARK | OBJF_IMMORTAL)) || (p->gc_minor && (o->flags & OBJF_OLD))) return;
-    o->flags |= OBJF_MARK;
+    uint8_t f = o->flags;
+    if ((f & (OBJF_OLD | OBJF_MARK)) == (OBJF_OLD | p->mark_bit) || (f & OBJF_IMMORTAL)) return;
+    o->flags = (uint8_t)((f & ~OBJF_MARK) | OBJF_OLD | p->mark_bit);
+    size_t fp = obj_footprint(o);
+    p->gc_live++;
+    p->gc_live_bytes += fp;
+    if (o->slab) {
+        Chunk *c = (Chunk *)((unsigned char *)o - o->off - offsetof(Chunk, data));
+        uint32_t l = o->off >> LINE_SHIFT, last = (o->off + o->slab * SLAB_GRAIN - 1u) >> LINE_SHIFT;
+        do c->lines[l] = 1;
+        while (++l <= last);
+        if (!(f & (OBJF_OLD | OBJF_OWNS))) { /* young, and counted in young_plain_bytes */
+            p->gc_kept_bytes += fp;
+            if (p->vm->gc_verify && (fp + SLAB_GRAIN - 1) / SLAB_GRAIN != o->slab) footprint_drift(o, fp);
+        }
+    }
     VEC_PUSH(p->markstack, o);
 }
-
 void gc_remember(Process *p, Obj *o) {
     o->flags |= OBJF_REMEMBERED;
     VEC_PUSH(p->remset, o);
@@ -335,39 +466,49 @@ static void mark_segment(Process *p, const Segment *s, uint32_t from_word) {
     }
 }
 
-/* Sweep the chunks in address order: unmark the marked objects, free the
- * rest, and rebuild each class's free list from the free slots, in order. */
-static void sweep_chunks(Process *p) {
-    Obj **tail[SLAB_CLASSES];
-    for (int k = 0; k < SLAB_CLASSES; k++) tail[k] = (Obj **)&p->slab_free[k];
-    for (Chunk *c = p->chunks; c; c = c->next) {
-        for (size_t off = 0; off < c->used;) {
-            Obj *o = (Obj *)(c->data + off);
-            unsigned cls = o->slab - 1u;
-            off += (size_t)o->slab * SLAB_GRAIN;
-            if (o->kind != OBJK_FREE) {
-                if (o->flags & OBJF_MARK) {
-                    o->flags = (uint8_t)((o->flags & ~OBJF_MARK) | OBJF_OLD);
-                    continue;
-                }
-                p->heap_bytes -= obj_footprint(o);
-                obj_release_buffers(p, o);
-                /* Under GC stress, garbage-fill freed objects, so that a use
-                 * after a free goes wrong loudly (ASan cannot see inside the
-                 * chunks). */
-                if (p->vm->gc_stress) memset(o, 0xDB, (size_t)o->slab * SLAB_GRAIN);
-                o->kind = OBJK_FREE;
-                o->flags = 0;
-                o->slab = (uint16_t)(cls + 1);
-                p->gc_freed_objects++;
-            }
-            *tail[cls] = o;
-            tail[cls] = &o->next;
-        }
+/* Whether a chunk has a free line (under GC stress, garbage-fill those, so
+ * that a use after a free goes wrong loudly: ASan cannot see inside the
+ * chunks; the allocator zeroes them again). */
+static bool chunk_free_lines(Chunk *c, bool stress) {
+    bool any = false;
+    for (uint32_t l = 0; l < c->nlines; l++) {
+        if (c->lines[l]) continue;
+        any = true;
+        if (stress) memset(c->data + ((size_t)l << LINE_SHIFT), 0xDB, LINE);
+        else break;
     }
-    for (int k = 0; k < SLAB_CLASSES; k++) *tail[k] = NULL;
+    return any;
 }
 
+/* After a collection, the chunks to allocate into, those with free lines.
+ * After a minor one, only the chunks allocated into since the last (the
+ * first recycle_i) can have changed: they go first, the most recent first,
+ * whose memory is the likeliest to be in the caches. A major one may have
+ * freed lines anywhere. */
+static void recycle_chunks(Process *p, bool major) {
+    bool stress = p->vm->gc_stress;
+    if (major) {
+        p->recycle.n = 0;
+        for (Chunk *c = p->chunks; c; c = c->next)
+            if (chunk_free_lines(c, stress)) VEC_PUSH(p->recycle, c);
+    } else {
+        size_t used = p->recycle_i, k = 0;
+        for (size_t i = 0, j = used; i + 1 < j; i++, j--) {
+            Chunk *t = p->recycle.v[i];
+            p->recycle.v[i] = p->recycle.v[j - 1];
+            p->recycle.v[j - 1] = t;
+        }
+        for (size_t i = 0; i < p->recycle.n; i++) {
+            Chunk *c = p->recycle.v[i];
+            if (i < used && !chunk_free_lines(c, stress)) continue;
+            p->recycle.v[k++] = c;
+        }
+        p->recycle.n = k;
+    }
+    p->recycle_i = 0;
+    p->bump_chunk = NULL;
+    p->bump = p->bump_lim = p->hole_end = NULL;
+}
 /* The roots: what is live whatever the heap holds. */
 static void mark_roots(Process *p) {
     mark_frames(p, p->regs, p->frames, p->nframes);
@@ -405,7 +546,7 @@ static MLWS_THREAD_LOCAL VEC(Obj *) verify_seen, verify_stack; /* (freed after e
 
 static void verify_reach(Process *p, Obj *o) {
     if (o->flags & (OBJF_VERIFY | OBJF_IMMORTAL)) return;
-    if (!(o->flags & (OBJF_OLD | OBJF_MARK))) {
+    if (!(o->flags & OBJF_OLD)) {
         const Obj *by = p->gc_parent;
         fprintf(stderr, "mlwsvm: gc verify: a young %s is held by %s %s that was not remembered (a write barrier is missing)\n",
                 obj_kind_name(o->kind), by ? (by->flags & OBJF_OLD ? "an old" : "a young") : "a root, not",
@@ -432,28 +573,17 @@ static void gc_verify(Process *p) {
     p->gc_verifying = false;
 }
 
-/* Free a young object of the chunks (minor collection), onto the front of
- * its class's free list: the last freed, still in the cache from the sweep,
- * is the first allocated again. */
-static void free_chunk_object(Process *p, Obj *o, bool stress) {
-    unsigned cls = o->slab - 1u;
-    p->heap_bytes -= obj_footprint(o);
-    obj_release_buffers(p, o);
-    if (stress) memset(o, 0xDB, (size_t)(cls + 1) * SLAB_GRAIN);
-    o->kind = OBJK_FREE;
-    o->flags = 0;
-    o->slab = (uint16_t)(cls + 1);
-    o->next = p->slab_free[cls];
-    p->slab_free[cls] = o;
-    p->gc_freed_objects++;
+/* An object a major collection marked (an owner, or one from malloc). */
+static bool owner_live(const Process *p, const Obj *o) {
+    return (o->flags & (OBJF_OLD | OBJF_MARK)) == (OBJF_OLD | p->mark_bit);
 }
 
 /* A minor collection: the young objects reached from the roots and from
- * the remembered old objects become old, the others are freed. Neither the
- * old objects nor the chunks are walked. */
+ * the remembered old objects become old, and the others are free. Neither the
+ * old objects nor the dead young ones are touched, but for the owners. */
 static void gc_minor(Process *p) {
     uint64_t old0 = p->old_bytes;
-    p->gc_minor = true;
+    p->gc_live = p->gc_live_bytes = p->gc_kept_bytes = 0;
     mark_roots(p);
     uint64_t rescanned = 0;
     for (size_t i = 0; i < p->remset.n; i++) {
@@ -465,32 +595,34 @@ static void gc_minor(Process *p) {
     p->remset.n = 0;
     drain(p);
     if (p->vm->gc_verify) gc_verify(p);
-    bool stress = p->vm->gc_stress;
-    for (size_t i = 0; i < p->young.n; i++) {
-        Obj *o = p->young.v[i];
-        if (o->flags & OBJF_MARK) {
-            o->flags = (uint8_t)((o->flags & ~OBJF_MARK) | OBJF_OLD);
-            p->old_bytes += obj_footprint(o);
+    for (size_t i = 0; i < p->young_owners.n; i++) {
+        Obj *o = p->young_owners.v[i];
+        if (o->flags & OBJF_OLD) {
+            VEC_PUSH(p->old_owners, o);
         } else {
-            free_chunk_object(p, o, stress);
+            p->heap_bytes -= obj_footprint(o);
+            obj_release_buffers(p, o);
         }
     }
-    p->young.n = 0;
+    p->young_owners.n = 0;
     Obj **pp = &p->heap; /* the objects from malloc since the last collection: the list's head */
     while (*pp && *pp != p->heap_old) {
         Obj *o = *pp;
-        if (o->flags & OBJF_MARK) {
-            o->flags = (uint8_t)((o->flags & ~OBJF_MARK) | OBJF_OLD);
-            p->old_bytes += obj_footprint(o);
+        if (o->flags & OBJF_OLD) {
             pp = &o->next;
         } else {
             *pp = o->next;
             p->heap_bytes -= obj_footprint(o);
             obj_release(p, o);
-            p->gc_freed_objects++;
         }
     }
-    p->gc_minor = false;
+    p->heap_bytes -= p->young_plain_bytes - p->gc_kept_bytes;
+    p->gc_freed_objects += p->objects_allocated - p->gc_allocated0 - p->gc_live;
+    p->old_count += p->gc_live;
+    p->gc_allocated0 = p->objects_allocated;
+    p->young_plain_bytes = 0;
+    p->old_bytes += p->gc_live_bytes;
+    recycle_chunks(p, false);
     /* More than an eighth of the nursery survived: it is too small for what the
      * program keeps a while, which it promotes (and the next major frees). */
     if ((p->old_bytes - old0) * 8 > p->nursery && p->nursery < GC_NURSERY_MAX) p->nursery *= 2;
@@ -501,39 +633,55 @@ static void gc_minor(Process *p) {
     if (want > p->nursery) p->nursery = want;
 }
 
-/* A major collection: everything, as a non-generational mark and sweep; what
- * survives is old. */
+/* A major collection: everything, old or young, is marked again from the
+ * roots; what survives is old. */
 static void gc_major(Process *p) {
     for (size_t i = 0; i < p->remset.n; i++) p->remset.v[i]->flags &= (uint8_t)~OBJF_REMEMBERED;
     p->remset.n = 0;
+    p->mark_bit ^= OBJF_MARK;
+    for (Chunk *c = p->chunks; c; c = c->next) memset(c->lines, 0, c->nlines);
+    p->gc_live = p->gc_live_bytes = p->gc_kept_bytes = 0;
     mark_roots(p);
     drain(p);
-    sweep_chunks(p);
-    p->young.n = 0;
+    size_t k = 0;
+    for (size_t i = 0; i < p->old_owners.n; i++) {
+        Obj *o = p->old_owners.v[i];
+        if (owner_live(p, o)) p->old_owners.v[k++] = o;
+        else obj_release_buffers(p, o);
+    }
+    p->old_owners.n = k;
+    for (size_t i = 0; i < p->young_owners.n; i++) {
+        Obj *o = p->young_owners.v[i];
+        if (owner_live(p, o)) VEC_PUSH(p->old_owners, o);
+        else obj_release_buffers(p, o);
+    }
+    p->young_owners.n = 0;
     Obj **pp = &p->heap;
     while (*pp) {
         Obj *o = *pp;
-        if (o->flags & OBJF_MARK) {
-            o->flags = (uint8_t)((o->flags & ~OBJF_MARK) | OBJF_OLD);
+        if (owner_live(p, o)) {
             pp = &o->next;
         } else {
             *pp = o->next;
-            p->heap_bytes -= obj_footprint(o);
             obj_release(p, o);
-            p->gc_freed_objects++;
         }
     }
-    p->old_bytes = p->heap_bytes;
+    p->gc_freed_objects += p->old_count + (p->objects_allocated - p->gc_allocated0) - p->gc_live;
+    p->old_count = p->gc_live;
+    p->gc_allocated0 = p->objects_allocated;
+    p->young_plain_bytes = 0;
+    p->heap_bytes = p->old_bytes = p->gc_live_bytes;
+    recycle_chunks(p, true);
     uint64_t min = p->vm->gc_min_threshold ? p->vm->gc_min_threshold : GC_MIN_THRESHOLD;
     p->next_major = p->old_bytes * 2 > 4 * min ? p->old_bytes * 2 : 4 * min;
     p->gc_majors++;
 }
-
 /* A minor collection, or a major one when the old objects have doubled since
  * the last (or a quota is near, or gc.collect asked). Under GC stress, every
  * 8th is major. */
 void gc_collect(Process *p) {
     uint64_t t0 = plat_now_ns();
+    note_peak(p);
     bool major = p->gc_major_req || p->old_bytes >= p->next_major ||
                  (p->vm->gc_stress && p->gc_count % 8 == 7);
     uint64_t q = p->quota[QUOTA_HEAP];
@@ -544,21 +692,27 @@ void gc_collect(Process *p) {
     p->gc_major_req = false;
     p->next_gc = gc_threshold(p, p->heap_bytes);
     p->gc_pending = false;
+    set_alloc_limit(p);
     p->gc_count++;
     p->gc_ns += plat_now_ns() - t0;
 }
 
-/* Each object in p's chunks that is not free. */
-#define FOR_CHUNK_OBJECTS(p, o)                                                \
-    for (Chunk *c_ = (p)->chunks; c_; c_ = c_->next)                           \
-        for (size_t off_ = 0; off_ < c_->used; off_ += (size_t)((Obj *)(c_->data + off_))->slab * SLAB_GRAIN) \
-            for (Obj *o = (Obj *)(c_->data + off_); o && o->kind != OBJK_FREE; o = NULL)
+void gc_chunk_usage(const Process *p, uint64_t *bytes, uint64_t *lines, uint64_t *used) {
+    *bytes = p->chunk_bytes;
+    *lines = *used = 0;
+    for (const Chunk *c = p->chunks; c; c = c->next) {
+        *lines += c->nlines;
+        for (uint32_t l = 0; l < c->nlines; l++) *used += c->lines[l];
+    }
+}
 
 void heap_release_foreign(Process *p) {
     for (Obj *o = p->heap; o; o = o->next)
         if (o->kind == OBJ_FOREIGN) foreign_finalize(p, o); /* idempotent: the handle forgets its pointer */
-    FOR_CHUNK_OBJECTS(p, o)
-        if (o->kind == OBJ_FOREIGN) foreign_finalize(p, o);
+    for (size_t i = 0; i < p->young_owners.n; i++)
+        if (p->young_owners.v[i]->kind == OBJ_FOREIGN) foreign_finalize(p, p->young_owners.v[i]);
+    for (size_t i = 0; i < p->old_owners.n; i++)
+        if (p->old_owners.v[i]->kind == OBJ_FOREIGN) foreign_finalize(p, p->old_owners.v[i]);
     foreign_run_deferred(p, NULL); /* none, unless a call never returned */
 }
 
@@ -574,26 +728,29 @@ void heap_free_all(Process *p) {
     while (p->heap) {
         Obj *o = p->heap;
         p->heap = o->next;
-        p->heap_bytes -= obj_footprint(o);
         obj_release(NULL, o); /* the buffer chunks go below, all at once */
     }
-    FOR_CHUNK_OBJECTS(p, o) {
-        p->heap_bytes -= obj_footprint(o);
-        obj_release_buffers(NULL, o);
-    }
+    for (size_t i = 0; i < p->young_owners.n; i++) obj_release_buffers(NULL, p->young_owners.v[i]);
+    for (size_t i = 0; i < p->old_owners.n; i++) obj_release_buffers(NULL, p->old_owners.v[i]);
     free_chunks(&p->chunks);
     free_chunks(&p->bchunks);
-    memset(p->slab_free, 0, sizeof p->slab_free);
     memset(p->buf_free, 0, sizeof p->buf_free);
     p->chunk_next = p->bchunk_next = 0;
+    p->chunk_bytes = p->heap_bytes = 0;
+    p->bump_chunk = NULL;
+    p->bump = p->bump_lim = p->hole_end = NULL;
+    VEC_FREE(p->recycle);
+    p->recycle_i = 0;
+    VEC_FREE(p->young_owners);
+    VEC_FREE(p->old_owners);
+    p->young_plain_bytes = p->old_count = 0;
+    p->gc_allocated0 = p->objects_allocated;
     VEC_FREE(p->handles);
     VEC_FREE(p->handle_free);
     VEC_FREE(p->markstack);
-    VEC_FREE(p->young);
     VEC_FREE(p->remset);
     p->heap_old = NULL;
 }
-
 /* ---- handles ------------------------------------------------------------- */
 
 int64_t handle_new(Process *p, Obj *o) {

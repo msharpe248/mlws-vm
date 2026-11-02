@@ -102,11 +102,6 @@ ObjStruct *struct_new(Process *p, const StructDef *def) {
 
 /* ---- lists ------------------------------------------------------------------ */
 
-/* Lists made with a capacity up to this keep their storage in their own
- * allocation, which stays within the largest small object (256 bytes, gc.c):
- * one allocation instead of two. */
-#define LIST_INLINE_MAX 24
-
 ObjList *list_new(Process *p, int64_t cap) {
     check_len(p, cap, "list");
     if (cap > 0 && cap <= LIST_INLINE_MAX) {

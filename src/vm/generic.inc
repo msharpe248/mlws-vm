@@ -862,7 +862,7 @@
             if (kind >= QUOTA__COUNT) vm_trap(p, "E_QUOTA", "unknown quota kind %lld", (long long)kind);
             if (limit < 0) vm_trap(p, "E_QUOTA", "a quota cannot be negative");
             sched_set_quota(p, (int)kind, (uint64_t)limit); /* only ever lowered */
-            if (kind == QUOTA_HEAP) p->next_gc = 0, p->gc_pending = true;   /* re-derive the GC threshold */
+            if (kind == QUOTA_HEAP) p->next_gc = p->alloc_limit = 0, p->gc_pending = true; /* re-derive the GC threshold */
             break;
         }
         case OP_MLEN:
