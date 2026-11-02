@@ -144,7 +144,8 @@
 #define STRUCT_OF(reg) ((ObjStruct *)QR[reg])
 #define IS_STRUCT(o) ((o) && (o)->h.kind == OBJ_STRUCT && (o)->def == in->k.p)
 /* An array element of exactly the instruction's type, or a list element
- * tagged with it (a store retags a list element), at index i; into an I
+ * tagged with it (a store retags a list element) or never written (zero of
+ * any type), at index i; into an I
  * register (the instruction's type is i64 or u64), also a byte of a string or
  * byte buffer. */
 #define ELEM_BYTE_I(N, ob, i) ELEM_BYTE_LOAD(N, ob, i)
@@ -161,8 +162,13 @@
                 QB(bank)[in->r[0]] = a->data[i].w;                              \
             } else if (ob->kind == OBJ_LIST) {                                \
                 ObjList *l = (ObjList *)ob;                                   \
-                if (i >= l->len || l->tags[i] != in->type) GENERIC();      \
-                QB(bank)[in->r[0]] = l->items[i].w;                             \
+                if (i >= l->len) GENERIC();                                   \
+                if (__builtin_expect(l->tags[i] == in->type, 1))              \
+                    QB(bank)[in->r[0]] = l->items[i].w;                         \
+                else if (l->tags[i] == T_NONE) /* never written: zero (null) */ \
+                    QB(bank)[in->r[0]] = 0;                                   \
+                else                                                          \
+                    GENERIC();                                                \
             } else {                                                          \
                 ELEM_BYTE_##bank(N, ob, i)                                    \
             }                                                                 \

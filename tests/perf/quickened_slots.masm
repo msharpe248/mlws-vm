@@ -6,7 +6,8 @@
 ; raises the usual error. A load of an element into an I register also takes
 ; a byte of a string or byte buffer (as an unsigned value, like the generic
 ; mov), and hands an index out of range, a narrower type and a store into a
-; string to the generic mov.
+; string to the generic mov. A list element never written reads as zero of
+; the instruction's type (null for a reference).
 .include "std/test.inc"
 
 .struct P
@@ -157,6 +158,22 @@
 
     ; ---- a quickened call whose callee returns another type by a tail call ----
     EXPECT_ERROR "E_TYPE", call tail_other () -> (I14)
+
+    ; ---- list elements never written: zero of any type (null) ----
+    lnew R16, 4
+    resize R16, 4
+    mov I15, 2
+    mov I16, 7
+    mov I16, R16[I15]                        ; LDE_I of an unset element
+    ASSERT_EQ I16, 0
+    mov F9, 1.5
+    mov F9, R16[I15+1]                       ; LDED_F
+    ASSERT_EQ F9, 0.0, f64
+    mov R17, R16
+    mov R17, R16[0]                          ; LDEK_R: null
+    ASSERT_FALSE R17, r
+    mov.f64 R16[I15], 5.5                    ; once written, its type
+    EXPECT_ERROR "E_TYPE", mov I16, R16[I15]
 
     ; ---- bytes of strings and byte buffers, into I registers ----
     mov R14, "a\xC8z"                        ; 'a', 200, 'z'

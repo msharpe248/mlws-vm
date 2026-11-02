@@ -543,7 +543,8 @@ them by emitting these shapes; nothing else changes.
   `mov R1->Point.x, I0`, `mov F0, R1[I2]`, `mov R1[I2], F0`, `mov I0, R1[3]`,
   `mov I0, R1[I2+1]`, for
   64-bit fields, and `i64`/`f64`/`r` arrays and list elements indexed by a
-  register or a constant; a byte of a string or byte buffer loaded into an
+  register or a constant (a list element never written reads as zero, or
+  null, on the fast path too); a byte of a string or byte buffer loaded into an
   `I` register (`mov I0, R1[I2]`, `i64` or `u64`); constants stored to fields
   (`mov.i64 R0->Point.x, 0`, `mov.r R0->Node.next, null`) and to elements
   (`mov.f64 R1[I2], 0.0`, `mov.r R1[I2+1], null`, `mov.i64 R1[0], 1`); and `ldv I0, F0, R1[I2]`

@@ -170,6 +170,12 @@ typedef struct {
     uint32_t pc;
     uint8_t n;
     uint8_t bank[2 * JC_MAX], mreg[2 * JC_MAX], vreg[2 * JC_MAX];
+    /* A list element's load: an element never written (its tag, in S2,
+     * T_NONE) is zero (null), put in val (of bank) by the stub, which goes
+     * back to `back`, after the load. */
+    bool unset;
+    uint8_t ubank, uval;
+    uint32_t back;
 } JSide;
 
 /* The register cache. Bank 0 is I (general registers), bank 1 F (float
@@ -435,6 +441,7 @@ static void jside_record(const JComp *j, JSide *sd, uint32_t pc) {
     const JCache *c = &j->jc;
     sd->pc = pc;
     sd->n = 0;
+    sd->unset = false;
     for (int bank = 0; bank < 2; bank++)
         for (int k = 0; k < jc_nslots(bank); k++)
             if (c->vm[bank][k] >= 0 && c->dirty[bank][k]) {
@@ -982,6 +989,19 @@ static void jit_elem_access(JBuf *b, bool store, int bank, int val, int ix) { /*
     if (store) bank == 1 ? jm_fstx(b, val, JR_S1, ix) : jm_stx(b, val, JR_S1, ix);
     else bank == 1 ? jm_fldx(b, val, JR_S1, ix) : jm_ldx(b, val, JR_S1, ix);
 }
+/* A list element's tag, in S2, for a load of type: another is a side exit,
+ * whose stub gives zero (null) for an element never written and comes back
+ * (jit_list_back, after the load). Returns the side's number. */
+static size_t jit_list_tag(JComp *j, uint32_t pc, unsigned type, int bank, int val) {
+    JBuf *b = &j->b;
+    jm_cmpi32(b, JR_S2, type);
+    SIDE_IF(JC_NE);
+    JSide *sd = &j->sides.v[j->sides.n - 1];
+    sd->unset = true, sd->ubank = (uint8_t)bank, sd->uval = (uint8_t)val;
+    return j->sides.n - 1;
+}
+static void jit_list_back(JComp *j, size_t side) { j->sides.v[side].back = (uint32_t)j->b.n; }
+
 static void jit_elem(JComp *j, const Insn *in, uint32_t pc, unsigned r, int ix, bool store, int bank, int val) {
     JBuf *b = &j->b;
     unsigned type = in->type;
@@ -991,16 +1011,17 @@ static void jit_elem(JComp *j, const Insn *in, uint32_t pc, unsigned r, int ix, 
         SIDE_IF(JC_HS);
         if (store && bank == 2) jit_barrier(j, pc, r, JR_S0, val, JR_S2);
         jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, tags));
+        size_t unset = SIZE_MAX;
         if (store) {
             jm_movi(b, JR_S2, type);
             jm_st8x(b, JR_S2, JR_S1, ix);
         } else {
             jm_ld8x(b, JR_S2, JR_S1, ix);
-            jm_cmpi32(b, JR_S2, type);
-            SIDE_IF(JC_NE);
+            unset = jit_list_tag(j, pc, type, bank, val);
         }
         jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, items));
         jit_elem_access(b, store, bank, val, ix);
+        if (unset != SIZE_MAX) jit_list_back(j, unset);
         return;
     }
     SIDE_IF_NULL(JR_S0);
@@ -1012,16 +1033,17 @@ static void jit_elem(JComp *j, const Insn *in, uint32_t pc, unsigned r, int ix, 
     SIDE_IF(JC_HS);
     if (store && bank == 2) jit_barrier(j, pc, r, JR_S0, val, JR_S2);
     jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, tags));
+    size_t unset = SIZE_MAX;
     if (store) {
         jm_movi(b, JR_S2, type);
         jm_st8x(b, JR_S2, JR_S1, ix);
     } else {
         jm_ld8x(b, JR_S2, JR_S1, ix);
-        jm_cmpi32(b, JR_S2, type);
-        SIDE_IF(JC_NE);
+        unset = jit_list_tag(j, pc, type, bank, val);
     }
     jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, items));
     jit_elem_access(b, store, bank, val, ix);
+    if (unset != SIZE_MAX) jit_list_back(j, unset);
     uint32_t to_done = jm_fwd(b, JC_AL), to_done2 = 0, to_done3 = 0;
     jm_bind(b, to_arr);
     jm_cmpi32(b, JR_S1, OBJ_ARRAY);
@@ -2032,6 +2054,14 @@ static void jit_compile(VM *vm, Function *f) {
     for (size_t k = 0; k < j->sides.n; k++) {
         const JSide *sd = &j->sides.v[k];
         side[k] = (uint32_t)b->n;
+        if (sd->unset) { /* never written: zero, and back; another type: the exit */
+            jm_cmpi32(b, JR_S2, T_NONE);
+            uint32_t other = jm_fwd(b, JC_NE);
+            if (sd->ubank == 1) jm_fconst(b, sd->uval, 0.0);
+            else jm_movi(b, sd->uval, 0);
+            jm_patch_at(b->v, jm_emit_branch(b, FX_B, 0, 0, false), sd->back);
+            jm_bind(b, other);
+        }
         jside_stores(j, sd);
         jm_add32i(b, JR_LEFT, JR_LEFT, rest[sd->pc]);
         jexit(j, &f->code[sd->pc]);
