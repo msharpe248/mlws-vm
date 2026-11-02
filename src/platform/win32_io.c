@@ -704,15 +704,13 @@ bool plat_random_bytes(void *buf, size_t n) {
 
 /* ---- the poller ----------------------------------------------------------------------
  * The waits armed (one-shot), under a lock, with an index from descriptor to
- * wait. plat_poller_wait polls the sockets among them, and a UDP socket of
- * its own on the loopback address that plat_poller_wake sends a byte to, with
- * WSAPoll; while it waits for a pipe, it wakes every millisecond to look at
- * it. */
+ * wait. plat_poller_wait polls the sockets among them with WSAPoll, and one
+ * end of a loopback TCP connection of its own, to whose other end
+ * plat_poller_wake writes a byte. (Not one UDP socket that sends to itself:
+ * a send on a socket another thread is in WSAPoll with does not return.)
+ * While it waits for a pipe, it wakes every millisecond to look at it. */
 
 #define PIPE_LOOK_MS 1
-
-static int poll_debug = -1; /* MLWSVM_DEBUG_POLL=1: log to stderr (while porting) */
-#define PDBG(...) do { if (poll_debug < 0) poll_debug = getenv("MLWSVM_DEBUG_POLL") != NULL; if (poll_debug) fprintf(stderr, "poll: " __VA_ARGS__); } while (0)
 
 typedef struct {
     int fd;
@@ -725,34 +723,52 @@ struct PlatPoller {
     SRWLOCK lock;
     VEC(Arm) arms;
     VEC(uint32_t) at; /* by descriptor: 1 + its wait's index in arms, or 0 */
-    SOCKET wake;
-    struct sockaddr_in wake_addr;
+    SOCKET wake, wake_tx; /* the connection's ends: polled, written */
     volatile LONG woken;
     VEC(WSAPOLLFD) pfd; /* the set being polled (the wait's: one thread waits) */
     VEC(int) pfd_fd;
 };
 
+/* A connected pair of loopback TCP sockets (Windows has no socketpair). */
+static bool loopback_pair(SOCKET *a, SOCKET *b) {
+    SOCKET l = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int len = sizeof addr;
+    *a = *b = INVALID_SOCKET;
+    if (l != INVALID_SOCKET && bind(l, (struct sockaddr *)&addr, len) == 0 && listen(l, 1) == 0 &&
+        getsockname(l, (struct sockaddr *)&addr, &len) == 0) {
+        *b = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+        if (*b != INVALID_SOCKET && connect(*b, (struct sockaddr *)&addr, len) == 0) *a = accept(l, NULL, NULL);
+    }
+    if (l != INVALID_SOCKET) closesocket(l);
+    if (*a == INVALID_SOCKET) {
+        if (*b != INVALID_SOCKET) closesocket(*b);
+        return false;
+    }
+    set_nonblock(*a);
+    set_nonblock(*b);
+    set_nodelay(*b);
+    return true;
+}
+
 PlatPoller *plat_poller_new(void) {
     wsa_init();
     PlatPoller *p = xcalloc(1, sizeof *p);
     InitializeSRWLock(&p->lock);
-    p->wake = WSASocketW(AF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
-    p->wake_addr.sin_family = AF_INET;
-    p->wake_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    int len = sizeof p->wake_addr;
-    if (p->wake == INVALID_SOCKET || bind(p->wake, (struct sockaddr *)&p->wake_addr, len) != 0 ||
-        getsockname(p->wake, (struct sockaddr *)&p->wake_addr, &len) != 0) {
-        if (p->wake != INVALID_SOCKET) closesocket(p->wake);
+    if (!loopback_pair(&p->wake, &p->wake_tx)) {
         free(p);
         return NULL;
     }
-    set_nonblock(p->wake);
     return p;
 }
 
 void plat_poller_free(PlatPoller *p) {
     if (!p) return;
     closesocket(p->wake);
+    closesocket(p->wake_tx);
     VEC_FREE(p->arms);
     VEC_FREE(p->at);
     VEC_FREE(p->pfd);
@@ -783,7 +799,6 @@ bool plat_poller_arm(PlatPoller *p, int fd, int events, uint64_t token) {
         p->at.v[fd] = (uint32_t)i + 1;
     }
     p->arms.v[i] = (Arm){fd, events, token, false};
-    PDBG("arm fd %d kind %d ev %d token %llx (%zu armed)\n", fd, e->kind, events, (unsigned long long)token, p->arms.n);
     ReleaseSRWLockExclusive(&p->lock);
     plat_poller_wake(p); /* so a wait in progress polls it too */
     return true;
@@ -829,11 +844,7 @@ int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_n
         int64_t left = timeout_ns < 0 ? -1 : timeout_ns - (int64_t)(plat_now_ns() - start);
         int ms = timeout_ns < 0 ? -1 : left <= 0 ? 0 : (int)((left + 999999) / 1000000);
         if (pipes && (ms < 0 || ms > PIPE_LOOK_MS)) ms = PIPE_LOOK_MS;
-        PDBG("WSAPoll %zu sockets, %d ms\n", p->pfd.n, ms);
         int n = WSAPoll(p->pfd.v, (ULONG)p->pfd.n, ms);
-        PDBG("WSAPoll -> %d (error %d)", n, n < 0 ? WSAGetLastError() : 0);
-        for (size_t j = 0; j < p->pfd.n; j++) PDBG(" [fd %d: %x]", p->pfd_fd.v[j], p->pfd.v[j].revents);
-        PDBG("\n");
         bool woken = n > 0 && p->pfd.v[0].revents;
         /* Drained, then cleared: a wake-up before the clear armed a wait the
          * next wait's set will have; one after it sends another byte. (The
@@ -869,7 +880,6 @@ int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_n
             arm_remove(p, i);
         }
         ReleaseSRWLockExclusive(&p->lock);
-        PDBG("ready %d, woken %d\n", k, woken);
         bool out_of_time = timeout_ns >= 0 && (int64_t)(plat_now_ns() - start) >= timeout_ns;
         if (k || woken || out_of_time || n < 0) break;
     }
@@ -877,12 +887,9 @@ int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_n
 }
 
 void plat_poller_wake(PlatPoller *p) {
-    LONG was = InterlockedExchange(&p->woken, 1);
-    PDBG("wake (pending %ld)\n", (long)was);
-    if (was) return; /* a wake-up is pending anyway */
+    if (InterlockedExchange(&p->woken, 1)) return; /* a wake-up is pending anyway */
     char b = 1;
-    int r = sendto(p->wake, &b, 1, 0, (struct sockaddr *)&p->wake_addr, sizeof p->wake_addr);
-    PDBG("sendto -> %d (error %d)\n", r, r < 0 ? WSAGetLastError() : 0);
+    send(p->wake_tx, &b, 1, 0);
 }
 #else
 typedef int mlwsvm_win32_io_unused; /* ISO C forbids an empty translation unit */

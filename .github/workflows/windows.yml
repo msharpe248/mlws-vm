@@ -1,6 +1,8 @@
 # Build MLWSVM and run its tests on Windows (x86-64), with Clang in MSYS2's
 # CLANG64 environment (the UCRT C runtime). The shell steps run in MSYS2's
 # bash, so the Makefile and the test scripts are the same as elsewhere.
+# (No sanitizer builds: MinGW has no ThreadSanitizer, and its
+# AddressSanitizer is incomplete.)
 name: Windows
 
 on:
@@ -12,7 +14,7 @@ jobs:
   test:
     name: windows-latest / clang
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         shell: msys2 {0}
@@ -25,6 +27,7 @@ jobs:
           update: false
           install: >-
             make
+            perl
             mingw-w64-clang-x86_64-clang
             mingw-w64-clang-x86_64-libffi
             mingw-w64-clang-x86_64-pkgconf
@@ -32,17 +35,46 @@ jobs:
       - name: Build
         run: make CC=clang -k -j4
 
-      - name: Test fixtures (extension, library archives)
-        continue-on-error: true
-        run: make CC=clang test-ext
-
-      - name: Diagnostics (while porting)
-        continue-on-error: true
-        run: |
-          MLWSVM_DEBUG_POLL=1 timeout 20 ./mlwsvm run --threads 1 tests/_diag/idle.masm 2>&1 | head -80 || echo "exit $?"
-
-      - name: Tests (suite only, while porting)
-        run: MLWSVM_TEST_TIMEOUT=120 ./mlwsvm test tests examples 2>&1 | tail -400
-
       - name: Tests
         run: make CC=clang test
+
+      - name: Embedding library and example host
+        run: make CC=clang lib check-embed
+
+      - name: Tests on one worker thread
+        run: MLWSVM_THREADS=1 ./mlwsvm test tests examples
+
+      - name: GC stress
+        run: make CC=clang check-gc
+
+      - name: Optimizer (every module with every pass, also with GC stress)
+        run: make CC=clang check-opt
+
+      - name: JIT (every function and block, also with GC stress and the optimizer; hot functions)
+        run: make CC=clang check-jit
+
+      - name: Fuzzer (random programs in every mode against the interpreter)
+        run: make CC=clang check-fuzz
+
+      - name: Tools (monitor, top, profiler, tracer)
+        run: make CC=clang check-tools
+
+      - name: Bindings generator (clang)
+        run: make CC=clang check-bindgen
+
+      - name: Switch dispatch (no computed goto)
+        run: make CC=clang check-switch
+
+      - name: Dispatch loop (no tail calls)
+        run: make CC=clang check-loop
+
+      - name: Register windows filled with garbage before a call clears them
+        run: make CC=clang check-poison
+
+      - name: Without libffi
+        run: |
+          make CC=clang BUILD=build-noffi BIN=mlwsvm-noffi.exe FFI=0 -j4
+          ./mlwsvm-noffi test tests examples
+
+      - name: Benchmarks (output checks)
+        run: sh bench/run.sh ./mlwsvm
