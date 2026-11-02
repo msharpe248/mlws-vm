@@ -32,5 +32,8 @@ jobs:
       - name: Build
         run: make CC=clang -k -j4
 
+      - name: Tests (suite only, while porting)
+        run: ./mlwsvm test tests examples 2>&1 | tail -400
+
       - name: Tests
         run: make CC=clang test
