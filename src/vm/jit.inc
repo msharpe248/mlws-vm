@@ -175,7 +175,20 @@ typedef struct {
 /* The register cache. Bank 0 is I (general registers), bank 1 F (float
  * registers). of[b][r]: the slot holding register r, or -1; vm[b][s]: the
  * register in slot s, or -1. With `record`, nothing is emitted for it: the
- * registers an instruction uses are noted in used[b][r] (1 read, 2 written). */
+ * registers an instruction uses are noted in used[b][r] (1 read, 2 written).
+ *
+ * R registers may also be in bank 0's slots (vm[0][s] is JC_RBASE + r, and
+ * rof[r] the slot), within a block: written through to the window as they
+ * are set (where the collector sees them), so never dirty; only in a slot
+ * that was free, and the first to go when an I register needs one. rk[r]:
+ * what the block has checked of R r's object since r was last set (kind 0:
+ * nothing; OBJ_STRUCT with its def; OBJ_LIST), so that the checks are not
+ * repeated. Both are forgotten at every block's start. */
+#define JC_RBASE 256
+typedef struct {
+    uint8_t kind;
+    const void *def;
+} JRKnown;
 typedef struct {
     int8_t of[2][256];
     int16_t vm[2][JC_MAX];
@@ -184,6 +197,9 @@ typedef struct {
     uint8_t next[2];
     bool record;
     uint8_t used[2][256];
+    int8_t rof[256];
+    JRKnown rk[256];
+    uint8_t rseen[256]; /* R registers read in the block (jld_r) */
 } JCache;
 
 /* A loop whose registers stay in machine registers from one iteration to the
@@ -211,6 +227,8 @@ typedef struct {
     JCache jc;
     const uint32_t *rest; /* the instructions from each to its block's end */
     const JLoop *loop;    /* the loop being compiled, or NULL */
+    const int32_t *loop_of; /* each instruction's loop (jit_loops), or NULL */
+    const JLoop *loops;
     struct {
         JSide *v; /* (pc: the target outside the loop) */
         size_t n, cap;
@@ -218,14 +236,15 @@ typedef struct {
     bool broken; /* a loop's register was not in its slot (a bug): compile nothing */
 } JComp;
 
-enum { TO_BODY, TO_UNDO, TO_EXIT, TO_SIDE, TO_LOOP, TO_LEAVE };
+enum { TO_BODY, TO_UNDO, TO_EXIT, TO_SIDE, TO_LOOP, TO_LEAVE, TO_INNER, TO_BODYX /* body, as is */ };
 
 static void jside_record(const JComp *j, JSide *sd, uint32_t pc);
 static void jfix(JComp *j, uint32_t at, int to, uint32_t pc) {
-    if (to == TO_BODY && j->loop) { /* inside a loop: back to its head, or out through a stub */
+    if (to == TO_BODY && j->loop) { /* inside a loop: back to its head, or out through a stub (which goes on as
+                                     * a branch from outside it) */
         if (pc == j->loop->L) {
             to = TO_LOOP;
-        } else if (pc < j->loop->L || pc > j->loop->E) {
+        } else if (!j->loop_of || j->loop_of[pc] < 0 || &j->loops[j->loop_of[pc]] != j->loop) {
             if (j->leaves.n == j->leaves.cap) {
                 j->leaves.cap = j->leaves.cap ? 2 * j->leaves.cap : 8;
                 j->leaves.v = xrealloc(j->leaves.v, j->leaves.cap * sizeof *j->leaves.v);
@@ -233,6 +252,8 @@ static void jfix(JComp *j, uint32_t at, int to, uint32_t pc) {
             jside_record(j, &j->leaves.v[j->leaves.n], pc);
             to = TO_LEAVE, pc = (uint32_t)j->leaves.n++;
         }
+    } else if (to == TO_BODY && j->loop_of && j->loop_of[pc] >= 0 && j->loops[j->loop_of[pc]].L != pc) {
+        to = TO_INNER; /* into a loop past L, from outside it: its registers are loaded first */
     }
     JFixes *f = &j->fx;
     if (f->n == f->cap) {
@@ -262,9 +283,6 @@ static void jm_ncall_check(JComp *j, uint32_t pc) {
 
 /* A register's place in the window: the F and R windows follow I's. */
 static int64_t jwoff(const JComp *j, int bank, unsigned r) { return (int64_t)(j->f->roff[bank] + r) * 8; }
-static void jld_r(JComp *j, int d, unsigned r) { jm_ld(&j->b, d, JR_WIN, jwoff(j, BANK_R, r)); }
-static void jst_r(JComp *j, int s, unsigned r) { jm_st(&j->b, s, JR_WIN, jwoff(j, BANK_R, r)); }
-
 static int jc_mreg(int bank, int s) { return bank ? jc_freg[s] : jc_ireg[s]; }
 static int jc_nslots(int bank) { return bank ? JC_NF : JC_NI; }
 
@@ -272,7 +290,65 @@ static void jc_reset(JCache *c) {
     memset(c->of, -1, sizeof c->of);
     memset(c->vm, -1, sizeof c->vm);
     memset(c->dirty, 0, sizeof c->dirty);
+    memset(c->rof, -1, sizeof c->rof);
+    memset(c->rk, 0, sizeof c->rk);
+    memset(c->rseen, 0, sizeof c->rseen);
     c->pin[0] = c->pin[1] = 0;
+}
+
+/* Forget the R registers (a block's start: it may be reached from anywhere). */
+static void jc_forget_r(JCache *c) {
+    for (int s = 0; s < JC_NI; s++)
+        if (c->vm[0][s] >= JC_RBASE) c->rof[c->vm[0][s] - JC_RBASE] = -1, c->vm[0][s] = -1;
+    memset(c->rk, 0, sizeof c->rk);
+    memset(c->rseen, 0, sizeof c->rseen);
+}
+
+/* A free slot of bank 0 for an R register, or -1 (none is evicted for one).
+ * On x86-64, none: with 5 slots, keeping R registers in them made the Intel
+ * machine up to 7% slower, where a move between registers is not free. */
+static int jc_rslot(JCache *c) {
+    if (c->record || !JM_RCACHE) return -1;
+    for (int s = 0; s < JC_NI; s++)
+        if (c->vm[0][s] < 0) return s;
+    return -1;
+}
+
+/* R register r into machine register d: from its slot, or from the window
+ * (and, read before in the block, into a free slot: a slot taken for each
+ * read once costs more moves than it saves loads where slots are few). */
+static void jld_r(JComp *j, int d, unsigned r) {
+    JCache *c = &j->jc;
+    int s = c->record ? -1 : c->rof[r];
+    if (s >= 0) {
+        if (jc_ireg[s] != d) jm_mov(&j->b, d, jc_ireg[s]);
+        return;
+    }
+    jm_ld(&j->b, d, JR_WIN, jwoff(j, BANK_R, r));
+    if (!c->rseen[r]) { /* the first read: a slot only for one read again */
+        c->rseen[r] = 1;
+        return;
+    }
+    if ((s = jc_rslot(c)) >= 0) {
+        jm_mov(&j->b, jc_ireg[s], d);
+        c->rof[r] = (int8_t)s;
+        c->vm[0][s] = (int16_t)(JC_RBASE + r);
+    }
+}
+
+/* R register r set from machine register v: written through, and what was
+ * known of it forgotten. */
+static void jst_r(JComp *j, int v, unsigned r) {
+    JCache *c = &j->jc;
+    jm_st(&j->b, v, JR_WIN, jwoff(j, BANK_R, r));
+    c->rk[r].kind = 0;
+    if (c->record) return;
+    int s = c->rof[r];
+    if (s < 0 && (s = jc_rslot(c)) >= 0) {
+        c->rof[r] = (int8_t)s;
+        c->vm[0][s] = (int16_t)(JC_RBASE + r);
+    }
+    if (s >= 0) jm_mov(&j->b, jc_ireg[s], v);
 }
 
 static void jc_store(JComp *j, int bank, int s, int r) {
@@ -296,6 +372,13 @@ static int jc_alloc(JComp *j, int bank) {
     int ns = jc_nslots(bank);
     for (int s = 0; s < ns; s++)
         if (c->vm[bank][s] < 0) return s;
+    if (!bank)
+        for (int s = 0; s < ns; s++) /* an R register's slot first: its value is in the window */
+            if (c->vm[0][s] >= JC_RBASE) {
+                c->rof[c->vm[0][s] - JC_RBASE] = -1;
+                c->vm[0][s] = -1;
+                return s;
+            }
     for (;;) { /* evict, in turn, a slot this instruction does not use */
         int s = c->next[bank];
         c->next[bank] = (uint8_t)((s + 1) % ns);
@@ -531,6 +614,7 @@ static JitStep jit_step(Ctx *c, const Insn *in, uint32_t left) {
 #define FR_OFF(f) ((int64_t)offsetof(Frame, f))
 #define C_OFF(f) ((int64_t)offsetof(Ctx, f))
 
+static void jit_loop_load_as(JComp *j, const JLoop *lp, bool seed, bool emit);
 /* The continuation of a call with plan pl: the caller's window, the results. */
 static void jit_cont(JComp *j, const QPlan *pl, int argc, uint32_t pc) {
     JBuf *b = &j->b;
@@ -542,6 +626,12 @@ static void jit_cont(JComp *j, const QPlan *pl, int argc, uint32_t pc) {
     for (int k = 0; k < pl->nres; k++) {
         jm_ld(b, JR_S0, JR_CTX, C_OFF(retv) + 8 * k);
         jm_st(b, JR_S0, JR_WIN, (int64_t)pl->slot[2 * argc + k] * 8);
+    }
+    int32_t lo = j->loop_of ? j->loop_of[pc + 1] : -1;
+    if (lo >= 0 && j->loops[lo].L != pc + 1) { /* a call in a loop: the loop's registers again, here */
+        jit_loop_load_as(j, &j->loops[lo], false, true);
+        jbranch(j, FX_B, 0, 0, false, TO_BODYX, pc + 1);
+        return;
     }
     jbranch(j, FX_B, 0, 0, false, TO_BODY, pc + 1);
 }
@@ -855,9 +945,26 @@ static void jit_elem_access(JBuf *b, bool store, int bank, int val, int ix) { /*
     if (store) bank == 1 ? jm_fstx(b, val, JR_S1, ix) : jm_stx(b, val, JR_S1, ix);
     else bank == 1 ? jm_fldx(b, val, JR_S1, ix) : jm_ldx(b, val, JR_S1, ix);
 }
-static void jit_elem(JComp *j, const Insn *in, uint32_t pc, int ix, bool store, int bank, int val) {
+static void jit_elem(JComp *j, const Insn *in, uint32_t pc, unsigned r, int ix, bool store, int bank, int val) {
     JBuf *b = &j->b;
     unsigned type = in->type;
+    if (j->jc.rk[r].kind == OBJ_LIST) { /* known to be a list: its path alone */
+        jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, len));
+        jm_cmp(b, ix, JR_S1);
+        SIDE_IF(JC_HS);
+        jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, tags));
+        if (store) {
+            jm_movi(b, JR_S2, type);
+            jm_st8x(b, JR_S2, JR_S1, ix);
+        } else {
+            jm_ld8x(b, JR_S2, JR_S1, ix);
+            jm_cmpi32(b, JR_S2, type);
+            SIDE_IF(JC_NE);
+        }
+        jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, items));
+        jit_elem_access(b, store, bank, val, ix);
+        return;
+    }
     SIDE_IF_NULL(JR_S0);
     jm_ld8(b, JR_S1, JR_S0, (int64_t)offsetof(Obj, kind));
     jm_cmpi32(b, JR_S1, OBJ_LIST);
@@ -918,7 +1025,10 @@ static void jit_elem(JComp *j, const Insn *in, uint32_t pc, int ix, bool store, 
  * type in k. */
 static void jit_struct(JComp *j, const Insn *in, uint32_t pc, unsigned r) {
     JBuf *b = &j->b;
+    JRKnown *k = &j->jc.rk[r];
     jld_r(j, JR_S0, r);
+    if (k->kind == OBJ_STRUCT && k->def == in->k.p) return; /* checked already */
+    k->kind = OBJ_STRUCT, k->def = in->k.p; /* from here on (the checks side-exit) */
     SIDE_IF_NULL(JR_S0);
     jm_ld8(b, JR_S1, JR_S0, (int64_t)offsetof(Obj, kind));
     jm_cmpi32(b, JR_S1, OBJ_STRUCT);
@@ -1167,7 +1277,7 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         else ix = jit_index(j, in, true);
         jm_movi(b, JR_S4, in->ops[1].kw);
         jld_r(j, JR_S0, in->r[0]);
-        jit_elem(j, in, pc, ix, true, 0, JR_S4);
+        jit_elem(j, in, pc, in->r[0], ix, true, 0, JR_S4);
         return;
     }
     case Q_STGK: /* a constant to a global */
@@ -1184,6 +1294,7 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         jm_movi(b, JR_A1, x == Q_NEW ? (uint64_t)(uintptr_t)in->k.p : (uint64_t)in->k.i);
         jm_ccall(b, x == Q_NEW ? (const void *)struct_new : (const void *)list_new);
         jst_r(j, JR_R0, in->r[0]);
+        j->jc.rk[in->r[0]] = (JRKnown){x == Q_NEW ? OBJ_STRUCT : OBJ_LIST, x == Q_NEW ? in->k.p : NULL};
         return;
     case Q_MGET_R:
         jc_flush(j);
@@ -1374,10 +1485,13 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
                 vals[k] = jc_get(j, REG_BANK(a->reg) == BANK_I ? 0 : 1, REG_IDX(a->reg));
         }
         jld_r(j, JR_S0, in->r[0]);
-        SIDE_IF_NULL(JR_S0);
-        jm_ld8(b, JR_S1, JR_S0, (int64_t)offsetof(Obj, kind));
-        jm_cmpi32(b, JR_S1, OBJ_LIST);
-        SIDE_IF(JC_NE);
+        if (j->jc.rk[in->r[0]].kind != OBJ_LIST) {
+            SIDE_IF_NULL(JR_S0);
+            jm_ld8(b, JR_S1, JR_S0, (int64_t)offsetof(Obj, kind));
+            jm_cmpi32(b, JR_S1, OBJ_LIST);
+            SIDE_IF(JC_NE);
+            j->jc.rk[in->r[0]].kind = OBJ_LIST;
+        }
         jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, len));
         jm_ld32(b, JR_S2, JR_S0, (int64_t)offsetof(ObjList, cap));
         jm_sub32(b, JR_S2, JR_S2, JR_S1);
@@ -1438,7 +1552,7 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         if (x >= Q_LDEK_I && x <= Q_LDEK_R) jm_movi(b, JR_S3, in->target), ix = JR_S3;
         else ix = jit_index(j, in, x >= Q_LDED_I);
         jld_r(j, JR_S0, in->r[1]);
-        jit_elem(j, in, pc, ix, false, bank, bank == 1 ? JF_S0 : JR_S4);
+        jit_elem(j, in, pc, in->r[1], ix, false, bank, bank == 1 ? JF_S0 : JR_S4);
         if (bank == 2) jst_r(j, JR_S4, in->r[0]);
         else if (bank == 1) d = jc_def(j, 1, in->r[0]), jm_fmov(b, d, JF_S0);
         else d = jc_def(j, 0, in->r[0]), jm_mov(b, d, JR_S4);
@@ -1453,7 +1567,7 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         if (bank == 2) jld_r(j, JR_S4, in->r[1]), val = JR_S4;
         else val = jc_get(j, bank, in->r[1]);
         jld_r(j, JR_S0, in->r[0]);
-        jit_elem(j, in, pc, ix, true, bank, val);
+        jit_elem(j, in, pc, in->r[0], ix, true, bank, val);
         return;
     }
     default: break;
@@ -1564,18 +1678,56 @@ static bool jit_calls_out(uint16_t x) {
     return jit_calls(x) || x == Q_JTAB || x == Q_NEW || x == Q_LNEW || x == Q_MGET_R;
 }
 
+/* Where an instruction can go next, into out (at most 2 + its operands):
+ * the next one unless it never falls through, and its branch targets. */
+static int jit_succ(const Function *f, const uint16_t *jx, uint32_t pc, uint32_t *out) {
+    const Insn *in = &f->code[pc];
+    uint16_t x = jx[pc];
+    int k = 0;
+    if (!(x == Q_JMP || x == Q_RET_R || x == Q_RET_RK || x == Q_TCALL_R || x == Q_TCALLI_R)) out[k++] = pc + 1;
+    if (jit_handles(x) && jit_branches(x)) out[k++] = pc + (uint32_t)(int32_t)in->target;
+    for (int a = 0; a < in->nops; a++)
+        if (in->ops[a].mode == OM_LABEL) out[k++] = in->ops[a].rv.target;
+    return k;
+}
+
 /* The loops whose registers stay in machine registers (JLoop): for each
- * branch back from E to L, innermost first, [L, E] if every instruction in
- * it is compiled and calls nothing, no branch from outside goes into it past
- * L, it overlaps no loop already taken, and its I and F registers fit the
- * cache (found by compiling it once with a recording cache). loop_of[pc]:
- * the loop pc is in, or -1. */
+ * branch back from E to L, innermost first, the loop (the instructions in
+ * [L, E] from which E is reached without passing L: a cold path in the range
+ * that leaves it, to a return or an error's call, is not in it) if it
+ * overlaps no loop already taken, and the I and F registers of its compiled
+ * instructions that call nothing (its members) fit the cache (found by
+ * compiling them once with a recording cache). Its other instructions (a
+ * call, one the interpreter runs) are holes: the registers are written back
+ * before one, and loaded again on the way back in, as they are for code
+ * outside the loop that goes back into it; a loop with more than
+ * JM_LOOP_HOLES keeps its registers in the window. loop_of[pc]: the loop pc
+ * is a member of, or -1. */
 static size_t jit_loops(JComp *j, const uint16_t *jx, const uint8_t *lead, JLoop **out, int32_t *loop_of) {
     const Function *f = j->f;
     uint32_t n = f->ncode;
     JLoop *v = NULL;
     size_t nl = 0;
     for (uint32_t pc = 0; pc < n; pc++) loop_of[pc] = -1;
+    uint8_t *in_loop = xcalloc(n + 1, 1), *work_seen = xcalloc(n + 1, 1);
+    uint32_t *work = xmalloc((n + 1) * sizeof *work);
+    uint32_t *succ = xmalloc((2 + MAX_OPERANDS) * sizeof *succ);
+    /* each instruction's predecessors: pred[pfrom[pc] .. pfrom[pc + 1]) */
+    uint32_t *pfrom = xcalloc(n + 2, sizeof *pfrom), npred = 0;
+    for (uint32_t pc = 0; pc < n; pc++) {
+        int ns = jit_succ(f, jx, pc, succ);
+        for (int k = 0; k < ns; k++)
+            if (succ[k] < n) pfrom[succ[k] + 1]++, npred++;
+    }
+    for (uint32_t pc = 0; pc < n; pc++) pfrom[pc + 1] += pfrom[pc];
+    uint32_t *pred = xmalloc((npred + 1) * sizeof *pred), *pfill = xmalloc((n + 1) * sizeof *pfill);
+    memcpy(pfill, pfrom, n * sizeof *pfill);
+    for (uint32_t pc = 0; pc < n; pc++) {
+        int ns = jit_succ(f, jx, pc, succ);
+        for (int k = 0; k < ns; k++)
+            if (succ[k] < n) pred[pfill[succ[k]]++] = pc;
+    }
+    free(pfill);
     struct {
         uint32_t L, E;
     } *cand = xmalloc((n + 1) * sizeof *cand);
@@ -1594,25 +1746,45 @@ static size_t jit_loops(JComp *j, const uint16_t *jx, const uint8_t *lead, JLoop
     for (size_t c = 0; c < nc; c++) {
         uint32_t L = cand[c].L, E = cand[c].E;
         bool ok = lead[L];
-        for (uint32_t pc = L; pc <= E && ok; pc++)
-            ok = jit_handles(jx[pc]) && !jit_calls_out(jx[pc]) && loop_of[pc] < 0;
-        for (uint32_t pc = 0; pc < n && ok; pc++) { /* no way in but L */
-            if (pc >= L && pc <= E) continue;
-            if (jit_handles(jx[pc]) && jit_branches(jx[pc])) {
-                uint32_t t = pc + (uint32_t)(int32_t)f->code[pc].target;
-                ok = !(t > L && t <= E);
-            } else if (jx[pc] == Q_JTAB) {
-                for (int k = 1; k < f->code[pc].nops && ok; k++)
-                    ok = !(f->code[pc].ops[k].rv.target > L && f->code[pc].ops[k].rv.target <= E);
+        /* the loop's instructions: backwards from E, within [L, E], not past L */
+        memset(in_loop + L, 0, E - L + 1);
+        size_t nw = 0;
+        in_loop[E] = in_loop[L] = 1;
+        work[nw++] = E;
+        while (nw) {
+            uint32_t m = work[--nw];
+            if (m == L) continue;
+            for (uint32_t q = pfrom[m]; q < pfrom[m + 1]; q++) { /* m's predecessors in [L, E] */
+                uint32_t pc = pred[q];
+                if (pc >= L && pc <= E && !in_loop[pc]) in_loop[pc] = 1, work[nw++] = pc;
             }
         }
+        /* L must reach E through them (a branch back to a jump out is no loop) */
+        uint8_t *seen = work_seen;
+        memset(seen + L, 0, E - L + 1);
+        nw = 0;
+        work[nw++] = L, seen[L] = 1;
+        while (nw && !seen[E]) {
+            int ns = jit_succ(f, jx, work[--nw], succ);
+            for (int k = 0; k < ns; k++)
+                if (succ[k] >= L && succ[k] <= E && in_loop[succ[k]] && !seen[succ[k]]) seen[succ[k]] = 1, work[nw++] = succ[k];
+        }
+        ok = ok && seen[E];
+        unsigned holes = 0;
+        for (uint32_t pc = L; pc <= E && ok; pc++)
+            if (in_loop[pc]) {
+                ok = loop_of[pc] < 0;
+                if (!jit_handles(jx[pc]) || jit_calls_out(jx[pc])) in_loop[pc] = 0, holes++; /* a hole */
+            }
+        ok = ok && in_loop[L] && in_loop[E] && holes <= JM_LOOP_HOLES;
         if (!ok) continue;
         JComp d = {.jt = j->jt, .f = f, .rest = j->rest};
         jc_reset(&d.jc);
         d.jc.record = true;
         memset(d.jc.used, 0, sizeof d.jc.used);
         uint32_t ignored;
-        for (uint32_t pc = L; pc <= E; pc++) jit_insn(&d, &f->code[pc], jx[pc], pc, &ignored);
+        for (uint32_t pc = L; pc <= E; pc++)
+            if (in_loop[pc]) jit_insn(&d, &f->code[pc], jx[pc], pc, &ignored);
         free(d.b.v), free(d.fx.v), free(d.sides.v), free(d.leaves.v);
         JLoop lp = {.L = L, .E = E};
         int count[2] = {0, 0};
@@ -1629,29 +1801,31 @@ static size_t jit_loops(JComp *j, const uint16_t *jx, const uint8_t *lead, JLoop
         if (!ok) continue;
         v = xrealloc(v, (nl + 1) * sizeof *v);
         v[nl] = lp;
-        for (uint32_t pc = L; pc <= E; pc++) loop_of[pc] = (int32_t)nl;
+        for (uint32_t pc = L; pc <= E; pc++)
+            if (in_loop[pc]) loop_of[pc] = (int32_t)nl;
         nl++;
     }
-    free(cand);
+    free(cand), free(in_loop), free(work_seen), free(work), free(succ), free(pfrom), free(pred);
     *out = v;
     return nl;
 }
 
-/* A loop's registers, from the window into their slots; the cache holds
- * them, the written ones dirty (from here on they are written back on every
- * way out). */
-static void jit_loop_load(JComp *j, const JLoop *lp, bool seed) {
+/* A loop's registers, from the window into their slots (with emit), and
+ * (with seed) the cache holding them, the written ones dirty (from here on
+ * they are written back on every way out). */
+static void jit_loop_load_as(JComp *j, const JLoop *lp, bool seed, bool emit) {
     if (seed) jc_reset(&j->jc);
     for (int k = 0; k < lp->n; k++) {
         int bank = lp->bank[k], s = lp->slot[k], r = lp->vreg[k];
-        if (bank) jm_fld(&j->b, jc_freg[s], JR_WIN, jwoff(j, BANK_F, (unsigned)r));
-        else jm_ld(&j->b, jc_ireg[s], JR_WIN, jwoff(j, BANK_I, (unsigned)r));
+        if (emit && bank) jm_fld(&j->b, jc_freg[s], JR_WIN, jwoff(j, BANK_F, (unsigned)r));
+        else if (emit) jm_ld(&j->b, jc_ireg[s], JR_WIN, jwoff(j, BANK_I, (unsigned)r));
         if (!seed) continue;
         j->jc.of[bank][r] = (int8_t)s;
         j->jc.vm[bank][s] = (int16_t)r;
         j->jc.dirty[bank][s] = lp->written[k];
     }
 }
+static void jit_loop_load(JComp *j, const JLoop *lp, bool seed) { jit_loop_load_as(j, lp, seed, true); }
 
 /* Compile f (under vm->jit_lock): its machine code, its blocks' entries, and
  * Q_JIT where entering pays; its Q_JITC triggers go. */
@@ -1710,13 +1884,38 @@ static void jit_compile(VM *vm, Function *f) {
     JLoop *loops;
     int32_t *loop_of = xmalloc((n + 1) * sizeof *loop_of);
     size_t nloops = jit_loops(j, jx, lead, &loops, loop_of);
+    j->loop_of = loop_of, j->loops = loops;
     for (uint32_t pc = 0; pc < n; pc++) {
+        if (j->loop && (loop_of[pc] < 0 || &loops[loop_of[pc]] != j->loop)) /* out of the loop's code */
+            j->loop = NULL, jc_flush(j);
+        if (!j->loop && loop_of[pc] >= 0 && loops[loop_of[pc]].L != pc && pc > 0 && jit_handles(jx[pc - 1])) {
+            uint32_t sc[2 + MAX_OPERANDS]; /* into the loop past L from the code before: the registers, for that way only */
+            int ns = jit_succ(f, jx, pc - 1, sc);
+            if (ns && sc[0] == pc) jit_loop_load_as(j, &loops[loop_of[pc]], false, true);
+        }
         body[pc] = (uint32_t)b->n;
         const Insn *in = &f->code[pc];
+        if (lead[pc]) jc_forget_r(&j->jc);
         if (loop_of[pc] >= 0 && loops[loop_of[pc]].L == pc) { /* a loop's way in, then its head */
             jit_loop_load(j, &loops[loop_of[pc]], true);
             head[pc] = (uint32_t)b->n;
             j->loop = &loops[loop_of[pc]];
+        } else if (loop_of[pc] >= 0 && !j->loop) { /* back in the loop's code, after a hole or code outside it */
+            j->loop = &loops[loop_of[pc]];
+            if (lead[pc]) {
+                jit_loop_load_as(j, j->loop, true, false);
+            } else { /* only from the hole before it: what it knew of R registers holds, outside the loop's slots */
+                JCache *c = &j->jc;
+                int16_t vm0[JC_MAX];
+                JRKnown *rk = xmalloc(sizeof c->rk);
+                memcpy(vm0, c->vm[0], sizeof vm0);
+                memcpy(rk, c->rk, sizeof c->rk);
+                jit_loop_load_as(j, j->loop, true, false);
+                for (int s = 0; s < JC_NI; s++)
+                    if (vm0[s] >= JC_RBASE && c->vm[0][s] < 0) c->vm[0][s] = vm0[s], c->rof[vm0[s] - JC_RBASE] = (int8_t)s;
+                memcpy(c->rk, rk, sizeof c->rk);
+                free(rk);
+            }
         }
         if (jit_steps(in, jx[pc])) { /* a block of its own: counted, then run by its handler */
             jm_subs32i(b, JR_LEFT, JR_LEFT, 1);
@@ -1745,9 +1944,9 @@ static void jit_compile(VM *vm, Function *f) {
             else jbranch(j, FX_BCOND, JC_LO, 0, false, TO_UNDO, pc);
         }
         jit_insn(j, in, jx[pc], pc, &cont[pc]);
-        if (j->loop && pc == j->loop->E) j->loop = NULL, jc_flush(j); /* out of the loop at its end */
-        else if (rest[pc] == 1) jc_flush(j);                          /* the block ends: back to the window */
+        if (rest[pc] == 1) jc_flush(j); /* the block ends: back to the window (in a loop, not until it is left) */
     }
+    j->loop = NULL; /* (a loop may end the function) */
     jm_brk(b); /* past the end: not reached (the verifier ends every path) */
     uint32_t *side = xcalloc(j->sides.n + 1, sizeof *side);
     for (size_t k = 0; k < j->sides.n; k++) {
@@ -1768,7 +1967,9 @@ static void jit_compile(VM *vm, Function *f) {
         if (loop_of[pc] < 0 || !lead[pc] || loops[loop_of[pc]].L == pc) continue;
         inner[pc] = (uint32_t)b->n;
         jit_loop_load(j, &loops[loop_of[pc]], false);
+        j->loop = &loops[loop_of[pc]]; /* (so that the branch goes to the body, not back here) */
         jbranch(j, FX_B, 0, 0, false, TO_BODY, pc);
+        j->loop = NULL;
     }
     for (uint32_t pc = 0; pc < n; pc++) { /* give the count back and stop before pc */
         if (!jit_handles(jx[pc]) && !jit_steps(&f->code[pc], jx[pc])) continue;
@@ -1782,11 +1983,12 @@ static void jit_compile(VM *vm, Function *f) {
             const JFix *x = &j->fx.v[k];
             int64_t dest;
             switch (x->to) {
-            case TO_BODY: dest = body[x->pc]; break;
+            case TO_BODY: case TO_BODYX: dest = body[x->pc]; break;
             case TO_SIDE: dest = side[x->pc]; break;
             case TO_UNDO: dest = undo[x->pc]; break;
             case TO_LOOP: dest = head[x->pc]; break;
             case TO_LEAVE: dest = leave[x->pc]; break;
+            case TO_INNER: dest = inner[x->pc]; break;
             default: dest = jt->exit - at; break;
             }
             jm_patch_at(b->v, x->at, dest);
@@ -1875,6 +2077,7 @@ void interp_jit_function(VM *vm, Function *f) {
 }
 
 bool interp_jit_available(void) { return true; }
+const char *interp_jit_arch(void) { return JIT_ARCH; }
 
 /* ---- the handlers ---- */
 

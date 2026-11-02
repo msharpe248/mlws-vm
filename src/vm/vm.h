@@ -673,6 +673,7 @@ void interp_jit_function(VM *vm, Function *f); /* after quickening: compile it, 
 void interp_jit_free(VM *vm);
 void interp_jit_report(VM *vm, FILE *out);
 bool interp_jit_available(void); /* in this build, on this machine */
+const char *interp_jit_arch(void);  /* its machine code's: "arm64", "x86-64", or NULL without one */
 uint64_t interp_jit_steps(const VM *vm);
 /* Push a frame running closure cl with its arguments bound (proc_callback). */
 void interp_enter(Process *p, ObjClosure *cl, const Word *args);

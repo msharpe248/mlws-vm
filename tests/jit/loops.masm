@@ -11,7 +11,17 @@
 ;     its own way in, which loads the loop's registers);
 ;   * nested loops (the inner keeps its registers), floats, and generic
 ;     instructions with captures inside a closure's loop, with a capture of
-;     another type (a side exit to the interpreter's conversion or error).
+;     another type (a side exit to the interpreter's conversion or error);
+;   * holes: a call and an allocation inside a loop (its registers are
+;     written back before them and loaded after), a cold path after the loop
+;     that goes back into it past its head; a stepped instruction; and a
+;     loop with three holes, which keeps its registers in the window (more
+;     than JM_LOOP_HOLES: 2 on arm64, 0 on x86-64, where loops with holes
+;     keep none);
+;   * a loop whose back branch is the function's last instruction, with a
+;     branch out of it;
+;   * a branch from one loop into another past its head: the first's
+;     registers are written back, then the second's loaded.
 ; Each loop has at most five I registers, as many as x86-64 keeps (arm64
 ; keeps 16). With --jit all the machine code is entered at every block.
 ; option: --jit all
@@ -22,11 +32,23 @@
 ; expect-jit: loops nested 1
 ; expect-jit: loops floats 1
 ; expect-jit: loops addup 1
+; expect-jit: loops holes 1 arm64
+; expect-jit: loops holes 0 x86-64
+; expect-jit: loops stepped 1 arm64
+; expect-jit: loops stepped 0 x86-64
+; expect-jit: loops many 0
+; expect-jit: loops ends 1
+; expect-jit: loops hop 2
 ; option: --slice 7
 ; expect-stdout: one 4999950000
 ; expect-stdout: middle 1242 46 7
 ; expect-stdout: middle -1 997 0
 ; expect-stdout: trapped E_BOUNDS 10 45
+; expect-stdout: holes 932 97 4 13
+; expect-stdout: stepped 4975 100
+; expect-stdout: many 9700 97
+; expect-stdout: ends 4950
+; expect-stdout: hop 1225 100855
 ; expect-stdout: nested 249500250000
 ; expect-stdout: floats 1.6439345666815615 1000
 ; expect-stdout: captures 504500 E_TYPE
@@ -116,6 +138,103 @@
     ret I1
 .endf
 
+.struct Box
+    v: i64
+.ends
+
+.func twice(i64 x) -> i64
+    add I1, x, x
+    ret I1
+.endf
+
+; A loop with holes: a call each iteration and an allocation every 8th
+; (both with the loop's registers written back before them and loaded
+; after), and a cold path after the loop every 25th that goes back in past
+; the head.
+gh: .i64 1
+.func holes(i64 n) -> (i64, i64, i64, i64)
+    mov I1, 0                          ; the sum
+    mov I2, 0                          ; i
+    mov I5, 0                          ; cold paths taken
+    mov I6, 0                          ; boxes made
+1:  rem I3, I2, 25
+    bz I3, 9f                          ; to the cold path
+3:  call twice (I2) -> (I4)            ; a hole: a call
+    and I4, 7
+    add I1, I4
+    and I3, I2, 7
+    bnz I3, 4f
+    new R1, Box                        ; a hole that falls through into the loop
+    mov R1->Box.v, I2
+    mov I7, R1->Box.v
+    add I1, I7
+    inc I6
+4:  inc I2
+    blt I2, n, 1b
+    mov I8, I6
+    ret I1, I2, I5, I8
+9:  inc I5                             ; cold, after the loop: back in past its head
+    call twice (I5) -> (I7)
+    add I1, I7
+    jmp 3b
+.endf
+
+; Two loops, with a branch from the first into the second past its head.
+.func hop(i64 n) -> (i64, i64)
+    mov I1, 0
+    mov I2, 0
+    mov I3, 0
+1:  add I1, I2                         ; the first loop
+    inc I2
+    beq I2, 50, 3f                     ; into the second, past its head
+    blt I2, n, 1b
+2:  add I3, I1                         ; the second loop
+3:  inc I3
+    add I3, I2
+    blt I3, 100000, 2b
+    ret I1, I3
+.endf
+
+; A generic add with a global (stepped: the interpreter's way back in loads
+; the registers) every 4th iteration.
+.func stepped(i64 n) -> (i64, i64)
+    mov I1, 0
+    mov I2, 0
+1:  add I1, I2
+    and I3, I2, 3
+    bnz I3, 2f
+    add I1, I1, @gh
+2:  inc I2
+    blt I2, n, 1b
+    ret I1, I2
+.endf
+
+; Three calls each iteration: more holes than a loop keeps its registers for.
+.func many(i64 n) -> (i64, i64)
+    mov I1, 0
+    mov I2, 0
+1:  call twice (I2) -> (I3)
+    call twice (I3) -> (I4)
+    call twice (50) -> (I5)
+    add I1, I5
+    inc I2
+    blt I2, n, 1b
+    ret I1, I2
+.endf
+
+; A loop that ends the function: its back branch is the last instruction,
+; and a branch out of it goes back to the return.
+.func ends(i64 n) -> i64
+    mov I1, 0
+    mov I2, 0
+    jmp 1f
+2:  ret I1
+1:  add I1, I2
+    inc I2
+    bge I2, n, 2b
+    jmp 1b
+.endf
+
 .func main
     call one (100000) -> (I0)
     PRINTLN "one", I0
@@ -132,6 +251,16 @@
     PRINT_S "trapped "
     ncall "io.print_s" (R1)
     PRINTLN "", I0, I1
+    call holes (97) -> (I0, I1, I2, I3)
+    PRINTLN "holes", I0, I1, I2, I3
+    call stepped (100) -> (I0, I1)
+    PRINTLN "stepped", I0, I1
+    call many (97) -> (I0, I1)
+    PRINTLN "many", I0, I1
+    call ends (100) -> (I0)
+    PRINTLN "ends", I0
+    call hop (1000) -> (I0, I1)
+    PRINTLN "hop", I0, I1
     call nested (1000) -> (I0)
     PRINTLN "nested", I0
     call floats (1000) -> (F0, I0)

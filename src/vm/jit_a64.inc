@@ -15,6 +15,10 @@ enum { JF_S0 = 0, JF_S1 = 1 };
 /* The register cache's machine registers (none of the above). */
 #define JC_NI 16
 #define JC_NF 16
+#define JM_RCACHE 1 /* R registers in the cache's free slots (jc_rslot) */
+/* The holes a loop may have and keep its registers (jit_loops): each costs
+ * a write-back and a load of them. */
+#define JM_LOOP_HOLES 2
 static const uint8_t jc_ireg[JC_NI] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 21, 22, 28};
 static const uint8_t jc_freg[JC_NF] = {16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
 #define XZR 31

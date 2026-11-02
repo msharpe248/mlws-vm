@@ -113,12 +113,25 @@ the interpreter grows the frame and register stacks when they are full.
 
 **Registers.** Inside a block, I and F registers live in machine registers
 once read or written, and those changed are written back at the block's
-end: 16 general and 16 float registers on arm64, 5 and 13 on x86-64. A loop
-of compiled instructions that calls nothing, is entered only at its head,
-and whose registers fit keeps them in machine registers across iterations:
-they are loaded on the way in and written back on every way out (a branch
-out, a side exit, the slice's end). R registers stay in the window, where
-the collector sees them.
+end: 16 general and 16 float registers on arm64, 5 and 13 on x86-64. On
+arm64, an R register read twice in a block also stays in a general register
+that is free: it is written to the window as soon as it is set, where the
+collector sees it, so it is never written back. What a block has checked of
+an R register's object (a struct of a type, or a list) holds until the
+register is set again, so a second field or element of the same object
+skips the checks.
+
+**Loops.** A loop keeps its I and F registers in machine registers across
+iterations when they fit: they are loaded on the way in and written back on
+every way out (a branch out, a side exit, the slice's end). The loop is the
+code from its head that reaches its branch back, so a cold path in its
+range that leaves it (a type check's slow path to a return or an error) is
+not part of it. A call or an instruction the interpreter runs inside it is
+a *hole*: the registers are written back before it and loaded after it, as
+they are on any way back in past the head (a slow path that rejoins the
+loop, or the interpreter). A loop with more than 2 holes on arm64, or any on
+x86-64, does not keep its registers: each hole costs a write-back and a
+load of all of them.
 
 **Tools.** The debugger, profiler and tracer see every instruction, so a run
 under them compiles nothing.
@@ -181,7 +194,8 @@ only for a report.
   expected output is the interpreter's.
 * `; expect-jit: compiled FUNCTION N`, `; expect-jit: loops FUNCTION N` and
   `; expect-jit: steps N` in a test check what the JIT did (where the build
-  has one).
+  has one). A line ending with `arm64` or `x86-64` is checked only for that
+  JIT.
 * `make check-jit` runs every test and example with `--jit all` (also under
   GC stress and with every module optimized) and with `--jit on
   --jit-hot 2` (also on one worker thread). `make check-asan` runs the tests
@@ -215,5 +229,6 @@ suite and the compilers' suites.
 
 What it does not do: it does not reorder or remove instructions (that is
 the optimizer's job, [OPTIMIZER.md](OPTIMIZER.md)), speculate on types,
-inline, or keep values in machine registers across calls. A function's
+inline, or keep values in machine registers across calls (a call in a loop
+is a hole). A function's
 machine code is kept for the life of the VM.

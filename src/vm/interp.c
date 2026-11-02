@@ -2261,5 +2261,6 @@ void interp_jit_report(VM *vm, FILE *out) {
     fprintf(out, "mlwsvm jit: not in this build (it needs arm64 or x86-64, and the tail-call interpreter)\n");
 }
 bool interp_jit_available(void) { return false; }
+const char *interp_jit_arch(void) { return NULL; }
 uint64_t interp_jit_steps(const VM *vm) { return (void)vm, 0; }
 #endif

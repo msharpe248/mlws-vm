@@ -20,6 +20,8 @@
  *   ; expect-jit: loops <function> <n>               (n of its loops keep their registers in
  *                                                       machine registers)
  *   ; expect-jit: steps <n>                          (the machine code stepped n instructions)
+ *                                                    (each of these may end with an architecture,
+ *                                                       arm64 or x86-64: checked only for its JIT)
  *
  * Directories whose name starts with '_' hold helper modules and are skipped.
  *
@@ -216,6 +218,10 @@ static void check_jit(const Expect *e, VM *vm, StrBuf *why) {
         char name[128];
         long long want;
         const char *line = e->jit_want.v[k];
+        char arch[16] = "";
+        int nf = sscanf(line, "%*s %*s %*s %15s", arch);
+        if (!strncmp(line, "steps", 5)) nf = sscanf(line, "%*s %*s %15s", arch);
+        if (nf == 1 && strcmp(arch, interp_jit_arch())) continue; /* another architecture's */
         bool loops = sscanf(line, "loops %127s %lld", name, &want) == 2;
         if (loops || sscanf(line, "compiled %127s %lld", name, &want) == 2) {
             const Function *f = NULL;
