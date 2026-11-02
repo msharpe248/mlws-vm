@@ -184,13 +184,19 @@ check-tools: $(BIN)
 	sh tests/tools/check_tools.sh ./$(BIN)
 
 # Generate bindings for tests/_bindgen/libc.h (needs clang), compare them with
-# the expected output, and call them.
+# the expected output, and call them. Windows (LLP64, another C library) has
+# a header of its own.
+ifeq ($(OS),Windows_NT)
+BINDGEN_DIR := tests/_bindgen/win
+else
+BINDGEN_DIR := tests/_bindgen
+endif
 check-bindgen: $(BIN) test-ext
 	@mkdir -p build/bindgen
 	@if ! command -v clang >/dev/null 2>&1; then echo "check-bindgen: skipped (no clang)"; exit 0; fi; \
-	./$(BIN) bindgen -l "" -p c -o build/bindgen/libc.inc tests/_bindgen/libc.h 2>/dev/null && \
-	diff -u tests/_bindgen/libc.expected build/bindgen/libc.inc && \
-	./$(BIN) run -L build/bindgen --ext-path $(TEST_EXT) tests/_bindgen/use.masm && \
+	./$(BIN) bindgen -l "" -p c -o build/bindgen/libc.inc $(BINDGEN_DIR)/libc.h 2>/dev/null && \
+	diff -u $(BINDGEN_DIR)/libc.expected build/bindgen/libc.inc && \
+	./$(BIN) run -L build/bindgen --ext-path $(TEST_EXT) $(BINDGEN_DIR)/use.masm && \
 	echo "check-bindgen: OK"
 
 check-gc: $(BIN) test-ext

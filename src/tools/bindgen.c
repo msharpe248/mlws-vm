@@ -719,9 +719,15 @@ static void gen_function(Gen *g, const Json *n) {
     ct_free(ft);
 }
 
+/* A declaration's name; NULL for an anonymous one (which newer clangs name ""). */
+static const char *decl_name(const Json *n) {
+    const char *s = jstr(n, "name");
+    return s && *s ? s : NULL;
+}
+
 static void gen_enum(Gen *g, const Json *n) {
     const Json *inner = jget(n, "inner");
-    const char *ename = jstr(n, "name");
+    const char *ename = decl_name(n);
     sb_printf(&g->out, "; enum %s\n", ename ? ename : "(anonymous)");
     int64_t next = 0;
     for (uint32_t i = 0; inner && i < inner->n; i++) {
@@ -778,9 +784,9 @@ static bool same_file(const char *a, const char *b) {
 
 /* Collect a struct definition, and those defined inside it. */
 static void add_records(Gen *g, const Json *n) {
-    if (jtrue(n, "completeDefinition") && jstr(n, "name") && jstr(n, "tagUsed") && !strcmp(jstr(n, "tagUsed"), "struct")) {
+    if (jtrue(n, "completeDefinition") && decl_name(n) && jstr(n, "tagUsed") && !strcmp(jstr(n, "tagUsed"), "struct")) {
         Record *r = xcalloc(1, sizeof *r);
-        r->name = xstrdup(jstr(n, "name"));
+        r->name = xstrdup(decl_name(n));
         r->node = n;
         void *old;
         if (smap_get(&g->records, r->name, &old)) free(((Record *)old)->name), free(old);
@@ -802,7 +808,7 @@ static bool generate(Gen *g, const Json *root) {
         const Json *n = top->items[i];
         const char *kind = jstr(n, "kind");
         if (!kind) continue;
-        if ((!strcmp(kind, "RecordDecl") || !strcmp(kind, "EnumDecl")) && !jstr(n, "name") && jstr(n, "id"))
+        if ((!strcmp(kind, "RecordDecl") || !strcmp(kind, "EnumDecl")) && !decl_name(n) && jstr(n, "id"))
             smap_put(&anon, jstr(n, "id"), (void *)n);
         if (!strcmp(kind, "TypedefDecl")) {
             const char *name = jstr(n, "name");
@@ -852,9 +858,9 @@ static bool generate(Gen *g, const Json *root) {
         } else if (!strcmp(kind, "TypedefDecl") && jstr(n, "name")) {
             void *v; /* typedef struct { ... } NAME, even if unused */
             if (smap_get(&g->records, jstr(n, "name"), &v)) record_ok(g, jstr(n, "name"));
-        } else if (!strcmp(kind, "RecordDecl") && jtrue(n, "completeDefinition") && jstr(n, "name") &&
+        } else if (!strcmp(kind, "RecordDecl") && jtrue(n, "completeDefinition") && decl_name(n) &&
                    jstr(n, "tagUsed") && !strcmp(jstr(n, "tagUsed"), "struct")) {
-            record_ok(g, jstr(n, "name")); /* the header's structs, even unused */
+            record_ok(g, decl_name(n)); /* the header's structs, even unused */
         }
     }
     return true;
