@@ -827,11 +827,15 @@ int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_n
         if (pipes && (ms < 0 || ms > PIPE_LOOK_MS)) ms = PIPE_LOOK_MS;
         int n = WSAPoll(p->pfd.v, (ULONG)p->pfd.n, ms);
         bool woken = n > 0 && p->pfd.v[0].revents;
-        if (woken) { /* cleared first: a wake-up from now on sends another byte */
-            InterlockedExchange(&p->woken, 0);
+        /* Drained, then cleared: a wake-up before the clear armed a wait the
+         * next wait's set will have; one after it sends another byte. (The
+         * other order loses a byte sent between the two, and with it every
+         * later wake-up.) */
+        if (woken) {
             char drain[64];
             while (recv(p->wake, drain, sizeof drain, 0) > 0) {
             }
+            InterlockedExchange(&p->woken, 0);
         }
         AcquireSRWLockExclusive(&p->lock);
         for (size_t j = 1; n > 0 && j < p->pfd.n && k < max; j++) {
