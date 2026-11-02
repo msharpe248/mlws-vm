@@ -53,6 +53,9 @@ typedef struct {
     uint32_t len, cap;
     uint8_t *data;
 } ObjBytes;
+/* Its bytes, never NULL (an empty buffer may have no storage, and memcpy and
+ * memcmp take no NULL even for 0 bytes). */
+static inline uint8_t *bytes_data(ObjBytes *b) { return b->data ? b->data : (uint8_t *)""; }
 
 /* Fixed-length array; every element is one Word of type `elem`. */
 typedef struct {

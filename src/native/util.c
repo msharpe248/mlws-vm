@@ -29,7 +29,7 @@ static const uint8_t *data_arg(Process *p, Word a, uint32_t *len) {
     }
     if (o->kind == OBJ_BYTES) {
         *len = ((ObjBytes *)o)->len;
-        return ((ObjBytes *)o)->data;
+        return bytes_data((ObjBytes *)o);
     }
     vm_trap(p, "E_TYPE", "%s: expected a string or byte buffer, got %s", fname(p), obj_kind_name(o->kind));
 }

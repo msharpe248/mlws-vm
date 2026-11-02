@@ -657,7 +657,7 @@ static const uint8_t *rd_text(Ctx *c, const Operand *o, const char *what, uint32
     }
     if (ob->kind == OBJ_BYTES) {
         *len = ((ObjBytes *)ob)->len;
-        return ((ObjBytes *)ob)->data;
+        return bytes_data((ObjBytes *)ob);
     }
     vm_trap(c->p, "E_TYPE", "%s needs a string or byte buffer, got %s (convert with tostr)", what, obj_desc(ob));
 }

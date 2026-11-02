@@ -183,7 +183,7 @@ static const char *api_str_data(MlwsCtx *cx, MlwsValue v, size_t *len) {
     }
     if (o && o->kind == OBJ_BYTES) {
         if (len) *len = ((ObjBytes *)o)->len;
-        return (const char *)((ObjBytes *)o)->data;
+        return (const char *)bytes_data((ObjBytes *)o);
     }
     want(P(cx), v, OBJ_STRING, "string");
     if (len) *len = 0;

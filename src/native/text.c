@@ -24,7 +24,7 @@ static const char *str_arg(Process *p, Word a, uint32_t *len) {
     }
     if (o->kind == OBJ_BYTES) {
         *len = ((ObjBytes *)o)->len;
-        return (const char *)((ObjBytes *)o)->data;
+        return (const char *)bytes_data((ObjBytes *)o);
     }
     vm_trap(p, "E_TYPE", "%s: expected a string or byte buffer, got %s", fn, obj_kind_name(o->kind));
 }
@@ -178,7 +178,7 @@ static void format_one(Process *p, StrBuf *out, const Spec *sp, Word v, uint8_t 
         Obj *o = tag == T_R ? v.r : NULL;
         if (!o || (o->kind != OBJ_STRING && o->kind != OBJ_BYTES)) FAIL("E_TYPE", "text.format: {:q} needs a string");
         if (o->kind == OBJ_STRING) put_quoted(&t, ((ObjString *)o)->data, ((ObjString *)o)->len);
-        else put_quoted(&t, (const char *)((ObjBytes *)o)->data, ((ObjBytes *)o)->len);
+        else put_quoted(&t, (const char *)bytes_data((ObjBytes *)o), ((ObjBytes *)o)->len);
         numeric = false;
     } else if (ty == 0 || ty == 's') {
         if (sp->prec >= 0 && (tag == T_F32 || tag == T_F64)) sb_printf(&t, "%.*f", sp->prec, v.f);
@@ -940,7 +940,7 @@ static void jw_value(JW *w, Word v, uint8_t tag, int depth) {
     }
     switch (o->kind) {
     case OBJ_STRING: jw_string(w, ((ObjString *)o)->data, ((ObjString *)o)->len); return;
-    case OBJ_BYTES: jw_string(w, (const char *)((ObjBytes *)o)->data, ((ObjBytes *)o)->len); return;
+    case OBJ_BYTES: jw_string(w, (const char *)bytes_data((ObjBytes *)o), ((ObjBytes *)o)->len); return;
     case OBJ_BIG:
     case OBJ_DEC: num_format(&w->b, o); return;
     case OBJ_LIST:

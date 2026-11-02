@@ -1,4 +1,7 @@
 ; Byte buffers: mutable, growable bytes; strcat turns one into a string.
+; An empty buffer (which has no storage yet) works wherever text is read: in
+; strcat, strcmp, strfind and bufcat, and in natives (under GCC's UBSan a
+; copy of its 0 bytes from a null pointer was an error).
 ; expect-stdout: hello hello!
 ; expect-stdout: hello hello!
 .include "std/test.inc"
@@ -23,5 +26,23 @@
     ASSERT_EQ I1, 2
     bufnew R2, 3                       ; zero-filled
     ASSERT_EQ R2[2], 0
+    bufnew R3, 0                       ; empty, with no storage
+    strcat R4, "a", R3, "b"
+    strcmp I2, R4, "ab"
+    ASSERT_EQ I2, 0
+    strcmp I2, R3, ""
+    ASSERT_EQ I2, 0
+    strfind I2, R3, ""
+    ASSERT_EQ I2, 0
+    strfind I2, "abc", R3
+    ASSERT_EQ I2, 0
+    bufcat R3, R3, R3
+    bufcat R2, R3
+    len I2, R2
+    ASSERT_EQ I2, 3
+    ncall "io.print_s" (R3)
+    ncall "text.upper" (R3) -> (R5)
+    len I2, R5
+    ASSERT_EQ I2, 0
     ret 0
 .endf

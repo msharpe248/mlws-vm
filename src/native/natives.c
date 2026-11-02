@@ -47,7 +47,7 @@ static const char *text_arg(Process *p, Word a, const char *fn, uint32_t *len) {
     }
     if (o->kind == OBJ_BYTES) {
         *len = ((ObjBytes *)o)->len;
-        return (const char *)((ObjBytes *)o)->data;
+        return (const char *)bytes_data((ObjBytes *)o);
     }
     vm_trap(p, "E_TYPE", "%s needs a string or byte buffer, got %s", fn, obj_kind_name(o->kind));
 }

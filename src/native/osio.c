@@ -87,7 +87,7 @@ static bool get_data(Process *p, Word v, const uint8_t **data, size_t *n) {
         return true;
     }
     if (o && o->kind == OBJ_BYTES) {
-        *data = ((ObjBytes *)o)->data;
+        *data = bytes_data((ObjBytes *)o);
         *n = ((ObjBytes *)o)->len;
         return true;
     }
