@@ -47,7 +47,7 @@ rmdir "$TMPD"
 # or an entry that is damaged, means assembling again; --no-cache makes none;
 # with --opt, optimized modules are kept and found by content
 CDIR=$(mktemp -d)
-mkdir "$CDIR/src" "$CDIR/cache"
+mkdir "$CDIR/src" # (the cache directory is the VM's to make: private, so trusted)
 printf '.include "val.inc"\n.include "std/io.inc"\n.func main\n    PRINTLN_I VAL\n    ret 0\n.endf\n' > "$CDIR/src/prog.masm"
 printf '.const VAL = 1\n' > "$CDIR/src/val.inc"
 OUT=$(MLWSVM_CACHE="$CDIR/cache" $BIN run "$CDIR/src/prog.masm")

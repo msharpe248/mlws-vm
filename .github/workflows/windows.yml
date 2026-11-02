@@ -27,13 +27,17 @@ jobs:
           update: false
           install: >-
             make
-            perl
+            diffutils
             mingw-w64-clang-x86_64-clang
             mingw-w64-clang-x86_64-libffi
             mingw-w64-clang-x86_64-pkgconf
 
       - name: Build
         run: make CC=clang -k -j4
+
+      - name: The JIT is built in
+        if: ${{ !cancelled() }}
+        run: ./mlwsvm run --jit on --jit-hot 2 --jit-report - examples/fib.masm 2>&1 | grep -A2 "mlwsvm jit (x86-64)"
 
       - name: Tests
         if: ${{ !cancelled() }}
