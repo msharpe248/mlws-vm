@@ -1,0 +1,36 @@
+# Build MLWSVM and run its tests on Windows (x86-64), with Clang in MSYS2's
+# CLANG64 environment (the UCRT C runtime). The shell steps run in MSYS2's
+# bash, so the Makefile and the test scripts are the same as elsewhere.
+name: Windows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: windows-latest / clang
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: false
+          install: >-
+            make
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-libffi
+            mingw-w64-clang-x86_64-pkgconf
+
+      - name: Build
+        run: make CC=clang -k -j4
+
+      - name: Tests
+        run: make CC=clang test

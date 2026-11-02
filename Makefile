@@ -37,7 +37,12 @@ WARN    := -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wno-unused-parameter
 # take up to 5% more or less time from one build to the next.
 ALIGN   := -falign-functions=64
 BUILD   ?= build
-BIN     ?= mlwsvm
+# Windows (MSYS2's CLANG64 environment): programs end in .exe, and the
+# libraries are Winsock and the random-number API.
+ifeq ($(OS),Windows_NT)
+EXE     := .exe
+endif
+BIN     ?= mlwsvm$(EXE)
 
 SRC := $(wildcard src/*.c src/*/*.c)
 
@@ -70,6 +75,9 @@ endif
 ifeq ($(shell uname -s),Linux)
 DL_LIBS := -ldl -lpthread
 endif
+ifeq ($(OS),Windows_NT)
+DL_LIBS := -lws2_32 -lbcrypt
+endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
 .PHONY: check-fuzz release-check check-jit check-opt all test test-ext test-libs check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
@@ -84,11 +92,11 @@ $(BUILD)/%.o: %.c
 	$(CC) $(WARN) $(ALIGN) $(CFLAGS) -fPIC $(FFI_CFLAGS) -MMD -MP -c $< -o $@
 
 # The web dashboard is compiled into the binary (served by --monitor).
-$(BUILD)/embed: build-tools/embed.c
+$(BUILD)/embed$(EXE): build-tools/embed.c
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -o $@ $<
 
-$(BUILD)/gen/dashboard.c: web/dashboard.html $(BUILD)/embed
+$(BUILD)/gen/dashboard.c: web/dashboard.html $(BUILD)/embed$(EXE)
 	@mkdir -p $(dir $@)
 	$(BUILD)/embed web/dashboard.html DASHBOARD_HTML > $@
 
@@ -103,6 +111,9 @@ LIB_LIBS := -lm $(FFI_LIBS) $(DL_LIBS) -lpthread
 ifeq ($(shell uname -s),Darwin)
 SHLIB := $(BUILD)/libmlwsvm.dylib
 SHLIB_FLAGS := -dynamiclib -install_name @rpath/libmlwsvm.dylib
+else ifeq ($(OS),Windows_NT)
+SHLIB := $(BUILD)/libmlwsvm.dll
+SHLIB_FLAGS := -shared
 else
 SHLIB := $(BUILD)/libmlwsvm.so
 SHLIB_FLAGS := -shared
