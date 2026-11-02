@@ -36,8 +36,20 @@ jobs:
         continue-on-error: true
         run: make CC=clang test-ext
 
+      - name: Diagnostics (while porting)
+        continue-on-error: true
+        run: |
+          for n in 20 100 300; do
+            sed "s/^.const N = 1000/.const N = $n/" tests/net/many_idle.masm > tests/net/mi_$n.masm
+            s=$(date +%s%N); ./mlwsvm run tests/net/mi_$n.masm; e=$(date +%s%N); echo "many_idle N=$n: $(( (e - s) / 1000000 )) ms"
+            s=$(date +%s%N); ./mlwsvm run --threads 1 tests/net/mi_$n.masm; e=$(date +%s%N); echo "  1 thread: $(( (e - s) / 1000000 )) ms"
+            rm tests/net/mi_$n.masm
+          done
+          s=$(date +%s%N); ./mlwsvm run tests/net/tcp_echo.masm; e=$(date +%s%N); echo "tcp_echo: $(( (e - s) / 1000000 )) ms"
+          s=$(date +%s%N); ./mlwsvm test tests/processes; e=$(date +%s%N); echo "tests/processes: $(( (e - s) / 1000000 )) ms"
+
       - name: Tests (suite only, while porting)
-        run: ./mlwsvm test tests examples 2>&1 | tail -400
+        run: MLWSVM_TEST_TIMEOUT=120 ./mlwsvm test tests examples 2>&1 | tail -400
 
       - name: Tests
         run: make CC=clang test
