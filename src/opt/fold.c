@@ -468,6 +468,11 @@ static bool is_imm(const Operand *o, int64_t v) { return o->mode == OM_IMM && o-
 static bool is_fimm(const Operand *o, double v) {
     return (o->mode == OM_FIMM && o->f == v && !signbit(o->f)) || (o->mode == OM_IMM && (double)o->imm == v);
 }
+/* An integer immediate as an instruction of type t reads it: mul.i8 x, 256
+ * multiplies by 0. */
+static bool is_timm(const Operand *o, MlwsType t, int64_t v) {
+    return o->mode == OM_IMM && canon_int(t, o->imm) == canon_int(t, v);
+}
 static bool same_reg(const Operand *a, const Operand *b) { return a->mode == OM_REG && b->mode == OM_REG && a->reg == b->reg; }
 
 static void replace(OFunc *f, uint32_t pc, Insn *with, int pass, const char *what) {
@@ -573,26 +578,27 @@ static bool simplify(OFunc *f, uint32_t pc) {
         bool regs = (a->mode == OM_REG || a->mode == OM_IMM) && (b->mode == OM_REG || b->mode == OM_IMM);
         switch (in->op) {
         case OP_ADD:
-            if (ints && is_imm(b, 0)) return to_mov(f, pc, a, "x + 0 is x");
-            if (ints && is_imm(a, 0)) return to_mov(f, pc, b, "0 + x is x");
+            if (ints && is_timm(b, t, 0)) return to_mov(f, pc, a, "x + 0 is x");
+            if (ints && is_timm(a, t, 0)) return to_mov(f, pc, b, "0 + x is x");
             break;
         case OP_SUB:
-            if (ints ? is_imm(b, 0) : is_fimm(b, 0.0)) return to_mov(f, pc, a, "x - 0 is x");
+            if (ints ? is_timm(b, t, 0) : is_fimm(b, 0.0)) return to_mov(f, pc, a, "x - 0 is x");
             if (ints && same_reg(a, b)) {
                 Operand z = op_imm(0);
                 return to_mov(f, pc, &z, "x - x is 0");
             }
             break;
         case OP_MUL:
-            if (ints ? is_imm(b, 1) : is_fimm(b, 1.0)) return to_mov(f, pc, a, "x * 1 is x");
-            if (ints ? is_imm(a, 1) : is_fimm(a, 1.0)) return to_mov(f, pc, b, "1 * x is x");
-            if (ints && regs && (is_imm(a, 0) || is_imm(b, 0))) {
+            if (ints ? is_timm(b, t, 1) : is_fimm(b, 1.0)) return to_mov(f, pc, a, "x * 1 is x");
+            if (ints ? is_timm(a, t, 1) : is_fimm(a, 1.0)) return to_mov(f, pc, b, "1 * x is x");
+            if (ints && regs && (is_timm(a, t, 0) || is_timm(b, t, 0))) {
                 Operand z = op_imm(0);
                 return to_mov(f, pc, &z, "x * 0 is 0");
             }
-            if (ints && b->mode == OM_IMM && b->imm > 1 && (b->imm & (b->imm - 1)) == 0) {
+            int64_t k = b->mode == OM_IMM ? canon_int(t, b->imm) : 0; /* as the type reads it */
+            if (ints && k > 1 && (k & (k - 1)) == 0) {
                 int sh = 0;
-                while ((1ll << sh) != b->imm) sh++;
+                while ((1ll << sh) != k) sh++;
                 Insn s = insn_make(OP_SHL, t, 3);
                 s.ops[0] = in->ops[0];
                 s.ops[1] = *a;
@@ -613,26 +619,26 @@ static bool simplify(OFunc *f, uint32_t pc) {
             }
             break;
         case OP_DIV:
-            if (ints ? is_imm(b, 1) : is_fimm(b, 1.0)) return to_mov(f, pc, a, "x / 1 is x");
+            if (ints ? is_timm(b, t, 1) : is_fimm(b, 1.0)) return to_mov(f, pc, a, "x / 1 is x");
             break;
         case OP_OR: case OP_XOR:
-            if (ints && is_imm(b, 0)) return to_mov(f, pc, a, "x | 0 and x ^ 0 are x");
-            if (ints && is_imm(a, 0)) return to_mov(f, pc, b, "0 | x and 0 ^ x are x");
+            if (ints && is_timm(b, t, 0)) return to_mov(f, pc, a, "x | 0 and x ^ 0 are x");
+            if (ints && is_timm(a, t, 0)) return to_mov(f, pc, b, "0 | x and 0 ^ x are x");
             if (ints && in->op == OP_XOR && same_reg(a, b)) {
                 Operand z = op_imm(0);
                 return to_mov(f, pc, &z, "x ^ x is 0");
             }
             break;
         case OP_AND:
-            if (ints && is_imm(b, -1)) return to_mov(f, pc, a, "x & -1 is x");
-            if (ints && is_imm(a, -1)) return to_mov(f, pc, b, "-1 & x is x");
-            if (ints && regs && (is_imm(a, 0) || is_imm(b, 0))) {
+            if (ints && is_timm(b, t, -1)) return to_mov(f, pc, a, "x & -1 is x");
+            if (ints && is_timm(a, t, -1)) return to_mov(f, pc, b, "-1 & x is x");
+            if (ints && regs && (is_timm(a, t, 0) || is_timm(b, t, 0))) {
                 Operand z = op_imm(0);
                 return to_mov(f, pc, &z, "x & 0 is 0");
             }
             break;
         case OP_SHL: case OP_SHR: case OP_SAR: case OP_ROL: case OP_ROR:
-            if (ints && is_imm(b, 0)) return to_mov(f, pc, a, "a shift by 0 is x");
+            if (ints && is_timm(b, t, 0)) return to_mov(f, pc, a, "a shift by 0 is x");
             break;
         default: break;
         }

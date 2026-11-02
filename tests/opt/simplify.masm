@@ -4,10 +4,14 @@
 ; compare or commutative arithmetic has it first (the quickener's fast forms
 ; take a constant second; a compare is mirrored: 1 < x is x > 1). Floats only
 ; where it is exact: x * 1.0 and x - 0.0, never x + 0.0 (-0.0 + 0.0 is +0.0).
-; The ten: five in ints, one in floats, two in compares, and main's two
-; ASSERT_EQ of a value with 0, which compare with 0 (bz).
+; A constant is taken as the instruction's type reads it: mul.i8 x, 2^32 is
+; x * 0, not x << 32 (which would shift by 32 mod 8 = 0), and mul.u8 x, 258
+; is x * 2 (found by mlwsvm fuzz).
+; The fourteen: five in ints, four in narrow, one in floats, two in
+; compares, and main's two ASSERT_EQ of a value with 0, which compare with 0
+; (bz).
 ; option: --opt simplify
-; expect-opt: simplify 10
+; expect-opt: simplify 14
 .include "std/test.inc"
 
 .func ints(i64 x) -> i64
@@ -18,6 +22,15 @@
     and I5, I2, -1                       ; mov I5, I2
     add I6, I5, I3, I4                   ; (three sources: left alone)
     ret I6
+.endf
+
+.func narrow(i64 x) -> i64
+    mul.i8 I1, x, 4294967296             ; 0 as an i8: mov.i8 I1, 0
+    mul.i32 I2, x, 1099511627776         ; 2^40, 0 as an i32: mov.i32 I2, 0
+    add.u8 I3, x, 256                    ; 0 as a u8: mov.u8 I3, x
+    mul.u8 I4, x, 258                    ; 2 as a u8: shl.u8 I4, x, 1
+    add I5, I1, I2, I3, I4
+    ret I5
 .endf
 
 .func floats(f64 y) -> f64
@@ -37,6 +50,8 @@
 .func main
     call ints (5) -> (I0)
     ASSERT_EQ I0, 40
+    call narrow (300) -> (I0)            ; 0 + 0 + 44 + 88 (300 is 44 as a u8)
+    ASSERT_EQ I0, 132
     call floats (-0.0) -> (F0)
     bitcast.i64.f64 I0, F0
     ASSERT_EQ I0, 0                      ; +0.0: -0.0 + 0.0
