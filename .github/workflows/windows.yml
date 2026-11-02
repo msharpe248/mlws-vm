@@ -2,7 +2,7 @@
 # CLANG64 environment (the UCRT C runtime). The shell steps run in MSYS2's
 # bash, so the Makefile and the test scripts are the same as elsewhere.
 # (No sanitizer builds: MinGW has no ThreadSanitizer, and its
-# AddressSanitizer is incomplete.)
+# AddressSanitizer is incomplete.) Every step runs after a failed one.
 name: Windows
 
 on:
@@ -36,45 +36,59 @@ jobs:
         run: make CC=clang -k -j4
 
       - name: Tests
+        if: ${{ !cancelled() }}
         run: make CC=clang test
 
       - name: Embedding library and example host
+        if: ${{ !cancelled() }}
         run: make CC=clang lib check-embed
 
       - name: Tests on one worker thread
+        if: ${{ !cancelled() }}
         run: MLWSVM_THREADS=1 ./mlwsvm test tests examples
 
       - name: GC stress
+        if: ${{ !cancelled() }}
         run: make CC=clang check-gc
 
       - name: Optimizer (every module with every pass, also with GC stress)
+        if: ${{ !cancelled() }}
         run: make CC=clang check-opt
 
       - name: JIT (every function and block, also with GC stress and the optimizer; hot functions)
+        if: ${{ !cancelled() }}
         run: make CC=clang check-jit
 
       - name: Fuzzer (random programs in every mode against the interpreter)
+        if: ${{ !cancelled() }}
         run: make CC=clang check-fuzz
 
       - name: Tools (monitor, top, profiler, tracer)
+        if: ${{ !cancelled() }}
         run: make CC=clang check-tools
 
       - name: Bindings generator (clang)
+        if: ${{ !cancelled() }}
         run: make CC=clang check-bindgen
 
       - name: Switch dispatch (no computed goto)
+        if: ${{ !cancelled() }}
         run: make CC=clang check-switch
 
       - name: Dispatch loop (no tail calls)
+        if: ${{ !cancelled() }}
         run: make CC=clang check-loop
 
       - name: Register windows filled with garbage before a call clears them
+        if: ${{ !cancelled() }}
         run: make CC=clang check-poison
 
       - name: Without libffi
+        if: ${{ !cancelled() }}
         run: |
           make CC=clang BUILD=build-noffi BIN=mlwsvm-noffi.exe FFI=0 -j4
           ./mlwsvm-noffi test tests examples
 
       - name: Benchmarks (output checks)
+        if: ${{ !cancelled() }}
         run: sh bench/run.sh ./mlwsvm

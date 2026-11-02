@@ -536,6 +536,20 @@ int plat_sock_accept(int lfd, int *err) {
     }
 }
 
+static bool is_loopback(const struct sockaddr *sa) {
+    if (sa->sa_family == AF_INET) return (ntohl(((const struct sockaddr_in *)sa)->sin_addr.s_addr) >> 24) == 127;
+    return sa->sa_family == AF_INET6 && IN6_IS_ADDR_LOOPBACK(&((const struct sockaddr_in6 *)sa)->sin6_addr);
+}
+
+/* Windows answers a reset to its SYN by sending the SYN again, twice, so a
+ * refused connection takes 2 s to fail. On the loopback interface nothing is
+ * lost: send it once. */
+static void no_syn_retries(SOCKET s) {
+    TCP_INITIAL_RTO_PARAMETERS rto = {TCP_INITIAL_RTO_UNSPECIFIED_RTT, TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS};
+    DWORD got;
+    WSAIoctl(s, SIO_TCP_INITIAL_RTO, &rto, sizeof rto, NULL, 0, &got, NULL, NULL);
+}
+
 /* Blocking (run on the I/O pool): resolve, then try each address in turn. */
 int plat_sock_connect(const char *host, int port, int64_t timeout_ms, int *err) {
     struct addrinfo *res;
@@ -548,6 +562,7 @@ int plat_sock_connect(const char *host, int port, int64_t timeout_ms, int *err) 
             continue;
         }
         set_nonblock(s);
+        if (is_loopback(a->ai_addr)) no_syn_retries(s);
         int x = 0;
         if (connect(s, a->ai_addr, (int)a->ai_addrlen) != 0) {
             x = WSAGetLastError();
