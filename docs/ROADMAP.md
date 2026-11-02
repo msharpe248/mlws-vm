@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M43 are complete. What remains is Windows (section 3) and the
+Milestones M0–M44 are complete. What remains is Windows (section 3) and the
 deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M43 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M44 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M43
+## Milestones M11–M44
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -65,6 +65,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M41 The optimizer** (done) | `mlwsvm opt` (ahead of time) and `--opt` (every module as it loads, kept in the module cache): constant folding, constant and copy propagation, algebraic simplification, dead-code and unreachable-code removal, branch threading, inversion and decision, and peephole clean-up at `-O1`; unused functions and smaller register windows at `-O2`; inlining at `-O3`; tail calls only when named. Each pass can be turned on or off (`--opt 3,-inline`), and a report gives each pass's changes and each function's size, with `-v` a log of every change. Folding uses the interpreter's own arithmetic (`src/core/arith.h`); a write that may release an object, a store a handler can see, and anything that can trap are kept | `tests/opt/`: a test per pass, with exact counts (`; expect-opt:`, `; expect-insns:`) and results checked at run time. `make check-opt`: the whole suite with every pass, also with GC stress; `make check-tools`: every module re-encoded byte for byte, the report and the command line. The compilers' suites pass at `--opt 2`, also with GC stress |
 | **M42 Compiled Erlang's shapes** (done) | from the Erlang compiler's profiles: fast forms for `bitcast` between an `I` and an `F` register and of a literal, `typeof` of a register, `beq.r`/`bne.r` of an element at a constant index against a constant (a tuple's tag), and direct tail calls with register and constant arguments. Compiled Erlang's `nbody` and `binarytrees` take 29–39% less time and `sorting` 15–21% less, on the M5, i7 and Ryzen. Other programs run the same handlers, but with GCC their new places in the binary make some compiled Lox benchmarks up to 9% slower; with functions aligned to 64 bytes they are within 1% | `tests/perf/quickened_values.masm`: each form against the generic instruction, with the cases that go to it (another element type, an index past the end, null, a string, a far larger callee window, undeclared results) |
 | **M43 A JIT** (done) | `--jit on`: each function compiled once hot (`--jit-hot`, 1000 calls or loop iterations) to arm64 or x86-64 machine code that runs in mixed mode with the interpreter, on the same windows, frames and heap: the quickened forms and a few generic ones compiled, the rest stepped by their own handlers, side exits to the interpreter where a handler would go generic. A block's registers, and a loop's, stay in machine registers; instruction counts and preemption are the interpreter's. Code memory per VM, written then made executable. `--jit all` compiles every function and enters every block, for testing; `--jit-report` says what it did ([JIT.md](JIT.md)). Calls take 42–60% less time, loops 51–78% less, and compiled Lua's benchmarks other than `strings` 22–78% less, on the M5, i7 and Ryzen; programs whose time is in natives, the collector or the scheduler gain little, and a few are up to 6% slower on x86-64 | `tests/jit/`: each form and side exit, calls and unwinding, loops, hot compiling, four threads compiling at once, a quota stopping at the same instruction, all against the interpreter's results; `make check-jit` (the suite and examples with `--jit all`, also with GC stress and the optimizer, and with `--jit on`) and a JIT run in `check-asan`, in CI on Linux (x86-64 and arm64) and macOS; the compilers' suites with the JIT |
+| **M44 Faster with the JIT** (done) | from the JIT's reports on the compilers' programs, and their sessions' changes: bytes of strings and byte buffers, never-written list elements and constants stored to elements and globals on the fast path and in the JIT; `mget` by a key in a register compiled; loops kept in machine registers as natural loops, with up to two calls or stepped instructions inside on arm64; on arm64 R registers cached within a block, and checks of an object not repeated in a block; a generational collector (a remembered set, a write barrier in the interpreter and the machine code, a young generation from 64 KB that grows as much survives, `MLWSVM_GC_VERIFY`); `tostr` and `strcat` without a copy, string hashes when first needed; functions aligned to 64 bytes. With the JIT, against 0.8.0, on the M5, i7 and Ryzen: compiled Lua's `strings` −50–55%, `binarytrees` −27–40%, Erlang's `sorting` −14–21%, `binarytrees` −11–25%, Lox's `binary_trees` −10–19%, `method_call` −12–16%, `bench/maps` −17–34%; Lua's `loop` −32% on the M5 | `tests/objects/gc_generations.masm` (each way an old object is given a young one, across minor collections); `tests/jit/loops.masm` (holes, cold paths back into a loop, a loop ending its function, one loop into another, a hole setting a loop register); `tests/perf/quickened_slots.masm` and `quickened_access.masm` (bytes, unset elements, constants stored); `make check-gc` also with `MLWSVM_GC_VERIFY=1`, with the JIT off and `all`; the compilers' suites under it |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -194,10 +195,11 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 * ~~Calls: one window per frame~~ (M28: done). Calls without copying, through
   overlapping windows, would need an ABI change; only if call-heavy programs
   show the argument copies.
-* A generational collector. Collection is 20–29% of compiled Lua's
-  `binarytrees`, but one built in M31 saved at most a quarter of that, and with
-  a remembered set of whole objects it rescanned large containers at every young
-  collection; it would need card marking. See PERFORMANCE.md.
+* ~~A generational collector~~ (M44: done). The one built in M31 saved too
+  little while the interpreter was the cost; with the JIT, re-marking what
+  programs keep was most of the collector's time. A remembered object is
+  rescanned whole; card marking would make large containers written now and
+  then cheaper still.
 * ~~Clearing only the registers a function may read before writing them, and
   its `R` bank~~ (M33: done).
 * Lock-free run queues and spinning before sleeping, for many-thread,
@@ -205,10 +207,14 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 * ~~A bytecode optimizer~~ (M41: done; [OPTIMIZER.md](OPTIMIZER.md)).
   Removing type checks needs the source language's types, so that stays in
   the compilers.
-* ~~A JIT~~ (M43: done; [JIT.md](JIT.md)). It keeps registers in machine
-  registers within a block or a loop, but not across calls, and does not
-  speculate on types or inline; those would be the next steps, if programs
-  show the time in calls and type tests.
+* ~~A JIT~~ (M43, M44: done; [JIT.md](JIT.md)). It keeps registers in machine
+  registers within a block or a loop (across up to two calls in a loop on
+  arm64), but does not speculate on types or inline; those would be the next
+  steps, if programs show the time in calls and type tests. On x86-64 it
+  keeps 5 integer registers; more would mean moving the frame out of a
+  register, which calls would pay for.
+* Compiling the string builders (`bufcat`, `tostr`, `strcat`), which the JIT
+  runs by their handlers: a few nanoseconds each, now that they are fast.
 * A generic string replace (every occurrence of one string in another, and
   the count), which the Lua compiler's `gsub` of a plain pattern would use
   instead of its loop. Low priority.

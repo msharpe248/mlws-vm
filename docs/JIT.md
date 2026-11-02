@@ -209,11 +209,10 @@ only for a report.
 
 [PERFORMANCE.md](PERFORMANCE.md#the-jit) has the results on the three
 machines, for the benchmarks and the compilers' programs. Calls (`fib`) take
-42–60% less time, loops (`loop`, `fannkuch`, `spectralnorm`) 51–78% less,
-and field and element access (`nbody`, `methods`, compiled Lox's
-`trees`) 19–49% less. Where the time goes to natives (strings, maps), the
-collector, the scheduler or raw memory, the JIT changes little; a few such
-programs are up to 6% slower on x86-64.
+43–67% less time, loops (`loop`, `fannkuch`, `spectralnorm`) 49–79% less,
+and field and element access (`nbody`, `methods`, compiled Lox's `trees`)
+26–56% less. Where the time goes to natives (`maps`), raw memory (`sieve`)
+or the scheduler (Erlang's `ring`), the JIT changes little.
 
 ## Design
 
