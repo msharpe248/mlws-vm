@@ -18,6 +18,8 @@
 ;     loop with three holes, which keeps its registers in the window (more
 ;     than JM_LOOP_HOLES: 2 on arm64, 0 on x86-64, where loops with holes
 ;     keep none);
+;   * a hole that sets one of the loop's registers (an mget by a key in a
+;     register): written back before the loop's registers are loaded again;
 ;   * a loop whose back branch is the function's last instruction, with a
 ;     branch out of it;
 ;   * a branch from one loop into another past its head: the first's
@@ -37,6 +39,7 @@
 ; expect-jit: loops stepped 1 arm64
 ; expect-jit: loops stepped 0 x86-64
 ; expect-jit: loops many 0
+; expect-jit: loops lookups 1 arm64
 ; expect-jit: loops ends 1
 ; expect-jit: loops hop 2
 ; option: --slice 7
@@ -47,6 +50,7 @@
 ; expect-stdout: holes 932 97 4 13
 ; expect-stdout: stepped 4975 100
 ; expect-stdout: many 9700 97
+; expect-stdout: lookups 50
 ; expect-stdout: ends 4950
 ; expect-stdout: hop 1225 100855
 ; expect-stdout: nested 249500250000
@@ -222,6 +226,20 @@ gh: .i64 1
     ret I1, I2
 .endf
 
+; A hole that sets a loop register: I3, from the map (the sum of the n
+; values, the first added after the loop).
+.func lookups(ref m, ref k, i64 n) -> i64
+    mov I1, 0
+    mov I2, 0
+    mov I3, 0
+1:  add I1, I3
+    mget I3, m, k, 0
+    inc I2
+    blt I2, n, 1b
+    add I1, I3
+    ret I1
+.endf
+
 ; A loop that ends the function: its back branch is the last instruction,
 ; and a branch out of it goes back to the return.
 .func ends(i64 n) -> i64
@@ -257,6 +275,11 @@ gh: .i64 1
     PRINTLN "stepped", I0, I1
     call many (97) -> (I0, I1)
     PRINTLN "many", I0, I1
+    mnew R6
+    mov R7, "k"
+    mset R6, R7, 5
+    call lookups (R6, R7, 10) -> (I0)
+    PRINTLN "lookups", I0
     call ends (100) -> (I0)
     PRINTLN "ends", I0
     call hop (1000) -> (I0, I1)

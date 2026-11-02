@@ -60,7 +60,8 @@ The JIT compiles the quickened forms ([PERFORMANCE.md](PERFORMANCE.md#how-the-in
 * struct fields, list and array elements, bytes of strings and byte
   buffers, globals, closure captures, `len`,
   constants stored to fields, elements and globals,
-  `lnew`, `lpush` into spare capacity, `new`, `mget` of a constant key,
+  `lnew`, `lpush` into spare capacity, `new`, `mget` of a constant key or a
+  key in a register,
   `ldv`, `typeof`, `isa`, `bisa`, `bnisa`, and a tuple's tag test.
 
 It also compiles a few generic instructions that have no quickened form,

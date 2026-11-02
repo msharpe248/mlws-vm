@@ -511,6 +511,7 @@ static bool jit_handles(uint16_t x) {
     case Q_LDU_I: case Q_LDU_F: case Q_LDU_R: case Q_STU_I: case Q_STU_F: case Q_STU_R: case Q_STFK:
     case Q_STEC: case Q_STECK: case Q_STGK:
     case Q_SEQ_RR: case Q_SNE_RR: case Q_SEQ_RK: case Q_SNE_RK: case Q_MGET_R:
+    case Q_MGETV_I: case Q_MGETV_F: case Q_MGETV_R:
 #define X(N, o) case Q_##N##_FF: case Q_##N##_FK:
         QSET_OPS(X)
 #undef X
@@ -1151,6 +1152,23 @@ static JitWord jit_mget(const Obj *ob, const Insn *in) {
     return in->nops < 4 ? (JitWord){0, 0} : (JitWord){0, 1};
 }
 
+/* Q_MGETV_*'s, by a key in a register (its bits in key, its type in
+ * Insn.target), of a value of type tag, or the default in Insn.k. */
+static JitWord jit_mgetv(const Obj *ob, const Insn *in, uint64_t key, uint8_t tag) {
+    if (!ob || ob->kind != OBJ_MAP) return (JitWord){0, 0};
+    Word k;
+    k.u = key;
+    const MapEntry *e = map_find((ObjMap *)ob, k, (uint8_t)in->target);
+    if (e) return e->vtag == tag ? (JitWord){e->val.u, 1} : (JitWord){0, 0};
+    if (in->nops < 4) return (JitWord){0, 0}; /* E_KEY: the handler's */
+    uint64_t d;
+    memcpy(&d, &in->k, 8);
+    return (JitWord){d, 1};
+}
+static JitWord jit_mgetv_i(const Obj *ob, const Insn *in, uint64_t key) { return jit_mgetv(ob, in, key, T_I64); }
+static JitWord jit_mgetv_f(const Obj *ob, const Insn *in, uint64_t key) { return jit_mgetv(ob, in, key, T_F64); }
+static JitWord jit_mgetv_r(const Obj *ob, const Insn *in, uint64_t key) { return jit_mgetv(ob, in, key, T_R); }
+
 /* A generic instruction's operand (jit_gen_operand) in a machine register:
  * an I register's, or the constant or capture in `into`. */
 static int jit_gen_src(JComp *j, const Operand *o, uint32_t pc, int into) {
@@ -1343,6 +1361,21 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         SIDE_IF_NULL(JR_R1);
         jst_r(j, JR_R0, in->r[0]);
         return;
+    case Q_MGETV_I: case Q_MGETV_F: case Q_MGETV_R: { /* a key in a register: from the window, once flushed */
+        static const void *const get[] = {(const void *)jit_mgetv_i, (const void *)jit_mgetv_f, (const void *)jit_mgetv_r};
+        int bank = x - Q_MGETV_I;
+        int kb = in->target == T_I64 ? BANK_I : in->target == T_F64 ? BANK_F : BANK_R;
+        jc_flush(j);
+        jm_ld(b, JR_A2, JR_WIN, jwoff(j, kb, in->r[2]));
+        jld_r(j, JR_A0, in->r[1]);
+        jm_movi(b, JR_A1, (uint64_t)(uintptr_t)in);
+        jm_ccall(b, get[bank]);
+        SIDE_IF_NULL(JR_R1);
+        if (bank == 2) jst_r(j, JR_R0, in->r[0]);
+        else if (bank == 1) d = jc_def(j, 1, in->r[0]), jm_fmov_from_x(b, d, JR_R0);
+        else d = jc_def(j, 0, in->r[0]), jm_mov(b, d, JR_R0);
+        return;
+    }
     case Q_SEQ_RR: case Q_SNE_RR: case Q_SEQ_RK: case Q_SNE_RK:
         jld_r(j, JR_S0, in->r[1]);
         if (x == Q_SEQ_RR || x == Q_SNE_RR) jld_r(j, JR_S1, in->r[2]);
@@ -1718,7 +1751,8 @@ static bool jit_worth_entering(const Function *f, const uint16_t *xop, uint32_t 
 /* Whether the form calls C or leaves the machine code by itself (a loop's
  * registers would not survive it). */
 static bool jit_calls_out(uint16_t x) {
-    return jit_calls(x) || x == Q_JTAB || x == Q_NEW || x == Q_LNEW || x == Q_MGET_R;
+    return jit_calls(x) || x == Q_JTAB || x == Q_NEW || x == Q_LNEW || x == Q_MGET_R || x == Q_MGETV_I ||
+           x == Q_MGETV_F || x == Q_MGETV_R;
 }
 
 /* Where an instruction can go next, into out (at most 2 + its operands):
@@ -1934,7 +1968,10 @@ static void jit_compile(VM *vm, Function *f) {
         if (!j->loop && loop_of[pc] >= 0 && loops[loop_of[pc]].L != pc && pc > 0 && jit_handles(jx[pc - 1])) {
             uint32_t sc[2 + MAX_OPERANDS]; /* into the loop past L from the code before: the registers, for that way only */
             int ns = jit_succ(f, jx, pc - 1, sc);
-            if (ns && sc[0] == pc) jit_loop_load_as(j, &loops[loop_of[pc]], false, true);
+            if (ns && sc[0] == pc) { /* (what the code before changed, back first: a hole may set a loop register) */
+                jc_flush(j);
+                jit_loop_load_as(j, &loops[loop_of[pc]], false, true);
+            }
         }
         body[pc] = (uint32_t)b->n;
         const Insn *in = &f->code[pc];
