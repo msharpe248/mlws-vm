@@ -1,0 +1,144 @@
+; The collector is generational (src/heap/gc.c): an object that survives a
+; collection is old, and a minor collection marks and frees only young
+; objects, finding the young ones that old objects hold through the write
+; barrier (heap.h, gc_write). Here old objects (made old by a collection of
+; the whole heap, gc.collect) are given young strings in every way a
+; reference is stored into an existing object, and then enough garbage is
+; made for several minor collections: each string must still be there.
+;   * a struct field; list elements by a register, a register plus an
+;     offset and a constant index; an element of an array of references; a
+;     closure's capture; lpush into spare capacity and past it; lins; mset of
+;     an existing key and of a new one;
+;   * a coroutine, old, whose registers hold a young string while it is
+;     suspended;
+;   * the same old object given a second young string after it was
+;     remembered (it stays remembered until the next collection).
+; make check-gc runs it with a collection at every allocation (most of them
+; minor), MLWSVM_GC_VERIFY=1 checks each minor collection's marking against
+; a walk of the whole heap, and make check-jit runs it with every store in
+; machine code (whose barrier is a side exit).
+.include "std/test.inc"
+
+.struct Box
+    item: ref
+.ends
+
+.macro COLLECT
+    ncall "gc.collect" ()
+    nop                                ; the collection runs before this
+.endm
+
+.macro MAKE dst, text
+    strcat \dst, \text, ""             ; a fresh (young) heap string
+.endm
+
+.macro CHECK r, text
+    strcmp I30, \r, \text
+    ASSERT_EQ I30, 0
+.endm
+
+; About 4 MB of garbage: several minor collections (the nursery starts at
+; 1 MB).
+.func garbage
+    mov I0, 0
+1:  tostr R0, I0
+    strcat R1, R0, "garbage, garbage, garbage, garbage"
+    inc I0
+    blt I0, 50000, 1b
+    ret
+.endf
+
+; A closure's capture: set (when set is not 0), then read.
+.func cell(i64 set, ref s) -> ref
+    bz set, 1f
+    mov UP[0], s
+1:  mov R0, UP[0]
+    ret R0
+.endf
+
+; A coroutine that holds a string in a register across a yield.
+.func holder(ref s)
+    strcat R1, s, "!"                  ; young, only in this coroutine's registers
+    coyield ()
+    ret R1
+.endf
+
+.func main
+    ; old objects
+    new R0, Box
+    lnew R1, 8
+    lpush R1, 0, 0, 0                  ; three elements, spare capacity
+    anew.r R2, 4
+    mnew R3
+    mset R3, "k", 0
+    mov R4, null
+    closure cell (R4) -> (R5)
+    lnew R7, 2                         ; for lpush past its capacity
+    lpush R7, 0, 0
+    lnew R8
+    lpush R8, 0
+    closure holder -> (R9)
+    conew R10, R9
+    COLLECT
+    ; young strings into them
+    MAKE R20, "field"
+    mov R0->Box.item, R20
+    MAKE R20, "element"
+    mov I1, 1
+    mov R1[I1], R20
+    MAKE R20, "element+1"
+    mov R1[I1+1], R20
+    MAKE R20, "element 0"
+    mov R1[0], R20
+    MAKE R20, "array"
+    mov R2[I1], R20
+    MAKE R20, "capture"
+    calli R5 (1, R20) -> (R22)
+    MAKE R20, "lpush"
+    lpush R1, R20
+    MAKE R20, "grown"
+    lpush R7, R20                      ; past the capacity: the list's storage grows
+    MAKE R20, "lins"
+    lins R8, 0, R20
+    MAKE R20, "existing key"
+    mset R3, "k", R20
+    MAKE R21, "new key"
+    MAKE R20, "new value"
+    mset R3, R21, R20
+    MAKE R20, "coroutine"
+    coresume R10 (R20)
+    MAKE R20, "second"                 ; into a remembered object
+    mov R2[0], R20
+    mov R20, null
+    mov R21, null
+    call garbage ()
+    ; each young string is still there
+    mov R22, R0->Box.item
+    CHECK R22, "field"
+    mov I1, 1
+    mov R22, R1[I1]
+    CHECK R22, "element"
+    mov R22, R1[2]
+    CHECK R22, "element+1"
+    mov R22, R1[0]
+    CHECK R22, "element 0"
+    mov R22, R1[3]
+    CHECK R22, "lpush"
+    mov R22, R2[1]
+    CHECK R22, "array"
+    mov R22, R2[0]
+    CHECK R22, "second"
+    calli R5 (0, R4) -> (R22)
+    CHECK R22, "capture"
+    mov R22, R7[2]
+    CHECK R22, "grown"
+    mov R22, R8[0]
+    CHECK R22, "lins"
+    mget.r R22, R3, "k"
+    CHECK R22, "existing key"
+    mget.r R22, R3, "new key"
+    CHECK R22, "new value"
+    coresume R10 -> (R22)
+    CHECK R22, "coroutine!"
+    ret 0
+.endf

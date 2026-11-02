@@ -124,7 +124,7 @@ a test file's own lines override both.
 | `--stack-words N` | 131072 | each process's data stack, in 8-byte words |
 | `--max-frames N` | 100000 | call depth limit (`E_CALL_DEPTH`) |
 | `--slice N` | 2000 | time slice, in instructions, before another process gets a turn |
-| `--gc-min BYTES` | 1M | the heap size below which no collection runs |
+| `--gc-min BYTES` | 1M | the young generation's starting size: what a process allocates between minor collections (it grows while too much of it survives) |
 | `--quota LIST` | unlimited | starting limits for every process, e.g. `heap=64M,raw=1G,mailbox=1000,insns=5000000,foreign=0,os=0`; any subset, `unlimited` resets one |
 | `--ext-path DIR[:DIR]` | (none) | trusted native-extension directories, searched before `lib/ext` ([EXTENDING.md](EXTENDING.md)) |
 | `--lib-path DIR[:DIR]` | (none) | more library directories (for modules and library archives), searched after the program's own |
@@ -143,9 +143,13 @@ $ mlwsvm run --max-frames 1000000 deep_recursion.masm
 $ MLWSVM_QUOTA=heap=256M,insns=10000000000 mlwsvm run untrusted.masm
 ```
 
-Two environment variables are for testing the VM itself: `MLWSVM_GC_STRESS=1`
-(or `mlwsvm run --gc-stress`) collects garbage at every instruction boundary
-after an allocation, and `MLWSVM_NO_SLABS=1` allocates every object with
+Three environment variables are for testing the VM itself:
+`MLWSVM_GC_STRESS=1` (or `mlwsvm run --gc-stress`) collects garbage at every
+instruction boundary after an allocation (every eighth collection of the
+whole heap, the rest minor); `MLWSVM_GC_VERIFY=1` checks each minor
+collection against a walk of the whole heap, and aborts naming the object
+that holds a young one without having been remembered (a missing write
+barrier); and `MLWSVM_NO_SLABS=1` allocates every object with
 `malloc` instead of the small-object allocator
 ([PERFORMANCE.md](PERFORMANCE.md#the-small-object-allocator)). For
 development, `mlwsvm run --unsafe-native` (or `MLWSVM_UNSAFE_NATIVE=1`) loads

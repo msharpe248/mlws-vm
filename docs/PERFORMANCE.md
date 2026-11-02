@@ -470,10 +470,51 @@ are filled with a garbage pattern, so a use after a free fails loudly there too.
 
 ### The collector
 
-The collector is a non-moving mark-and-sweep, one per process. It takes about
-12% of `binarytrees` and 4% of `maps`, the most allocation-heavy benchmarks,
-and 20–29% of compiled Lua's `binarytrees`, whose inner nodes are two
-allocations each (a table, and a list that holds its storage).
+The collector is a non-moving, generational mark-and-sweep, one per process
+([DESIGN.md §11](DESIGN.md#11-the-heap-and-the-collector)). An object that survives
+a collection is old. A minor collection marks only the young objects, from
+the roots and from the old objects written since the last collection (the
+remembered set), and frees the young ones it did not reach; it walks neither
+the old objects nor the chunks. A collection of the whole heap runs when the
+old objects have doubled.
+
+Most of a collection's time used to be re-marking and re-sweeping what
+long-lived data a program keeps, at every collection. Against the collector
+that collected the whole heap each time, with the JIT, on the M5 / i7 /
+Ryzen:
+
+| Program | M5 | i7, GCC | Ryzen, Clang |
+|---|---|---|---|
+| Lua binarytrees | −25% | −39% | −28% |
+| Erlang sorting | −9% | −21% | −19% |
+| Erlang binarytrees | −12% | −24% | −13% |
+| Lox binary_trees | −14% | −20% | −10% |
+| bench/binarytrees | +1% | −13% | −12% |
+
+Programs that keep almost nothing pay a little more per allocation (each
+young object is recorded for the minor sweep), and Erlang's `ring` pays for
+the barrier on its mailbox: up to 4% slower. Interpreted, the same programs
+gain about two-thirds as much.
+
+* **The young generation** starts at `--gc-min` (1 MB) per process, so a
+  process that keeps little stays small, and doubles, up to 16 MB, while a
+  minor collection promotes more than an eighth of it: a program that builds
+  structures larger than the young generation (`binarytrees`' trees) would
+  otherwise promote them, and they would die old. It also grows to the size
+  of the old objects a minor collection had to rescan (a large map written
+  now and then is rescanned whole), up to the old generation's size, so such
+  a program is rescanned no more often than the whole heap was once.
+* **The write barrier.** A store of a reference into an existing object
+  checks the object first (most stores are into young ones) and then the
+  value: a young value into an old object not yet remembered remembers it.
+  The interpreter's store forms do the check inline and go to a handler of
+  their own to remember; the JIT's machine code skips it for an object made
+  in the same block, and otherwise leaves for the interpreter, once per
+  object between collections. Stores of null, numbers and constants never
+  remember anything.
+* **The free lists.** A minor collection pushes the slots it frees on the
+  front of their lists, so the last freed, still in the cache, is the first
+  reused: 5% faster on the M5 than keeping them in address order.
 
 * **Near a heap quota.** The collection threshold is capped at three-quarters
   of the process's heap quota, so the collector runs before the quota is hit.
@@ -549,17 +590,10 @@ for each request it serves.
   `Operand`s for the generic path, the debugger and the tools. The benchmarks fit
   in cache, so this does not show yet. Shrinking `Operand` is the fix if large
   programs show cache misses.
-* **A generational GC.** Built and measured, and not kept: a non-moving
-  collector with an old generation, a write barrier on every reference store
-  into an object, and a remembered set of old objects written since the last
-  collection. On compiled Lua's `binarytrees`, where collection is 20% of the
-  time, it saved at most 27% of that, with an 8 MB young generation: the trees
-  that program builds outgrow any small one, so they are promoted and die old,
-  and most of a collection's cost is freeing the dead, which a generational
-  collector does too. With a 1 MB young generation it was 2.4 times slower on
-  a large map written now and then, which it rescanned whole at every young
-  collection; remembering written slots instead of objects (card marking)
-  would fix that at more cost again.
+* **Card marking.** A remembered object is rescanned whole at the next
+  minor collection; remembering the slots written instead would make a large
+  container written now and then cheaper still. The young generation's
+  growth bounds what it costs today.
 * **More specialised shapes.** Arithmetic directly on elements and fields
   (`nbody`) and raw memory (`sieve`) take the generic path. Rewriting `nbody` to
   load into registers, compute there and store back takes it from 96 ms to

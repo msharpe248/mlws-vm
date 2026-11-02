@@ -1133,11 +1133,19 @@ consistent before it is charged, since the trap can come from the charge;
 `gc_alloc` checks the quota before it makes the object, so a trap never
 leaves the sweep an object its constructor did not finish.
 
-### 11.3 When to collect
+### 11.3 Generations, and when to collect
+
+An object that survives a collection is old (`OBJF_OLD`). A collection is
+*minor*, of the young objects only, unless the old objects have doubled
+since the last collection of the whole heap (`next_major`), a heap quota is
+near, or `gc.collect` asked for the whole heap (*major*).
 
 `gc_threshold(live)` sets `next_gc` after each collection:
 
-* twice the live heap, and at least the minimum (`--gc-min`, 1 MiB);
+* the heap plus the young generation's size (`Process.nursery`): from the
+  minimum (`--gc-min`, 1 MiB), doubled (up to 16 MiB) while a minor
+  collection promotes more than an eighth of it, and grown to the size of
+  the old objects a minor collection rescanned (up to the old generation's);
 * with a heap quota, no more than three quarters of it, but always room for
   an eighth more than the live data, so a process near its quota collects a
   few times and then gets `E_QUOTA`, rather than collecting at every
@@ -1145,9 +1153,28 @@ leaves the sweep an object its constructor did not finish.
 
 The collection itself runs at the next safepoint (§8.5).
 
+**The write barrier.** An old object given a young one must be found by the
+next minor collection, which does not mark old objects: every store of a
+reference into an existing object calls `gc_write(p, object, value)` (heap.h)
+after it, which puts an old object not yet remembered (`OBJF_REMEMBERED`)
+on `Process.remset` if the value is young (not null, old or immortal), and
+`gc_touch` remembers one whatever was stored. The stores are: the generic
+`mov` into a field, element or capture (`Loc.obj`), the quickened store
+forms, `list_push`, `list_insert` and `map_set` (and so every native and the
+C API that uses them), FFI structs filled in place, and a coroutine's
+context when it is swapped (`coro_swap`). The JIT checks the same before a
+compiled store, and leaves for the interpreter to remember the object;
+an object made in the same block (`new`, `lnew`) needs no check, since no
+collection runs before the block is left. An object just allocated is young,
+so filling it needs none. `MLWSVM_GC_VERIFY=1` checks every minor
+collection's marking against a walk of the whole heap: a young object
+reached but not marked means a missing barrier, and the walk names the
+object that held it.
+
 ### 11.4 Marking
 
-`gc_collect` marks from these roots:
+`gc_collect` marks from these roots (and a minor collection also scans the
+remembered objects, and marks no old object):
 
 1. every frame's `R` window, and its closure;
 2. the data stack's words tagged `T_R`, from `stack_ref_lo` to the top;
@@ -1171,9 +1198,16 @@ tags. No integer ever keeps an object alive.
 
 ### 11.5 Sweeping
 
+A minor collection sweeps only the young: the objects of the chunks
+allocated since the last collection (each recorded in `Process.young` as it
+is allocated) and the head of the `malloc` list, back to the object that
+was first at the last collection (`Process.heap_old`): a marked one becomes
+old, an unmarked one is freed, onto the front of its class's free list. A
+major collection sweeps everything:
+
 1. **The chunks**, each in address order. Each object's header gives its
    size, so the sweep steps from object to object without a list. A marked
-   object is unmarked. An unmarked one releases what it owns (a foreign
+   object is unmarked and old. An unmarked one releases what it owns (a foreign
    object's finalizer runs, a coroutine's context is freed, a list's or
    map's buffers are freed), is subtracted from `heap_bytes`, and becomes a
    free slot. Each class's free list is rebuilt in the order the sweep
@@ -1186,12 +1220,15 @@ objects are finalized first (so its files and sockets close before its
 
 ### 11.6 Why this collector
 
-It is a non-moving, non-incremental, non-generational mark-sweep, one per
-process, with no barriers and no locks. A heap belongs to one process and
-is collected only on its own thread, between instructions, so the
-collector never needs to stop another thread or find roots in C code. A
-generational collector was built and measured, and was not kept
-([PERFORMANCE.md](PERFORMANCE.md#what-is-not-done-and-why)).
+It is a non-moving, non-incremental, generational mark-sweep, one per
+process, with a write barrier and no locks. A heap belongs to one process
+and is collected only on its own thread, between instructions, so the
+collector never needs to stop another thread or find roots in C code.
+Generations pay where programs keep data a while: a collection of the whole
+heap re-marked and re-swept it every time, which was most of the collector's
+cost in compiled Lua's and Erlang's `binarytrees`, `sorting` and Lox's
+`binary_trees` ([PERFORMANCE.md](PERFORMANCE.md#the-collector)). Objects do
+not move, so the dead still cost a free each.
 
 ### 11.7 Immortal constants
 
@@ -1958,7 +1995,7 @@ Windows implementation is written but untested
 
 ## 22. Testing
 
-**Tests are MLWSVM programs.** `tests/` holds the suite (311 programs) and
+**Tests are MLWSVM programs.** `tests/` holds the suite (312 programs) and
 `examples/` holds self-checking examples, all in documented assembly. The
 test runner reads expectations from comments in each file: expected output
 lines, exit code or error code; VM options; a debugger script; what the
@@ -2002,10 +2039,9 @@ Each of these was considered, and most were measured
   loaded code lives as long as the VM.
 * **Turning integers into pointers.** That would defeat the checks of §10.
   Raw memory refers to objects through handles.
-* **A generational collector.** One was built and measured. On the
-  allocation-heavy benchmark where collection matters most, it saved at most
-  a quarter of the collection time, and it was much slower on large
-  containers written now and then. It would need card marking.
+* **A moving young generation.** Copying the survivors out of the young
+  generation would make the dead free, but references compare and hash by
+  address (map keys), and objects would need forwarding.
 * **Calls without copying.** Overlapping windows, as in Lua, would save a
   word copy per argument, but need an ABI change. That waits until
   call-heavy programs show the copies.

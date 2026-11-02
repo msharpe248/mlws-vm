@@ -4,7 +4,8 @@
 #   make              build ./mlwsvm
 #   make test         run the assembly test suite and the examples
 #   make check-tools  smoke-test --monitor, top, --profile and --trace
-#   make check-gc     run the tests with a garbage collection at every allocation
+#   make check-gc     run the tests with a garbage collection at every allocation, and with
+#                     each minor collection checked against a walk of the whole heap
 #   make check-opt    run the tests with every module optimized (--opt all), also with GC stress
 #   make check-jit    run the tests with the JIT: every function compiled and entered at every
 #                     block (--jit all), also with GC stress and optimized; then hot functions
@@ -167,6 +168,8 @@ check-bindgen: $(BIN) test-ext
 
 check-gc: $(BIN) test-ext
 	MLWSVM_TEST_TIMEOUT=$(STRESS_TIMEOUT) MLWSVM_GC_STRESS=1 ./$(BIN) test tests examples
+	MLWSVM_GC_VERIFY=1 ./$(BIN) test tests examples
+	MLWSVM_GC_VERIFY=1 MLWSVM_JIT=all ./$(BIN) test tests examples
 
 # The tests with every module optimized by every pass (tests that depend on
 # what -O2, -O3 or tailcall change say `; no-opt:`), plainly and with GC

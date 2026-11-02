@@ -58,6 +58,7 @@ static void program_result(VM *vm, Process *p, RunResult *res, uint64_t wall_ns)
     res->heap_peak = p->heap_peak;
     res->heap_live = p->heap_bytes;
     res->gc_count = p->gc_count;
+    res->gc_majors = p->gc_majors;
     res->gc_ns = p->gc_ns;
     res->objects_allocated = p->objects_allocated;
     res->objects_freed = p->gc_freed_objects;

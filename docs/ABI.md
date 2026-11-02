@@ -360,10 +360,12 @@ Objects (strings, byte buffers, arrays, structs, lists, maps) live on the heap o
 the process that created them. Processes never share heap objects; the only
 exception is constant-pool strings, which are immutable and immortal.
 
-* **Collector.** Precise, non-moving mark-sweep. A collection starts when the heap
-  has grown to twice its size after the previous collection (minimum 1 MiB;
-  *option* `--gc-min`), or earlier as a heap quota approaches. `gc.collect`
-  requests one explicitly.
+* **Collector.** Precise, non-moving, generational mark-sweep. A minor
+  collection, of the objects allocated since the last one, starts when the
+  process has allocated its young generation's size (from 1 MiB, *option*
+  `--gc-min`, growing to 16 MiB while much of it survives); one of the whole
+  heap when what has survived has doubled, or as a heap quota approaches.
+  `gc.collect` requests one of the whole heap.
 * **Allocation.** Objects of up to 256 bytes are carved from the process's own
   chunks, in 16-byte size classes with a free list each; larger ones use
   `malloc`. A list keeps its values and their type tags in one block: inside
@@ -389,11 +391,12 @@ exception is constant-pool strings, which are immutable and immortal.
 * **Handles.** `hnew` returns an `i64` handle that is a root until `hfree`. Use one
   to refer to an object from raw memory or from host code.
 * **Statistics.** `mlwsvm run --stats` reports peak heap, objects allocated and
-  collected, and GC count and time. `gc.heap_bytes` and `gc.collections` read them
+  collected, and GC count (and how many were of the whole heap) and time. `gc.heap_bytes` and `gc.collections` read them
   from inside a program.
 * **Stress testing.** `--gc-stress` (or `MLWSVM_GC_STRESS=1`) collects at every
-  instruction boundary after an allocation. `make check-gc` runs the whole test
-  suite this way.
+  instruction boundary after an allocation. `MLWSVM_GC_VERIFY=1` checks each
+  minor collection against a walk of the whole heap. `make check-gc` runs the
+  whole test suite both ways.
 
 ## 7. Exceptions and traps
 

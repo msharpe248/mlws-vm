@@ -55,7 +55,7 @@ base:
 * **Rich heap types with a garbage collector**: strings, byte buffers, typed
   arrays, structs declared in assembly (`R0->Point.x`), dynamically typed lists,
   insertion-ordered maps, closures, BigInts (`123n`) and exact decimals (`19.99d`).
-  The collector is a precise, per-process mark-sweep.
+  The collector is a precise, generational mark-sweep, one per process.
 * **Many isolated processes, in parallel**: preemptive scheduling on one worker
   thread per core with work stealing, `spawn`/`send`/`recv` with deep-copied
   messages, timeouts, Erlang-style `link`/`monitor` supervision, and per-process
@@ -111,7 +111,7 @@ base:
   milliseconds on later runs.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 311 test programs, also run under
+* **Tested in its own assembly**: 312 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, with a
   garbage collection at every allocation, with every module optimized, and
   with every function compiled by the JIT.
@@ -162,7 +162,7 @@ comparisons with the JVM and CPython.
 ```sh
 make                         # builds ./mlwsvm (a C11 compiler; libffi is used for .extern if found)
 make test                    # runs tests/ and examples/
-make check-gc                # the same, collecting garbage at every allocation
+make check-gc                # the same, collecting garbage at every allocation, and checking the write barrier
 make check-opt               # the same, with every module optimized (--opt all), also under GC stress
 make check-jit               # the same, with every function and block in machine code (--jit all), and hot functions
 make check-tools             # smoke-test the monitor, top, profiler, tracer, .loc and the module cache

@@ -140,6 +140,7 @@ void list_push(Process *p, ObjList *l, Word v, uint8_t tag) {
     l->items[l->len] = v;
     l->tags[l->len] = tag;
     l->len++;
+    gc_write_word(p, &l->h, v, tag);
 }
 
 void list_insert(Process *p, ObjList *l, int64_t at, Word v, uint8_t tag) {
@@ -151,6 +152,7 @@ void list_insert(Process *p, ObjList *l, int64_t at, Word v, uint8_t tag) {
     l->items[at] = v;
     l->tags[at] = tag;
     l->len++;
+    gc_write_word(p, &l->h, v, tag);
 }
 
 void list_delete(Process *p, ObjList *l, int64_t at) {
@@ -282,6 +284,7 @@ void map_set(Process *p, ObjMap *m, Word key, uint8_t ktag, Word val, uint8_t vt
         MapEntry *e = &m->entries[m->index[slot]];
         e->val = val;
         e->vtag = vtag;
+        gc_write_word(p, &m->h, val, vtag);
         return;
     }
     if (m->nentries == m->entry_cap) {
@@ -298,6 +301,8 @@ void map_set(Process *p, ObjMap *m, Word key, uint8_t ktag, Word val, uint8_t vt
     e->hash = h;
     e->live = 1;
     m->count++;
+    gc_write_word(p, &m->h, key, ktag);
+    gc_write_word(p, &m->h, val, vtag);
     uint32_t mask = m->index_cap - 1;
     uint32_t j = h & mask;
     while (m->index[j] >= 0) j = (j + 1) & mask; /* reuse deleted (-2) or empty (-1) slots */

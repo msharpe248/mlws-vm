@@ -268,7 +268,7 @@ static int cmd_run(int argc, char **argv) {
                 "heap peak:        %llu bytes\n"
                 "heap at exit:     %llu bytes\n"
                 "objects:          %llu allocated, %llu collected\n"
-                "gc:               %llu collections, %.3f ms\n"
+                "gc:               %llu collections (%llu of the whole heap), %.3f ms\n"
                 "processes:        %llu spawned, %llu at most at once, %llu time slices\n"
                 "all instructions: %llu (every process)\n",
                 (unsigned long long)r.insns, (double)r.wall_ns / 1e6,
@@ -277,7 +277,7 @@ static int cmd_run(int argc, char **argv) {
                 (unsigned long long)r.raw_frees, (unsigned long long)r.raw_peak, (unsigned long long)r.raw_leaked,
                 (unsigned long long)r.heap_peak, (unsigned long long)r.heap_live,
                 (unsigned long long)r.objects_allocated, (unsigned long long)r.objects_freed,
-                (unsigned long long)r.gc_count, (double)r.gc_ns / 1e6, (unsigned long long)r.spawned,
+                (unsigned long long)r.gc_count, (unsigned long long)r.gc_majors, (double)r.gc_ns / 1e6, (unsigned long long)r.spawned,
                 (unsigned long long)r.max_live, (unsigned long long)r.slices, (unsigned long long)r.total_insns);
     }
     if (profile && r.status != RUN_LOAD_ERROR) tools_profile_report(vm, stderr, flame);

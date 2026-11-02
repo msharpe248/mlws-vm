@@ -18,6 +18,24 @@ void gc_account(Process *p, int64_t delta);           /* external buffer growth 
 void *gc_buf_alloc(Process *p, const Obj *o, size_t n); /* o's own buffer, zeroed */
 void gc_buf_free(Process *p, const Obj *o, void *b, size_t n); /* n: as allocated */
 void gc_collect(Process *p);
+
+/* The write barrier. An old object that is given a young one is remembered,
+ * so that the next minor collection finds the young one from it: every store
+ * of a reference into an existing object (a field, an element, a capture, a
+ * map entry, a coroutine's context) calls gc_write after it, or gc_touch
+ * when what was stored is not known. An object just allocated is young and
+ * needs neither. */
+void gc_remember(Process *p, Obj *o);
+static inline bool gc_young(const Obj *v) { return v && !(v->flags & (OBJF_OLD | OBJF_IMMORTAL)); }
+static inline void gc_write(Process *p, Obj *o, const Obj *v) {
+    if (__builtin_expect((o->flags & (OBJF_OLD | OBJF_REMEMBERED)) == OBJF_OLD, 0) && gc_young(v)) gc_remember(p, o);
+}
+static inline void gc_write_word(Process *p, Obj *o, Word w, uint8_t tag) {
+    if (type_is_ref((MlwsType)tag)) gc_write(p, o, w.r);
+}
+static inline void gc_touch(Process *p, Obj *o) {
+    if ((o->flags & (OBJF_OLD | OBJF_REMEMBERED)) == OBJF_OLD) gc_remember(p, o);
+}
 void heap_free_all(Process *p);
 /* Messages: free a detached object list, or link one into p's heap. */
 void gc_free_list(Obj *list);

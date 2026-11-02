@@ -9,6 +9,7 @@
 #include "numeric.h"
 
 #define GC_MIN_THRESHOLD (1u << 20)
+#define GC_NURSERY_MAX (16u << 20)
 
 size_t obj_footprint(const Obj *o) {
     switch (o->kind) {
@@ -29,11 +30,14 @@ size_t obj_footprint(const Obj *o) {
     }
 }
 
-/* Next collection threshold: twice the live heap, at least the minimum, and
- * early enough to reclaim garbage before a heap quota is hit. */
+/* Next collection threshold: the heap plus a nursery of the minimum (the
+ * young objects a minor collection walks), and early enough to reclaim
+ * garbage before a heap quota is hit. */
 static uint64_t gc_threshold(Process *p, uint64_t live) {
-    uint64_t min = p->vm->gc_min_threshold ? p->vm->gc_min_threshold : GC_MIN_THRESHOLD;
-    uint64_t t = live * 2 > min ? live * 2 : min;
+    uint64_t min = p->nursery;
+    if (!min) min = p->nursery = p->vm->gc_min_threshold ? p->vm->gc_min_threshold : GC_MIN_THRESHOLD;
+    if (p->vm->gc_verify && !p->vm->gc_min_threshold) min = 16384; /* minor collections often, each checked */
+    uint64_t t = live + min;
     uint64_t q = p->quota[QUOTA_HEAP];
     if (q != UINT64_MAX) {
         if (t > q / 4 * 3) t = q / 4 * 3; /* collect well before the quota... */
@@ -139,6 +143,7 @@ Obj *gc_alloc_unaccounted(Process *p, uint8_t kind, size_t size) {
         }
         o = b;
         o->slab = (uint16_t)(cls + 1);
+        VEC_PUSH(p->young, o);
     } else {
         o = xcalloc(1, size);
         o->next = p->heap;
@@ -234,10 +239,25 @@ void gc_adopt(Process *p, Obj *list, uint64_t bytes, uint64_t nobjs) {
     if (p->heap_bytes >= p->next_gc || p->vm->gc_stress) p->gc_pending = true;
 }
 
+static void verify_reach(Process *p, Obj *o);
+
+/* A minor collection marks only young objects: an old one is live until the
+ * next major collection, and the young ones it holds are found from the
+ * remembered set. */
 static void mark(Process *p, Obj *o) {
-    if (!o || (o->flags & (OBJF_MARK | OBJF_IMMORTAL))) return;
+    if (!o) return;
+    if (p->gc_verifying) {
+        verify_reach(p, o);
+        return;
+    }
+    if ((o->flags & (OBJF_MARK | OBJF_IMMORTAL)) || (p->gc_minor && (o->flags & OBJF_OLD))) return;
     o->flags |= OBJF_MARK;
     VEC_PUSH(p->markstack, o);
+}
+
+void gc_remember(Process *p, Obj *o) {
+    o->flags |= OBJF_REMEMBERED;
+    VEC_PUSH(p->remset, o);
 }
 
 static void mark_segment(Process *p, const Segment *s, uint32_t from_word);
@@ -327,7 +347,7 @@ static void sweep_chunks(Process *p) {
             off += (size_t)o->slab * SLAB_GRAIN;
             if (o->kind != OBJK_FREE) {
                 if (o->flags & OBJF_MARK) {
-                    o->flags &= (uint8_t)~OBJF_MARK;
+                    o->flags = (uint8_t)((o->flags & ~OBJF_MARK) | OBJF_OLD);
                     continue;
                 }
                 p->heap_bytes -= obj_footprint(o);
@@ -348,8 +368,8 @@ static void sweep_chunks(Process *p) {
     for (int k = 0; k < SLAB_CLASSES; k++) *tail[k] = NULL;
 }
 
-void gc_collect(Process *p) {
-    uint64_t t0 = plat_now_ns();
+/* The roots: what is live whatever the heap holds. */
+static void mark_roots(Process *p) {
     mark_frames(p, p->regs, p->frames, p->nframes);
     /* The stack from the lowest word ever tagged as a reference: code may legally
      * write references below SP, so SP is not the bound. */
@@ -370,13 +390,98 @@ void gc_collect(Process *p) {
     }
     for (size_t i = p->mbox_head; i < p->mbox.n; i++)
         if (p->mbox.v[i].tag == T_R) mark(p, p->mbox.v[i].v.r);
+}
+
+static void drain(Process *p) {
     while (p->markstack.n) scan(p, p->markstack.v[--p->markstack.n]);
-    sweep_chunks(p);
-    Obj **pp = &p->heap;
-    while (*pp) {
+}
+
+/* ---- checking the write barrier (MLWSVM_GC_VERIFY) ----
+ * After a minor collection's marking, a walk of the whole heap from the roots
+ * must find no young object that the marking missed: one would be freed
+ * while an old object still held it, because a store into that old object
+ * did not call the write barrier. The walk's own bit is OBJF_VERIFY. */
+static MLWS_THREAD_LOCAL VEC(Obj *) verify_seen, verify_stack; /* (freed after each walk) */
+
+static void verify_reach(Process *p, Obj *o) {
+    if (o->flags & (OBJF_VERIFY | OBJF_IMMORTAL)) return;
+    if (!(o->flags & (OBJF_OLD | OBJF_MARK))) {
+        const Obj *by = p->gc_parent;
+        fprintf(stderr, "mlwsvm: gc verify: a young %s is held by %s %s that was not remembered (a write barrier is missing)\n",
+                obj_kind_name(o->kind), by ? (by->flags & OBJF_OLD ? "an old" : "a young") : "a root, not",
+                by ? obj_kind_name(by->kind) : "marked");
+        abort();
+    }
+    o->flags |= OBJF_VERIFY;
+    VEC_PUSH(verify_seen, o);
+    VEC_PUSH(verify_stack, o);
+}
+
+static void gc_verify(Process *p) {
+    p->gc_verifying = true;
+    p->gc_parent = NULL;
+    mark_roots(p);
+    while (verify_stack.n) {
+        Obj *o = verify_stack.v[--verify_stack.n];
+        p->gc_parent = o;
+        scan(p, o);
+    }
+    for (size_t i = 0; i < verify_seen.n; i++) verify_seen.v[i]->flags &= (uint8_t)~OBJF_VERIFY;
+    VEC_FREE(verify_seen);
+    VEC_FREE(verify_stack);
+    p->gc_verifying = false;
+}
+
+/* Free a young object of the chunks (minor collection), onto the front of
+ * its class's free list: the last freed, still in the cache from the sweep,
+ * is the first allocated again. */
+static void free_chunk_object(Process *p, Obj *o, bool stress) {
+    unsigned cls = o->slab - 1u;
+    p->heap_bytes -= obj_footprint(o);
+    obj_release_buffers(p, o);
+    if (stress) memset(o, 0xDB, (size_t)(cls + 1) * SLAB_GRAIN);
+    o->kind = OBJK_FREE;
+    o->flags = 0;
+    o->slab = (uint16_t)(cls + 1);
+    o->next = p->slab_free[cls];
+    p->slab_free[cls] = o;
+    p->gc_freed_objects++;
+}
+
+/* A minor collection: the young objects reached from the roots and from
+ * the remembered old objects become old, the others are freed. Neither the
+ * old objects nor the chunks are walked. */
+static void gc_minor(Process *p) {
+    uint64_t old0 = p->old_bytes;
+    p->gc_minor = true;
+    mark_roots(p);
+    uint64_t rescanned = 0;
+    for (size_t i = 0; i < p->remset.n; i++) {
+        Obj *o = p->remset.v[i];
+        o->flags &= (uint8_t)~OBJF_REMEMBERED;
+        rescanned += obj_footprint(o);
+        scan(p, o);
+    }
+    p->remset.n = 0;
+    drain(p);
+    if (p->vm->gc_verify) gc_verify(p);
+    bool stress = p->vm->gc_stress;
+    for (size_t i = 0; i < p->young.n; i++) {
+        Obj *o = p->young.v[i];
+        if (o->flags & OBJF_MARK) {
+            o->flags = (uint8_t)((o->flags & ~OBJF_MARK) | OBJF_OLD);
+            p->old_bytes += obj_footprint(o);
+        } else {
+            free_chunk_object(p, o, stress);
+        }
+    }
+    p->young.n = 0;
+    Obj **pp = &p->heap; /* the objects from malloc since the last collection: the list's head */
+    while (*pp && *pp != p->heap_old) {
         Obj *o = *pp;
         if (o->flags & OBJF_MARK) {
-            o->flags &= (uint8_t)~OBJF_MARK;
+            o->flags = (uint8_t)((o->flags & ~OBJF_MARK) | OBJF_OLD);
+            p->old_bytes += obj_footprint(o);
             pp = &o->next;
         } else {
             *pp = o->next;
@@ -385,6 +490,58 @@ void gc_collect(Process *p) {
             p->gc_freed_objects++;
         }
     }
+    p->gc_minor = false;
+    /* More than an eighth of the nursery survived: it is too small for what the
+     * program keeps a while, which it promotes (and the next major frees). */
+    if ((p->old_bytes - old0) * 8 > p->nursery && p->nursery < GC_NURSERY_MAX) p->nursery *= 2;
+    /* Large old objects written now and then (a big map) are rescanned whole
+     * at each minor collection: never more often than once per as many bytes
+     * allocated, as often as the whole heap was once (at twice its size). */
+    uint64_t want = rescanned < p->old_bytes ? rescanned : p->old_bytes;
+    if (want > p->nursery) p->nursery = want;
+}
+
+/* A major collection: everything, as a non-generational mark and sweep; what
+ * survives is old. */
+static void gc_major(Process *p) {
+    for (size_t i = 0; i < p->remset.n; i++) p->remset.v[i]->flags &= (uint8_t)~OBJF_REMEMBERED;
+    p->remset.n = 0;
+    mark_roots(p);
+    drain(p);
+    sweep_chunks(p);
+    p->young.n = 0;
+    Obj **pp = &p->heap;
+    while (*pp) {
+        Obj *o = *pp;
+        if (o->flags & OBJF_MARK) {
+            o->flags = (uint8_t)((o->flags & ~OBJF_MARK) | OBJF_OLD);
+            pp = &o->next;
+        } else {
+            *pp = o->next;
+            p->heap_bytes -= obj_footprint(o);
+            obj_release(p, o);
+            p->gc_freed_objects++;
+        }
+    }
+    p->old_bytes = p->heap_bytes;
+    uint64_t min = p->vm->gc_min_threshold ? p->vm->gc_min_threshold : GC_MIN_THRESHOLD;
+    p->next_major = p->old_bytes * 2 > 4 * min ? p->old_bytes * 2 : 4 * min;
+    p->gc_majors++;
+}
+
+/* A minor collection, or a major one when the old objects have doubled since
+ * the last (or a quota is near, or gc.collect asked). Under GC stress, every
+ * 8th is major. */
+void gc_collect(Process *p) {
+    uint64_t t0 = plat_now_ns();
+    bool major = p->gc_major_req || p->old_bytes >= p->next_major ||
+                 (p->vm->gc_stress && p->gc_count % 8 == 7);
+    uint64_t q = p->quota[QUOTA_HEAP];
+    if (q != UINT64_MAX && p->heap_bytes >= q / 4 * 3) major = true;
+    if (major) gc_major(p);
+    else gc_minor(p);
+    p->heap_old = p->heap;
+    p->gc_major_req = false;
     p->next_gc = gc_threshold(p, p->heap_bytes);
     p->gc_pending = false;
     p->gc_count++;
@@ -432,6 +589,9 @@ void heap_free_all(Process *p) {
     VEC_FREE(p->handles);
     VEC_FREE(p->handle_free);
     VEC_FREE(p->markstack);
+    VEC_FREE(p->young);
+    VEC_FREE(p->remset);
+    p->heap_old = NULL;
 }
 
 /* ---- handles ------------------------------------------------------------- */

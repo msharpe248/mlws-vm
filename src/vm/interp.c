@@ -97,6 +97,7 @@ typedef struct {
     uint8_t fixed;  /* LK_SLOT with a fixed type (arrays, struct fields) */
     uint8_t ro;     /* LK_BYTE of an immutable string */
     uint8_t *byte;
+    Obj *obj;       /* LK_SLOT: the object the slot is in (for the write barrier) */
 } Loc;
 
 /* Location of the memory a pointer designates (checks the segment). */
@@ -230,9 +231,11 @@ static void obj_loc(Ctx *c, const Operand *o, Loc *L) {
         L->is_reg = LK_SLOT;
         L->slot = &cl->up[o->index];
         L->tag = &cl->tags[o->index];
+        L->obj = &cl->h;
         return;
     }
     Obj *ob = obj_reg(c, o->reg);
+    L->obj = ob;
     if (o->mode == OM_FIELD) {
         const FieldRef *fr = o->rv.ptr;
         if (ob->kind != OBJ_STRUCT || ((ObjStruct *)ob)->def != fr->def)
@@ -460,6 +463,7 @@ static void slot_write(Ctx *c, const Loc *L, MlwsType t, Word w) {
         *L->tag = (uint8_t)t;
     }
     *L->slot = w;
+    if (L->obj) gc_write_word(c->p, L->obj, w, (uint8_t)t);
 }
 
 static Word rd_loc(Ctx *c, const Loc *L, MlwsType *t) {
@@ -553,6 +557,7 @@ static void wr(Ctx *c, const Operand *o, MlwsType t, Word w) {
         uint64_t i = (uint64_t)c->I[REG_IDX(o->ireg)] + (uint64_t)o->imm;
         if (a && a->h.kind == OBJ_ARRAY && a->elem == t && i < a->len && wide_type(t)) {
             a->data[i] = w;
+            gc_write_word(c->p, &a->h, w, (uint8_t)t);
             return;
         }
     } else if (o->mode == OM_FIELD) { /* shortcut: a field of exactly this type */
@@ -560,6 +565,7 @@ static void wr(Ctx *c, const Operand *o, MlwsType t, Word w) {
         const FieldRef *f = o->rv.ptr;
         if (so && so->h.kind == OBJ_STRUCT && so->def == f->def && f->def->types[f->index] == t && wide_type(t)) {
             so->fields[f->index] = w;
+            gc_write_word(c->p, &so->h, w, (uint8_t)t);
             return;
         }
     }
@@ -1906,6 +1912,19 @@ X(ED, (uint64_t)QI[in->r[2]] + (uint64_t)in->k.i)
 X(EK, (uint64_t)in->target)
 #undef X
 #define ELEM_BYTE_LOAD(N, ob, i) MUSTTAIL return h_elem_byte_##N(QARGS);
+/* The write barrier's remembering, for the stores (qforms.inc, GC_WRITE_R):
+ * a handler of its own, for the same reason; the store is done. */
+static QCC int h_gc_remember_R0(QPARAMS) {
+    QLOCALS
+    gc_remember(QPRC, QR[in->r[0]]);
+    NEXT;
+}
+static QCC int h_gc_remember_UP(QPARAMS) {
+    QLOCALS
+    gc_remember(QPRC, QFRM->closure);
+    NEXT;
+}
+#define GC_REMEMBER(N, o) MUSTTAIL return h_gc_remember_##N(QARGS)
 /* Each QCASE ends the previous handler's function and starts the next: the
  * first one ends this placeholder, and the brace after the include the last. */
 #define QCASE(x)                                                               \
@@ -2138,6 +2157,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 #define QFRM fr
 #define GENERIC() goto generic
 #define ELEM_BYTE_LOAD(N, ob, i) if (!elem_byte(ob, i, &QI[in->r[0]])) GENERIC();
+#define GC_REMEMBER(N, o) gc_remember(QPRC, (o))
 #define JUMP() (pc = in->target)
 #define JUMPTO(t) (pc = (t))
 #define IR(k) QI[in->r[k]]

@@ -595,8 +595,8 @@ Where it matters, prefer one instruction to several (`blt a, b, L` over `slt` +
 
 The remaining planned work is performance, done when measurements call for it
 ([ROADMAP.md](ROADMAP.md#4-performance-when-measurements-call-for-it)): more
-specialised forms for arithmetic on fields, elements and raw memory, a smaller
-decoded form, and possibly a generational collector. These need no changes to
+specialised forms for arithmetic on fields, elements and raw memory, and a
+smaller decoded form. These need no changes to
 generated code, but which forms get specialised should follow what compilers
 actually emit, so the compilers' output will decide them.
 

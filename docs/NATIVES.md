@@ -25,7 +25,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `test.fail` | r | - | Trap with E_ASSERT and the given message. |
 | `foreign.release` | r | - | Release a foreign handle now: run its finalizer (an extension's, or the tag's .ffi_free function) once; later uses see a released handle. |
 | `ffi.async_callback` | r, i64 | r | A C function pointer for an async .callback type (by name) whose calls, from any thread, become Callback{name, args} messages to a process. Keep the handle while C may call it. |
-| `gc.collect` | - | - | Request a garbage collection; it runs before the next instruction. |
+| `gc.collect` | - | - | Request a collection of the whole heap; it runs before the next instruction. |
 | `gc.heap_bytes` | - | i64 | Bytes currently allocated on this process's heap (live and not yet collected). |
 | `gc.collections` | - | i64 | Number of garbage collections so far in this process. |
 | `proc.count` | - | i64 | Number of processes currently alive in the VM (including this one). |

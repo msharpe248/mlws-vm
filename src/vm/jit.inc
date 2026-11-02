@@ -187,6 +187,7 @@ typedef struct {
 #define JC_RBASE 256
 typedef struct {
     uint8_t kind;
+    bool young; /* made in this block (new, lnew): no collection runs before it is left */
     const void *def;
 } JRKnown;
 typedef struct {
@@ -937,6 +938,41 @@ static void jit_global(JComp *j, const Insn *in, uint32_t pc, int tag, unsigned 
     jm_ld(b, JR_S0, JR_S0, (int64_t)offsetof(Segment, data));
 }
 
+/* The write barrier (heap.h, gc_write), before a store of the object in v
+ * into the object in o: a young one into an old object not yet remembered is
+ * a side exit, where the interpreter stores it and remembers the object. t:
+ * a scratch register. */
+static void jit_barrier(JComp *j, uint32_t pc, unsigned r, int o, int v, int t) {
+    JBuf *b = &j->b;
+    if (j->jc.rk[r].young) return; /* made in this block: young until it is left */
+    jm_ld8(b, t, o, (int64_t)offsetof(Obj, flags)); /* (most stores are into young objects) */
+    jm_alui(b, JA_AND, t, t, OBJF_OLD | OBJF_REMEMBERED);
+    jm_cmpi32(b, t, OBJF_OLD);
+    uint32_t not_old = jm_fwd(b, JC_NE);
+    uint32_t none = jm_fwd_cbz(b, v, false);
+    jm_ld8(b, t, v, (int64_t)offsetof(Obj, flags));
+    jm_alui(b, JA_AND, t, t, OBJF_OLD | OBJF_IMMORTAL);
+    jm_cmpi32(b, t, 0);
+    SIDE_IF(JC_EQ);
+    jm_bind(b, not_old);
+    jm_bind(b, none);
+}
+
+static void jit_barrier_up(JComp *j, uint32_t pc, int o, int v, int t) {
+    JBuf *b = &j->b;
+    jm_ld8(b, t, o, (int64_t)offsetof(Obj, flags));
+    jm_alui(b, JA_AND, t, t, OBJF_OLD | OBJF_REMEMBERED);
+    jm_cmpi32(b, t, OBJF_OLD);
+    uint32_t not_old = jm_fwd(b, JC_NE);
+    uint32_t none = jm_fwd_cbz(b, v, false);
+    jm_ld8(b, t, v, (int64_t)offsetof(Obj, flags));
+    jm_alui(b, JA_AND, t, t, OBJF_OLD | OBJF_IMMORTAL);
+    jm_cmpi32(b, t, 0);
+    SIDE_IF(JC_EQ);
+    jm_bind(b, not_old);
+    jm_bind(b, none);
+}
+
 /* ---- elements, as ELEM_LOAD and ELEM_STORE: a list element tagged with the
  * instruction's type, or an element of an array of it, and for a load into
  * an I register, a byte of a string or byte buffer; S0 the object, ix the
@@ -952,6 +988,7 @@ static void jit_elem(JComp *j, const Insn *in, uint32_t pc, unsigned r, int ix, 
         jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, len));
         jm_cmp(b, ix, JR_S1);
         SIDE_IF(JC_HS);
+        if (store && bank == 2) jit_barrier(j, pc, r, JR_S0, val, JR_S2);
         jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, tags));
         if (store) {
             jm_movi(b, JR_S2, type);
@@ -972,6 +1009,7 @@ static void jit_elem(JComp *j, const Insn *in, uint32_t pc, unsigned r, int ix, 
     jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, len));
     jm_cmp(b, ix, JR_S1);
     SIDE_IF(JC_HS);
+    if (store && bank == 2) jit_barrier(j, pc, r, JR_S0, val, JR_S2);
     jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, tags));
     if (store) {
         jm_movi(b, JR_S2, type);
@@ -1015,6 +1053,7 @@ static void jit_elem(JComp *j, const Insn *in, uint32_t pc, unsigned r, int ix, 
     jm_ld8(b, JR_S1, JR_S0, (int64_t)offsetof(ObjArray, elem));
     jm_cmpi32(b, JR_S1, type);
     SIDE_IF(JC_NE);
+    if (store && bank == 2) jit_barrier(j, pc, r, JR_S0, val, JR_S2);
     jm_alui(b, JA_ADD, JR_S1, JR_S0, (int64_t)offsetof(ObjArray, data));
     jit_elem_access(b, store, bank, val, ix);
     jm_bind(b, to_done);
@@ -1254,7 +1293,7 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         jit_struct(j, in, pc, in->r[load ? 1 : 0]);
         if (bank == 2) {
             if (load) jm_ld(b, JR_S1, JR_S0, off), jst_r(j, JR_S1, in->r[0]);
-            else jld_r(j, JR_S1, in->r[1]), jm_st(b, JR_S1, JR_S0, off);
+            else jld_r(j, JR_S1, in->r[1]), jit_barrier(j, pc, in->r[0], JR_S0, JR_S1, JR_S2), jm_st(b, JR_S1, JR_S0, off);
         } else if (load) {
             d = jc_def(j, bank, in->r[0]);
             bank ? jm_fld(b, d, JR_S0, off) : jm_ld(b, d, JR_S0, off);
@@ -1294,7 +1333,7 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         jm_movi(b, JR_A1, x == Q_NEW ? (uint64_t)(uintptr_t)in->k.p : (uint64_t)in->k.i);
         jm_ccall(b, x == Q_NEW ? (const void *)struct_new : (const void *)list_new);
         jst_r(j, JR_R0, in->r[0]);
-        j->jc.rk[in->r[0]] = (JRKnown){x == Q_NEW ? OBJ_STRUCT : OBJ_LIST, x == Q_NEW ? in->k.p : NULL};
+        j->jc.rk[in->r[0]] = (JRKnown){x == Q_NEW ? OBJ_STRUCT : OBJ_LIST, true, x == Q_NEW ? in->k.p : NULL};
         return;
     case Q_MGET_R:
         jc_flush(j);
@@ -1338,6 +1377,7 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjClosure, nup));
         jm_cmpi32(b, JR_S1, u);
         SIDE_IF(JC_LS); /* nup <= u */
+        if (!load && bank == 2) jit_barrier_up(j, pc, JR_S0, JR_S4, JR_S2);
         jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjClosure, tags));
         if (load) {
             jm_ld8(b, JR_S2, JR_S1, u);
@@ -1497,6 +1537,9 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         jm_sub32(b, JR_S2, JR_S2, JR_S1);
         jm_cmpi32(b, JR_S2, nv);
         SIDE_IF(JC_LO);
+        for (unsigned k = 0; k < nv; k++) /* (a constant is never young) */
+            if (in->ops[1 + k].mode == OM_REG && REG_BANK(in->ops[1 + k].reg) == BANK_R)
+                jld_r(j, JR_S2, (unsigned)REG_IDX(in->ops[1 + k].reg)), jit_barrier(j, pc, in->r[0], JR_S0, JR_S2, JR_S3);
         jm_ld(b, JR_S3, JR_S0, (int64_t)offsetof(ObjList, items));
         jm_addsh3(b, JR_S3, JR_S3, JR_S1);
         jm_ld(b, JR_S4, JR_S0, (int64_t)offsetof(ObjList, tags));

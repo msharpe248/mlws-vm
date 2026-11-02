@@ -26,6 +26,7 @@
     } while (0)
 
 void coro_swap(Process *p, ObjCoro *co) {
+    gc_touch(p, &co->h); /* the context it is given holds whatever the registers held */
     ExecCtx *x = &co->ctx;
     SWAP(p->regs, x->regs);
     SWAP(p->rcap, x->rcap);

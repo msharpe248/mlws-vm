@@ -234,6 +234,7 @@ typedef struct VM {
     uint32_t max_frames;
     uint64_t next_pid;           /* under `lock` */
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
+    bool gc_verify;          /* after each minor collection's marking, check it against a walk of the whole heap */
     bool slabs;              /* processes use the small-object allocator (gc.c); MLWSVM_NO_SLABS=1: malloc */
     uint64_t gc_min_threshold;
     bool whole_windows;      /* every call clears its whole register window (the debugger) */
@@ -479,6 +480,14 @@ struct Process {
     VEC(Obj *) handles;
     VEC(uint32_t) handle_free;
     VEC(Obj *) markstack;
+    /* generations (gc.c): an object that survives a collection is old */
+    VEC(Obj *) young;   /* the objects from the chunks allocated since the last collection */
+    Obj *heap_old;      /* the first object of `heap` that was there at the last collection */
+    VEC(Obj *) remset;  /* old objects that may hold young ones (written since the last collection) */
+    uint64_t old_bytes, next_major, gc_majors;
+    uint64_t nursery;   /* what is allocated between minor collections: from --gc-min, doubled while too much survives */
+    bool gc_minor, gc_major_req, gc_verifying;
+    Obj *gc_parent;     /* gc_verify: the object being scanned */
     Obj *exception; /* being thrown or just caught (a GC root) */
     uint64_t exceptions_thrown;
     /* processes (sched.c). Fields marked [L] are shared with other threads and

@@ -294,6 +294,7 @@ static Obj *borrowed(Process *p, const FfiTag *tag, void *ptr, ExtLib *lib) {
  * new one. A pointer field that is unchanged keeps its handle. */
 static Obj *unpack(Process *p, const FfiStruct *fs, const uint8_t *mem, ObjStruct *into, ExtLib *lib) {
     ObjStruct *s = into ? into : struct_new(p, fs->def);
+    if (into) gc_touch(p, &into->h); /* an existing struct is given new objects */
     for (uint32_t k = 0; k < fs->nfields; k++) {
         uint8_t kind = fs->kinds[k];
         const uint8_t *at = mem + fs->offsets[k];

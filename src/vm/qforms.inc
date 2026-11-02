@@ -168,6 +168,14 @@
             }                                                                 \
             NEXT;                                                             \
         }
+/* The write barrier (heap.h, gc_write) after a store of R register r[1]
+ * into object o (R register r[0], or the frame's closure: N). */
+#define GC_WRITE_I(o, N)
+#define GC_WRITE_F(o, N)
+#define GC_WRITE_R(o, N)                                                      \
+            if (__builtin_expect(((o)->flags & (OBJF_OLD | OBJF_REMEMBERED)) == OBJF_OLD, 0) && \
+                gc_young(QR[in->r[1]]))                                       \
+                GC_REMEMBER(N, o);
 #define ELEM_STORE(bank, w, i_)                                               \
         {                                                                     \
             Obj *ob = QR[in->r[0]];                                          \
@@ -185,6 +193,7 @@
             } else {                                                          \
                 GENERIC();                                                 \
             }                                                                 \
+            GC_WRITE_##bank(ob, R0)                                           \
             NEXT;                                                             \
         }
 #define X(B, bank, w)                                                         \
@@ -198,6 +207,7 @@
             ObjStruct *so = STRUCT_OF(in->r[0]);                              \
             if (!IS_STRUCT(so)) GENERIC();                                 \
             so->fields[in->target].w = QB(bank)[in->r[1]];                      \
+            GC_WRITE_##bank(&so->h, R0)                                       \
             NEXT;                                                             \
         }                                                                     \
         QCASE(Q_LDE_##B) ELEM_LOAD(E, bank, w, (uint64_t)QI[in->r[2]])            \
@@ -219,6 +229,7 @@
             if (!cl || u >= cl->nup) GENERIC();                            \
             cl->tags[u] = in->type;                                           \
             cl->up[u].w = QB(bank)[in->r[1]];                                   \
+            GC_WRITE_##bank(&cl->h, UP)                                       \
             NEXT;                                                             \
         }                                                                     \
         QCASE(Q_LDG_##B) {                                                    \
@@ -285,6 +296,9 @@
 #undef ELEM_BYTE_I
 #undef ELEM_BYTE_F
 #undef ELEM_BYTE_R
+#undef GC_WRITE_I
+#undef GC_WRITE_F
+#undef GC_WRITE_R
 #undef STRUCT_OF
 #undef IS_STRUCT
         QCASE(Q_CALLI_R) {
@@ -503,23 +517,29 @@
             uint32_t n = (uint32_t)in->nops - 1;
             if (l->cap - l->len < n) GENERIC();
             const Operand *qo = in->ops;
+            bool young = false;
             for (uint32_t k = 1; k <= n; k++, l->len++) {
                 uint8_t r = qo[k].reg;
                 switch (REG_BANK(r)) {
                 case BANK_I: l->items[l->len].i = QI[REG_IDX(r)]; l->tags[l->len] = T_I64; break;
                 case BANK_F: l->items[l->len].f = QF[REG_IDX(r)]; l->tags[l->len] = T_F64; break;
-                default: l->items[l->len].r = QR[REG_IDX(r)]; l->tags[l->len] = T_R; break;
+                default:
+                    l->items[l->len].r = QR[REG_IDX(r)], l->tags[l->len] = T_R;
+                    young |= gc_young(QR[REG_IDX(r)]);
+                    break;
                 }
             }
+            if (__builtin_expect(young && (ob->flags & (OBJF_OLD | OBJF_REMEMBERED)) == OBJF_OLD, 0)) GC_REMEMBER(R0, ob);
             NEXT;
         }
-        QCASE(Q_LPUSH_RK) { /* the same, with constants (interp_quicken) */
+        QCASE(Q_LPUSH_RK) { /* the same, with constants (interp_quicken; a constant is never young) */
             Obj *ob = QR[in->r[0]];
             if (!ob || ob->kind != OBJ_LIST) GENERIC();
             ObjList *l = (ObjList *)ob;
             uint32_t n = (uint32_t)in->nops - 1;
             if (l->cap - l->len < n) GENERIC();
             const Operand *qo = in->ops;
+            bool young = false;
             for (uint32_t k = 1; k <= n; k++, l->len++) {
                 const Operand *a = &qo[k];
                 if (a->mode != OM_REG) {
@@ -531,9 +551,13 @@
                 switch (REG_BANK(r)) {
                 case BANK_I: l->items[l->len].i = QI[REG_IDX(r)]; l->tags[l->len] = T_I64; break;
                 case BANK_F: l->items[l->len].f = QF[REG_IDX(r)]; l->tags[l->len] = T_F64; break;
-                default: l->items[l->len].r = QR[REG_IDX(r)]; l->tags[l->len] = T_R; break;
+                default:
+                    l->items[l->len].r = QR[REG_IDX(r)], l->tags[l->len] = T_R;
+                    young |= gc_young(QR[REG_IDX(r)]);
+                    break;
                 }
             }
+            if (__builtin_expect(young && (ob->flags & (OBJF_OLD | OBJF_REMEMBERED)) == OBJF_OLD, 0)) GC_REMEMBER(R0, ob);
             NEXT;
         }
 #define X(N, f)                                                               \

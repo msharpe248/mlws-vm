@@ -27,6 +27,9 @@ enum {
 #define OBJF_IMMORTAL 0x01
 #define OBJF_MARK 0x02
 #define OBJF_BORROWED 0x04 /* a foreign handle to a pointer C still owns: never finalized */
+#define OBJF_OLD 0x08        /* survived a collection: a minor collection neither marks nor frees it (gc.c) */
+#define OBJF_REMEMBERED 0x10 /* old, and written since the last collection (Process.remset) */
+#define OBJF_VERIFY 0x20     /* reached by gc_verify's walk */
 
 typedef struct Obj {
     uint8_t kind;
