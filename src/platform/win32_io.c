@@ -877,9 +877,12 @@ int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_n
 }
 
 void plat_poller_wake(PlatPoller *p) {
-    if (InterlockedExchange(&p->woken, 1)) return; /* a wake-up is pending anyway */
+    LONG was = InterlockedExchange(&p->woken, 1);
+    PDBG("wake (pending %ld)\n", (long)was);
+    if (was) return; /* a wake-up is pending anyway */
     char b = 1;
-    sendto(p->wake, &b, 1, 0, (struct sockaddr *)&p->wake_addr, sizeof p->wake_addr);
+    int r = sendto(p->wake, &b, 1, 0, (struct sockaddr *)&p->wake_addr, sizeof p->wake_addr);
+    PDBG("sendto -> %d (error %d)\n", r, r < 0 ? WSAGetLastError() : 0);
 }
 #else
 typedef int mlwsvm_win32_io_unused; /* ISO C forbids an empty translation unit */
