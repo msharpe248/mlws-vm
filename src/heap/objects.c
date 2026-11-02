@@ -21,14 +21,25 @@ static void check_len(Process *p, int64_t n, const char *what) {
 
 /* ---- strings and bytes ---------------------------------------------------- */
 
-ObjString *str_new(Process *p, const char *s, size_t n) {
+/* A string of n bytes, for the caller to fill in (its last byte, after
+ * them, is 0). Its hash is computed when first needed (str_hash), since most
+ * strings are never a map key. */
+ObjString *str_alloc(Process *p, size_t n) {
     check_len(p, (int64_t)n, "string");
     ObjString *o = (ObjString *)gc_alloc(p, OBJ_STRING, sizeof(ObjString) + n + 1);
     o->len = (uint32_t)n;
-    if (n) memcpy(o->data, s, n);
-    o->data[n] = 0;
-    o->hash = hash_bytes(s, n);
     return o;
+}
+
+ObjString *str_new(Process *p, const char *s, size_t n) {
+    ObjString *o = str_alloc(p, n);
+    if (n) memcpy(o->data, s, n);
+    return o;
+}
+
+uint32_t str_hash(ObjString *s) {
+    if (!s->hash) s->hash = hash_string(s->data, s->len);
+    return s->hash;
 }
 
 ObjBytes *bytes_new(Process *p, int64_t len) {
@@ -206,7 +217,7 @@ static uint32_t key_hash(Word k, uint8_t tag) {
     }
     case KC_REF: {
         Obj *o = k.r;
-        if (o && o->kind == OBJ_STRING) return ((ObjString *)o)->hash;
+        if (o && o->kind == OBJ_STRING) return str_hash((ObjString *)o);
         if (o && (o->kind == OBJ_BIG || o->kind == OBJ_DEC)) return num_hash(o); /* by value */
         return mix64((uint64_t)(uintptr_t)o);
     }
@@ -225,7 +236,8 @@ static bool key_eq(Word a, uint8_t at, Word b, uint8_t bt) {
         if (x && y && x->kind == y->kind && (x->kind == OBJ_BIG || x->kind == OBJ_DEC)) return num_equal(x, y);
         if (!x || !y || x->kind != OBJ_STRING || y->kind != OBJ_STRING) return false;
         const ObjString *sx = (const ObjString *)x, *sy = (const ObjString *)y;
-        return sx->len == sy->len && sx->hash == sy->hash && memcmp(sx->data, sy->data, sx->len) == 0;
+        return sx->len == sy->len && (!sx->hash || !sy->hash || sx->hash == sy->hash) &&
+               memcmp(sx->data, sy->data, sx->len) == 0;
     }
     default: return a.u == b.u;
     }
@@ -344,14 +356,22 @@ static ObjString *str_utf8(Process *p, uint32_t cp) {
     return str_new(p, buf, (size_t)n);
 }
 
+/* An integer in decimal, into the end of b (24 bytes); returns its start. */
+static char *fmt_u64(char *end, uint64_t u) {
+    do *--end = (char)('0' + u % 10);
+    while (u /= 10);
+    return end;
+}
+
 ObjString *value_to_string(Process *p, Word v, MlwsType t) {
     char buf[96];
     switch (t) {
     case T_B: return str_new(p, v.i ? "true" : "false", v.i ? 4 : 5);
     case T_C: return str_utf8(p, (uint32_t)v.u);
-    case T_U8: case T_U16: case T_U32: case T_U64:
-        snprintf(buf, sizeof buf, "%llu", (unsigned long long)v.u);
-        break;
+    case T_U8: case T_U16: case T_U32: case T_U64: {
+        char *at = fmt_u64(buf + 24, v.u);
+        return str_new(p, at, (size_t)(buf + 24 - at));
+    }
     case T_F32: case T_F64: fmt_double(v.f, buf, sizeof buf); break;
     case T_P:
         if (!v.p) snprintf(buf, sizeof buf, "null");
@@ -396,7 +416,11 @@ ObjString *value_to_string(Process *p, Word v, MlwsType t) {
         }
         break;
     }
-    default: snprintf(buf, sizeof buf, "%lld", (long long)v.i); break;
+    default: { /* the signed integers */
+        char *at = fmt_u64(buf + 24, v.i < 0 ? 0 - (uint64_t)v.i : (uint64_t)v.i);
+        if (v.i < 0) *--at = '-';
+        return str_new(p, at, (size_t)(buf + 24 - at));
+    }
     }
     return str_new(p, buf, strlen(buf));
 }

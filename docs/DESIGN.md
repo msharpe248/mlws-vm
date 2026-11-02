@@ -1065,7 +1065,7 @@ typedef struct Obj {
 
 | Kind | Layout after the header | Notes |
 |---|---|---|
-| string | `len`, `hash`, bytes, NUL | Immutable. The hash (FNV-1a) is computed when it is made |
+| string | `len`, `hash`, bytes, NUL | Immutable. The hash (FNV-1a, never 0) is computed when it is first a map key (0 until then), or when made for a constant, which threads share |
 | bytes | `len`, `cap`, `data *` | Mutable; the buffer grows by doubling |
 | array | `elem` type, `len`, words | Fixed length; traced if `elem` is `r` |
 | struct | `StructDef *`, fields | The type comes from its module; fields are traced if their declared type is a reference |
@@ -1105,7 +1105,7 @@ entries: dense, in insertion order        index: power of two, open addressing
   BigInts and decimals by value, and other objects by identity. Keys of
   different classes are never equal, so `1`, `1.0` and `1n` are three keys.
   Integers, floats and identities are hashed with a 64-bit mixer; strings
-  use their stored hash.
+  use their stored hash (`str_hash`).
 
 ### 11.2 Allocation
 

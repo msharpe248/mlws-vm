@@ -487,14 +487,12 @@
                 total += plen[k];
             }
             if (total >= (uint64_t)1 << 31) vm_trap(p, "E_BAD_ALLOC", "strcat result too long");
-            char *buf = xmalloc((size_t)total + 1);
+            ObjString *s = str_alloc(p, (size_t)total); /* (no collection runs before the instruction ends) */
             size_t at = 0;
             for (int k = 1; k < in->nops; k++) {
-                memcpy(buf + at, part[k], plen[k]);
+                memcpy(s->data + at, part[k], plen[k]);
                 at += plen[k];
             }
-            ObjString *s = str_new(p, buf, (size_t)total);
-            free(buf);
             wr_ref(CX, &ops[0], s);
             break;
         }

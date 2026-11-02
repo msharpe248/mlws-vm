@@ -86,6 +86,11 @@ bool smap_has(const StrMap *m, const char *key);
 void smap_free(StrMap *m);
 
 uint32_t hash_bytes(const void *p, size_t n);
+/* A string's hash (ObjString.hash): never 0, which means not yet computed. */
+static inline uint32_t hash_string(const void *p, size_t n) {
+    uint32_t h = hash_bytes(p, n);
+    return h ? h : 1;
+}
 
 /* Shortest decimal representation of d that round-trips ("nan", "inf", "-inf"). */
 void fmt_double(double d, char *buf, size_t n);

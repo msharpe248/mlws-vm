@@ -52,6 +52,8 @@ void handle_free(Process *p, int64_t h);
 /* ---- objects (objects.c) -------------------------------------------------- */
 
 ObjString *str_new(Process *p, const char *s, size_t n);
+ObjString *str_alloc(Process *p, size_t n); /* to fill in */
+uint32_t str_hash(ObjString *s);
 ObjBytes *bytes_new(Process *p, int64_t len);
 void bytes_append(Process *p, ObjBytes *b, const void *data, size_t n);
 void bytes_resize(Process *p, ObjBytes *b, int64_t len);

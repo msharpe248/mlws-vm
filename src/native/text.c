@@ -395,7 +395,7 @@ static void n_slice(Process *p, Word *a, Word *r) {
         ObjString *o = str_new(p, s, n);                                       \
         for (uint32_t i = 0; i < n; i++)                                       \
             if (o->data[i] >= LO && o->data[i] <= HI) o->data[i] = (char)(o->data[i] + (DELTA)); \
-        o->hash = hash_bytes(o->data, o->len);                                 \
+        o->hash = 0; /* (computed when first needed) */                       \
         r[0].r = o;                                                            \
     }
 ASCII_CASE(n_ascii_upper, 'a', 'z', 'A' - 'a')

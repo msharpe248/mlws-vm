@@ -16,7 +16,7 @@ ObjString *str_new_immortal(const char *s, size_t len) {
     o->h.kind = OBJ_STRING;
     o->h.flags = OBJF_IMMORTAL;
     o->len = (uint32_t)len;
-    o->hash = hash_bytes(s, len);
+    o->hash = hash_string(s, len); /* now: shared between threads, never written again */
     memcpy(o->data, s, len);
     o->data[len] = 0;
     return o;
