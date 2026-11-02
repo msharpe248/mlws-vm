@@ -13,6 +13,10 @@
 #include <bcrypt.h>
 #include <ctype.h>
 #include <mstcpip.h>
+#include <mswsock.h>
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
 
 int plat_last_error(void) { return (int)GetLastError(); }
 

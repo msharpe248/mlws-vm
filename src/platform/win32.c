@@ -432,11 +432,19 @@ static void last_error_text(char *buf, size_t n, DWORD e) {
     free(u);
 }
 
+/* A path is made absolute, with backslashes, and the libraries it needs are
+ * looked for next to it first; a bare name is looked for as LoadLibrary
+ * does (the program's directory, the system's, then PATH). */
 void *plat_dlopen(const char *path, char *err, size_t errlen) {
     if (!path) return (void *)GetModuleHandleW(NULL);
-    wchar_t *w = w_str(path);
-    HMODULE h = LoadLibraryExW(w, NULL, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
-    if (!h && GetLastError() == ERROR_INVALID_PARAMETER) h = LoadLibraryW(w); /* a name without a directory */
+    wchar_t *w = w_str(path), full[32768];
+    HMODULE h;
+    if (strpbrk(path, "/\\:")) {
+        DWORD n = GetFullPathNameW(w, 32768, full, NULL);
+        h = n > 0 && n < 32768 ? LoadLibraryExW(full, NULL, LOAD_WITH_ALTERED_SEARCH_PATH) : NULL;
+    } else {
+        h = LoadLibraryW(w);
+    }
     free(w);
     if (!h && err) {
         char text[400];
