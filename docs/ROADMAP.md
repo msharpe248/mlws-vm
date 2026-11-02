@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M46 are complete. What remains is Windows (section 3) and the
-deferred performance work (section 4). M0–M10 built the VM itself. The aim of
-M11–M46 was to make MLWSVM worth targeting: programs on it should be able to do
+Milestones M0–M47 are complete. What remains is the deferred performance
+work (section 4). M0–M10 built the VM itself. The aim of
+M11–M47 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M46
+## Milestones M11–M47
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -68,6 +68,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M44 Faster with the JIT** (done) | from the JIT's reports on the compilers' programs, and their sessions' changes: bytes of strings and byte buffers, never-written list elements and constants stored to elements and globals on the fast path and in the JIT; `mget` by a key in a register compiled; loops kept in machine registers as natural loops, with up to two calls or stepped instructions inside on arm64; on arm64 R registers cached within a block, and checks of an object not repeated in a block; a generational collector (a remembered set, a write barrier in the interpreter and the machine code, a young generation from 64 KB that grows as much survives, `MLWSVM_GC_VERIFY`); `tostr` and `strcat` without a copy, string hashes when first needed; functions aligned to 64 bytes. With the JIT, against 0.8.0, on the M5, i7 and Ryzen: compiled Lua's `strings` −50–55%, `binarytrees` −27–40%, Erlang's `sorting` −14–21%, `binarytrees` −11–25%, Lox's `binary_trees` −10–19%, `method_call` −12–16%, `bench/maps` −17–34%; Lua's `loop` −32% on the M5 | `tests/objects/gc_generations.masm` (each way an old object is given a young one, across minor collections); `tests/jit/loops.masm` (holes, cold paths back into a loop, a loop ending its function, one loop into another, a hole setting a loop register); `tests/perf/quickened_slots.masm` and `quickened_access.masm` (bytes, unset elements, constants stored); `make check-gc` also with `MLWSVM_GC_VERIFY=1`, with the JIT off and `all`; the compilers' suites under it |
 | **M45 Hardening** (done) | `mlwsvm fuzz`, a differential fuzzer: random programs that always end (integer, float and bitwise arithmetic at every width, elements, fields, globals, raw memory, bytes, maps, strings, the data stack; loops with breaks and early returns, jump tables, exceptions, closures with captures, tail calls, coroutines that yield from anywhere), each run in the interpreter and ten other modes (the JIT, hot and at first call, with short time slices, the optimizer, GC stress and verification, and combinations), any difference reported and shrunk with `--reduce`; `make check-fuzz` in CI and fuzzing in `check-asan`; `make release-check` (`tests/release-check.sh`): every check, longer fuzzing, and the compilers' suites in eleven modes, two under AddressSanitizer; `run --gc-verify`. It found that the optimizer's identities took an integer constant without truncating it to the instruction's type (`mul.i8 x, 2^32` became a shift by 32, which is 0 in 8 bits);; the compilers' suites under AddressSanitizer found that an empty byte buffer read as text was a null pointer to `memcpy` and `memcmp` (UBSan, with glibc's nonnull declarations), which fuzzed programs now cover too; and the fuzzer finds 0.9.0's JIT fault (a branch patched in a moved buffer) within seeds 1–300 | `tests/opt/simplify.masm` (constants at narrow types); `tests/objects/bytes.masm` (an empty buffer as text, in instructions and natives); `check_tools.sh` (the program for a seed, a clean run, and `--reduce` against a VM whose JIT miscompiles a marked line); about 300,000 fuzzed programs agreeing in every mode on the M5, the i7 and the Ryzen; `make release-check` passing on all three |
 | **M46 Allocation speed** (done) | objects bump-allocated into the free 128-byte lines of each process's chunks (mark-region, as Immix, without moving: natives that call back hold pointers, and maps hash objects by address); a collection marks survivors and their lines and never visits the dead, but for objects that own memory (on owner lists); marking makes an object old, and a collection of the whole heap flips the mark bit's meaning instead of clearing marks; the allocation fast path inline in C and emitted by the JIT for `new` and `lnew`, against one limit for the collection threshold and the heap quota; `--stats` shows the chunks and their lines in use; `MLWSVM_SLABS=1` for the chunks under AddressSanitizer. With the JIT, on the M5, i7 and Ryzen: compiled Lua's `binarytrees` −25–36%, `methods` −6–15%, Lox's `instantiation` −28–37%, `binary_trees` −13–19%, Erlang's `sorting` −9–15%, `binarytrees` −12–14%, `nbody` −10–13%, `bench/binarytrees` −11–15% | `tests/objects/gc_lines.masm` (objects of every size kept among garbage, holes reused, an old object given young ones made in them); `tests/objects/gc_owners.masm` (each kind of owner dying young and old, the heap's accounting exact afterwards); `check-asan` with the chunks under LeakSanitizer; `--gc-verify` also checks each survivor's size against its allocation; 75,870 fuzzed programs agreeing in every mode; `make release-check` on all three machines |
+| **M47 Windows** (done) | Windows on x86-64, built with Clang in MSYS2 and tested in CI in every mode but the sanitizers: files, pipes, child processes and sockets over a table of handles; a `WSAPoll` poller (a loopback connection to wake it, pipes looked at every millisecond); trust checks on owners and access control lists; the JIT, whose System V code the C functions it calls share there (`sysv_abi`); UTF-8 paths, arguments to children quoted as the C runtime parses them. The FFI tests that call POSIX functions have Windows twins |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -78,7 +79,7 @@ the foreign-call quota. See [EXTENDING.md](EXTENDING.md).
 
 Variadic functions (1.1), C structs (1.2) and finalizers for `.extern`
 handles were added in M17, callbacks (1.3, 1.4) in M18, and the binding
-generator in M20. Only the Windows trust check (1.5) is still to do.
+generator in M20, and the Windows trust check (1.5) in M47.
 
 ### 1.1 Variadic functions (M17: done)
 
@@ -134,8 +135,8 @@ supported. It would have to block that thread until the process replied.
 * **Finalizers for `.extern` handles** (M17: done): `.ffi_free db,
   "libsqlite3", "sqlite3_close"` frees every `ptr<db>` when it is collected or
   released with `foreign.release`.
-* **Windows**: ACL checks in `plat_path_trusted` (POSIX permission checks are
-  done).
+* **Windows** (M47: done): `plat_path_trusted` checks the owner and the
+  access control list, as POSIX's checks the owner and the permission bits.
 * **Hot code reloading**: loading a new version of a module beside the old
   one while it runs, Erlang-style, with callers moving over and the old
   version purged later. M39 loads modules at run time but never unloads or
@@ -177,9 +178,9 @@ untrusted process cannot reach the OS at all (compare Deno's permissions).
 ## 3. Platform
 
 * Linux and CI: M11.
-* Windows: `src/platform/win32.c` is written but untested, including the
-  thread layer. It needs CI on Windows, MSVC or clang-cl builds, C11 atomics
-  there, and an IOCP backend for the M12 event loop.
+* Windows: M47, on x86-64 with Clang (MSYS2). Not done: Windows on arm64
+  (untested, and without the JIT), MSVC builds, and a completion-port
+  poller ([DESIGN.md](DESIGN.md) §23).
 
 ## 4. Performance (when measurements call for it)
 

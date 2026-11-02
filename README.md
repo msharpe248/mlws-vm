@@ -206,6 +206,14 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 ./mlwsvm --help                # every command and option
 ```
 
+On Windows, build in [MSYS2](https://www.msys2.org/)'s CLANG64 shell, where
+the same `make` targets work (all but `check-asan` and `check-tsan`):
+
+```sh
+pacman -S make diffutils mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-libffi mingw-w64-clang-x86_64-pkgconf
+make CC=clang && make CC=clang test
+```
+
 ## Documentation
 
 | | |
@@ -227,7 +235,7 @@ make docs                    # regenerate docs/ISA.md and docs/NATIVES.md
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks and results, how the interpreter and scheduler are made fast, and what is left alone (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M44 and what remains: Windows and the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M47 and what remains: the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
@@ -260,10 +268,11 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 ## Status
 
 The current release is 0.10.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
-on GitHub. Everything described in `docs/` is implemented and tested on macOS and Linux
-(GitHub Actions: Linux GCC and Clang, macOS Clang), in every test mode: the
-plain suite, GC stress, the optimizer, AddressSanitizer, ThreadSanitizer, the tools, and builds
-without libffi, tail calls or computed goto. Windows support is written but untested.
+on GitHub. Everything described in `docs/` is implemented and tested on macOS, Linux and
+Windows (GitHub Actions: Linux GCC and Clang, macOS Clang, Windows Clang in MSYS2), in every test
+mode: the plain suite, GC stress, the optimizer, the JIT, the fuzzer, the tools, and builds
+without libffi, tail calls or computed goto; AddressSanitizer and ThreadSanitizer on Linux and macOS.
+On Windows only x86-64 is tested, and the JIT is x86-64 only there.
 [docs/ROADMAP.md](docs/ROADMAP.md) lists the milestones and what remains.
 
 ## License

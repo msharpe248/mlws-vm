@@ -284,7 +284,7 @@ for want in "x: util of x, fmt of x" "y: util of y, fmt of y" "x/other: util of 
 done
 # Tools tell same-named modules apart by their files.
 OUT=$(MLWSVM_NO_CACHE=1 $BIN run --profile "$PDIR/x/main.masm" --also "$PDIR/y/main.masm" 2>&1)
-echo "$OUT" | grep -q "util.who \[$PDIR/y/util.masm\]" || fail "--also: profile without util's file ($OUT)"
+echo "$OUT" | grep -q "util.who \[.*/y/util.masm\]" || fail "--also: profile without util's file ($OUT)"
 # Two programs of one directory naming the same module: an error that says how to fix it.
 printf '.module main\n.func main\n    ret 0\n.endf\n' > "$PDIR/x/alt.masm"
 set +e

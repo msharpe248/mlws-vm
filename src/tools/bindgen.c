@@ -797,8 +797,33 @@ static void add_records(Gen *g, const Json *n) {
         if (jstr(inner->items[i], "kind") && !strcmp(jstr(inner->items[i], "kind"), "RecordDecl")) add_records(g, inner->items[i]);
 }
 
+/* The anonymous struct or enum a typedef's type refers to, wherever clang
+ * puts the reference: an ElaboratedType's ownedTagDecl (clang up to 21), or
+ * a RecordType's or EnumType's decl. */
+static const Json *typedef_anon(const Json *inner, StrMap *anon) {
+    for (uint32_t i = 0; inner && inner->kind == J_ARR && i < inner->n; i++) {
+        static const char *const keys[] = {"ownedTagDecl", "decl"};
+        for (size_t k = 0; k < 2; k++) {
+            const Json *d = jget(inner->items[i], keys[k]);
+            void *v;
+            if (d && jstr(d, "id") && smap_get(anon, jstr(d, "id"), &v)) return v;
+        }
+        const char *kind = jstr(inner->items[i], "kind");
+        if (kind && (strstr(kind, "Pointer") || strstr(kind, "Array") || strstr(kind, "Function")))
+            continue; /* typedef struct { ... } *P names a pointer, not the struct */
+        const Json *r = typedef_anon(jget(inner->items[i], "inner"), anon);
+        if (r) return r;
+    }
+    return NULL;
+}
+
 static bool generate(Gen *g, const Json *root) {
     const Json *top = jget(root, "inner");
+    /* clang's own names for size_t's and ptrdiff_t's types (clang 22) */
+    bool lp = sizeof(long) == sizeof(size_t);
+    smap_put(&g->typedefs, "__size_t", lp ? "unsigned long" : "unsigned long long");
+    smap_put(&g->typedefs, "__signed_size_t", lp ? "long" : "long long");
+    smap_put(&g->typedefs, "__ptrdiff_t", lp ? "long" : "long long");
     if (!top || top->kind != J_ARR) return false;
     /* First every typedef and struct definition, wherever it is (a struct the
      * header uses may be defined in another header); then the header's own. */
@@ -814,12 +839,9 @@ static bool generate(Gen *g, const Json *root) {
             const char *name = jstr(n, "name");
             const Json *ty = jget(n, "type");
             const char *qt = jstr(ty, "desugaredQualType") ? jstr(ty, "desugaredQualType") : jstr(ty, "qualType");
-            const Json *in = jget(n, "inner");
-            const Json *owned = in && in->n ? jget(in->items[0], "ownedTagDecl") : NULL;
-            void *v;
-            if (name && owned && jstr(owned, "id") && smap_get(&anon, jstr(owned, "id"), &v)) {
+            const Json *decl = name ? typedef_anon(jget(n, "inner"), &anon) : NULL;
+            if (decl) {
                 /* typedef struct { ... } NAME: the struct takes the typedef's name */
-                const Json *decl = v;
                 if (!strcmp(jstr(decl, "kind"), "EnumDecl")) smap_put(&g->typedefs, name, "int");
                 else if (jtrue(decl, "completeDefinition") && jstr(decl, "tagUsed") && !strcmp(jstr(decl, "tagUsed"), "struct")) {
                     Record *r = xcalloc(1, sizeof *r);

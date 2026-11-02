@@ -154,10 +154,12 @@ JIT compiles nothing.
 ## Platforms
 
 The JIT needs the tail-call interpreter (Clang, or GCC 15 and later) on
-arm64 or x86-64: macOS and Linux on arm64, Linux on x86-64. macOS on x86-64
-should work but is not tested. Elsewhere (other processors, older GCC,
-Windows, ThreadSanitizer builds, which use the dispatch loop) `--jit` is
-accepted and the program runs in the interpreter.
+arm64 or x86-64: macOS and Linux on arm64, Linux and Windows on x86-64. On
+Windows, the machine code is the same as on Linux: the C functions it calls
+use System V's calling convention there too (Clang's `sysv_abi`). macOS on
+x86-64 should work but is not tested. Elsewhere (other processors, Windows
+on arm64, older GCC, ThreadSanitizer builds, which use the dispatch loop)
+`--jit` is accepted and the program runs in the interpreter.
 
 ## The report
 
@@ -202,8 +204,8 @@ only for a report.
 * `make check-jit` runs every test and example with `--jit all` (also under
   GC stress and with every module optimized) and with `--jit on
   --jit-hot 2` (also on one worker thread). `make check-asan` runs the tests
-  with `--jit all` too. CI runs both, on Linux (x86-64 and arm64) and
-  macOS.
+  with `--jit all` too. CI runs both on Linux (x86-64 and arm64) and
+  macOS, and `check-jit` on Windows.
 * The Brainfuck, Lox, Lua and Erlang compilers' suites pass with the JIT,
   plainly, under GC stress and at `-O3`.
 

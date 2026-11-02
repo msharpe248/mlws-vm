@@ -1730,7 +1730,11 @@ act ([EXTENDING.md](EXTENDING.md#security), `vm/extensions.c`):
   allows it.
 * The directory, the manifest and the extension must not be writable by
   group or others, and must belong to the user or root (the check SSH makes
-  of `~/.ssh`).
+  of `~/.ssh`). On Windows: owned by the user or an administrator (the
+  Administrators group, SYSTEM, TrustedInstaller), with no access control
+  entry that lets another account write; `mlwsvm ext` gives the directory
+  and what it writes a list of their own (the user, SYSTEM and
+  Administrators may write, other users read).
 * Quota 4 shuts native code out of a sandbox entirely.
 
 ## 18. Embedding
@@ -2013,22 +2017,51 @@ cannot express.
 ## 21. The platform layer
 
 `src/platform/platform.h` is the only OS-specific interface, implemented by
-`posix.c`, `posix_io.c` and `win32.c`:
+`posix.c` and `posix_io.c` (macOS, Linux, the BSDs), and `win32.c` and
+`win32_io.c` (Windows):
 
 * threads, `PlatLock` (short sections: `os_unfair_lock` on macOS),
   `PlatMutex` and `PlatCond`;
 * clocks, sleeping and random bytes;
 * files, directories, modification times and real paths;
-* processes and pipes; sockets; the poller (kqueue or epoll);
+* processes and pipes; sockets; the poller (kqueue, epoll, or WSAPoll);
 * dynamic loading;
 * memory for the JIT's machine code (`plat_code_*`): written, then made
-  executable (`MAP_JIT` on Apple silicon; none on Windows);
+  executable (`MAP_JIT` on Apple silicon);
 * the permission check behind trusted directories (`plat_path_trusted`).
 
 Everything else is plain C11 with `<stdatomic.h>`. Memory is little-endian
-on every host, and the binary formats spell out their byte order. The
-Windows implementation is written but untested
-([ROADMAP.md](ROADMAP.md#3-platform)).
+on every host, and the binary formats spell out their byte order.
+
+**Windows** (x86-64, Clang in MSYS2's CLANG64 environment, the UCRT C
+runtime):
+
+* Strings are UTF-8 everywhere; `win32.c` converts them for Windows' wide
+  (UTF-16) functions.
+* The integers the layer passes around for files, pipes and sockets index a
+  table of handles and sockets (`win32.h`); 0, 1 and 2 are the standard
+  handles.
+* A non-blocking pipe is in `PIPE_NOWAIT` mode: a read of an empty one fails
+  with `ERROR_NO_DATA`, and a write takes what fits.
+* The poller waits for sockets with `WSAPoll`, and for its own wake-up on a
+  loopback TCP connection (a send on a socket that another thread is polling
+  does not return, so one socket cannot wake itself). An anonymous pipe has
+  no readiness to wait for, so while a process waits for one, the poller
+  looks at it every millisecond (`PeekNamedPipe`).
+* A child is started with `CreateProcessW`, inheriting only its three
+  standard handles (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`); its arguments are
+  quoted as the C runtime parses them. A signal ends it
+  (`TerminateProcess`), with the exit code a POSIX shell reports (128 + N).
+* A connection to a loopback address sends its SYN once: Windows answers a
+  reset by resending it, which makes a refused connection take 2 s.
+* The JIT's machine code is the System V code of Linux and macOS: the C
+  functions it calls and its entry are declared `sysv_abi`, and the C code
+  around each call saves what Windows' convention keeps and System V's does
+  not. `longjmp` is given no frame (`_setjmp(buf, NULL)`), so it leaves the
+  machine code's frames without the system's unwinder, which knows nothing
+  of them.
+* `stdout` and `stderr` are in binary mode (no newline translation), and the
+  console's code page is UTF-8.
 
 ## 22. Testing
 
@@ -2059,7 +2092,8 @@ with `_` hold helper modules.
 
 Unicode support is checked against the Unicode Consortium's own
 normalization and segmentation test files. CI runs the modes on Linux (GCC
-and Clang) and macOS (Clang), and the JIT's on Linux on arm64. The compilers project (`mlws-compilers`)
+and Clang) and macOS (Clang), all but the sanitizers on Windows (Clang in
+MSYS2), and the JIT's on Linux on arm64. The compilers project (`mlws-compilers`)
 generates large amounts of real code, and its test suites are a second,
 independent test of the VM and the optimizer.
 
@@ -2091,5 +2125,10 @@ Each of these was considered, and most were measured
 * **Lock-free run queues and spinning before sleeping.** The queue locks
   are almost always uncontended, and waking one thread at a time avoided the
   latency problem in every benchmark so far.
-* **Windows.** Written, untested: it needs CI, MSVC or clang-cl builds, and
-  an IOCP poller.
+* **A completion-port poller on Windows.** `WSAPoll` is given every socket
+  waited for at each wait, and pipes are looked at every millisecond; I/O
+  completion ports (or the AFD driver, as wepoll does) would cost nothing per
+  idle socket. 1,000 idle connections are well within `WSAPoll`'s reach.
+* **MSVC.** Clang is needed for computed goto and guaranteed tail calls, and
+  the build uses GNU make and a POSIX shell; MSVC would get the switch
+  dispatch, without the JIT.

@@ -454,6 +454,15 @@ FFI ([EXTENDING.md](EXTENDING.md)).
 
 ## Platforms
 
-POSIX systems with kqueue or epoll: macOS, Linux and the BSDs. On Windows the
-`fs` and `os` natives are not yet implemented (an IOCP-based poller is on the
-roadmap); they fail with `E_IO`.
+macOS, Linux and the BSDs (kqueue or epoll), and Windows (`WSAPoll`). On
+Windows:
+
+* `os.run` and `os.spawn` find a command as `CreateProcess` does (the
+  program's directory, the system's, then `PATH`, adding `.exe`), and
+  quote its arguments as the C runtime parses them. `os.kill` ends the
+  command, with the exit code a POSIX shell reports for the signal: 143
+  (128 + 15), or 137 (128 + 9) for a kill.
+* `fs.stat`'s `mode` is what the permission bits would be: 0755 for a
+  directory, 0644 for a file, 0444 for a read-only one.
+* An error's message is Windows' own; its code is the same `E_*` code as
+  elsewhere.
