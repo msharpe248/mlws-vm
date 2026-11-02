@@ -87,19 +87,19 @@ interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | JIT, M5 | Lua 5.5, M5 | MLWSVM, i7 | JIT, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|---|---|
-| loop | 205 | 55 | 220 | 344 | 105 | 290 |
+| loop | 205 | 55 | 218 | 344 | 105 | 290 |
 | iterate | 73 | 35 | 58 | 113 | 54 | 80 |
-| fib | 62 | 36 | 54 | 106 | 51 | 102 |
-| methods | 542 | 361 | 366 | 960 | 683 | 567 |
-| strings | 229 | 164 | 135 | 401 | 303 | 213 |
-| binarytrees (15) | 335 | 189 | 389 | 563 | 305 | 578 |
-| nbody (500,000) | 878 | 420 | 412 | 1,379 | 960 | 591 |
-| spectralnorm (500) | 228 | 101 | 184 | 385 | 139 | 269 |
-| fannkuch (10) | 2,004 | 690 | 832 | 3,027 | 1,547 | 1,157 |
+| fib | 62 | 36 | 53 | 106 | 51 | 102 |
+| methods | 542 | 361 | 348 | 960 | 683 | 567 |
+| strings | 229 | 164 | 134 | 401 | 303 | 213 |
+| binarytrees (15) | 335 | 189 | 382 | 563 | 305 | 578 |
+| nbody (500,000) | 878 | 420 | 424 | 1,379 | 960 | 591 |
+| spectralnorm (500) | 228 | 101 | 185 | 385 | 139 | 269 |
+| fannkuch (10) | 2,004 | 690 | 808 | 3,027 | 1,547 | 1,157 |
 
 Interpreted, `loop` and `binarytrees` take less time than in Lua on the M5,
-and `binarytrees` on the i7 too; with the JIT, seven of the nine take less
-time than in Lua on the M5, and five on the i7. Without start-up, interpreted `fib` runs in 50 ms
+and `binarytrees` on the i7 too; with the JIT, six of the nine take less
+time than in Lua on the M5 (and `nbody` as much), and five on the i7. Without start-up, interpreted `fib` runs in 50 ms
 on the M5, as fast as Lua: its typed copy executes fewer instructions than
 Lua's bytecode does. Counted with Lua's
 own instruction hook, the others execute 1.7 to 5.2 times as many, and each

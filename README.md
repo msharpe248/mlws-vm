@@ -131,15 +131,15 @@ Apple M5 Pro. Every engine printed the same output.
 
 | Lua | MLWSVM | MLWSVM JIT | Lua 5.5 | LuaJIT 2.1 |
 |---|---|---|---|---|
-| fib (32) | 62 | **36** | 54 | 10 |
-| loop (30,000,000 iterations) | 205 | **55** | 220 | 17 |
-| methods (2M method calls and objects) | 542 | **361** | 366 | 71 |
-| strings (format, gmatch, gsub) | 229 | 164 | **135** | 100 |
+| fib (32) | 62 | **36** | 53 | 10 |
+| loop (30,000,000 iterations) | 205 | **55** | 218 | 17 |
+| methods (2M method calls and objects) | 542 | 361 | **348** | 71 |
+| strings (format, gmatch, gsub) | 229 | 164 | **134** | 100 |
 | iterate (pairs, ipairs) | 73 | **35** | 58 | 6 |
-| binarytrees (15) | 335 | **189** | 389 | 148 |
-| nbody (500,000) | 878 | 420 | **412** | 25 |
-| spectralnorm (500) | 228 | **101** | 184 | 9 |
-| fannkuch (10) | 2,004 | **690** | 832 | 125 |
+| binarytrees (15) | 335 | **189** | 382 | 148 |
+| nbody (500,000) | 878 | **420** | 424 | 25 |
+| spectralnorm (500) | 228 | **101** | 185 | 9 |
+| fannkuch (10) | 2,004 | **690** | 808 | 125 |
 
 | Erlang | MLWSVM | MLWSVM JIT | Erlang/OTP 29 (JIT) |
 |---|---|---|---|
@@ -150,9 +150,10 @@ Apple M5 Pro. Every engine printed the same output.
 | sorting (200,000 integers, maps) | 666 | 366 | **115** |
 
 Bold marks the faster of MLWSVM's JIT and the reference interpreter or
-BEAM; LuaJIT is there for scale. With its JIT, MLWSVM runs seven of the nine
-Lua programs faster than Lua 5.5, which is faster where the time goes to its
-C library (`strings`) or to tables of floats (`nbody`). LuaJIT, a tracing JIT that specializes code to the types it sees,
+BEAM; LuaJIT is there for scale. With its JIT, MLWSVM runs six of the nine
+Lua programs faster than Lua 5.5 and `nbody` as fast; Lua 5.5 is faster
+where the time goes to its C library (`strings`), and a little on
+`methods`. LuaJIT, a tracing JIT that specializes code to the types it sees,
 is 1.3–17× faster than MLWSVM's JIT. BEAM's times include its start-up of
 about 80 ms, which is most of its `fib` and almost a third of its `ring`.
 Its code is 1.4–3.2× faster than MLWSVM's JIT on the other three. Start-up
