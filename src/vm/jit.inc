@@ -2059,7 +2059,8 @@ static void jit_compile(VM *vm, Function *f) {
             uint32_t other = jm_fwd(b, JC_NE);
             if (sd->ubank == 1) jm_fconst(b, sd->uval, 0.0);
             else jm_movi(b, sd->uval, 0);
-            jm_patch_at(b->v, jm_emit_branch(b, FX_B, 0, 0, false), sd->back);
+            uint32_t at = jm_emit_branch(b, FX_B, 0, 0, false); /* (first: the buffer may move as it grows) */
+            jm_patch_at(b->v, at, sd->back);
             jm_bind(b, other);
         }
         jside_stores(j, sd);
