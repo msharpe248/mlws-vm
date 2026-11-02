@@ -371,19 +371,26 @@ $BIN run --no-cache "$FDIR/a.masm" >/dev/null || fail "fuzz --emit: the program 
 $BIN fuzz --list | grep -q "^jit-verify " || fail "fuzz --list"
 $BIN fuzz -n 20 --seed 1 -j 4 --out "$FDIR/out" 2>"$FDIR/log" || fail "fuzz: $(tail -3 "$FDIR/log")"
 grep -q "20 programs (seeds 1-20), 220 runs, 0 skipped, 0 failed" "$FDIR/log" || fail "fuzz: $(tail -1 "$FDIR/log")"
-REAL="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
-{
-    echo '#!/bin/sh'
-    echo 'for a; do f=$a; done'
-    echo 'case " $* " in *" --jit "*) grep -q MARK "$f" && echo miscompiled;; esac'
-    echo "exec \"$REAL\" \"\$@\""
-} > "$FDIR/vm"
-chmod +x "$FDIR/vm"
-awk '{ print } /^\.func f0/ { print "    nop                                ; MARK" }' "$FDIR/a.masm" > "$FDIR/c.masm"
-$BIN fuzz --vm "$FDIR/vm" --reduce "$FDIR/c.masm" --modes jit --out "$FDIR/out" 2>"$FDIR/log" ||
-    fail "fuzz --reduce: $(tail -2 "$FDIR/log")"
-grep -q MARK "$FDIR/c.reduced.masm" || fail "fuzz --reduce lost the marked line"
-[ "$(wc -l < "$FDIR/c.reduced.masm")" -lt 10 ] || fail "fuzz --reduce left $(wc -l < "$FDIR/c.reduced.masm") lines"
+# (Not on Windows, which cannot start the shell script that stands in for a
+# VM here as a program.)
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*) ;;
+*)
+    REAL="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
+    {
+        echo '#!/bin/sh'
+        echo 'for a; do f=$a; done'
+        echo 'case " $* " in *" --jit "*) grep -q MARK "$f" && echo miscompiled;; esac'
+        echo "exec \"$REAL\" \"\$@\""
+    } > "$FDIR/vm"
+    chmod +x "$FDIR/vm"
+    awk '{ print } /^\.func f0/ { print "    nop                                ; MARK" }' "$FDIR/a.masm" > "$FDIR/c.masm"
+    $BIN fuzz --vm "$FDIR/vm" --reduce "$FDIR/c.masm" --modes jit --out "$FDIR/out" 2>"$FDIR/log" ||
+        fail "fuzz --reduce: $(tail -2 "$FDIR/log")"
+    grep -q MARK "$FDIR/c.reduced.masm" || fail "fuzz --reduce lost the marked line"
+    [ "$(wc -l < "$FDIR/c.reduced.masm")" -lt 10 ] || fail "fuzz --reduce left $(wc -l < "$FDIR/c.reduced.masm") lines"
+    ;;
+esac
 rm -rf "${FDIR:?}"
 
 # --trace with a limit
