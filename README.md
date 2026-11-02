@@ -114,7 +114,10 @@ base:
 * **Tested in its own assembly**: 312 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, with a
   garbage collection at every allocation, with every module optimized, and
-  with every function compiled by the JIT.
+  with every function compiled by the JIT. A differential fuzzer (`mlwsvm
+  fuzz`) runs random programs in each of these modes against the interpreter
+  and shrinks any that disagree, and `make release-check` runs everything,
+  the compilers' suites included, before a release.
 
 ## Performance
 
@@ -166,15 +169,17 @@ make test                    # runs tests/ and examples/
 make check-gc                # the same, collecting garbage at every allocation, and checking the write barrier
 make check-opt               # the same, with every module optimized (--opt all), also under GC stress
 make check-jit               # the same, with every function and block in machine code (--jit all), and hot functions
-make check-tools             # smoke-test the monitor, top, profiler, tracer, .loc and the module cache
+make check-tools             # smoke-test the monitor, top, profiler, tracer, .loc, the module cache and the fuzzer
+make check-fuzz              # 300 random programs in every mode, against the interpreter (mlwsvm fuzz)
 make bench                   # benchmarks, with output checks (docs/PERFORMANCE.md)
-make check-asan              # test and check-gc, under AddressSanitizer + UBSan
+make check-asan              # test and check-gc, under AddressSanitizer + UBSan, and fuzzed programs
 make check-tsan              # the tests on several threads, under ThreadSanitizer
 make check-switch            # the tests with switch dispatch (for compilers without computed goto)
 make check-loop              # the tests with the dispatch loop (for compilers without guaranteed tail calls)
 make check-poison            # the tests with new register windows full of garbage (checks what calls clear)
 make lib check-embed         # the embedding library, and its example host program
 make check-bindgen           # generate, compare and call bindings for a test header (needs clang)
+make release-check           # all of the above, longer fuzzing, and the compilers' suites in every mode
 
 ./mlwsvm run examples/hello.masm
 ./mlwsvm run --stats examples/fib.masm
@@ -236,7 +241,7 @@ src/heap/       garbage collector, heap objects (strings, bytes, arrays, structs
 src/opt/        the optimizer: its working form of a function, the passes, the report
 src/native/     built-in and standard-library natives (text, files, the OS and network, module.*), the extension API and the FFI
 src/embed/      the embedding API (libmlwsvm)
-src/tools/      test runner, doc generator, debugger, profiler/tracer, monitor, top, ext, lib, opt, bindgen
+src/tools/      test runner, doc generator, debugger, profiler/tracer, monitor, top, ext, lib, opt, bindgen, fuzz
 src/platform/   the only OS-specific code (POSIX and Windows)
 include/mlwsvm/ public C headers: the extension API (mlwsvm.h) and the embedding API (embed.h)
 web/            the monitor's dashboard (compiled into the binary)

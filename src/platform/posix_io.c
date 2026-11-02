@@ -197,6 +197,7 @@ char *plat_getcwd(void) {
 }
 
 char *const *plat_environ(void) { return environ; }
+void plat_unsetenv(const char *name) { unsetenv(name); }
 
 const char *plat_os_name(void) {
 #if defined(__APPLE__)

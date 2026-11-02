@@ -2,7 +2,8 @@
 
 Tools for seeing what a program is doing: resource statistics, a profiler, an
 instruction tracer, an interactive debugger, and a live monitor with a web
-dashboard and a `top`-style terminal view.
+dashboard and a `top`-style terminal view. And, for the VM itself, a
+differential fuzzer and the checks to run before a release.
 
 | Tool | Command | Overhead when off |
 |---|---|---|
@@ -19,6 +20,8 @@ dashboard and a `top`-style terminal view.
 | Libraries | `mlwsvm lib build DIR \| info FILE \| list` | — |
 | Optimizer | `mlwsvm opt -O2 prog.masm`, or `mlwsvm run --opt 2 prog.masm` ([OPTIMIZER.md](OPTIMIZER.md)) | none |
 | JIT | `mlwsvm run --jit on [--jit-report -] prog.masm` ([JIT.md](JIT.md)) | none |
+| Differential fuzzer | `mlwsvm fuzz [-n N \| --time S]`, `--reduce FILE` | — |
+| Before a release | `make release-check` (`tests/release-check.sh`) | — |
 
 The profiler, tracer and debugger use one per-instruction hook, which is
 installed only while one of them is active. A program run under them is
@@ -146,7 +149,7 @@ $ MLWSVM_QUOTA=heap=256M,insns=10000000000 mlwsvm run untrusted.masm
 Three environment variables are for testing the VM itself:
 `MLWSVM_GC_STRESS=1` (or `mlwsvm run --gc-stress`) collects garbage at every
 instruction boundary after an allocation (every eighth collection of the
-whole heap, the rest minor); `MLWSVM_GC_VERIFY=1` checks each minor
+whole heap, the rest minor); `MLWSVM_GC_VERIFY=1` (or `--gc-verify`) checks each minor
 collection against a walk of the whole heap, and aborts naming the object
 that holds a young one without having been remembered (a missing write
 barrier); and `MLWSVM_NO_SLABS=1` allocates every object with
@@ -396,6 +399,103 @@ array or an out parameter, or how long C keeps a pointer it is given. Review
 the output, and adjust it (`.ffi_free` for handles the program must free) before
 use. `make check-bindgen` generates bindings for `tests/_bindgen/libc.h`,
 compares them with `libc.expected`, and calls them.
+
+## Differential fuzzing: `mlwsvm fuzz`
+
+`mlwsvm fuzz` writes random programs that always end, runs each one in the
+interpreter and in every other mode, and reports each program whose output or
+exit status differs from the interpreter's, or that crashes or hangs:
+
+```
+$ mlwsvm fuzz -n 50000 --seed 100000
+mlwsvm fuzz: seeds from 100000, size 40, 18 jobs; against the interpreter: jit,hot,first,slice,opt,jit-opt,stress,jit-stress,verify,jit-verify
+mlwsvm fuzz: 50000 programs (seeds 100000-149999), 550000 runs, 0 skipped, 0 failed, 200.7 s
+```
+
+| Mode | Options | What it checks |
+|---|---|---|
+| `interp` | | the reference |
+| `jit` | `--jit all` | every function compiled as it loads, entered at every block |
+| `hot` | `--jit on --jit-hot 2` | functions compiled when hot, in the middle of a run |
+| `first` | `--jit on --jit-hot 1` | functions compiled at their first call |
+| `slice` | `--jit all --slice 7` | machine code left and entered again at time slices |
+| `opt` | `--opt all` | every optimizer pass |
+| `jit-opt` | `--jit all --opt all` | the JIT on optimized code |
+| `stress` | `--gc-stress` | a collection at every allocation |
+| `jit-stress` | `--jit all --gc-stress` | the same, in machine code |
+| `verify` | `--gc-verify` | each minor collection checked against a walk of the whole heap |
+| `jit-verify` | `--jit all --gc-verify` | the write barriers of machine code |
+
+A program has a few functions and a `main` that calls each of them three
+times and prints what they return, then everything they can have written:
+lists, a map, a chain of structs, strings, globals. The functions do integer
+(at every width), float and bitwise arithmetic, conversions, compares and
+selects; read and write list and array elements, struct fields, globals, raw
+memory, bytes of strings and byte buffers, map entries and the data stack;
+build strings, lists and structs (so collections run); branch, loop (with
+breaks, continues and early returns), jump through tables, throw and catch;
+call each other directly, through closures with captures, in tail position and
+inside coroutines that yield from anywhere. Each calls only the functions
+after it and loops a constant number of times, and a budget counted through
+loops and calls bounds the instructions and allocations of each call, so a
+program runs in a few milliseconds. An instruction that can trap (a divide by
+a register, an index not masked into range, a missing map key) is mostly put
+inside a `.try` region, so the handler's view of the registers is compared
+as well. The program for a seed is the same on every host: `mlwsvm fuzz
+--emit SEED` prints it.
+
+* `-n N` programs, or `--time SECONDS` (default: 100 programs), from `--seed
+  S` (default: from the clock); `-j N` at once (default: one per core).
+* `--size N`: statements per function, about (default 40). One function in
+  ten is eight times as long, for a lot of machine code in one function.
+* `--modes LIST`: which modes to compare with the interpreter (`--list`
+  shows them).
+* `--vm PATH`: run another build, such as `mlwsvm-asan`; by default the one
+  running `fuzz`. Each run is `mlwsvm run --no-cache --threads 1` with the
+  mode's options, and `fuzz` clears every `MLWSVM_` variable first, so a mode
+  is exactly what it says.
+* `--timeout SECONDS` (default 60): a run that takes longer is a hang (and
+  a program that slow in the interpreter is skipped).
+* `--out DIR` (default `fuzz-out`): each failing program goes there as
+  `fuzz-SEED.masm`, with a header saying which modes failed and how, the
+  first line that differs, and the command to reproduce it, and each run's
+  output as `fuzz-SEED.MODE.out`.
+
+`mlwsvm fuzz --reduce FILE [--modes LIST]` shrinks a failing program: it
+removes lines (halves, then quarters, and so on, then each run of up to four
+lines) while the program still assembles, exits as before in the interpreter,
+and fails the same way (differs, crashes or hangs) in a mode that failed at
+first. A candidate that loops is cut off at four times the original's time.
+It writes the result beside the file as `FILE.reduced.masm`, often a few
+dozen lines after a few hundred runs (a fault that needs a large function
+keeps more).
+
+`make check-fuzz` runs seeds 1 to 300 (a few seconds), in CI too, and `make
+check-asan` 100 under AddressSanitizer.
+
+## Before a release: `make release-check`
+
+`sh tests/release-check.sh [-c CC] [-C COMPILERS_DIR] [-f FUZZ_SECONDS]` runs
+every check a release needs, on the machine it runs on:
+
+* a clean build, which must have no warnings;
+* `make test`, also on one worker thread, and `check-gc`, `check-opt`,
+  `check-jit`, `check-embed`, `check-tools`, `check-bindgen`, `check-asan`
+  (also with `MLWSVM_OPT=3`, and with the JIT and `MLWSVM_OPT=3`),
+  `check-tsan`, `check-switch`, `check-loop`, `check-poison`, a build without
+  libffi, and the benchmarks' output checks;
+* the fuzzer for `FUZZ_SECONDS` (default 300), and a tenth of that under
+  AddressSanitizer;
+* if `../mlws-compilers` (or `COMPILERS_DIR`) is there, the Brainfuck, Lox,
+  Lua and Erlang compilers' suites in eleven modes with this build: the JIT
+  off, on, on compiling every function at its first call, and `all`; GC
+  stress and `MLWSVM_OPT=3`, each also with `all`; `MLWSVM_GC_VERIFY` with the
+  JIT off and `all`; and, with the AddressSanitizer build, `all` and `all` at
+  `MLWSVM_OPT=3`.
+
+It goes on after a failure, prints one line per step, keeps each step's
+output in `build/release-check/STEP.log`, and exits with 1 if any step
+failed. It takes about an hour. Run it on every platform a release supports.
 
 ## Testing the tools
 

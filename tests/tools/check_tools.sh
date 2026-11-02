@@ -1,7 +1,7 @@
 #!/bin/sh
 # Smoke test for the tools that cannot be exercised from inside an assembly
-# test: --monitor (HTTP API and dashboard), `mlwsvm top`, --profile, --trace
-# and `mlwsvm opt`.
+# test: --monitor (HTTP API and dashboard), `mlwsvm top`, --profile, --trace,
+# `mlwsvm opt` and `mlwsvm fuzz`.
 # Usage: tests/tools/check_tools.sh [path/to/mlwsvm]      (run by `make check-tools`)
 set -eu
 BIN=${1:-./mlwsvm}
@@ -360,6 +360,32 @@ $BIN asm "$ODIR/bytes2.masm" -o "$ODIR/bytes2.mlwso" || fail "dis: reassembling"
 $BIN dis "$ODIR/bytes2.mlwso" | grep -q 'a\\xc2b€c' || fail "dis: the string changed on the way round"
 rm -rf "${ODIR:?}"
 
+# mlwsvm fuzz: the program for a seed is the same each time, and runs; a
+# few seeds agree with the interpreter in every mode; and --reduce, given a VM
+# whose JIT "miscompiles" any program with a marked line (a script that adds a
+# line of output when --jit is given), keeps that line and little else.
+FDIR=$(mktemp -d)
+$BIN fuzz --emit 7 > "$FDIR/a.masm" && $BIN fuzz --emit 7 > "$FDIR/b.masm" || fail "fuzz --emit"
+cmp -s "$FDIR/a.masm" "$FDIR/b.masm" || fail "fuzz --emit: not the same program twice"
+$BIN run --no-cache "$FDIR/a.masm" >/dev/null || fail "fuzz --emit: the program fails"
+$BIN fuzz --list | grep -q "^jit-verify " || fail "fuzz --list"
+$BIN fuzz -n 20 --seed 1 -j 4 --out "$FDIR/out" 2>"$FDIR/log" || fail "fuzz: $(tail -3 "$FDIR/log")"
+grep -q "20 programs (seeds 1-20), 220 runs, 0 skipped, 0 failed" "$FDIR/log" || fail "fuzz: $(tail -1 "$FDIR/log")"
+REAL="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
+{
+    echo '#!/bin/sh'
+    echo 'for a; do f=$a; done'
+    echo 'case " $* " in *" --jit "*) grep -q MARK "$f" && echo miscompiled;; esac'
+    echo "exec \"$REAL\" \"\$@\""
+} > "$FDIR/vm"
+chmod +x "$FDIR/vm"
+awk '{ print } /^\.func f0/ { print "    nop                                ; MARK" }' "$FDIR/a.masm" > "$FDIR/c.masm"
+$BIN fuzz --vm "$FDIR/vm" --reduce "$FDIR/c.masm" --modes jit --out "$FDIR/out" 2>"$FDIR/log" ||
+    fail "fuzz --reduce: $(tail -2 "$FDIR/log")"
+grep -q MARK "$FDIR/c.reduced.masm" || fail "fuzz --reduce lost the marked line"
+[ "$(wc -l < "$FDIR/c.reduced.masm")" -lt 10 ] || fail "fuzz --reduce left $(wc -l < "$FDIR/c.reduced.masm") lines"
+rm -rf "${FDIR:?}"
+
 # --trace with a limit
 N=$($BIN run --trace - --trace-limit 5 examples/hello.masm 2>&1 >/dev/null | grep -c '^\[1\]')
 [ "$N" = 5 ] || fail "trace limit (got $N lines)"
@@ -394,4 +420,4 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
 fi
-echo "check-tools: profile, .loc, cache, lib, --also, opt, trace, jit, monitor, top OK"
+echo "check-tools: profile, .loc, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"

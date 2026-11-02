@@ -1,5 +1,5 @@
 /* main.c - the `mlwsvm` command line: run, debug, top, asm, dis, test, doc, ext,
- * lib, bindgen and version. */
+ * lib, opt, bindgen, fuzz and version. */
 #include "asm/asm.h"
 #include "core/disasm.h"
 #include "core/version.h"
@@ -19,6 +19,7 @@ static void usage(FILE *f) {
           "        --trace FILE|- [--trace-limit N] log every instruction\n"
           "        --monitor [HOST:]PORT [--hold]  serve the web dashboard and /api while running\n"
           "        --gc-stress                     collect garbage at every allocation (VM testing)\n"
+          "        --gc-verify                     check each minor collection against the whole heap (VM testing)\n"
           "        --unsafe-native                 load native code without the trust checks (development)\n"
           "        --no-cache                      assemble .masm files afresh (or MLWSVM_NO_CACHE=1)\n"
           "      VM options (also for test; or MLWSVM_<NAME>, e.g. MLWSVM_MAX_FRAMES=500000):\n"
@@ -48,6 +49,9 @@ static void usage(FILE *f) {
           "  opt  [-L dir] [-O0|-O1|-O2|-O3] [--passes LIST] [-o out.mlwso] [-S] [--report FILE|-] [-v] file.(masm|mlwso)\n"
           "                                        optimize a module, with a report (--list: the passes)\n"
           "  bindgen [-l LIB] [-p PREFIX] [-o OUT] [--all] header.h       FFI declarations from a C header (clang)\n"
+          "  fuzz [-n N | --time S] [--seed S] [-j N] [--modes LIST] [--vm PATH] [--out DIR]\n"
+          "                                        run random programs in every mode against the interpreter\n"
+          "                                        (--emit SEED, --reduce FILE, --list: the modes)\n"
           "  version\n"
           "\n"
           "Libraries are searched in: the program's directory, -L dirs, $MLWSVM_PATH, and lib/\n"
@@ -132,7 +136,7 @@ static void print_error(const MlwsError *e) {
 
 static int cmd_run(int argc, char **argv) {
     const char *file = NULL;
-    bool stats = false, gc_stress = false, profile = false, hold = false, unsafe_native = false, no_cache = false;
+    bool stats = false, gc_stress = false, gc_verify = false, profile = false, hold = false, unsafe_native = false, no_cache = false;
     const char *trace = NULL, *flame = NULL, *monitor = NULL;
     uint64_t trace_limit = 0;
     VEC(const char *) opts = {0}; /* VM options: name, value pairs */
@@ -147,6 +151,7 @@ static int cmd_run(int argc, char **argv) {
         else if (!strcmp(argv[i], "--trace-limit") && i + 1 < argc) trace_limit = strtoull(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor = argv[++i];
         else if (!strcmp(argv[i], "--gc-stress")) gc_stress = true;
+        else if (!strcmp(argv[i], "--gc-verify")) gc_verify = true;
         else if (!strcmp(argv[i], "--unsafe-native")) unsafe_native = true;
         else if (!strcmp(argv[i], "--no-cache")) no_cache = true;
         else if (take_lib_opt(argc, argv, &i)) continue;
@@ -207,6 +212,7 @@ static int cmd_run(int argc, char **argv) {
     }
     for (int k = 0; k < progs.v[0].argc; k++) VEC_PUSH(vm->prog_args, xstrdup(prog_argv[k]));
     if (gc_stress) vm->gc_stress = true;
+    if (gc_verify) vm->gc_verify = true;
     if (unsafe_native) vm->unsafe_native = true;
     if (no_cache) vm->no_cache = true;
     if (trace && !tools_trace(vm, trace, trace_limit)) {
@@ -441,6 +447,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "lib")) rc = tool_lib(n, args, &g_env);
     else if (!strcmp(cmd, "opt")) rc = tool_opt(n, args, &g_env);
     else if (!strcmp(cmd, "bindgen")) rc = tool_bindgen(n, args);
+    else if (!strcmp(cmd, "fuzz")) rc = tool_fuzz(n, args);
     else if (!strcmp(cmd, "version") || !strcmp(cmd, "--version")) {
         printf("mlwsvm %s\n", MLWSVM_VERSION);
         rc = 0;

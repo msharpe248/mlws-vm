@@ -21,6 +21,7 @@ int tool_test(int argc, char **argv, const ToolEnv *env);
 int tool_doc(int argc, char **argv);
 int tool_top(int argc, char **argv);
 int tool_bindgen(int argc, char **argv); /* `mlwsvm bindgen` */
+int tool_fuzz(int argc, char **argv);    /* `mlwsvm fuzz` (fuzz.c) */
 
 /* --trace / --profile (hooks.c) */
 bool tools_trace(VM *vm, const char *path, uint64_t limit);

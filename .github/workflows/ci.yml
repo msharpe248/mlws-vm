@@ -55,6 +55,9 @@ jobs:
       - name: JIT (every function and block, also with GC stress and the optimizer; hot functions)
         run: make CC=$CC check-jit
 
+      - name: Fuzzer (random programs in every mode against the interpreter)
+        run: make CC=$CC check-fuzz
+
       - name: Tools (monitor, top, profiler, tracer)
         run: make CC=$CC check-tools
 
@@ -114,6 +117,9 @@ jobs:
 
       - name: JIT (every function and block, also with GC stress and the optimizer; hot functions)
         run: make CC=$CC check-jit
+
+      - name: Fuzzer (random programs in every mode against the interpreter)
+        run: make CC=$CC check-fuzz
 
       - name: AddressSanitizer + UBSan, also with the JIT
         run: make CC=$CC check-asan

@@ -115,6 +115,7 @@ bool plat_rename(const char *from, const char *to, int *err);
 bool plat_mkdir_err(const char *path, int *err);
 char *plat_getcwd(void); /* malloc'd */
 char *const *plat_environ(void); /* NAME=VALUE strings, NULL-terminated */
+void plat_unsetenv(const char *name); /* for the children this process starts */
 const char *plat_os_name(void);  /* "macos", "linux", "freebsd", "windows", ... */
 
 /* Child processes. `pipes` selects which of stdin/stdout/stderr get a pipe

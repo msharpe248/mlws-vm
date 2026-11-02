@@ -394,9 +394,9 @@ exception is constant-pool strings, which are immutable and immortal.
   collected, and GC count (and how many were of the whole heap) and time. `gc.heap_bytes` and `gc.collections` read them
   from inside a program.
 * **Stress testing.** `--gc-stress` (or `MLWSVM_GC_STRESS=1`) collects at every
-  instruction boundary after an allocation. `MLWSVM_GC_VERIFY=1` checks each
-  minor collection against a walk of the whole heap. `make check-gc` runs the
-  whole test suite both ways.
+  instruction boundary after an allocation. `--gc-verify` (or `MLWSVM_GC_VERIFY=1`)
+  checks each minor collection against a walk of the whole heap. `make check-gc` runs the
+  whole test suite both ways, and `mlwsvm fuzz` random programs, with the JIT and without.
 
 ## 7. Exceptions and traps
 

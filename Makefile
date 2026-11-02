@@ -10,11 +10,15 @@
 #   make check-jit    run the tests with the JIT: every function compiled and entered at every
 #                     block (--jit all), also with GC stress and optimized; then hot functions
 #   make check-asan   build with AddressSanitizer + UBSan and run the tests (normal, GC stress, JIT)
+#                     and 100 fuzzed programs
 #   make check-switch build with switch dispatch instead of threaded code (as MSVC would) and run the tests
 #   make check-loop   build with the threaded dispatch loop instead of tail calls (as GCC before 15 would) and run the tests
 #   make check-poison build with every new register window filled with garbage before the
 #                     registers a call clears are cleared, and run the tests (checks verify.c's plan)
 #   make check-tsan   build with ThreadSanitizer and run the tests on several worker threads
+#   make check-fuzz   run 300 random programs in every mode against the interpreter (mlwsvm fuzz)
+#   make release-check  every check above, longer fuzzing, and the compilers' suites in every
+#                     mode if ../mlws-compilers is there (tests/release-check.sh): before a release
 #   make lib          the embedding library: build/libmlwsvm.a and a shared libmlwsvm
 #   make check-embed  build and run the embedding example (examples/embed/host.c)
 #   make test-ext     build the example extension the tests load (extensions/)
@@ -68,7 +72,7 @@ DL_LIBS := -ldl -lpthread
 endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: check-jit check-opt all test test-ext test-libs check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
+.PHONY: check-fuzz release-check check-jit check-opt all test test-ext test-libs check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
 
 all: $(BIN)
 
@@ -190,6 +194,14 @@ check-jit: $(BIN) test-ext
 	MLWSVM_JIT=on MLWSVM_JIT_HOT=2 ./$(BIN) test tests examples
 	MLWSVM_JIT=on MLWSVM_JIT_HOT=2 MLWSVM_THREADS=1 ./$(BIN) test tests examples
 
+# Random programs (src/tools/fuzz.c), each run in the interpreter and in
+# every other mode, which must print the same; seeds 1-300 every time.
+check-fuzz: $(BIN)
+	./$(BIN) fuzz -n 300 --seed 1 --out build/fuzz
+
+release-check:
+	sh tests/release-check.sh -c $(CC)
+
 check-asan: test-ext
 	$(MAKE) BUILD=build-asan BIN=mlwsvm-asan \
 	    CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
@@ -197,6 +209,7 @@ check-asan: test-ext
 	$(ASAN_ENV) ./mlwsvm-asan test tests examples
 	$(ASAN_ENV) MLWSVM_TEST_TIMEOUT=$(STRESS_TIMEOUT) MLWSVM_GC_STRESS=1 ./mlwsvm-asan test tests examples
 	$(ASAN_ENV) MLWSVM_JIT=all ./mlwsvm-asan test tests examples
+	$(ASAN_ENV) ./mlwsvm-asan fuzz -n 100 --seed 1 --out build/fuzz-asan
 	$(MAKE) BUILD=build-asan BIN=mlwsvm-asan \
 	    CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
 	    LDFLAGS="-fsanitize=address,undefined" build-asan/embed-host

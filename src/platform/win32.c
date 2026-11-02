@@ -282,6 +282,7 @@ bool plat_rename(const char *a, const char *b, int *err) { (void)a, (void)b; *er
 bool plat_mkdir_err(const char *path, int *err) { (void)path; *err = ERROR_NOT_SUPPORTED; return false; }
 char *plat_getcwd(void) { return NULL; }
 char *const *plat_environ(void) { return _environ; }
+void plat_unsetenv(const char *name) { _putenv_s(name, ""); }
 const char *plat_os_name(void) { return "windows"; }
 bool plat_spawn(char *const argv[], int pipes, PlatChild *c, int *err) { (void)argv, (void)pipes, (void)c; *err = ERROR_NOT_SUPPORTED; return false; }
 bool plat_wait_child(int64_t pid, int *code, int *err) { (void)pid, (void)code; *err = ERROR_NOT_SUPPORTED; return false; }
