@@ -31,6 +31,8 @@ long plat_sock_read(int fd, void *buf, size_t n, uint64_t timeout_ns); /* 0 = cl
 bool plat_sock_write_all(int fd, const void *buf, size_t n);
 void plat_sock_close(int fd);
 bool plat_is_tty(void);                       /* stdout is a terminal */
+void plat_stdio_init(void);                   /* stdout and stderr write bytes as they are (Windows:
+                                                 no newline translation, a UTF-8 console) */
 
 /* Threads (pthreads on POSIX, Win32 threads/SRW locks/condition variables). */
 typedef struct PlatThread PlatThread;

@@ -12,7 +12,7 @@
  * in the .mlwso format.
  *
  * The directory is $MLWSVM_CACHE, else $XDG_CACHE_HOME/mlwsvm, else
- * ~/.cache/mlwsvm; MLWSVM_NO_CACHE=1 or `run --no-cache` turns the cache
+ * ~/.cache/mlwsvm (on Windows %LOCALAPPDATA%\mlwsvm); MLWSVM_NO_CACHE=1 or `run --no-cache` turns the cache
  * off. It is made private (0700), and used only if it passes the same trust
  * check as native code, because a module can declare foreign functions. An
  * entry is written to a temporary file and renamed into place, so readers
@@ -48,6 +48,10 @@ static const char *cache_dir(VM *vm) {
         d = xstrdup(dir);
     } else {
         const char *xdg = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
+#ifdef _WIN32
+        const char *local = getenv("LOCALAPPDATA");
+        if (local && *local) xdg = local;
+#endif
         char *base;
         if (xdg && *xdg) base = xstrdup(xdg);
         else if (home && *home) base = path_join(home, ".cache");

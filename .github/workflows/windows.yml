@@ -32,6 +32,10 @@ jobs:
       - name: Build
         run: make CC=clang -k -j4
 
+      - name: Test fixtures (extension, library archives)
+        continue-on-error: true
+        run: make CC=clang test-ext
+
       - name: Tests (suite only, while porting)
         run: ./mlwsvm test tests examples 2>&1 | tail -400
 

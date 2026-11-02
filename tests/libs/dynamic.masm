@@ -6,7 +6,8 @@
 ; before a module was loaded gets that module's globals when it first uses
 ; them, and each process has its own copy. A load that fails can be caught,
 ; leaves nothing half loaded, and can be tried again.
-; option: --lib-path tests/libs/_dyn:build/test-libs
+; option: --lib-path tests/libs/_dyn
+; option: --lib-path build/test-libs
 .include "std/test.inc"
 .requires greet, "^1.0"
 

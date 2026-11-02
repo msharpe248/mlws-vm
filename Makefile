@@ -145,6 +145,13 @@ build/ext/demo.mlwsx: extensions/demo/demo.c include/mlwsvm/mlwsvm.h
 	@mkdir -p $(dir $@)
 	$(CC) $(EXT_CFLAGS) -o $@ $<
 
+# Let every user write to a directory (Windows: an access control entry for Everyone).
+ifeq ($(OS),Windows_NT)
+WORLD_WRITABLE = MSYS2_ARG_CONV_EXCL='*' icacls $(1) /grant '*S-1-1-0:(OI)(CI)W' >/dev/null
+else
+WORLD_WRITABLE = chmod o+w $(1)
+endif
+
 # Trusted extension directories for tests/native: a good one, and three that
 # must be refused (not in TRUSTED, changed since installed, writable by others).
 TEST_EXT := build/test-ext
@@ -163,7 +170,7 @@ test-ext: $(BIN) build/ext/demo.mlwsx test-libs
 	@./$(BIN) ext install --dir build/test-ext-tampered build/ext/demo.mlwsx >/dev/null
 	@printf 'x' >> build/test-ext-tampered/demo.mlwsx
 	@./$(BIN) ext install --dir build/test-ext-open build/ext/demo.mlwsx >/dev/null
-	@chmod o+w build/test-ext-open
+	@$(call WORLD_WRITABLE,build/test-ext-open)
 
 test: $(BIN) test-ext
 	./$(BIN) test tests examples

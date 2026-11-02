@@ -110,7 +110,8 @@ char *read_file(const char *path, size_t *len);
 bool write_file(const char *path, const void *data, size_t len);
 bool file_exists(const char *path);
 char *path_dirname(const char *path);
-char *path_join(const char *a, const char *b);
+char *path_join(const char *a, const char *b); /* b if it is absolute */
+bool path_is_absolute(const char *path);        /* /x; on Windows also \x, C:\x and C:/x */
 const char *path_basename(const char *path);
 bool str_ends_with(const char *s, const char *suffix);
 
