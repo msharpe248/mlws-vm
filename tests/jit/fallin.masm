@@ -1,0 +1,105 @@
+; A block reached only by falling through the conditional branch before it
+; keeps that block's cached registers and what it knew of R registers
+; (src/vm/jit.inc, fallin): the branch writes them back only on the way to
+; its target. Every result must be the interpreter's:
+;   * registers set before a branch, read after it on both of its ways;
+;   * a block after a branch that a jmp also reaches (it is not one of those:
+;     the jmp's way arrives with nothing cached);
+;   * the slice ending at such a block's start (a 7-instruction slice), with
+;     registers not yet written back;
+;   * a struct checked in one block and its fields read in the next ones;
+;   * floats, and a compare of floats as the branch.
+; option: --jit all
+; option: --slice 7
+; expect-stdout: both 2013 1101
+; expect-stdout: jmp 7 13
+; expect-stdout: fields 7 9 16
+; expect-stdout: floats 7.5 -0.5
+.include "std/io.inc"
+.struct P
+    a: i64
+    b: i64
+.ends
+
+; x+1 and x*10 set before the branch; read after it on whichever way it went
+.func both(i64 x) -> i64
+    add I1, x, 1
+    mul I2, x, 10
+    bgt I1, 100, 1f
+    add I3, I1, I2                     ; fall through: both still cached
+    add I3, I3, 1000
+    ret I3
+1:  add I3, I1, I2                     ; the target: written back first
+    ret I3
+.endf
+
+; 2: follows a conditional branch and is also a jmp's target. On the jmp's
+; way, a native (which the machine code steps) sets I1 in the window, so a
+; machine register still holding I1's old value would show.
+.func jmp_in(i64 x) -> i64
+    mov I1, x
+    bz I1, 1f
+    ncall "str.len" ("abcd") -> (I1)
+    jmp 2f
+1:  add I1, I1, 10
+    blt I1, 5, 3f
+2:  add I1, I1, 3                      ; from the jmp, and falling through
+    ret I1
+3:  ret 0
+.endf
+
+; a struct checked once; its fields read across the blocks after it
+.func fields(ref p, i64 k) -> (i64, i64, i64)
+    mov I1, p->P.a
+    blt I1, k, 1f
+    mov I2, p->P.b
+    blt I2, k, 1f
+    add I3, I1, I2
+    ret I1, I2, I3
+1:  ret 0, 0, 0
+.endf
+
+.func floats(f64 x, f64 y) -> f64
+    add.f64 F2, x, y
+    sub.f64 F3, x, y
+    bgt.f64 F2, 100.0, 1f
+    mul.f64 F4, F2, 1.0
+    blt.f64 F3, 0.0, 1f
+    ret F4
+1:  ret F3
+.endf
+
+.func main
+    mov I5, 0
+    mov I6, 0
+    mov I7, 0
+1:  call both (I5) -> (I8)            ; fall-through way while x <= 99
+    add I6, I8
+    inc I5
+    blt I5, 2, 1b
+    call both (100) -> (I9)           ; the target's way
+    PRINT_S "both "
+    PRINT_I I6
+    PRINT_S " "
+    PRINT_I I9
+    NL
+
+    call jmp_in (27) -> (I1)           ; through the jmp: len "abcd" + 3
+    call jmp_in (0) -> (I2)            ; falling through: 0 + 10 + 3
+    PRINTLN "jmp", I1, I2
+
+    new R0, P
+    mov R0->P.a, 7
+    mov R0->P.b, 9
+    call fields (R0, 2) -> (I3, I4, I5)
+    PRINTLN "fields", I3, I4, I5
+
+    call floats (5.0, 2.5) -> (F0)     ; fall through twice: 7.5
+    call floats (1.0, 1.5) -> (F1)     ; the second branch: -0.5
+    PRINT_S "floats "
+    PRINT_F F0
+    PRINT_S " "
+    PRINT_F F1
+    NL
+    ret 0
+.endf
