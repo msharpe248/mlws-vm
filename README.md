@@ -131,29 +131,29 @@ Apple M5 Pro. Every engine printed the same output.
 
 | Lua | MLWSVM | MLWSVM JIT | Lua 5.5 | LuaJIT 2.1 |
 |---|---|---|---|---|
-| fib (32) | 60 | **34** | 53 | 10 |
-| loop (30,000,000 iterations) | 197 | **52** | 218 | 17 |
-| methods (2M method calls and objects) | 528 | **245** | 348 | 71 |
-| strings (format, gmatch, gsub) | 220 | 152 | **134** | 100 |
-| iterate (pairs, ipairs) | 71 | **33** | 58 | 6 |
-| binarytrees (15) | 331 | **182** | 382 | 148 |
-| nbody (500,000) | 847 | **405** | 424 | 25 |
-| spectralnorm (500) | 225 | **99** | 185 | 9 |
-| fannkuch (10) | 1,967 | **683** | 808 | 125 |
+| fib (32) | 62 | **32** | 53 | 10 |
+| loop (30,000,000 iterations) | 199 | **55** | 218 | 17 |
+| methods (2M method calls and objects) | 544 | **248** | 348 | 71 |
+| strings (format, gmatch, gsub) | 228 | 155 | **134** | 100 |
+| iterate (pairs, ipairs) | 73 | **35** | 58 | 6 |
+| binarytrees (15) | 332 | **182** | 382 | 148 |
+| nbody (500,000) | 866 | **412** | 424 | 25 |
+| spectralnorm (500) | 226 | **91** | 185 | 9 |
+| fannkuch (10) | 2,002 | **691** | 808 | 125 |
 
 | Erlang | MLWSVM | MLWSVM JIT | Erlang/OTP 29 (JIT) |
 |---|---|---|---|
-| fib (30) | 41 | **22** | 90 |
-| ring (1,000 processes, 1,000,000 messages) | 232 | **213** | 265 |
-| binarytrees (16) | 568 | 243 | **129** |
-| nbody (100,000 steps) | 480 | 203 | **148** |
-| sorting (200,000 integers, maps) | 657 | 350 | **115** |
+| fib (30) | 42 | **20** | 90 |
+| ring (1,000 processes, 1,000,000 messages) | 237 | **217** | 265 |
+| binarytrees (16) | 570 | 227 | **129** |
+| nbody (100,000 steps) | 489 | 207 | **148** |
+| sorting (200,000 integers, maps) | 663 | 343 | **115** |
 
 Bold marks the faster of MLWSVM's JIT and the reference interpreter or
 BEAM; LuaJIT is there for scale. With its JIT, MLWSVM runs eight of the nine
 Lua programs faster than Lua 5.5; Lua 5.5 is faster where the time goes to
 its C library (`strings`). LuaJIT, a tracing JIT that specializes code to
-the types it sees, is 1.2–16× faster than MLWSVM's JIT. BEAM's times include its start-up of
+the types it sees, is 1.2–17× faster than MLWSVM's JIT. BEAM's times include its start-up of
 about 80 ms, which is most of its `fib` and almost a third of its `ring`.
 Its code is 1.4–3.0× faster than MLWSVM's JIT on the other three. Start-up
 is 3 ms for MLWSVM (with the module cache) and 2 ms for Lua.

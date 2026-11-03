@@ -234,10 +234,10 @@ only for a report.
 
 [PERFORMANCE.md](PERFORMANCE.md#the-jit) has the results on the three
 machines, for the benchmarks and the compilers' programs. Calls (`fib`) take
-44–63% less time, closure calls (`closures`, compiled Lox's `invocation`)
-55–84% less, loops (`loop`, `fannkuch`, `spectralnorm`) 48–79% less, and
+52–66% less time, closure calls (`closures`, compiled Lox's `invocation`)
+56–85% less, loops (`loop`, `fannkuch`, `spectralnorm`) 48–78% less, and
 field and element access with method calls (`nbody`, `methods`, compiled
-Lox's `trees`) 30–55% less. Where the time goes to natives (`maps`), raw memory (`sieve`)
+Lox's `trees`) 30–58% less. Where the time goes to natives (`maps`), raw memory (`sieve`)
 or the scheduler (Erlang's `ring`), the JIT changes little.
 
 ## Design
