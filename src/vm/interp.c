@@ -1842,7 +1842,7 @@ static inline const Obj *qpart(Obj **R, const Operand *o) {
 }
 static MLWS_NOINLINE Obj *q_strcat(Process *p, const Insn *in, Obj **R) {
     uint64_t total = 0;
-    uint32_t len;
+    uint32_t len = 0; /* (set by qtext when it returns text) */
     for (int k = 1; k < in->nops; k++) {
         if (!qtext(qpart(R, &in->ops[k]), &len)) return NULL;
         total += len;
@@ -1859,7 +1859,7 @@ static MLWS_NOINLINE Obj *q_strcat(Process *p, const Insn *in, Obj **R) {
 }
 static MLWS_NOINLINE bool q_bufcat(Process *p, const Insn *in, Obj **R) {
     Obj *b = R[in->r[0]];
-    uint32_t len;
+    uint32_t len = 0; /* (set by qtext when it returns text) */
     if (!b || b->kind != OBJ_BYTES) return false;
     for (int k = 1; k < in->nops; k++)
         if (!qtext(qpart(R, &in->ops[k]), &len)) return false;
@@ -1870,7 +1870,7 @@ static MLWS_NOINLINE bool q_bufcat(Process *p, const Insn *in, Obj **R) {
     return true;
 }
 static MLWS_NOINLINE Obj *q_substr(Process *p, const Insn *in, Obj **R, const int64_t *I) {
-    uint32_t len;
+    uint32_t len = 0; /* (set by qtext when it returns text) */
     const uint8_t *d = qtext(R[in->r[1]], &len);
     int64_t start = I[in->r[2]], cnt = I[in->target];
     if (!d || start < 0 || cnt < 0 || start > (int64_t)len - cnt) return NULL;
