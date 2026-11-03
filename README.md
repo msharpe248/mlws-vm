@@ -112,7 +112,7 @@ base:
   milliseconds on later runs.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 314 test programs, also run under
+* **Tested in its own assembly**: 323 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, with a
   garbage collection at every allocation, with every module optimized, and
   with every function compiled by the JIT. A differential fuzzer (`mlwsvm

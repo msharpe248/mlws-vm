@@ -111,10 +111,16 @@ preemption are exactly the interpreter's, and a slice can end in the middle
 of a loop as it would without the JIT.
 
 **Calls.** A call from machine code pushes the frame as the interpreter's
-call does and goes to the callee's machine code, or to the interpreter at
-its first instruction if it has none. Its continuation follows it in the
-machine code. A return to a call made from machine code goes to the
-continuation; any other return is the interpreter's. Calls and returns are
+call does and goes to the callee's machine code. A direct call to a function
+that has no machine code stops for the interpreter, which makes it; a
+closure call goes to the interpreter at the callee's first instruction. The
+call clears the callee's window two words at a time (`stp` on arm64, a
+16-byte store on x86-64), and writes the frame's pc and flags as one word.
+Its continuation follows it in the machine code, and the code of the
+instruction after the call follows the continuation. A return to a call made
+from machine code goes to the continuation, with the first four results in
+machine registers (the rest go through memory); any other return is the
+interpreter's. Calls and returns are
 paired machine calls and returns, so the CPU's return predictor follows
 them. On arm64 nothing is pushed; on x86-64 a call pushes its return
 address, and a return checks it against the frame's continuation. A call

@@ -86,6 +86,12 @@ static void jm_stz(JBuf *b, int n, int64_t off) { /* mov qword [n+off], 0 */
     x_mem(b, 0, true, 0xC7, 0, n, off, false);
     jb32(b, 0);
 }
+/* n words of zeros at [n + off]: two at a time from a zeroed xmm0 (JF_S0) */
+static void jm_clear(JBuf *b, int n, int64_t off, unsigned words) {
+    if (words >= 2) jb8(b, 0x66), jb8(b, 0x0F), jb8(b, 0xEF), jb8(b, 0xC0); /* pxor xmm0, xmm0 */
+    for (; words >= 2; words -= 2, off += 16) x_mem(b, 0, false, 0x0F11, JF_S0, n, off, false); /* movups */
+    if (words) jm_stz(b, n, off);
+}
 static void jm_ld32(JBuf *b, int d, int n, int64_t off) { x_mem(b, 0, false, 0x8B, d, n, off, false); }
 static void jm_st32(JBuf *b, int s, int n, int64_t off) { x_mem(b, 0, false, 0x89, s, n, off, false); }
 static void jm_ld8(JBuf *b, int d, int n, int64_t off) { x_mem(b, 0, false, 0x0FB6, d, n, off, false); }

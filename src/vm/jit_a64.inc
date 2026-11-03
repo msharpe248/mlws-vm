@@ -104,6 +104,12 @@ static void a_mem(JBuf *b, uint32_t uop, uint32_t rop, unsigned sz, int t, int n
 static void jm_ld(JBuf *b, int d, int n, int64_t off) { a_mem(b, 0xF9400000u, 0xF8606800u, 8, d, n, off); }
 static void jm_st(JBuf *b, int s, int n, int64_t off) { a_mem(b, 0xF9000000u, 0xF8206800u, 8, s, n, off); }
 static void jm_stz(JBuf *b, int n, int64_t off) { jm_st(b, XZR, n, off); }
+/* n words of zeros at [n + off]: stp xzr, xzr where the offset fits */
+static void jm_clear(JBuf *b, int n, int64_t off, unsigned words) {
+    for (; words >= 2 && off % 8 == 0 && off >= -512 && off <= 496; words -= 2, off += 16)
+        jw(b, 0xA9000000u | (uint32_t)((off / 8) & 0x7F) << 15 | (unsigned)XZR << 10 | (unsigned)n << 5 | XZR);
+    for (; words; words--, off += 8) jm_stz(b, n, off);
+}
 static void jm_ld32(JBuf *b, int d, int n, int64_t off) { a_mem(b, 0xB9400000u, 0xB8606800u, 4, d, n, off); }
 static void jm_st32(JBuf *b, int s, int n, int64_t off) { a_mem(b, 0xB9000000u, 0xB8206800u, 4, s, n, off); }
 static void jm_ld8(JBuf *b, int d, int n, int64_t off) { a_mem(b, 0x39400000u, 0x38606800u, 1, d, n, off); }

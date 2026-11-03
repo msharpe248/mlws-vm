@@ -1,0 +1,162 @@
+; What a call and its return carry between machine code (src/vm/jit.inc,
+; jit_push_frame, jit_ret and jit_cont): a return leaves its first four
+; results in machine registers and the rest in Ctx.retv; a call writes the
+; frame's pc and flags as one word, clears the callee's window two words at a
+; time where it can, and is the interpreter's when the callee has no machine
+; code. With --jit-hot 20, main's loop and the callees are compiled early,
+; and every result must be the interpreter's:
+;   * one to seven results, of every bank, constants among them, from direct
+;     calls, a closure call and a tail call;
+;   * a window cleared after a call that left values in it: R registers, and
+;     I and F registers read before they are written, near the window's start
+;     and far enough into it that a pair store cannot reach them;
+;   * a hot caller calling a function once, which has no machine code then.
+; option: --jit on
+; option: --jit-hot 20
+.include "std/test.inc"
+
+; Seven results: I, F, R and a constant in registers, the rest in Ctx.retv.
+.func seven(i64 a, f64 x, ref s) -> (i64, f64, ref, i64, f64, ref, i64)
+    add I1, a, 1
+    mul.f64 F1, x, 2.0
+    add I2, a, 2
+    add.f64 F2, x, 0.5
+    ret I1, F1, s, 9, F2, s, I2
+.endf
+
+.func one(f64 x) -> f64
+    add.f64 F1, x, 1.0
+    ret F1
+.endf
+
+; Four constants and a register: every result of the four in registers.
+.func four(i64 a) -> (i64, i64, i64, i64)
+    ret 1, a, -3, 4
+.endf
+
+.func five(ref s, ref t) -> (ref, ref, ref, ref, ref)
+    ret t, s, t, s, t
+.endf
+
+; Its results are seven's: a tail call returns to this one's caller.
+.func via(i64 a, f64 x, ref s) -> (i64, f64, ref, i64, f64, ref, i64)
+    add I3, a, 10
+    tcall seven (I3, x, s)
+.endf
+
+; A closure: seven's results, with a captured offset.
+.func sevenc(i64 a, f64 x, ref s) -> (i64, f64, ref, i64, f64, ref, i64)
+    mov I3, UP[0]
+    add I3, a
+    tcall seven (I3, x, s)
+.endf
+
+; Leaves values all over its window.
+.func dirty(i64 a) -> i64
+    mov I1, a
+    mov I2, a
+    mov I3, a
+    mov.f64 F1, 1.5
+    mov.f64 F2, 2.5
+    mov.r R1, "left"
+    mov.r R2, "left"
+    mov.r R29, "left"
+    mov.r R30, "left"
+    mov.r R31, "left"
+    mov I31, a                ; (the I and F banks large: R29 is past 496 bytes)
+    mov.f64 F31, 1.0
+    add I0, I1, I2
+    ret I0
+.endf
+
+; Reads registers before writing them: each must be zero or null.
+.func clean(i64 a) -> i64
+    mov I6, 0
+    add I6, I3                ; I3 and F2 read before they are written
+    cvt.i64.f64 I4, F2
+    add I6, I4
+    bz.r R1, 1f
+    add I6, 1000
+1:  bz.r R2, 2f
+    add I6, 1000
+2:  bz.r R30, 3f              ; far into the window
+    add I6, 1000
+3:  bz.r R31, 4f
+    add I6, 1000
+4:  mov.r R29, "set"
+    mov I31, 0
+    mov.f64 F31, 0.0
+    add I6, a
+    ret I6
+.endf
+
+.func rare(i64 a) -> (i64, i64)
+    add I1, a, 1
+    ret a, I1
+.endf
+
+.func main
+    mov.r R10, "s"
+    mov.r R11, "t"
+    closure sevenc (100) -> (R12)
+    mov I20, 0
+    mov I21, 0
+1:  call seven (I20, 1.5, R10) -> (I1, F1, R1, I2, F2, R2, I3)
+    add I4, I20, 1
+    ASSERT_EQ I1, I4
+    ASSERT_EQ F1, 3.0
+    strcmp I9, R1, "s"
+    ASSERT_EQ I9, 0
+    ASSERT_EQ I2, 9
+    ASSERT_EQ F2, 2.0
+    strcmp I9, R2, "s"
+    ASSERT_EQ I9, 0
+    add I4, I20, 2
+    ASSERT_EQ I3, I4
+
+    call one (2.25) -> (F3)
+    ASSERT_EQ F3, 3.25
+    call four (I20) -> (I5, I6, I7, I8)
+    ASSERT_EQ I5, 1
+    ASSERT_EQ I6, I20
+    ASSERT_EQ I7, -3
+    ASSERT_EQ I8, 4
+    call five (R10, R11) -> (R3, R4, R5, R6, R7)
+    strcmp I9, R3, "t"
+    ASSERT_EQ I9, 0
+    strcmp I9, R4, "s"
+    ASSERT_EQ I9, 0
+    strcmp I9, R7, "t"
+    ASSERT_EQ I9, 0
+
+    call via (I20, 0.5, R11) -> (I1, F1, R1, I2, F2, R2, I3)
+    add I4, I20, 11
+    ASSERT_EQ I1, I4
+    ASSERT_EQ F1, 1.0
+    strcmp I9, R2, "t"
+    ASSERT_EQ I9, 0
+    add I4, I20, 12
+    ASSERT_EQ I3, I4
+
+    calli R12 (I20, 4.0, R10) -> (I1, F1, R1, I2, F2, R2, I3)
+    add I4, I20, 101
+    ASSERT_EQ I1, I4
+    ASSERT_EQ F1, 8.0
+    ASSERT_EQ F2, 4.5
+    add I4, I20, 102
+    ASSERT_EQ I3, I4
+
+    call dirty (I20) -> (I1)
+    call clean (I20) -> (I1)
+    ASSERT_EQ I1, I20
+
+    bne I20, 150, 2f
+    call rare (I20) -> (I1, I2)       ; its only call: the interpreter's
+    ASSERT_EQ I1, 150
+    ASSERT_EQ I2, 151
+    add I21, 1
+2:  inc I20
+    blt I20, 200, 1b
+    ASSERT_EQ I21, 1
+    ret 0
+.endf

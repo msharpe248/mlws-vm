@@ -677,20 +677,27 @@ static JIT_CC JitStep jit_step(Ctx *c, const Insn *in, uint32_t left) {
  * A call does what Q_CALL_R does: the caller's pc, a frame pushed as
  * proc_push_frame_fitting pushes one (or, without room, the interpreter's
  * call, which grows the stacks), the callee's window cleared and the
- * arguments copied by the call's plan; then the callee's machine code, or the
- * interpreter at its first instruction. The call's continuation follows it;
- * its offset in the code memory is the call's Insn.target, which calls do not
- * otherwise use (a call has no label, so it is 0 until then). A return to a
- * compiled call puts its values in Ctx.retv, pops the frame and returns to
- * the continuation, which takes the caller's window and copies the results.
- * Any other return is the interpreter's. */
+ * arguments copied by the call's plan; then the callee's machine code. A
+ * direct call to a function without machine code is the interpreter's. The
+ * call's continuation follows it; its offset in the code memory is the
+ * call's Insn.target, which calls do not otherwise use (a call has no label,
+ * so it is 0 until then). A return to a compiled call puts its values in
+ * machine registers (JRES_N of them, the rest in Ctx.retv), pops the frame
+ * and returns to the continuation, which takes the caller's window and copies
+ * the results. Any other return is the interpreter's. */
 #define P_OFF(f) ((int64_t)offsetof(Process, f))
 #define FR_OFF(f) ((int64_t)offsetof(Frame, f))
 #define C_OFF(f) ((int64_t)offsetof(Ctx, f))
 
 static void jit_loop_load_as(JComp *j, const JLoop *lp, bool seed, bool emit);
-/* The continuation of a call with plan pl: the caller's window, the results. */
-static void jit_cont(JComp *j, const QPlan *pl, int argc, uint32_t pc) {
+/* A return to a continuation leaves its first JRES_N values in the cache's
+ * first integer registers (free at a return, whose block has written its
+ * registers back), the rest in Ctx.retv. Only a compiled return (jit_ret)
+ * goes to a continuation. */
+#define JRES_N (JC_NI < 4 ? JC_NI : 4)
+/* The continuation of a call with plan pl: the caller's window, the results.
+ * fall: the code for pc + 1 follows it (no jump there). */
+static void jit_cont(JComp *j, const QPlan *pl, int argc, uint32_t pc, bool fall) {
     JBuf *b = &j->b;
     jm_cont(b);
     jm_ld32(b, JR_S0, JR_FR, FR_OFF(base));
@@ -698,8 +705,10 @@ static void jit_cont(JComp *j, const QPlan *pl, int argc, uint32_t pc) {
     jm_ld(b, JR_S1, P, P_OFF(regs));
     jm_addsh3(b, JR_WIN, JR_S1, JR_S0);
     for (int k = 0; k < pl->nres; k++) {
-        jm_ld(b, JR_S0, JR_CTX, C_OFF(retv) + 8 * k);
-        jm_st(b, JR_S0, JR_WIN, (int64_t)pl->slot[2 * argc + k] * 8);
+        int v = JR_S0;
+        if (k < JRES_N) v = jc_ireg[k];
+        else jm_ld(b, JR_S0, JR_CTX, C_OFF(retv) + 8 * k);
+        jm_st(b, v, JR_WIN, (int64_t)pl->slot[2 * argc + k] * 8);
     }
     int32_t lo = j->loop_of ? j->loop_of[pc + 1] : -1;
     if (lo >= 0 && j->loops[lo].L != pc + 1) { /* a call in a loop: the loop's registers again, here */
@@ -707,6 +716,7 @@ static void jit_cont(JComp *j, const QPlan *pl, int argc, uint32_t pc) {
         jbranch(j, FX_B, 0, 0, false, TO_BODYX, pc + 1);
         return;
     }
+    if (fall && lo < 0 && !j->loop && pc + 1 < j->f->ncode) return;
     jbranch(j, FX_B, 0, 0, false, TO_BODY, pc + 1);
 }
 
@@ -735,15 +745,15 @@ static void jit_push_frame(JComp *j, const Insn *in, uint32_t pc, const Function
     jm_st32(b, JR_S0, P, P_OFF(nframes));
     jm_movi(b, t, (uint64_t)(uintptr_t)fn);
     jm_st(b, t, JR_S4, FR_OFF(fn));
-    jm_movi(b, t2, 0);
-    jm_st32(b, t2, JR_S4, FR_OFF(pc));
+    _Static_assert(offsetof(Frame, pc) == 8 && offsetof(Frame, qret) == 12 && offsetof(Frame, stackless) == 13 &&
+                       offsetof(Frame, base) == 16,
+                   "pc, qret and stackless are one word");
+    jm_movi(b, t, (uint64_t)1 << 32 | (uint64_t)fn->stackless << 40); /* pc 0, qret, stackless */
+    jm_st(b, t, JR_S4, FR_OFF(pc));
     jm_movi(b, t, (uint64_t)(uintptr_t)in);
     jm_st(b, t, JR_S4, FR_OFF(ret_insn));
     if (clo >= 0) jm_st(b, clo, JR_S4, FR_OFF(closure));
     else jm_stz(b, JR_S4, FR_OFF(closure));
-    jm_movi(b, t, 1);
-    jm_st8(b, t, JR_S4, FR_OFF(qret));
-    jm_st8(b, fn->stackless ? t : t2, JR_S4, FR_OFF(stackless)); /* (t is 1 and t2 still 0) */
     if (!fn->stackless) {
         jm_ld(b, t, P, P_OFF(sp));
         jm_st(b, t, JR_S4, FR_OFF(entry_sp));
@@ -760,7 +770,7 @@ static void jit_push_frame(JComp *j, const Insn *in, uint32_t pc, const Function
     jm_bind(b, deep);
     jm_ld(b, t, P, P_OFF(regs));
     jm_addsh3(b, t, t, JR_S1); /* the callee's window */
-    for (unsigned k = 0; k < fn->zlen; k++) jm_stz(b, t, (int64_t)(fn->zoff + k) * 8);
+    jm_clear(b, t, (int64_t)fn->zoff * 8, fn->zlen);
     for (int k = 0; k < argc; k++) {
         if (src[k] == QPLAN_K) jm_movi(b, JR_S0, kw[k]);
         else jm_ld(b, JR_S0, JR_WIN, (int64_t)src[k] * 8);
@@ -781,24 +791,19 @@ static uint32_t jit_call(JComp *j, const Insn *in, uint32_t pc) {
     jm_ncall_check(j, pc);
     jm_movi(b, JR_S0, pc + 1);
     jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
-    jit_push_frame(j, in, pc, fn, argc, pl->slot, pl->slot + argc, kw, -1);
-    uint32_t z1 = 0, z2 = 0;
-    if (fn == j->f) { /* (its code is being made: its first instruction's) */
-        jfix(j, jm_ncall_self(b), TO_BODY, 0);
-    } else { /* the callee's machine code for its first instruction, if it has some */
+    int ent = jc_ireg[2]; /* (jit_push_frame leaves it) */
+    if (fn != j->f) { /* the callee's machine code for its first instruction; if it has none, the interpreter's call */
         jm_movi(b, JR_S0, (uint64_t)(uintptr_t)&fn->jit_entry);
         jm_ld(b, JR_S0, JR_S0, 0);
-        z1 = jm_fwd_cbz(b, JR_S0, false);
-        jm_ld(b, JR_S0, JR_S0, 0);
-        z2 = jm_fwd_cbz(b, JR_S0, false);
-        jm_ncall_reg(b, JR_S0);
+        jbranch(j, FX_CB, 0, JR_S0, false, TO_UNDO, pc);
+        jm_ld(b, ent, JR_S0, 0);
+        jbranch(j, FX_CB, 0, ent, false, TO_UNDO, pc);
     }
+    jit_push_frame(j, in, pc, fn, argc, pl->slot, pl->slot + argc, kw, -1);
+    if (fn == j->f) jfix(j, jm_ncall_self(b), TO_BODY, 0); /* (its code is being made: its first instruction's) */
+    else jm_ncall_reg(b, ent);
     uint32_t c = (uint32_t)b->n;
-    jit_cont(j, pl, argc, pc);
-    if (fn != j->f) { /* pushed, but the callee runs in the interpreter, from its first instruction */
-        jm_bind(b, z1), jm_bind(b, z2);
-        jexit(j, fn->code);
-    }
+    jit_cont(j, pl, argc, pc, true);
     return c;
 }
 
@@ -910,7 +915,7 @@ static uint32_t jit_calli(JComp *j, const Insn *in, uint32_t pc) {
     if (fn) jm_bind(b, go);
     jm_ncall_reg(b, JR_R0);
     uint32_t c = (uint32_t)b->n; /* the continuation, as a direct call's */
-    jit_cont(j, pl, pl->argc, pc);
+    jit_cont(j, pl, pl->argc, pc, false);
     jit_callee_interp(j, none);
     if (fn) { /* pushed, but the callee runs in the interpreter, from its first instruction */
         jm_bind(b, z1), jm_bind(b, z2);
@@ -1004,10 +1009,11 @@ static void jit_ret(JComp *j, const Insn *in, uint32_t pc) {
     jm_ld(b, JR_S1, JR_FR, FR_OFF(ret_insn));
     jm_ld32(b, JR_S2, JR_S1, (int64_t)offsetof(Insn, target)); /* the continuation, or 0 */
     jbranch(j, FX_CB, 0, JR_S2, false, TO_UNDO, pc);
-    for (int k = 0; k < rp->nres; k++) {
-        if (rp->slot[k] == QPLAN_K) jm_movi(b, JR_S0, in->ops[k].kw); /* Q_RET_RK's constant */
-        else jm_ld(b, JR_S0, JR_WIN, (int64_t)rp->slot[k] * 8);
-        jm_st(b, JR_S0, JR_CTX, C_OFF(retv) + 8 * k);
+    for (int k = 0; k < rp->nres; k++) { /* (into JRES_N registers, then Ctx.retv) */
+        int v = k < JRES_N ? jc_ireg[k] : JR_S0;
+        if (rp->slot[k] == QPLAN_K) jm_movi(b, v, in->ops[k].kw); /* Q_RET_RK's constant */
+        else jm_ld(b, v, JR_WIN, (int64_t)rp->slot[k] * 8);
+        if (k >= JRES_N) jm_st(b, JR_S0, JR_CTX, C_OFF(retv) + 8 * k);
     }
     int P = jm_proc(b, JR_S3);
     if (!j->f->stackless) {
