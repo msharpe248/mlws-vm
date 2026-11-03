@@ -60,7 +60,7 @@
     ncall "gc.collections" () -> (I1)
     ASSERT_GT I1, 10
     ncall "gc.heap_bytes" () -> (I2)
-    ASSERT_GT I2, 0                    ; (an over-count of what was freed would wrap)
+    ASSERT_GE I2, 0                    ; (an over-count of what was freed would wrap; 0 if nothing is live)
     sub I3, I2, I10
     ASSERT_LT I3, 20000000             ; over 200 MB were allocated (young: up to 16 MB)
     ; dying old
