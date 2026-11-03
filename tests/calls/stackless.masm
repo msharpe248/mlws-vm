@@ -1,0 +1,167 @@
+; A function that never moves or reads SP or FP is stackless: its frame
+; saves and restores neither (Function.stackless). SP and FP must still be
+; right in every function with a data stack, whatever stackless functions
+; run in between. Here:
+;   * a function with locals (enter, LOC[n]) calls a stackless one, and reads
+;     its locals after;
+;   * a stackless function calls one that pushes, pops and has locals, and its
+;     caller's locals are intact after;
+;   * a throw from a function with locals, through a stackless one, is caught
+;     by a function with locals of its own, whose SP is its own after;
+;   * tail calls from a function with locals to a stackless one, and from a
+;     stackless one to one with locals;
+;   * a coroutine with locals, resumed from a stackless function.
+; The calls that matter are made with words pushed, so that SP differs from
+; what it was at earlier calls of the same depth (a frame's stale entry_sp
+; would then show). Each prints what it read; the interpreter and the JIT
+; (--jit all, hot) must agree.
+; expect-stdout: locals 11 22 33
+; expect-stdout: through 5 7 9
+; expect-stdout: caught 3 4 thrown
+; expect-stdout: tails 105 20 1
+; expect-stdout: coro 0 1 2 3
+.include "std/io.inc"
+
+; stackless
+.func add(i64 a, i64 b) -> i64
+    add I2, a, b
+    ret I2
+.endf
+
+; with locals: sums 1..n through LOC[0], and pushes and pops on the way
+.func stacky(i64 n) -> i64
+    enter 2
+    mov LOC[0], 0
+    mov LOC[1], n
+1:  bz LOC[1], 2f
+    push LOC[1]
+    add LOC[0], LOC[1]
+    pop I3
+    sub LOC[1], 1
+    jmp 1b
+2:  mov I4, LOC[0]
+    ret I4
+.endf
+
+; stackless: calls one with a stack
+.func middle(i64 n) -> i64
+    call stacky (n) -> (I1)
+    add I1, 2
+    ret I1
+.endf
+
+; with locals; throws
+.func thrower(i64 n) -> i64
+    enter 1
+    mov LOC[0], n
+    throw "thrown"
+.endf
+
+; stackless; the throw goes through it
+.func passes(i64 n) -> i64
+    call thrower (n) -> (I1)
+    ret I1
+.endf
+
+; with locals: tail-calls a stackless function
+.func tail_to_stackless(i64 n) -> i64
+    enter 1
+    mov LOC[0], n
+    add I1, LOC[0], 100
+    tcall add (I1, 5)
+.endf
+
+; stackless: tail-calls one with locals
+.func tail_to_stacky(i64 n) -> i64
+    add I1, n, 0
+    tcall stacky (I1)
+.endf
+
+; a coroutine body with locals: yields 0 .. n-1
+.func gen(i64 n) -> i64
+    enter 1
+    mov LOC[0], 0
+1:  bge LOC[0], n, 2f
+    mov I1, LOC[0]
+    coyield (I1)
+    add LOC[0], 1
+    jmp 1b
+2:  ret n
+.endf
+
+; stackless: resumes the coroutine (its first resume passes n)
+.func step(ref co) -> i64
+    coresume co (4) -> (I1)
+    ret I1
+.endf
+
+.func main
+    enter 3
+    mov LOC[0], 11
+    mov LOC[1], 22
+    mov LOC[2], 33
+    call add (1, 2) -> (I0)
+    PRINT_S "locals "
+    PRINT_I LOC[0]
+    PRINT_S " "
+    PRINT_I LOC[1]
+    PRINT_S " "
+    PRINT_I LOC[2]
+    NL
+
+    call middle (2) -> (I0)            ; 1+2, +2
+    call middle (2) -> (I1)
+    add I1, 2                           ; 7
+    call middle (3) -> (I2)            ; 6+2, +1 below
+    add I2, 1
+    PRINT_S "through "
+    PRINT_I I0
+    PRINT_S " "
+    PRINT_I I1
+    PRINT_S " "
+    PRINT_I I2
+    NL
+
+    mov LOC[0], 3
+    push 4                             ; SP is not what it was at the calls above
+.try 1f
+    call passes (9) -> (I0)
+.endtry
+    jmp 2f
+1:  catch R0
+2:  pop I3                             ; 4, if the catch left SP right
+    PRINT_S "caught "
+    PRINT_I LOC[0]
+    PRINT_S " "
+    PRINT_I I3
+    PRINT_S " "
+    ncall "io.print_s" (R0)
+    NL
+
+    push 8                             ; SP lower than at any call above
+    call tail_to_stackless (0) -> (I0)  ; 0 + 100 + 5
+    push 9                             ; and lower again: a frame of this depth
+    call tail_to_stacky (5) -> (I1)     ; saved another SP just before
+    add I1, 5                           ; 1+..+5 = 15, +5
+    pop I3, I2                          ; 9 and 8, if SP came back right
+    sub I2, I3, I2                      ; 9 - 8
+    PRINT_S "tails "
+    PRINT_I I0
+    PRINT_S " "
+    PRINT_I I1
+    PRINT_S " "
+    PRINT_I I2
+    NL
+
+    closure gen -> (R1)
+    conew R2, R1
+    PRINT_S "coro"
+    mov I5, 0
+3:  call step (R2) -> (I6)
+    PRINT_S " "
+    PRINT_I I6
+    inc I5
+    blt I5, 4, 3b
+    NL
+    ret 0
+.endf

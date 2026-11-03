@@ -894,6 +894,7 @@ typedef struct {                 /* 56 bytes */
     Function *fn;
     uint32_t pc;                 /* the index after the instruction running in this frame */
     uint8_t qret;                /* pushed by a quickened call: a quickened ret copies straight back */
+    uint8_t stackless;           /* fn->stackless: the next two are not kept */
     uint32_t base;               /* its register window: regs[base .. base + fn->rsize) */
     uint64_t entry_sp;           /* SP at the call, restored on return */
     uint64_t saved_fp;           /* the caller's FP */
@@ -923,6 +924,19 @@ it uses its stack.
 4. Clear the window's one run of `zlen` words from `zoff` (§7).
 
 `proc_pop_frame` is `sp = entry_sp; fp = saved_fp; rtop = base`.
+
+**Stackless functions.** Most functions never move or read `SP` or `FP`:
+no `push`, `pop`, `drop` or `enter`, and no operand that names either (the
+loader's `Function.stackless`). Their frames skip step 3's stack pointers,
+and their pops leave `sp` and `fp` alone: such a function leaves them as it
+found them, so they are already the caller's. The frame records the flag
+(`Frame.stackless`), so a pop reads one byte of the frame it pops. A
+throw's unwinding pops with `proc_pop_frame` too, so `SP` comes back right:
+the lowest frame that keeps its stack pointers was called with the
+handler's `SP`, since everything between them leaves `SP` alone. A tail
+call pops one frame and pushes the next, each as its function says. With
+the JIT that is five of the twenty or so stores a call and its return make;
+the `fib` programs take 4–22% less time for it.
 
 **Calls.** The generic `call` reads each argument in the caller's window as
 its parameter's type, pushes the frame, and binds the arguments per bank in

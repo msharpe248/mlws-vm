@@ -1,8 +1,8 @@
 # MLWSVM Roadmap
 
-Milestones M0–M48 are complete. What remains is the deferred performance
+Milestones M0–M49 are complete. What remains is the deferred performance
 work (section 4). M0–M10 built the VM itself. The aim of
-M11–M48 was to make MLWSVM worth targeting: programs on it should be able to do
+M11–M49 was to make MLWSVM worth targeting: programs on it should be able to do
 real work (files, the OS, the network, text and data), and its distinctive
 feature (isolated, parallel, supervised processes) should be easy to show off.
 The scripting language is a separate project.
@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M48
+## Milestones M11–M49
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -70,6 +70,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M46 Allocation speed** (done) | objects bump-allocated into the free 128-byte lines of each process's chunks (mark-region, as Immix, without moving: natives that call back hold pointers, and maps hash objects by address); a collection marks survivors and their lines and never visits the dead, but for objects that own memory (on owner lists); marking makes an object old, and a collection of the whole heap flips the mark bit's meaning instead of clearing marks; the allocation fast path inline in C and emitted by the JIT for `new` and `lnew`, against one limit for the collection threshold and the heap quota; `--stats` shows the chunks and their lines in use; `MLWSVM_SLABS=1` for the chunks under AddressSanitizer. With the JIT, on the M5, i7 and Ryzen: compiled Lua's `binarytrees` −25–36%, `methods` −6–15%, Lox's `instantiation` −28–37%, `binary_trees` −13–19%, Erlang's `sorting` −9–15%, `binarytrees` −12–14%, `nbody` −10–13%, `bench/binarytrees` −11–15% | `tests/objects/gc_lines.masm` (objects of every size kept among garbage, holes reused, an old object given young ones made in them); `tests/objects/gc_owners.masm` (each kind of owner dying young and old, the heap's accounting exact afterwards); `check-asan` with the chunks under LeakSanitizer; `--gc-verify` also checks each survivor's size against its allocation; 75,870 fuzzed programs agreeing in every mode; `make release-check` on all three machines |
 | **M47 Windows** (done) | Windows on x86-64, built with Clang in MSYS2 and tested in CI in every mode but the sanitizers: files, pipes, child processes and sockets over a table of handles; a `WSAPoll` poller (a loopback connection to wake it, pipes looked at every millisecond); trust checks on owners and access control lists; the JIT, whose System V code the C functions it calls share there (`sysv_abi`); UTF-8 paths, arguments to children quoted as the C runtime parses them. The FFI tests that call POSIX functions have Windows twins |
 | **M48 Closure calls compiled for their callee** (done) | Measured first: closure calls from machine code went through C, which checked the callee against the call at every call (25–48% of compiled Lua's `methods` and Lox's `properties`). A closure call site now records the function it called last; compiled once hot, a `calli` or `tcalli` that suits that function checks the closure's function and calls it as a direct call does, any other value taking the general call. A tail call keeps its last caller's `qret` answer in a word, and a self tail call needs none. With the JIT, on the M5, i7 and Ryzen: Lox's `invocation` −55–66% (−15–24% before), `trees` −50–55%, `properties` −36–54%, Lua's `methods` −53–55% (−28–36% before), `bench/closures` −80–84%; with it MLWSVM runs eight of the nine Lua programs faster than Lua 5.5 on the M5. Inlining was measured and set aside: most calls in these programs are recursive or to functions that call others (0% of calls in `fib`, `binarytrees`, `trees` go to small leaf functions; 22–29% in Erlang's `nbody` and `sorting`). The tail call's test found that builds without tail-call dispatch returned from a tail-called function to a quickened call without checking its results' types, so an integer could reach an `R` register as a reference | `tests/jit/speculate.masm` (calls compiled for their callee given other closures, other functions, non-closures and null, constants, two-bank results, closure tail calls and a self tail call a million long; `expect-jit: speculated`); `tests/jit/tail_qret.masm` (two callers needing different answers: a cache ignoring the caller fails it); `tests/calls/tail_result_type.masm` (a tail-called function's i64 result for a caller's `R` register: E_TYPE in every build); `check-asan` and `release-check` run the JIT hot; the compilers' suites in every hot mode, under GC verify and stress, and under AddressSanitizer |
+| **M49 Cheaper frames** (done) | A function that never moves or reads SP or FP (no `push`, `pop`, `drop` or `enter`, no operand naming them) is stackless: its frames neither save nor restore the data-stack pointers, in the interpreter's pushes and pops and in the JIT's calls, returns and tail calls, since it leaves them as it found them; the frame records the flag. Unwinding stays right: the lowest frame that keeps them was called with the handler's SP. With the JIT, on the M5, i7 and Ryzen: the `fib` programs −4–22%, Erlang's `binarytrees` −4–10%, Lua's −3–5%, Erlang's `sorting` −2–5%; interpreted, within 2% but for compiled Lox's `trees` (+4% on the M5) and Erlang's `fib` (+6% on the Ryzen), each unchanged or faster on the other machines. Calling an already compiled callee's code by its address, not through its entry table, measured no gain (the loads hit the cache) | `tests/calls/stackless.masm` (SP and FP through stackless frames: locals around calls, a throw through them, tail calls both ways with SP lowered between, a coroutine; a JIT whose tail call skips the save fails it) |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -229,9 +230,8 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   `binarytrees` or Lox's `trees`; 22–29% in Erlang's `nbody` and `sorting`),
   and an inlined function needs its frame made at every way out of its code
   (a side exit, the slice's end, a trap), since the collector and the
-  unwinder find registers through frames. Making every call cheaper (fewer
-  frame fields written, the data-stack pointers saved only by functions that
-  use the stack) would reach recursive calls too.
+  unwinder find registers through frames. Making every call cheaper reached
+  recursive calls too (M49).
 * Faster refills of the allocator. Measured after M48: reading a chunk's
   line marks 8 at a time gained nothing, and skipping holes of fewer than 2,
   4 or 8 lines (new chunks instead) gained at most 3% on compiled Lox's

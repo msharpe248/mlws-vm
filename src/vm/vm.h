@@ -99,6 +99,11 @@ typedef struct Function {
      * clear is under 2 KiB and expands it inline as `rep stos`, whose start-up
      * made calls on x86 up to a third slower than a call to memset. */
     uint16_t zoff, zlen;
+    /* No instruction of it moves or reads SP or FP (no push, pop, drop or
+     * enter, no SP or FP operand): its frame neither saves nor restores them
+     * (proc_push_frame_fitting, proc_pop_frame), since it leaves them as it
+     * found them. */
+    bool stackless;
     /* The I, F and P registers it may read before writing them (bit k:
      * register k of that bank; R is always cleared): what makes the run
      * longer, shown by the profiler. */
@@ -335,6 +340,7 @@ typedef struct {
      * the results straight across. A tail call replaces the frame with one
      * that is not marked. */
     uint8_t qret;
+    uint8_t stackless; /* fn->stackless: entry_sp and saved_fp are not kept */
     uint32_t base; /* its register window: regs[base .. base + fn->rsize) */
     uint64_t entry_sp; /* SP at the call; restored on return */
     uint64_t saved_fp;
