@@ -219,8 +219,11 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   registers within a block or a loop (across up to two calls in a loop on
   arm64), and compiles a closure call for the function it called last (M48),
   but does not speculate on types otherwise or inline. On x86-64 it
-  keeps 5 integer registers; more would mean moving the frame out of a
-  register, which calls would pay for.
+  keeps 5 integer registers. Measured after M48 on the i7 and the Ryzen: 4
+  are as fast as 5 on every program, and a sixth (the slice's count moved
+  into memory to free r13) made most programs 3–40% slower, since every
+  block's count then goes through memory. So x86-64 gaining less from the
+  JIT than arm64 is not the register count.
 * Inlining in the JIT. Measured in M48: of the calls in the compilers'
   benchmarks, few go to small functions that call nothing (none in `fib`,
   `binarytrees` or Lox's `trees`; 22–29% in Erlang's `nbody` and `sorting`),
