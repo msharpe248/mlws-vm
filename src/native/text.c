@@ -1054,7 +1054,7 @@ static const NativeDef TEXT_NATIVES[] = {
       "The byte offset of the first occurrence at or after an offset, or -1."),
     N("text.replace", 3, T(T_R, T_R, T_R), 1, T(T_R), n_replace, "Replace every occurrence."),
     N("text.replace_n", 4, T(T_R, T_R, T_R, T_I64), 2, T(T_R, T_I64), n_replace_n,
-      "Replace the first n occurrences (every one, if n < 0), and how many were: Lua's gsub of a plain pattern."),
+      "Replace the first n occurrences (every one, if n < 0), and how many were: Lua's gsub of a plain pattern, but for n < 0."),
     N("text.starts_with", 2, T(T_R, T_R), 1, T(T_B), n_starts_with, "Whether a string starts with a prefix."),
     N("text.ends_with", 2, T(T_R, T_R), 1, T(T_B), n_ends_with, "Whether a string ends with a suffix."),
     N("text.slice", 3, T(T_R, T_I64, T_I64), 1, T(T_R), n_slice,

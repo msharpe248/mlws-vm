@@ -156,9 +156,10 @@ characters goes through `text.next` (iterate without allocating),
 `text.chars`, `text.length` and `text.from_chars`; these read an invalid byte
 as one U+FFFD. `text.valid` checks a whole string. `text.split` with an empty
 separator splits on whitespace; `text.join` accepts lists of any values. `text.replace` replaces every occurrence of a string;
-`text.replace_n` replaces the first n (every one, if n is negative) and also
-returns how many it replaced, as Lua's `gsub` of a plain pattern does,
-where an empty string occurs before each byte and at the end.
+`text.replace_n` replaces the first n and also returns how many it
+replaced, as Lua's `gsub` of a plain pattern does, where an empty string
+occurs before each byte and at the end. A negative n replaces every
+occurrence (Lua's `gsub` replaces none).
 
 ### Unicode
 
