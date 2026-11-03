@@ -320,6 +320,7 @@
                 if (!wide_type(mf->params[k]) || REG_BANK(qo[2 + k].reg) != (int)type_bank((MlwsType)mf->params[k])) GENERIC();
             for (int k = 0; k < nres; k++)
                 if (!wide_type(mf->rets[k]) || REG_BANK(qo[2 + argc + k].reg) != (int)type_bank((MlwsType)mf->rets[k])) GENERIC();
+            plan_saw(in, fn);
             SPILL();
             QPUSH_FRAME(fn, in);
             Frame *nf = &QPRC->frames[QPRC->nframes - 1];
@@ -360,6 +361,7 @@
             if (argc != mf->nparams || QFRM->base + fn->rsize > QPRC->rcap) GENERIC();
             for (int k = 0; k < argc; k++)
                 if (!wide_type(mf->params[k]) || REG_BANK(qo[2 + k].reg) != (int)type_bank((MlwsType)mf->params[k])) GENERIC();
+            plan_saw(in, fn);
             SPILL();
             /* The arguments, in order, before the callee's window replaces this one. */
             uint64_t args[MAX_OPERANDS];
