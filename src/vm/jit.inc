@@ -290,8 +290,10 @@ typedef struct {
     } leaves;
     bool broken; /* a loop's register was not in its slot (a bug): compile nothing */
     /* The branch being compiled falls through into a block that keeps the
-     * cache (fallin): it is not flushed first, and its way to the target
-     * writes back what changed (a leave stub, as a loop's). */
+     * cache (fallin): its flush writes back what changed but forgets
+     * nothing. (Writing back only on the way to the target, in a stub, costs
+     * two more jumps where the branch is usually taken: Lua's loop on the
+     * Ryzen, 7%.) */
     bool keep;
     uint32_t ncalli, nspec; /* closure calls, and those compiled for a callee */
 } JComp;
@@ -312,13 +314,6 @@ static void jfix(JComp *j, uint32_t at, int to, uint32_t pc) {
             jside_record(j, &j->leaves.v[j->leaves.n], pc);
             to = TO_LEAVE, pc = (uint32_t)j->leaves.n++;
         }
-    } else if (to == TO_BODY && j->keep) { /* to its target with the cache written back */
-        if (j->leaves.n == j->leaves.cap) {
-            j->leaves.cap = j->leaves.cap ? 2 * j->leaves.cap : 8;
-            j->leaves.v = xrealloc(j->leaves.v, j->leaves.cap * sizeof *j->leaves.v);
-        }
-        jside_record(j, &j->leaves.v[j->leaves.n], pc);
-        to = TO_LEAVE, pc = (uint32_t)j->leaves.n++;
     } else if (to == TO_BODY && j->loop_of && j->loop_of[pc] >= 0 && j->loops[j->loop_of[pc]].L != pc) {
         to = TO_INNER; /* into a loop past L, from outside it: its registers are loaded first */
     }
@@ -426,14 +421,14 @@ static void jc_store(JComp *j, int bank, int s, int r) {
 }
 
 /* Write the changed registers back, and forget them all (a block's end; in
- * a loop, not until its end). */
+ * a loop, not until its end; before a branch into a fallin block, keep them). */
 static void jc_flush(JComp *j) {
     JCache *c = &j->jc;
-    if (j->loop || c->record || j->keep) return;
+    if (j->loop || c->record) return;
     for (int bank = 0; bank < 2; bank++)
         for (int s = 0; s < jc_nslots(bank); s++)
-            if (c->vm[bank][s] >= 0 && c->dirty[bank][s]) jc_store(j, bank, s, c->vm[bank][s]);
-    jc_reset(c);
+            if (c->vm[bank][s] >= 0 && c->dirty[bank][s]) jc_store(j, bank, s, c->vm[bank][s]), c->dirty[bank][s] = false;
+    if (!j->keep) jc_reset(c);
 }
 
 static int jc_alloc(JComp *j, int bank) {
@@ -2286,7 +2281,8 @@ static void jit_compile(VM *vm, Function *f) {
     /* Blocks only reached by falling through from the block before, which
      * ends in a conditional branch (no branch or jump table goes to them; not
      * in a loop, whose blocks keep their registers another way): they keep
-     * that block's cache and what it knew of R registers, and are never
+     * that block's cache (written back at the branch, so nothing is loaded
+     * again) and what it knew of R registers, and are never
      * entered from the interpreter (their code assumes the cache). */
     uint8_t *target = xcalloc(n + 1, 1), *fallin = xcalloc(n + 1, 1);
     for (uint32_t pc = 0; pc < n; pc++) {

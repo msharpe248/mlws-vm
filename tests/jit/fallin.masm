@@ -1,12 +1,11 @@
 ; A block reached only by falling through the conditional branch before it
 ; keeps that block's cached registers and what it knew of R registers
-; (src/vm/jit.inc, fallin): the branch writes them back only on the way to
-; its target. Every result must be the interpreter's:
+; (src/vm/jit.inc, fallin): the branch writes them back, but the block after
+; it does not load them again. Every result must be the interpreter's:
 ;   * registers set before a branch, read after it on both of its ways;
 ;   * a block after a branch that a jmp also reaches (it is not one of those:
 ;     the jmp's way arrives with nothing cached);
-;   * the slice ending at such a block's start (a 7-instruction slice), with
-;     registers not yet written back;
+;   * the slice ending at such a block's start (a 7-instruction slice);
 ;   * a struct checked in one block and its fields read in the next ones;
 ;   * floats, and a compare of floats as the branch.
 ; option: --jit all
