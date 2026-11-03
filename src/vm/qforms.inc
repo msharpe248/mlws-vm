@@ -121,7 +121,10 @@
             int argc = (int)ri->ops[1].imm, nres = ri->nops - 2 - argc;
             if (nres > n)
                 vm_trap(QPRC, "E_RET_COUNT", "%s returned %d value(s) but the caller expects %d", callee, n, nres);
-            if (ri->xop == Q_CALL_R) { /* both sides are registers of the right banks */
+            /* A quickened call to this function: both sides are registers of
+             * the right banks. (Not if a tail call replaced the callee's frame:
+             * the function returning is another, with other result types.) */
+            if (ri->xop == Q_CALL_R && ((const Function *)ri->ops[0].rv.ptr)->mf == mf) {
                 for (int k = 0; k < nres; k++) {
                     uint8_t r = ri->ops[2 + argc + k].reg;
                     switch (REG_BANK(r)) {
@@ -320,6 +323,7 @@
                 if (!wide_type(mf->params[k]) || REG_BANK(qo[2 + k].reg) != (int)type_bank((MlwsType)mf->params[k])) GENERIC();
             for (int k = 0; k < nres; k++)
                 if (!wide_type(mf->rets[k]) || REG_BANK(qo[2 + argc + k].reg) != (int)type_bank((MlwsType)mf->rets[k])) GENERIC();
+            plan_saw(in, fn);
             SPILL();
             QPUSH_FRAME(fn, in);
             Frame *nf = &QPRC->frames[QPRC->nframes - 1];
@@ -360,6 +364,7 @@
             if (argc != mf->nparams || QFRM->base + fn->rsize > QPRC->rcap) GENERIC();
             for (int k = 0; k < argc; k++)
                 if (!wide_type(mf->params[k]) || REG_BANK(qo[2 + k].reg) != (int)type_bank((MlwsType)mf->params[k])) GENERIC();
+            plan_saw(in, fn);
             SPILL();
             /* The arguments, in order, before the callee's window replaces this one. */
             uint64_t args[MAX_OPERANDS];

@@ -94,12 +94,25 @@ struct Jit {
     uint8_t *exit;
     bool no_memory;
     bool stats; /* count entries, steps and stops (--jit-report) */
-    uint64_t nfuncs, ninsns, nnative, nloops, bytes, ns;
+    uint64_t nfuncs, ninsns, nnative, nloops, ncalli, nspec, bytes, ns;
     uint64_t entries, ran, nsteps;
     uint64_t stops[Q__COUNT], steps[Q__COUNT];
     uint16_t opof[Q__COUNT];
+    VEC(uintptr_t *) words; /* blocks of the words the machine code keeps data in (jit_word) */
+    size_t nwords;          /* used of the last block */
 };
 enum { JIT_COMPILED = 1, JIT_NONE = 2 }; /* Function.jit_state */
+#define JIT_WORDS 512
+
+/* A word of data for the machine code, zero, kept for the VM's life (the
+ * code itself is never written again). Under the JIT lock. */
+static uintptr_t *jit_word(Jit *jt) {
+    if (!jt->words.n || jt->nwords == JIT_WORDS) {
+        VEC_PUSH(jt->words, xcalloc(JIT_WORDS, sizeof(uintptr_t)));
+        jt->nwords = 0;
+    }
+    return &jt->words.v[jt->words.n - 1][jt->nwords++];
+}
 
 #define JIT_MEM_SIZE ((size_t)64 << 20)
 
@@ -171,6 +184,8 @@ void interp_jit_free(VM *vm) {
     Jit *jt = vm->jit;
     if (!jt) return;
     plat_code_free(jt->mem, JIT_MEM_SIZE);
+    for (size_t i = 0; i < jt->words.n; i++) free(jt->words.v[i]);
+    VEC_FREE(jt->words);
     free(jt);
     vm->jit = NULL;
 }
@@ -251,6 +266,7 @@ typedef struct {
         size_t n, cap;
     } leaves;
     bool broken; /* a loop's register was not in its slot (a bug): compile nothing */
+    uint32_t ncalli, nspec; /* closure calls, and those compiled for a callee */
 } JComp;
 
 enum { TO_BODY, TO_UNDO, TO_EXIT, TO_SIDE, TO_LOOP, TO_LEAVE, TO_INNER, TO_BODYX /* body, as is */ };
@@ -655,17 +671,17 @@ static void jit_cont(JComp *j, const QPlan *pl, int argc, uint32_t pc) {
     jbranch(j, FX_B, 0, 0, false, TO_BODY, pc + 1);
 }
 
-/* Returns the continuation's offset in the code. */
-static uint32_t jit_call(JComp *j, const Insn *in, uint32_t pc) {
+/* Push fn's frame for the call `in`, as Q_CALL_R's handler does, and copy its
+ * arguments: src[k] is each one's slot in the caller (QPLAN_K: the constant
+ * word kw[k]), dst[k] its slot in fn's window. clo, if not negative, is a
+ * register holding the closure called. Stops before the call (TO_UNDO) when
+ * the frame or register stack is full, for the interpreter to grow it. Leaves
+ * JR_FR and JR_WIN on the new frame. (The cache is empty at a call.) */
+static void jit_push_frame(JComp *j, const Insn *in, uint32_t pc, const Function *fn, int argc, const uint8_t *src,
+                           const uint8_t *dst, const uint64_t *kw, int clo) {
     JBuf *b = &j->b;
-    const QPlan *pl = in->k.p;
-    const Function *fn = pl->fn;
-    int argc = pl->argc;
-    int t = jc_ireg[0], t2 = jc_ireg[1]; /* (the cache is empty at a call) */
-    jm_ncall_check(j, pc);
+    int t = jc_ireg[0], t2 = jc_ireg[1];
     int P = jm_proc(b, JR_S3);
-    jm_movi(b, JR_S0, pc + 1);
-    jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
     jm_ld32(b, JR_S0, P, P_OFF(nframes));
     jm_ld32(b, JR_S1, P, P_OFF(flimit));
     jm_cmp32(b, JR_S0, JR_S1);
@@ -684,7 +700,8 @@ static uint32_t jit_call(JComp *j, const Insn *in, uint32_t pc) {
     jm_st32(b, t2, JR_S4, FR_OFF(pc));
     jm_movi(b, t, (uint64_t)(uintptr_t)in);
     jm_st(b, t, JR_S4, FR_OFF(ret_insn));
-    jm_stz(b, JR_S4, FR_OFF(closure));
+    if (clo >= 0) jm_st(b, clo, JR_S4, FR_OFF(closure));
+    else jm_stz(b, JR_S4, FR_OFF(closure));
     jm_movi(b, t, 1);
     jm_st8(b, t, JR_S4, FR_OFF(qret));
     jm_ld(b, t, P, P_OFF(sp));
@@ -703,12 +720,26 @@ static uint32_t jit_call(JComp *j, const Insn *in, uint32_t pc) {
     jm_addsh3(b, t, t, JR_S1); /* the callee's window */
     for (unsigned k = 0; k < fn->zlen; k++) jm_stz(b, t, (int64_t)(fn->zoff + k) * 8);
     for (int k = 0; k < argc; k++) {
-        if (pl->slot[k] == QPLAN_K) jm_movi(b, JR_S0, in->ops[2 + k].kw); /* Q_CALL_RK's constant */
-        else jm_ld(b, JR_S0, JR_WIN, (int64_t)pl->slot[k] * 8);
-        jm_st(b, JR_S0, t, (int64_t)pl->slot[argc + k] * 8);
+        if (src[k] == QPLAN_K) jm_movi(b, JR_S0, kw[k]);
+        else jm_ld(b, JR_S0, JR_WIN, (int64_t)src[k] * 8);
+        jm_st(b, JR_S0, t, (int64_t)dst[k] * 8);
     }
     jm_mov(b, JR_FR, JR_S4);
     jm_mov(b, JR_WIN, t);
+}
+
+/* Returns the continuation's offset in the code. */
+static uint32_t jit_call(JComp *j, const Insn *in, uint32_t pc) {
+    JBuf *b = &j->b;
+    const QPlan *pl = in->k.p;
+    const Function *fn = pl->fn;
+    int argc = pl->argc;
+    uint64_t kw[MAX_OPERANDS];
+    for (int k = 0; k < argc; k++) kw[k] = in->ops[2 + k].kw; /* Q_CALL_RK's constants */
+    jm_ncall_check(j, pc);
+    jm_movi(b, JR_S0, pc + 1);
+    jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
+    jit_push_frame(j, in, pc, fn, argc, pl->slot, pl->slot + argc, kw, -1);
     uint32_t z1 = 0, z2 = 0;
     if (fn == j->f) { /* (its code is being made: its first instruction's) */
         jfix(j, jm_ncall_self(b), TO_BODY, 0);
@@ -764,12 +795,68 @@ static void jit_callee_interp(JComp *j, uint32_t h) {
     jbranch(j, FX_B, 0, 0, false, TO_EXIT, 0);
 }
 
+/* The callee a closure call (Q_CALLI_R, Q_CALLI_RK) is compiled for: the last
+ * one it called (QPlan.seen), if the call suits it as call_rk checks, with its
+ * arguments' slots in its window and the constants' words; NULL if none. */
+static Function *jit_spec_callee(const Insn *in, uint8_t *dst, uint64_t *kw) {
+    const QPlan *pl = in->k.p;
+    Function *fn = __atomic_load_n(&pl->seen, __ATOMIC_RELAXED);
+    if (!fn) return NULL;
+    const MFunc *mf = fn->mf;
+    const Operand *qo = in->ops;
+    int argc = pl->argc, nres = pl->nres;
+    if (argc != mf->nparams || nres > mf->nrets || (nres && !(mf->flags & MF_RETS_DECLARED))) return NULL;
+    int cnt[NBANKS] = {0};
+    for (int k = 0; k < argc; k++) {
+        int pt = mf->params[k], bk = (int)type_bank((MlwsType)pt);
+        Word w = {0};
+        if (!wide_type(pt)) return NULL;
+        if (qo[2 + k].mode == OM_REG ? REG_BANK(qo[2 + k].reg) != bk : !const_word(&qo[2 + k], pt, &w)) return NULL;
+        memcpy(&kw[k], &w, 8);
+        dst[k] = (uint8_t)(fn->roff[bk] + cnt[bk]++);
+    }
+    for (int k = 0; k < nres; k++)
+        if (!wide_type(mf->rets[k]) || REG_BANK(qo[2 + argc + k].reg) != (int)type_bank((MlwsType)mf->rets[k]))
+            return NULL;
+    return fn;
+}
+
+/* A closure call. When it is compiled for a callee (jit_spec_callee), a
+ * closure of that function is called as a direct call is, with the closure
+ * in its frame; any other value takes the C helper, as every closure call
+ * does otherwise. Both go on at the one call instruction, so the return's
+ * check of its continuation holds either way. */
 static uint32_t jit_calli(JComp *j, const Insn *in, uint32_t pc) {
     JBuf *b = &j->b;
     const QPlan *pl = in->k.p;
+    uint8_t dst[MAX_OPERANDS];
+    uint64_t kw[MAX_OPERANDS];
+    Function *fn = jit_spec_callee(in, dst, kw);
+    j->ncalli++, j->nspec += fn != NULL;
     jm_ncall_check(j, pc);
     jm_movi(b, JR_S0, pc + 1); /* the return address; and the count, for a trap */
     jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
+    uint32_t other[3] = {0}, go = 0, z1 = 0, z2 = 0;
+    if (fn) {
+        int clo = jc_ireg[2];
+        jm_ld(b, clo, JR_WIN, (int64_t)in->ops[0].pad * 8);
+        other[0] = jm_fwd_cbz(b, clo, false);
+        jm_ld8(b, JR_S0, clo, (int64_t)offsetof(Obj, kind));
+        jm_cmpi32(b, JR_S0, OBJ_CLOSURE);
+        other[1] = jm_fwd(b, JC_NE);
+        jm_ld(b, JR_S0, clo, (int64_t)offsetof(ObjClosure, fn));
+        jm_movi(b, JR_S1, (uint64_t)(uintptr_t)fn);
+        jm_cmp(b, JR_S0, JR_S1);
+        other[2] = jm_fwd(b, JC_NE);
+        jit_push_frame(j, in, pc, fn, pl->argc, pl->slot, dst, kw, clo);
+        jm_movi(b, JR_R0, (uint64_t)(uintptr_t)&fn->jit_entry);
+        jm_ld(b, JR_R0, JR_R0, 0);
+        z1 = jm_fwd_cbz(b, JR_R0, false);
+        jm_ld(b, JR_R0, JR_R0, 0);
+        z2 = jm_fwd_cbz(b, JR_R0, false);
+        go = jm_fwd(b, JC_AL);
+        for (int k = 0; k < 3; k++) jm_bind(b, other[k]);
+    }
     jit_sync_insns(j, 0);
     jm_mov(b, JR_A0, JR_CTX);
     jm_movi(b, JR_A1, (uint64_t)(uintptr_t)in);
@@ -778,10 +865,15 @@ static uint32_t jit_calli(JComp *j, const Insn *in, uint32_t pc) {
     jm_reload(b);
     jm_cmpi(b, JR_R0, 1);
     uint32_t none = jm_fwd(b, JC_EQ);
+    if (fn) jm_bind(b, go);
     jm_ncall_reg(b, JR_R0);
     uint32_t c = (uint32_t)b->n; /* the continuation, as a direct call's */
     jit_cont(j, pl, pl->argc, pc);
     jit_callee_interp(j, none);
+    if (fn) { /* pushed, but the callee runs in the interpreter, from its first instruction */
+        jm_bind(b, z1), jm_bind(b, z2);
+        jexit(j, fn->code);
+    }
     return c;
 }
 
@@ -801,6 +893,7 @@ static JIT_CC uintptr_t jit_tcalli_go(Ctx *c, const Insn *in) {
     if (argc != mf->nparams || fr->base + fn->rsize > p->rcap) return 0;
     for (int k = 0; k < argc; k++)
         if (!wide_type(mf->params[k]) || REG_BANK(qo[2 + k].reg) != (int)type_bank((MlwsType)mf->params[k])) return 0;
+    plan_saw(in, fn);
     uint64_t args[MAX_OPERANDS];
     const uint64_t *ow = p->regs + fr->base;
     for (int k = 0; k < argc; k++) memcpy(&args[k], &ow[qo[2 + k].pad], 8);
@@ -822,10 +915,33 @@ static JIT_CC uintptr_t jit_tcalli_go(Ctx *c, const Insn *in) {
     return ent && ent[0] ? (uintptr_t)ent[0] : 1;
 }
 
+static void jit_tail_frame(JComp *j, const Insn *in, uint32_t pc, const Function *fn, int clo);
+
+/* A closure tail call; for the callee it is compiled for (jit_spec_callee), as
+ * a direct tail call is made, with the closure in the frame. */
 static void jit_tcalli(JComp *j, const Insn *in, uint32_t pc) {
     JBuf *b = &j->b;
+    uint8_t dst[MAX_OPERANDS];
+    uint64_t kw[MAX_OPERANDS];
+    Function *fn = jit_spec_callee(in, dst, kw);
+    j->ncalli++, j->nspec += fn != NULL;
     jm_movi(b, JR_S0, pc + 1);
     jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
+    if (fn) {
+        int clo = jc_ireg[2];
+        jm_ld(b, clo, JR_WIN, (int64_t)in->ops[0].pad * 8);
+        uint32_t other[3];
+        other[0] = jm_fwd_cbz(b, clo, false);
+        jm_ld8(b, JR_S0, clo, (int64_t)offsetof(Obj, kind));
+        jm_cmpi32(b, JR_S0, OBJ_CLOSURE);
+        other[1] = jm_fwd(b, JC_NE);
+        jm_ld(b, JR_S0, clo, (int64_t)offsetof(ObjClosure, fn));
+        jm_movi(b, JR_S1, (uint64_t)(uintptr_t)fn);
+        jm_cmp(b, JR_S0, JR_S1);
+        other[2] = jm_fwd(b, JC_NE);
+        jit_tail_frame(j, in, pc, fn, clo);
+        for (int k = 0; k < 3; k++) jm_bind(b, other[k]);
+    }
     jit_sync_insns(j, 0);
     jm_mov(b, JR_A0, JR_CTX);
     jm_movi(b, JR_A1, (uint64_t)(uintptr_t)in);
@@ -868,12 +984,23 @@ static void jit_ret(JComp *j, const Insn *in, uint32_t pc) {
 /* A direct tail call (Q_TCALL_R): the callee's frame replaces this one at
  * the same base, as in the handler. The arguments go through Ctx.retv, since
  * the callee's window is this one's. */
-static JIT_CC uint8_t jit_tail_qret(const Frame *fr, const Function *fn) { return tail_qret(fr->ret_insn, fr->qret, fn->mf); }
+/* For a tail call to fn from a frame with qret: tail_qret, which depends only
+ * on the frame's ret_insn, kept in the call site's word as ret_insn | qret
+ * (one atomic store: threads share the word). */
+static JIT_CC uint8_t jit_tail_qret(const Frame *fr, const Function *fn, uintptr_t *word) {
+    uint8_t q = tail_qret(fr->ret_insn, 1, fn->mf);
+    __atomic_store_n(word, (uintptr_t)fr->ret_insn | q, __ATOMIC_RELAXED);
+    return q;
+}
 
-static void jit_tcall(JComp *j, const Insn *in, uint32_t pc) {
+static void jit_tcall(JComp *j, const Insn *in, uint32_t pc) { jit_tail_frame(j, in, pc, in->ops[0].rv.ptr, -1); }
+
+/* A tail call to fn, as Q_TCALL_R's handler makes it: fn's frame replaces
+ * this one, at the same base. clo, if not negative, is a register holding
+ * the closure called. Goes to the callee (or stops for the interpreter). */
+static void jit_tail_frame(JComp *j, const Insn *in, uint32_t pc, const Function *fn, int clo) {
     JBuf *b = &j->b;
     const Operand *qo = in->ops;
-    const Function *fn = qo[0].rv.ptr;
     const MFunc *mf = fn->mf;
     int argc = (int)qo[1].imm;
     jm_ld32(b, JR_S1, JR_FR, FR_OFF(base));
@@ -887,11 +1014,33 @@ static void jit_tcall(JComp *j, const Insn *in, uint32_t pc) {
         else jm_movi(b, JR_S0, qo[2 + k].kw);
         jm_st(b, JR_S0, JR_CTX, C_OFF(retv) + 8 * k);
     }
-    jm_mov(b, JR_A0, JR_FR);
-    jm_movi(b, JR_A1, (uint64_t)(uintptr_t)fn);
-    jm_ccall(b, (const void *)jit_tail_qret);
-    jm_st8(b, JR_R0, JR_FR, FR_OFF(qret));
-    jm_ld32(b, JR_S1, JR_FR, FR_OFF(base)); /* (the call kept no scratch register) */
+    if (clo >= 0) jm_st(b, clo, JR_FR, FR_OFF(closure)); /* (before the call below, which may clobber clo) */
+    /* Whether the callee's ret may copy its results straight to the caller
+     * (tail_qret): no, if this frame's may not; for a call to itself, what
+     * this frame's may, since every frame given qret checked the same;
+     * otherwise what the call site's word says for this frame's ret_insn,
+     * or what the helper works out (and puts in the word). */
+    if (fn != j->f) {
+        uintptr_t *word = jit_word(j->jt);
+        jm_ld8(b, JR_S0, JR_FR, FR_OFF(qret));
+        uint32_t no = jm_fwd_cbz(b, JR_S0, false);
+        jm_ld(b, JR_S1, JR_FR, FR_OFF(ret_insn));
+        jm_movi(b, JR_S2, (uint64_t)(uintptr_t)word);
+        jm_ld(b, JR_S2, JR_S2, 0);
+        jm_alu(b, JA_XOR, JR_S2, JR_S2, JR_S1); /* the word's qret, if it is for this ret_insn */
+        jm_cmpi(b, JR_S2, 1);
+        uint32_t miss = jm_fwd(b, JC_HI);
+        jm_st8(b, JR_S2, JR_FR, FR_OFF(qret));
+        uint32_t hit = jm_fwd(b, JC_AL);
+        jm_bind(b, miss);
+        jm_mov(b, JR_A0, JR_FR);
+        jm_movi(b, JR_A1, (uint64_t)(uintptr_t)fn);
+        jm_movi(b, JR_A2, (uint64_t)(uintptr_t)word);
+        jm_ccall(b, (const void *)jit_tail_qret);
+        jm_st8(b, JR_R0, JR_FR, FR_OFF(qret));
+        jm_bind(b, no), jm_bind(b, hit);
+    }
+    jm_ld32(b, JR_S1, JR_FR, FR_OFF(base)); /* (a call keeps no scratch register) */
     jm_add32i(b, JR_S2, JR_S1, fn->rsize);
     P = jm_proc(b, JR_S3);
     jm_ld(b, JR_S0, JR_FR, FR_OFF(entry_sp)); /* popped and pushed: sp and fp are the entry sp */
@@ -901,7 +1050,7 @@ static void jit_tcall(JComp *j, const Insn *in, uint32_t pc) {
     jm_st(b, JR_S4, JR_FR, FR_OFF(fn));
     jm_movi(b, JR_S0, 0);
     jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
-    jm_stz(b, JR_FR, FR_OFF(closure));
+    if (clo < 0) jm_stz(b, JR_FR, FR_OFF(closure));
     jm_st32(b, JR_S2, P, P_OFF(rtop));
     for (unsigned k = 0; k < fn->zlen; k++) jm_stz(b, JR_WIN, (int64_t)(fn->zoff + k) * 8);
     uint32_t cnt[NBANKS] = {0};
@@ -2206,6 +2355,7 @@ static void jit_compile(VM *vm, Function *f) {
         f->jit_xop = xop;
         f->jit_native = nnat;
         f->jit_loops = (uint16_t)(nloops > UINT16_MAX ? UINT16_MAX : nloops);
+        f->jit_spec = (uint16_t)(j->nspec > UINT16_MAX ? UINT16_MAX : j->nspec);
         __atomic_store_n(&f->jit_entry, ent, __ATOMIC_RELEASE);
         for (uint32_t pc = 0; pc < n; pc++)
             __atomic_store_n(&f->code[pc].xop, enter[pc] ? (uint16_t)Q_JIT : xop[pc], __ATOMIC_RELEASE);
@@ -2215,6 +2365,8 @@ static void jit_compile(VM *vm, Function *f) {
         jt->ninsns += n;
         jt->nnative += nnat;
         jt->nloops += nloops;
+        jt->ncalli += j->ncalli;
+        jt->nspec += j->nspec;
         jt->bytes += b->n;
     } else { /* no room (or a bug): it stays the interpreter's */
         jt->no_memory = !j->broken;
@@ -2334,6 +2486,8 @@ void interp_jit_report(VM *vm, FILE *out) {
     fprintf(out, "  instructions        %llu of %llu compiled (%.1f%%)\n", (unsigned long long)jt->nnative,
             (unsigned long long)jt->ninsns, jt->ninsns ? 100.0 * (double)jt->nnative / (double)jt->ninsns : 0.0);
     fprintf(out, "  loops               %llu with their registers in machine registers\n", (unsigned long long)jt->nloops);
+    fprintf(out, "  closure calls       %llu of %llu compiled for the function they called last\n",
+            (unsigned long long)jt->nspec, (unsigned long long)jt->ncalli);
     fprintf(out, "  machine code        %llu bytes, in %.2f ms\n", (unsigned long long)jt->bytes, (double)jt->ns / 1e6);
     if (jt->no_memory) fprintf(out, "  (the code memory filled: later functions were not compiled)\n");
     if (!jt->stats) return;

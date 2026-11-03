@@ -1156,11 +1156,19 @@ static const MFunc *quicken_fn; /* function being quickened (for ret) */
 static uint32_t quicken_idx;      /* the instruction's index in it */
 
 typedef struct {
-    Function *fn; /* a direct call's callee */
+    Function *fn;   /* a direct call's callee */
+    Function *seen; /* a closure call's last callee: the JIT's guess at the next */
     uint8_t argc, nres;
     uint8_t slot[];
 } QPlan;
 #define QPLAN_K 0xFF
+
+/* A closure call site's callee, for the JIT (plan_seen). Written only when it
+ * changes, so a call site that always calls one function writes it once. */
+static inline void plan_saw(const Insn *in, Function *fn) {
+    QPlan *pl = (QPlan *)in->k.p;
+    if (__atomic_load_n(&pl->seen, __ATOMIC_RELAXED) != fn) __atomic_store_n(&pl->seen, fn, __ATOMIC_RELAXED);
+}
 
 /* A quickened call's or ret's operands as its handler reads them: bytes, in
  * one cache line, instead of a 72-byte Operand each. It lives just after the
@@ -1168,9 +1176,11 @@ typedef struct {
  * Insn.k points to it. A call's slots are each argument's slot in the caller
  * (QPLAN_K: a constant, whose word is the operand's kw), then, for a direct
  * call, each parameter's slot in the callee, then each result's slot in the
- * caller; a ret's are its values' slots (or QPLAN_K). */
+ * caller; a ret's are its values' slots (or QPLAN_K). A closure tail call has
+ * one too, for QPlan.seen. */
 static void quicken_plan(Insn *in) {
-    bool call = in->xop == Q_CALL_R || in->xop == Q_CALL_RK || in->xop == Q_CALLI_R || in->xop == Q_CALLI_RK;
+    bool call = in->xop == Q_CALL_R || in->xop == Q_CALL_RK || in->xop == Q_CALLI_R || in->xop == Q_CALLI_RK ||
+                in->xop == Q_TCALLI_R;
     bool ret = in->xop == Q_RET_R || in->xop == Q_RET_RK;
     if (!call && !ret) return;
     int n = in->nops, argc = call ? (int)in->ops[1].imm : 0, nres = call ? n - 2 - argc : n;
@@ -1180,6 +1190,7 @@ static void quicken_plan(Insn *in) {
     QPlan *pl = (QPlan *)((char *)in->ops + at);
     bool direct = in->xop == Q_CALL_R || in->xop == Q_CALL_RK;
     pl->fn = direct ? o[0].rv.ptr : NULL;
+    pl->seen = NULL;
     pl->argc = (uint8_t)argc;
     pl->nres = (uint8_t)nres;
     const Operand *v = call ? o + 2 : o;
@@ -1751,6 +1762,7 @@ static MLWS_NOINLINE bool call_rk(Process *p, const Insn *in) {
     for (int k = 0; k < nres; k++)
         if (!wide_type(mf->rets[k]) || REG_BANK(qo[2 + argc + k].reg) != (int)type_bank((MlwsType)mf->rets[k]))
             return false;
+    plan_saw(in, fn);
     proc_push_frame(p, fn, in); /* may move the frames and the banks */
     Frame *nf = &p->frames[p->nframes - 1];
     const Frame *of = nf - 1;

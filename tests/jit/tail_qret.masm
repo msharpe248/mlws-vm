@@ -1,0 +1,57 @@
+; A tail call from machine code decides, as the interpreter's does
+; (tail_qret), whether the callee's ret may copy its results straight into
+; its caller's registers: that depends on the caller's call, and the machine
+; code keeps the last caller's answer in a word of the call site's. Here g
+; (-> f64) tail-calls h (-> i64) for two callers in turn:
+;   * A takes no results: h's ret may copy them (there are none);
+;   * B (b2) takes an f64: h's ret must not copy, and the general ret finds
+;     an i64 for an F register, so B's call fails with E_TYPE each time.
+; If the word gave B A's answer, h's ret would copy the i64 into B's F
+; register and nothing would fail (a cache that ignores the caller does).
+; option: --jit all
+; expect-stdout: 1000 calls, 1000 E_TYPE
+.include "std/io.inc"
+
+.func h(i64 x) -> i64
+    add I1, x, 1
+    ret I1
+.endf
+
+.func g(i64 x) -> f64
+    tcall h (x)
+.endf
+
+; B: one call of g for an f64 (a call the interpreter quickens: none is
+; inside a .try); b, 1 if it failed with E_TYPE.
+.func b2(i64 x) -> f64
+    call g (x) -> (F0)
+    ret F0
+.endf
+
+.func b(i64 x) -> i64
+.try 1f
+    call b2 (x) -> (F1)
+.endtry
+    ret 0
+1:  catch R0
+    strcmp I1, R0->Error.code, "E_TYPE"
+    bnz I1, 2f
+    ret 1
+2:  ret 0
+.endf
+
+.func main
+    mov I5, 0
+    mov I6, 0
+1:  call g (I6)                        ; A
+    call b (I6) -> (I0)                ; B
+    add I5, I0
+    inc I6
+    blt I6, 1000, 1b
+    PRINT_I I6
+    PRINT_S " calls, "
+    PRINT_I I5
+    PRINT_S " E_TYPE"
+    NL
+    ret 0
+.endf

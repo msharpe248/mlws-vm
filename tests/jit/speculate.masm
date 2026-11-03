@@ -1,0 +1,163 @@
+; A closure call (calli, tcalli) compiled once hot is compiled for the
+; function its call site called last (src/vm/jit.inc, jit_spec_callee): a
+; closure of that function is called as a direct call is, and any other value
+; takes the general closure call. Every result must be the interpreter's:
+;   * the function compiled for, with other captures: each call sees its own
+;     closure's (the closure is in the frame);
+;   * another function, at a call site compiled for the first: the general
+;     call, with its own window and results;
+;   * something that is not a closure, and null: the interpreter's E_TYPE
+;     and E_NULL;
+;   * constants as arguments (calli with an f64 and an i64 constant);
+;   * several results, of two banks;
+;   * a closure tail call compiled for its callee, and one to itself, a
+;     million long, through the closure it was given (no frames pile up).
+; With --jit-hot 3 each function is compiled after its third call, so the
+; call sites have seen their callees.
+; option: --jit on
+; option: --jit-hot 3
+; no-opt: expect-jit counts the closure calls as written
+; expect-jit: speculated apply 1
+; expect-jit: speculated apply_k 1
+; expect-jit: speculated apply_two 1
+; expect-jit: speculated tapply 1
+; expect-jit: speculated down 1
+; expect-jit: speculated main 0
+; expect-stdout: same 11 12 13 110 120
+; expect-stdout: other 10 22 E_TYPE E_NULL
+; expect-stdout: consts 5.5 8.5
+; expect-stdout: two 7 2.5 9 3.5
+; expect-stdout: tails 1001 2002 0 1000000
+.include "std/io.inc"
+
+; The closures called: add or multiply by the capture, UP[0].
+.func addk(i64 x) -> i64
+    mov I1, UP[0]
+    add I1, x
+    ret I1
+.endf
+
+.func mulk(i64 x) -> i64
+    mov I1, UP[0]
+    mul I1, x
+    ret I1
+.endf
+
+.func fsum(f64 a, i64 b) -> f64
+    mov F1, UP[0]
+    cvt.f64.i64 F2, b
+    add F1, a
+    add F1, F2
+    ret F1
+.endf
+
+.func pair(i64 x) -> (i64, f64)
+    add I1, x, UP[0]
+    cvt.f64.i64 F1, x
+    div F1, 2.0
+    ret I1, F1
+.endf
+
+; The call sites.
+.func apply(ref f, i64 x) -> i64
+    calli f (x) -> (I1)
+    ret I1
+.endf
+
+.func apply_k(ref f) -> f64
+    calli f (2.5, 3) -> (F1)
+    ret F1
+.endf
+
+.func apply_two(ref f, i64 x) -> (i64, f64)
+    calli f (x) -> (I1, F1)
+    ret I1, F1
+.endf
+
+.func tapply(ref f, i64 x) -> i64
+    tcalli f (x)
+.endf
+
+; Counts down to 0 with a tail call of itself, through the closure.
+.func down(ref self, i64 n) -> i64
+    bz n, 1f
+    sub n, 1
+    tcalli self (self, n)
+1:  ret UP[0]
+.endf
+
+; apply(f, x), or the error's code.
+.func try_apply(ref f, i64 x) -> ref
+.try 1f
+    call apply (f, x) -> (I1)
+.endtry
+    ret "no error"
+1:  catch R1
+    ret R1->Error.code
+.endf
+
+.func main
+    closure addk (1) -> (R0)
+    call apply (R0, 10) -> (I0)
+    call apply (R0, 11) -> (I1)
+    call apply (R0, 12) -> (I2)        ; apply compiled now, for addk
+    closure addk (100) -> (R1)
+    call apply (R1, 10) -> (I3)        ; addk again, its own capture
+    call apply (R1, 20) -> (I4)
+    PRINTLN "same", I0, I1, I2, I3, I4
+
+    closure mulk (2) -> (R2)
+    call apply (R2, 5) -> (I0)         ; another function: the general call
+    call apply (R2, 11) -> (I1)
+    call try_apply ("not a closure", 1) -> (R3)
+    call try_apply (null, 1) -> (R4)
+    PRINT_S "other "
+    PRINT_I I0
+    PRINT_S " "
+    PRINT_I I1
+    PRINT_S " "
+    ncall "io.print_s" (R3)
+    PRINT_S " "
+    ncall "io.print_s" (R4)
+    NL
+
+    closure fsum (0.0) -> (R5)
+    call apply_k (R5) -> (F0)
+    call apply_k (R5) -> (F0)
+    call apply_k (R5) -> (F0)
+    closure fsum (3.0) -> (R6)
+    call apply_k (R6) -> (F1)
+    PRINT_S "consts "
+    PRINT_F F0
+    PRINT_S " "
+    PRINT_F F1
+    NL
+
+    closure pair (2) -> (R7)
+    call apply_two (R7, 5) -> (I0, F0)
+    call apply_two (R7, 5) -> (I0, F0)
+    call apply_two (R7, 5) -> (I0, F0)
+    call apply_two (R7, 7) -> (I1, F1)
+    PRINT_S "two "
+    PRINT_I I0
+    PRINT_S " "
+    PRINT_F F0
+    PRINT_S " "
+    PRINT_I I1
+    PRINT_S " "
+    PRINT_F F1
+    NL
+
+    closure addk (1000) -> (R8)
+    call tapply (R8, 1) -> (I0)
+    call tapply (R8, 1) -> (I0)
+    call tapply (R8, 1) -> (I0)        ; compiled for addk
+    closure addk (2000) -> (R9)
+    call tapply (R9, 2) -> (I1)
+    closure mulk (0) -> (R10)
+    call tapply (R10, 7) -> (I2)       ; another function: the general tail call
+    closure down (1000000) -> (R11)
+    call down (R11, 1000000) -> (I3)
+    PRINTLN "tails", I0, I1, I2, I3
+    ret 0
+.endf
