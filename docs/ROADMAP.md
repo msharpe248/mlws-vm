@@ -229,9 +229,12 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   unwinder find registers through frames. Making every call cheaper (fewer
   frame fields written, the data-stack pointers saved only by functions that
   use the stack) would reach recursive calls too.
-* Finding a hole in a chunk a word of line marks at a time, not a byte: the
-  allocator's search for free lines is 21% of compiled Lox's
-  `instantiation` with the JIT.
+* Faster refills of the allocator. Measured after M48: reading a chunk's
+  line marks 8 at a time gained nothing, and skipping holes of fewer than 2,
+  4 or 8 lines (new chunks instead) gained at most 3% on compiled Lox's
+  `instantiation`, whose survivors leave holes of 1–7 lines, for up to 75%
+  more chunk memory; other programs were unchanged. The allocator's slow
+  path is mostly zeroing the memory it hands out.
 * Compiling the string builders (`bufcat`, `tostr`, `strcat`), which the JIT
   runs by their handlers: a few nanoseconds each, now that they are fast.
 * A generic string replace (every occurrence of one string in another, and
