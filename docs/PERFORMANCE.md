@@ -87,19 +87,19 @@ interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | JIT, M5 | Lua 5.5, M5 | MLWSVM, i7 | JIT, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|---|---|
-| loop | 198 | 52 | 218 | 338 | 105 | 290 |
-| iterate | 71 | 32 | 58 | 116 | 51 | 80 |
-| fib | 60 | 30 | 53 | 104 | 47 | 102 |
-| methods | 531 | 229 | 348 | 938 | 409 | 567 |
-| strings | 222 | 151 | 134 | 409 | 282 | 213 |
-| binarytrees (15) | 329 | 173 | 382 | 546 | 289 | 578 |
-| nbody (500,000) | 860 | 378 | 424 | 1,335 | 882 | 591 |
-| spectralnorm (500) | 225 | 92 | 185 | 399 | 129 | 269 |
-| fannkuch (10) | 1,975 | 676 | 808 | 2,990 | 1,475 | 1,157 |
+| loop | 197 | 54 | 218 | 338 | 107 | 290 |
+| iterate | 72 | 32 | 58 | 113 | 49 | 80 |
+| fib | 61 | 31 | 53 | 103 | 47 | 102 |
+| methods | 540 | 227 | 348 | 946 | 375 | 567 |
+| strings | 206 | 120 | 134 | 378 | 230 | 213 |
+| binarytrees (15) | 333 | 176 | 382 | 548 | 284 | 578 |
+| nbody (500,000) | 867 | 361 | 424 | 1,340 | 827 | 591 |
+| spectralnorm (500) | 239 | 93 | 185 | 381 | 126 | 269 |
+| fannkuch (10) | 1,995 | 657 | 808 | 2,980 | 1,441 | 1,157 |
 
 Interpreted, `loop` and `binarytrees` take less time than in Lua on the M5,
-and `binarytrees` on the i7 too; with the JIT, eight of the nine take less
-time than in Lua on the M5 (all but `strings`), and six on the i7. Without start-up, interpreted `fib` runs in 50 ms
+and `binarytrees` on the i7 too; with the JIT, all nine take less
+time than in Lua on the M5, and six on the i7. Without start-up, interpreted `fib` runs in 50 ms
 on the M5, as fast as Lua: its typed copy executes fewer instructions than
 Lua's bytecode does. Counted with Lua's
 own instruction hook, the others execute 1.7 to 5.2 times as many, and each
@@ -132,8 +132,8 @@ included on both sides; Erlang's is about 0.08 s):
 | fib | 0.04 | 0.02 | 0.09 |
 | ring | 0.23 | 0.21 | 0.27 |
 | binarytrees | 0.56 | 0.23 | 0.13 |
-| nbody | 0.48 | 0.19 | 0.15 |
-| sorting | 0.66 | 0.34 | 0.12 |
+| nbody | 0.49 | 0.19 | 0.15 |
+| sorting | 0.68 | 0.34 | 0.12 |
 
 BEAM compiles to machine code here, so its loops are not a fair match for an
 interpreter. `ring`, which passes a message round a ring of a thousand
@@ -195,37 +195,37 @@ benchmarks of the sections above.
 
 | Program | M5, ms (interpreter → JIT) | M5 | i7, GCC | Ryzen, Clang |
 |---|---|---|---|---|
-| bench/fib | 50 → 20 | −60% | −63% | −54% |
-| bench/loop | 86 → 18 | −78% | −54% | −59% |
-| bench/nbody | 100 → 101 | +1% | 0% | −1% |
-| bench/sieve | 608 → 621 | +2% | −2% | −1% |
-| bench/closures | 100 → 17 | −83% | −84% | −86% |
-| bench/maps | 35 → 35 | 0% | +2% | +2% |
-| bench/binarytrees | 82 → 59 | −28% | −32% | −25% |
-| Erlang fib | 35 → 13 | −62% | −65% | −62% |
-| Erlang ring | 200 → 179 | −10% | −5% | −6% |
-| Erlang binarytrees | 558 → 220 | −61% | −62% | −58% |
-| Erlang nbody | 481 → 184 | −62% | −55% | −60% |
-| Erlang sorting | 655 → 330 | −50% | −48% | −44% |
-| Lua fib | 51 → 20 | −60% | −64% | −54% |
-| Lua loop | 190 → 44 | −77% | −72% | −76% |
-| Lua methods | 531 → 222 | −58% | −57% | −55% |
-| Lua strings | 215 → 141 | −34% | −31% | −32% |
-| Lua iterate | 62 → 22 | −65% | −64% | −68% |
-| Lua binarytrees | 322 → 165 | −49% | −49% | −49% |
-| Lua nbody | 865 → 368 | −58% | −34% | −47% |
-| Lua spectralnorm | 221 → 80 | −64% | −69% | −71% |
-| Lua fannkuch | 1992 → 671 | −66% | −51% | −67% |
-| Lox binary_trees | 710 → 334 | −53% | −56% | −50% |
-| Lox equality | 129 → 65 | −50% | −60% | −56% |
-| Lox fib | 314 → 154 | −51% | −62% | −58% |
-| Lox instantiation | 292 → 183 | −37% | −25% | −24% |
-| Lox invocation | 259 → 74 | −71% | −61% | −56% |
-| Lox method_call | 155 → 79 | −49% | −47% | −34% |
-| Lox properties | 385 → 165 | −57% | −52% | −37% |
-| Lox string_equality | 1.4 → 0.9 | −38% | −49% | −38% |
-| Lox trees | 1837 → 763 | −58% | −58% | −48% |
-| Lox zoo | 283 → 118 | −58% | −59% | −46% |
+| bench/fib | 46 → 19 | −58% | −63% | −54% |
+| bench/loop | 83 → 18 | −78% | −54% | −60% |
+| bench/nbody | 98 → 98 | 0% | 0% | −1% |
+| bench/sieve | 602 → 602 | 0% | −1% | +1% |
+| bench/closures | 100 → 16 | −84% | −84% | −84% |
+| bench/maps | 26 → 26 | −1% | −2% | +2% |
+| bench/binarytrees | 80 → 57 | −29% | −32% | −22% |
+| Erlang fib | 34 → 13 | −62% | −65% | −61% |
+| Erlang ring | 192 → 174 | −10% | −3% | −5% |
+| Erlang binarytrees | 546 → 213 | −61% | −61% | −58% |
+| Erlang nbody | 468 → 177 | −62% | −56% | −60% |
+| Erlang sorting | 658 → 321 | −51% | −47% | −43% |
+| Lua fib | 50 → 20 | −60% | −62% | −53% |
+| Lua loop | 185 → 42 | −78% | −72% | −75% |
+| Lua methods | 527 → 212 | −60% | −61% | −56% |
+| Lua strings | 193 → 105 | −46% | −41% | −40% |
+| Lua iterate | 61 → 20 | −66% | −66% | −69% |
+| Lua binarytrees | 317 → 160 | −49% | −50% | −50% |
+| Lua nbody | 842 → 346 | −59% | −39% | −52% |
+| Lua spectralnorm | 224 → 79 | −65% | −70% | −72% |
+| Lua fannkuch | 1967 → 639 | −68% | −52% | −67% |
+| Lox binary_trees | 698 → 326 | −53% | −57% | −48% |
+| Lox equality | 128 → 62 | −51% | −60% | −56% |
+| Lox fib | 310 → 150 | −52% | −62% | −57% |
+| Lox instantiation | 289 → 181 | −37% | −27% | −26% |
+| Lox invocation | 254 → 74 | −71% | −64% | −57% |
+| Lox method_call | 152 → 76 | −50% | −51% | −30% |
+| Lox properties | 383 → 160 | −58% | −56% | −41% |
+| Lox string_equality | 1.4 → 0.8 | −42% | −50% | −43% |
+| Lox trees | 1808 → 747 | −59% | −60% | −48% |
+| Lox zoo | 283 → 115 | −60% | −63% | −41% |
 
 Calls and loops gain the most: the machine code has no dispatch, keeps a
 block's registers in machine registers, and a loop's across iterations (with
@@ -240,9 +240,8 @@ though not again for an object the block has checked.
 Where the time is not the interpreter's, the JIT has nothing to remove:
 `bench/nbody` computes on elements in place (operands the interpreter has no
 fast form for, so the JIT does not enter it), `sieve` works in raw memory,
-`maps` is natives, and Erlang's `ring` is messages and the scheduler; Lua's
-`strings` still runs its string building (`bufcat`, `tostr`, `strcat`) by
-their handlers. x86-64 has fewer registers to keep a block's values in (5
+`maps` is natives, and Erlang's `ring` is messages and the scheduler.
+x86-64 has fewer registers to keep a block's values in (5
 for integers, against 16 on arm64), and keeps no loop's registers across a
 call, which is most of why the Lox and Lua programs gain less there.
 
@@ -282,7 +281,11 @@ it measured faster.
    an `I` register), `typeof` of a register, `beq.r`/`bne.r` of an element at
    a constant index against a constant (a tuple's tag), and direct tail calls
    with registers and constants as arguments. These took 29–39% off its
-   `binarytrees` and `nbody` and 15–21% off `sorting`. The profiler lists the
+   `binarytrees` and `nbody` and 15–21% off `sorting`. An eighth, for text:
+   `strcat` and `bufcat` of registers and string constants, `tostr` of an
+   `I` or an `F` register, `substr` of registers, `bufnew` of a constant and
+   `bufpush` of a register, each a check of its operands and a call of C.
+   The profiler lists the
    instructions that still run generically, which is how these were chosen. A
    shape qualifies only when its generic semantics are trivially the same: no
    width canonicalisation, and no trap that cannot be checked cheaply. The disassembler, tracer, profiler and debugger see the real opcode.

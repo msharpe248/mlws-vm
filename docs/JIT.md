@@ -67,9 +67,11 @@ The JIT compiles the quickened forms ([PERFORMANCE.md](PERFORMANCE.md#how-the-in
   constants stored to fields, elements and globals,
   `new` and `lnew` (for a struct, and for a list whose storage is inside
   it, the allocator's pointer bump in machine code: DESIGN.md §11.2),
-  `lpush` into spare capacity, `mget` of a constant key or a key in a
-  register,
-  `ldv`, `typeof`, `isa`, `bisa`, `bnisa`, and a tuple's tag test.
+  `lpush` (a full list grown by a call of C, in a stub out of the way),
+  `mget` of a constant key or a key in a register,
+  `ldv`, `typeof`, `isa`, `bisa`, `bnisa`, and a tuple's tag test;
+* the string builders, `strcat`, `bufcat`, `tostr`, `substr`, `bufnew` and
+  `bufpush`, by calls of their quickened forms' C functions.
 
 It also compiles a few generic instructions that have no quickened form,
 from their operands: `i64` and `u64` add, sub, mul, and, or, xor and
@@ -153,10 +155,19 @@ end, but the block after it does not load them again, and keeps what the
 block before checked of R registers. Such a block is never entered from the
 interpreter.
 
+**Two-word values.** Compiled Lox reads a value as its number word and
+then its reference word (`mov.f64 F1, R2[I3]`, `mov.r R1, R2[I3+1]`), and
+compiled Lua as its tag word and then `ldv` of its number. Two such loads of
+different banks from one object, at an index and the one after it, are one
+form: one check that the object is a list, then both loads. Anything but a
+list stops before the first, since an array's elements have one type and
+cannot give both. The block knows the object is a list from then on.
+
 **Globals.** A global of the function's own module is read or written
 without checking its segment's size, since a process's segment of a module
 is that module's size; a global of another module is checked. That the
-process has a module's globals at all is checked once a block. Together with
+process has a module's globals at all is checked once a block, and a
+global's word is read at an offset fixed when it is compiled. Together with
 falling through, against 0.12.0 on the M5, the i7 and the Ryzen: compiled
 Lua's `nbody` 6–7% less time, `methods` 5–9%, `fannkuch` 1–13%, and Lox's
 `zoo` and `properties` 4–13% and 3–9%.
@@ -255,10 +266,10 @@ only for a report.
 
 [PERFORMANCE.md](PERFORMANCE.md#the-jit) has the results on the three
 machines, for the benchmarks and the compilers' programs. Calls (`fib`) take
-51–65% less time, closure calls (`closures`, compiled Lox's `invocation`)
-56–86% less, loops (`loop`, `fannkuch`, `spectralnorm`) 51–78% less, and
+52–65% less time, closure calls (`closures`, compiled Lox's `invocation`)
+57–84% less, loops (`loop`, `fannkuch`, `spectralnorm`) 52–78% less, and
 field and element access with method calls (`nbody`, `methods`, compiled
-Lox's `trees`) 34–58% less. Where the time goes to natives (`maps`), raw memory (`sieve`)
+Lox's `trees`) 39–61% less. Where the time goes to natives (`maps`), raw memory (`sieve`)
 or the scheduler (Erlang's `ring`), the JIT changes little.
 
 ## Design

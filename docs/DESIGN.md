@@ -834,7 +834,9 @@ its length from the count. A block that only the branch before it falls
 into (`fallin` in `jit_compile`) starts with that block's cache, so it gets
 no entry, and its header's stop is made as a side exit. After the code come stubs: side exits (write
 back the changed registers, give back the block's count, exit at the
-instruction), stops before a block for the interpreter, and, for loops whose
+instruction), a full list's growth for `lpush` (write back, grow it in C,
+load the cached registers again, go back), stops before a block for the
+interpreter, and, for loops whose
 registers stay in machine registers, the ways out (write back, go on) and a
 way in for each block inside the loop (load them). A call's continuation
 offset goes in the call's `Insn.target` (calls have no label, so it is
