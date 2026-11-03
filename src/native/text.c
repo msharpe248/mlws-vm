@@ -326,32 +326,65 @@ TRIM(n_trim, 1, 1)
 TRIM(n_trim_start, 1, 0)
 TRIM(n_trim_end, 0, 1)
 
+/* The first occurrence of sub in s[0, n) at or after from, or -1 (an empty
+ * sub: from itself, if it is not past the end). */
+static int64_t text_search(const char *s, uint32_t n, int64_t from, const char *sub, uint32_t sn) {
+    if (from < 0) from = 0;
+    if (from + (int64_t)sn > (int64_t)n) return -1;
+    if (!sn) return from;
+    const char *at = s + from, *last = s + n - sn;
+    while (at <= last) {
+        at = memchr(at, (unsigned char)sub[0], (size_t)(last - at) + 1);
+        if (!at) return -1;
+        if (!memcmp(at, sub, sn)) return at - s;
+        at++;
+    }
+    return -1;
+}
+
 static void n_find(Process *p, Word *a, Word *r) {
     uint32_t n, sn;
     const char *s = str_arg(p, a[0], &n), *sub = str_arg(p, a[1], &sn);
-    int64_t from = a[2].i < 0 ? 0 : a[2].i;
-    r[0].i = -1;
-    for (int64_t i = from; i + (int64_t)sn <= (int64_t)n; i++)
-        if (!memcmp(s + i, sub, sn)) {
-            r[0].i = i;
-            return;
+    r[0].i = text_search(s, n, a[2].i, sub, sn);
+}
+
+/* s with the first max occurrences of old (every one, if max < 0) replaced
+ * by new, and how many were. An empty old occurs before each byte and at the
+ * end, as Lua's gsub of an empty pattern matches. */
+static Word text_replace(Process *p, const char *s, uint32_t n, const char *old, uint32_t on, const char *new_,
+                         uint32_t nn, int64_t max, int64_t *count) {
+    StrBuf b = {0};
+    int64_t done = 0;
+    uint32_t i = 0;
+    if (!on) {
+        for (; done != max && i <= n; done++, i++) {
+            sb_putn(&b, new_, nn);
+            if (i < n) sb_putc(&b, s[i]);
         }
+    } else {
+        for (int64_t at; done != max && (at = text_search(s, n, i, old, on)) >= 0; done++) {
+            sb_putn(&b, s + i, (size_t)(at - i));
+            sb_putn(&b, new_, nn);
+            i = (uint32_t)at + on;
+        }
+    }
+    if (i < n) sb_putn(&b, s + i, n - i);
+    *count = done;
+    return sb_string(p, &b);
 }
 
 static void n_replace(Process *p, Word *a, Word *r) {
     uint32_t n, on, nn;
     const char *s = str_arg(p, a[0], &n), *old = str_arg(p, a[1], &on), *new_ = str_arg(p, a[2], &nn);
     if (!on) vm_trap(p, "E_TYPE", "text.replace: the text to replace is empty");
-    StrBuf b = {0};
-    for (uint32_t i = 0; i < n;) {
-        if (i + on <= n && !memcmp(s + i, old, on)) {
-            sb_putn(&b, new_, nn);
-            i += on;
-        } else {
-            sb_putc(&b, s[i++]);
-        }
-    }
-    r[0] = sb_string(p, &b);
+    int64_t count;
+    r[0] = text_replace(p, s, n, old, on, new_, nn, -1, &count);
+}
+
+static void n_replace_n(Process *p, Word *a, Word *r) {
+    uint32_t n, on, nn;
+    const char *s = str_arg(p, a[0], &n), *old = str_arg(p, a[1], &on), *new_ = str_arg(p, a[2], &nn);
+    r[0] = text_replace(p, s, n, old, on, new_, nn, a[3].i < 0 ? -1 : a[3].i, &r[1].i);
 }
 
 static void n_starts_with(Process *p, Word *a, Word *r) {
@@ -1020,6 +1053,8 @@ static const NativeDef TEXT_NATIVES[] = {
     N("text.find", 3, T(T_R, T_R, T_I64), 1, T(T_I64), n_find,
       "The byte offset of the first occurrence at or after an offset, or -1."),
     N("text.replace", 3, T(T_R, T_R, T_R), 1, T(T_R), n_replace, "Replace every occurrence."),
+    N("text.replace_n", 4, T(T_R, T_R, T_R, T_I64), 2, T(T_R, T_I64), n_replace_n,
+      "Replace the first n occurrences (every one, if n < 0), and how many were: Lua's gsub of a plain pattern."),
     N("text.starts_with", 2, T(T_R, T_R), 1, T(T_B), n_starts_with, "Whether a string starts with a prefix."),
     N("text.ends_with", 2, T(T_R, T_R), 1, T(T_B), n_ends_with, "Whether a string ends with a suffix."),
     N("text.slice", 3, T(T_R, T_I64, T_I64), 1, T(T_R), n_slice,

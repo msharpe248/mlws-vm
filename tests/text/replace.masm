@@ -1,0 +1,62 @@
+; text.replace_n: the first n occurrences of a string replaced (every one, if
+; n < 0), and how many were, as Lua's string.gsub of a plain pattern gives
+; them (the expected values are Lua 5.5's): occurrences that overlap are
+; taken from the left, and an empty string occurs before each byte and at
+; the end. text.replace replaces every occurrence, and refuses an empty one;
+; text.find, which shares the search, finds from an offset.
+.include "std/test.inc"
+
+.macro SEQ a, b
+    strcmp I9, \a, \b
+    ASSERT_EQ I9, 0
+.endm
+
+.macro REPLACE s, old, new, n, want, count
+    ncall "text.replace_n" (\s, \old, \new, \n) -> (R1, I1)
+    SEQ R1, \want
+    ASSERT_EQ I1, \count
+.endm
+
+.func main
+    REPLACE "a.b.c", ".", "::", -1, "a::b::c", 2
+    REPLACE "abc", "", "-", -1, "-a-b-c-", 4
+    REPLACE "abc", "", "-", 2, "-a-bc", 2
+    REPLACE "aaaa", "aa", "b", -1, "bb", 2
+    REPLACE "aaa", "aa", "b", -1, "ba", 1
+    REPLACE "hello", "l", "L", 1, "heLlo", 1
+    REPLACE "hello", "z", "Z", -1, "hello", 0
+    REPLACE "", "", "x", -1, "x", 1
+    REPLACE "", "a", "x", -1, "", 0
+    REPLACE "abab", "ab", "", -1, "", 2
+    REPLACE "xyz", "xyz", "Q", 0, "xyz", 0
+    REPLACE "the cat sat", "at", "og", -1, "the cog sog", 2
+    REPLACE "end.", ".", "!", -1, "end!", 1
+
+    ; a byte buffer as the text, and bytes that are not UTF-8
+    bufnew R2, 0
+    bufcat R2, "x\xffy\xffz"
+    ncall "text.replace_n" (R2, "\xff", "-", -1) -> (R1, I1)
+    SEQ R1, "x-y-z"
+    ASSERT_EQ I1, 2
+
+    ncall "text.replace" ("a.b.c", ".", "::") -> (R1)
+    SEQ R1, "a::b::c"
+    ncall "text.replace" ("aaa", "aa", "b") -> (R1)
+    SEQ R1, "ba"
+
+    ncall "text.find" ("hello hello", "llo", 0) -> (I1)
+    ASSERT_EQ I1, 2
+    ncall "text.find" ("hello hello", "llo", 3) -> (I1)
+    ASSERT_EQ I1, 8
+    ncall "text.find" ("hello", "o", 4) -> (I1)        ; the last byte
+    ASSERT_EQ I1, 4
+    ncall "text.find" ("hello", "lo", 4) -> (I1)       ; would run past the end
+    ASSERT_EQ I1, -1
+    ncall "text.find" ("hello", "", 5) -> (I1)         ; empty, at the end
+    ASSERT_EQ I1, 5
+    ncall "text.find" ("hello", "", 6) -> (I1)
+    ASSERT_EQ I1, -1
+    ncall "text.find" ("hello", "h", -3) -> (I1)       ; from 0
+    ASSERT_EQ I1, 0
+    ret 0
+.endf

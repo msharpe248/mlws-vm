@@ -112,6 +112,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `text.trim_end` | r | r | Remove whitespace from the end. |
 | `text.find` | r, r, i64 | i64 | The byte offset of the first occurrence at or after an offset, or -1. |
 | `text.replace` | r, r, r | r | Replace every occurrence. |
+| `text.replace_n` | r, r, r, i64 | r, i64 | Replace the first n occurrences (every one, if n < 0), and how many were: Lua's gsub of a plain pattern. |
 | `text.starts_with` | r, r | b | Whether a string starts with a prefix. |
 | `text.ends_with` | r, r | b | Whether a string ends with a suffix. |
 | `text.slice` | r, i64, i64 | r | The bytes [start, end) as a string; negative offsets count from the end; clamped to the string. |
