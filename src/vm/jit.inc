@@ -1133,7 +1133,7 @@ static void jit_tail_frame(JComp *j, const Insn *in, uint32_t pc, const Function
  * S3 the word's index in it; the tag checked (tag: 1 must be r, -1 must not
  * be r, 0 set it to `set`), anything else a side exit. Leaves S0 the
  * segment's data. ---- */
-static void jit_global(JComp *j, const Insn *in, uint32_t pc, int tag, unsigned set) {
+static uint32_t jit_global(JComp *j, const Insn *in, uint32_t pc, int tag, unsigned set) {
     JBuf *b = &j->b;
     uint32_t g = (uint32_t)((uint64_t)in->k.i >> 32), off = (uint32_t)in->k.i;
     /* A process's segment of a module is the module's globals, of its size:
@@ -1142,34 +1142,35 @@ static void jit_global(JComp *j, const Insn *in, uint32_t pc, int tag, unsigned 
      * it always will (they only grow): one check a block. */
     const LModule *own = j->f->mod;
     bool inside = own && g == (uint32_t)own->index && (uint64_t)off + 8 <= own->m->gsize;
+    int64_t seg = (int64_t)g * (int64_t)sizeof(Segment); /* (the segment's fields at immediate offsets) */
     int P = jm_proc(b, JR_S0);
     if (j->jc.gok != (int32_t)g) {
         jm_ld32(b, JR_S1, P, P_OFF(nglobals));
-        jm_movi(b, JR_S2, g);
-        jm_cmp32(b, JR_S2, JR_S1);
-        SIDE_IF(JC_HS);
+        jm_cmpi32(b, JR_S1, g);
+        SIDE_IF(JC_LS); /* nglobals <= g */
         j->jc.gok = (int32_t)g;
     }
     jm_ld(b, JR_S0, P, P_OFF(globals));
-    jm_movi(b, JR_S1, (uint64_t)g * sizeof(Segment));
-    jm_alu(b, JA_ADD, JR_S0, JR_S0, JR_S1);
     if (!inside) {
-        jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(Segment, size));
+        jm_ld32(b, JR_S1, JR_S0, seg + (int64_t)offsetof(Segment, size));
         jm_movi(b, JR_S2, (uint64_t)off + 8);
         jm_cmp(b, JR_S1, JR_S2);
         SIDE_IF(JC_LO);
     }
-    jm_movi(b, JR_S3, off >> 3);
-    jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(Segment, tags));
+    jm_ld(b, JR_S1, JR_S0, seg + (int64_t)offsetof(Segment, tags));
     if (tag) {
-        jm_ld8x(b, JR_S2, JR_S1, JR_S3);
+        jm_ld8(b, JR_S2, JR_S1, off >> 3);
         jm_cmpi32(b, JR_S2, T_R);
         SIDE_IF(tag > 0 ? JC_NE : JC_EQ);
     } else {
         jm_movi(b, JR_S2, set);
-        jm_st8x(b, JR_S2, JR_S1, JR_S3);
+        jm_st8(b, JR_S2, JR_S1, off >> 3);
     }
-    jm_ld(b, JR_S0, JR_S0, (int64_t)offsetof(Segment, data));
+    jm_ld(b, JR_S0, JR_S0, seg + (int64_t)offsetof(Segment, data));
+    if (off <= INT32_MAX) return off; /* the word: at S0 + off */
+    jm_movi(b, JR_S1, off); /* (beyond a 32-bit displacement) */
+    jm_alu(b, JA_ADD, JR_S0, JR_S0, JR_S1);
+    return 0;
 }
 
 /* new (a struct) or lnew (a list with its storage inside it): the allocator's
@@ -1505,9 +1506,97 @@ static int jit_gen_src(JComp *j, const Operand *o, uint32_t pc, int into) {
     return into;
 }
 
+/* ldv's value: the tag in S2, the word in S4, into r[0] (i64) and r[1]
+ * (f64), the other zero; none gives zeros, any other tag the handler. */
+static void jit_ldv_value(JComp *j, const Insn *in, uint32_t pc) {
+    JBuf *b = &j->b;
+    jm_cmpi32(b, JR_S2, T_I64);
+    uint32_t ok1 = jm_fwd(b, JC_EQ);
+    jm_cmpi32(b, JR_S2, T_F64);
+    uint32_t ok2 = jm_fwd(b, JC_EQ);
+    jm_cmpi32(b, JR_S2, T_NONE);
+    SIDE_IF(JC_NE);
+    jm_bind(b, ok1), jm_bind(b, ok2);
+    int di = jc_def(j, 0, in->r[0]), df = jc_def(j, 1, in->r[1]);
+    jm_cmpi32(b, JR_S2, T_I64);
+    jm_cselz(b, di, JR_S4, JC_EQ);
+    jm_cmpi32(b, JR_S2, T_F64);
+    jm_cselz(b, JR_S3, JR_S4, JC_EQ);
+    jm_fmov_from_x(b, df, JR_S3);
+}
+
+/* A value's two words, as the compilers read them: an element and the one
+ * after it, of another bank (Lox: `mov.f64 F, X[i]`, `mov.r R, X[i+1]`), or
+ * a reference and then ldv's number (Lua: `mov R, X[i]`, `ldv I, F,
+ * X[i+1]`); jit_is_pair. One check that X is a list, then both loads.
+ * Anything but a list stops before the first (an array cannot give both: its
+ * elements have one type); the second's checks stop before it, the first
+ * done. From here on the block knows X is a list. */
+static void jit_pair_load(JComp *j, const Insn *in, uint32_t pc, int bank, int ix) {
+    JBuf *b = &j->b;
+    int val = bank == 1 ? JF_S0 : JR_S4, d;
+    jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, tags));
+    jm_ld8x(b, JR_S2, JR_S1, ix);
+    size_t unset = jit_list_tag(j, pc, in->type, bank, val);
+    jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, items));
+    jit_elem_access(b, false, bank, val, ix);
+    jit_list_back(j, unset);
+    if (bank == 2) jst_r(j, JR_S4, in->r[0]);
+    else if (bank == 1) d = jc_def(j, 1, in->r[0]), jm_fmov(b, d, JF_S0);
+    else d = jc_def(j, 0, in->r[0]), jm_mov(b, d, JR_S4);
+}
+static void jit_pair(JComp *j, const Insn *in, uint32_t pc, uint16_t x1, uint16_t x2) {
+    JBuf *b = &j->b;
+    int bank0 = x1 - Q_LDE_I;
+    const Insn *v = in + 1;
+    unsigned r = in->r[1];
+    int ix = jc_get(j, 0, in->r[2]);
+    jld_r(j, JR_S0, r);
+    if (j->jc.rk[r].kind != OBJ_LIST) {
+        SIDE_IF_NULL(JR_S0);
+        jm_ld8(b, JR_S1, JR_S0, (int64_t)offsetof(Obj, kind));
+        jm_cmpi32(b, JR_S1, OBJ_LIST);
+        SIDE_IF(JC_NE);
+        j->jc.rk[r].kind = OBJ_LIST, j->jc.rk[r].def = NULL;
+    }
+    jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, len));
+    jm_cmp(b, ix, JR_S1);
+    SIDE_IF(JC_HS);
+    jit_pair_load(j, in, pc, bank0, ix);
+    pc++; /* the second */
+    jm_alui(b, JA_ADD, JR_S3, ix, 1);
+    jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, len));
+    jm_cmp(b, JR_S3, JR_S1);
+    SIDE_IF(JC_HS);
+    if (x2 != Q_LDV_ED) {
+        jit_pair_load(j, v, pc, x2 - Q_LDED_I, JR_S3);
+        return;
+    }
+    jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, tags));
+    jm_ld8x(b, JR_S2, JR_S1, JR_S3);
+    jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, items));
+    jm_ldx(b, JR_S4, JR_S1, JR_S3);
+    jit_ldv_value(j, v, pc);
+}
+
+/* Whether pc and pc + 1 are such a pair (the second's form, or 0). */
+static uint16_t jit_is_pair(const Function *f, const uint16_t *jx, const uint8_t *lead, uint32_t pc) {
+    if (pc + 1 >= f->ncode || lead[pc + 1] || jx[pc] < Q_LDE_I || jx[pc] > Q_LDE_R ||
+        jit_steps(&f->code[pc], jx[pc]) || jit_steps(&f->code[pc + 1], jx[pc + 1]))
+        return 0;
+    const Insn *in = &f->code[pc], *v = in + 1;
+    int bank = jx[pc] - Q_LDE_I;
+    if (in->r[0] == (bank == 2 ? in->r[1] : bank == 0 ? in->r[2] : 256)) return 0; /* (it changes X or i) */
+    if (jx[pc + 1] == Q_LDV_ED)
+        return bank == 2 && in->r[1] == (unsigned)v->k.i && in->r[2] == v->target && (int8_t)v->r[2] == 1 ? Q_LDV_ED : 0;
+    if (jx[pc + 1] < Q_LDED_I || jx[pc + 1] > Q_LDED_R || jx[pc + 1] - Q_LDED_I == bank) return 0;
+    return in->r[1] == v->r[1] && in->r[2] == v->r[2] && v->k.i == 1 ? jx[pc + 1] : 0;
+}
+
 static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t *cont) {
     JBuf *b = &j->b;
     int shape, kind, s1, s2, d, op;
+    uint32_t goff; /* a global's word, at S0 + goff (jit_global) */
     uint32_t t = pc + (uint32_t)(int32_t)in->target; /* a branch's target (relative in this build) */
     j->jc.pin[0] = j->jc.pin[1] = 0;
     switch (x) {
@@ -1651,9 +1740,9 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         return;
     }
     case Q_STGK: /* a constant to a global */
-        jit_global(j, in, pc, 0, in->type);
+        goff = jit_global(j, in, pc, 0, in->type);
         jm_movi(b, JR_S1, in->ops[1].kw);
-        jm_stx(b, JR_S1, JR_S0, JR_S3);
+        jm_st(b, JR_S1, JR_S0, goff);
         return;
     case Q_NEW: case Q_LNEW: { /* the C functions may trap (a quota), so the frame's pc and the count are up to date */
         jc_flush(j);
@@ -1806,20 +1895,7 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         jm_alui(b, JA_ADD, JR_S1, JR_S0, (int64_t)offsetof(ObjArray, data));
         jm_ldx(b, JR_S4, JR_S1, ix);
         jm_bind(b, to_tag);
-        /* the tag in S2, the word in S4: i64, f64 or none (zeros), else the handler's */
-        jm_cmpi32(b, JR_S2, T_I64);
-        uint32_t ok1 = jm_fwd(b, JC_EQ);
-        jm_cmpi32(b, JR_S2, T_F64);
-        uint32_t ok2 = jm_fwd(b, JC_EQ);
-        jm_cmpi32(b, JR_S2, T_NONE);
-        SIDE_IF(JC_NE);
-        jm_bind(b, ok1), jm_bind(b, ok2);
-        int di = jc_def(j, 0, in->r[0]), df = jc_def(j, 1, in->r[1]);
-        jm_cmpi32(b, JR_S2, T_I64);
-        jm_cselz(b, di, JR_S4, JC_EQ);
-        jm_cmpi32(b, JR_S2, T_F64);
-        jm_cselz(b, JR_S3, JR_S4, JC_EQ);
-        jm_fmov_from_x(b, df, JR_S3);
+        jit_ldv_value(j, in, pc);
         return;
     }
     case Q_BISA: case Q_BNISA: { /* a struct of the type in k: branch (BISA) or not */
@@ -1841,8 +1917,8 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         return;
     }
     case Q_BEQ_RG: case Q_BNE_RG:
-        jit_global(j, in, pc, 1, 0);
-        jm_ldx(b, JR_S1, JR_S0, JR_S3);
+        goff = jit_global(j, in, pc, 1, 0);
+        jm_ld(b, JR_S1, JR_S0, goff);
         jc_flush(j);
         jld_r(j, JR_S0, in->r[0]);
         jm_cmp(b, JR_S0, JR_S1);
@@ -1850,18 +1926,18 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         return;
     case Q_LDG_I: case Q_LDG_F: case Q_LDG_R: {
         int bank = x - Q_LDG_I;
-        jit_global(j, in, pc, bank == 2 ? 1 : -1, 0);
-        if (bank == 2) jm_ldx(b, JR_S1, JR_S0, JR_S3), jst_r(j, JR_S1, in->r[0]);
-        else d = jc_def(j, bank, in->r[0]), bank ? jm_fldx(b, d, JR_S0, JR_S3) : jm_ldx(b, d, JR_S0, JR_S3);
+        goff = jit_global(j, in, pc, bank == 2 ? 1 : -1, 0);
+        if (bank == 2) jm_ld(b, JR_S1, JR_S0, goff), jst_r(j, JR_S1, in->r[0]);
+        else d = jc_def(j, bank, in->r[0]), bank ? jm_fld(b, d, JR_S0, goff) : jm_ld(b, d, JR_S0, goff);
         return;
     }
     case Q_STG_I: case Q_STG_F: case Q_STG_R: {
         int bank = x - Q_STG_I;
         if (bank != 2) s1 = jc_get(j, bank, in->r[1]);
         else s1 = -1;
-        jit_global(j, in, pc, 0, in->type);
-        if (bank == 2) jld_r(j, JR_S1, in->r[1]), jm_stx(b, JR_S1, JR_S0, JR_S3);
-        else bank ? jm_fstx(b, s1, JR_S0, JR_S3) : jm_stx(b, s1, JR_S0, JR_S3);
+        goff = jit_global(j, in, pc, 0, in->type);
+        if (bank == 2) jld_r(j, JR_S1, in->r[1]), jm_st(b, JR_S1, JR_S0, goff);
+        else bank ? jm_fst(b, s1, JR_S0, goff) : jm_st(b, s1, JR_S0, goff);
         return;
     }
     case Q_LPUSH_R: case Q_LPUSH_RK: { /* into the list's spare capacity; growing it is the handler's */
@@ -2361,7 +2437,9 @@ static void jit_compile(VM *vm, Function *f) {
             else jbranch(j, FX_BCOND, JC_LO, 0, false, TO_UNDO, pc);
         }
         j->keep = pc + 1 < n && fallin[pc + 1]; /* (a conditional branch, then) */
-        jit_insn(j, in, jx[pc], pc, &cont[pc]);
+        uint16_t x2 = jit_is_pair(f, jx, lead, pc);
+        if (x2) jit_pair(j, in, pc, jx[pc], x2);
+        else if (!(pc > 0 && jit_is_pair(f, jx, lead, pc - 1))) jit_insn(j, in, jx[pc], pc, &cont[pc]); /* (a pair's second: done) */
         j->keep = false;
         if (rest[pc] == 1 && !(pc + 1 < n && fallin[pc + 1])) jc_flush(j); /* the block ends: back to the window (in a
                                                                               loop, not until it is left) */
