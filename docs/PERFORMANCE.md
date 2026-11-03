@@ -87,19 +87,19 @@ interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | JIT, M5 | Lua 5.5, M5 | MLWSVM, i7 | JIT, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|---|---|
-| loop | 205 | 55 | 218 | 344 | 105 | 290 |
-| iterate | 73 | 35 | 58 | 113 | 54 | 80 |
-| fib | 62 | 36 | 53 | 106 | 51 | 102 |
-| methods | 542 | 361 | 348 | 960 | 683 | 567 |
-| strings | 229 | 164 | 134 | 401 | 303 | 213 |
-| binarytrees (15) | 335 | 189 | 382 | 563 | 305 | 578 |
-| nbody (500,000) | 878 | 420 | 424 | 1,379 | 960 | 591 |
-| spectralnorm (500) | 228 | 101 | 185 | 385 | 139 | 269 |
-| fannkuch (10) | 2,004 | 690 | 808 | 3,027 | 1,547 | 1,157 |
+| loop | 197 | 52 | 218 | 338 | 105 | 290 |
+| iterate | 71 | 33 | 58 | 114 | 53 | 80 |
+| fib | 60 | 34 | 53 | 105 | 52 | 102 |
+| methods | 528 | 245 | 348 | 954 | 453 | 567 |
+| strings | 220 | 152 | 134 | 404 | 288 | 213 |
+| binarytrees (15) | 331 | 182 | 382 | 550 | 301 | 578 |
+| nbody (500,000) | 847 | 405 | 424 | 1,353 | 940 | 591 |
+| spectralnorm (500) | 225 | 99 | 185 | 397 | 139 | 269 |
+| fannkuch (10) | 1,967 | 683 | 808 | 2,968 | 1,556 | 1,157 |
 
 Interpreted, `loop` and `binarytrees` take less time than in Lua on the M5,
-and `binarytrees` on the i7 too; with the JIT, six of the nine take less
-time than in Lua on the M5 (and `nbody` as much), and five on the i7. Without start-up, interpreted `fib` runs in 50 ms
+and `binarytrees` on the i7 too; with the JIT, eight of the nine take less
+time than in Lua on the M5 (all but `strings`), and six on the i7. Without start-up, interpreted `fib` runs in 50 ms
 on the M5, as fast as Lua: its typed copy executes fewer instructions than
 Lua's bytecode does. Counted with Lua's
 own instruction hook, the others execute 1.7 to 5.2 times as many, and each
@@ -130,10 +130,10 @@ included on both sides; Erlang's is about 0.08 s):
 | Benchmark | MLWSVM | MLWSVM with its JIT | Erlang/OTP 29 |
 |---|---|---|---|
 | fib | 0.04 | 0.02 | 0.09 |
-| ring | 0.24 | 0.22 | 0.27 |
-| binarytrees | 0.57 | 0.25 | 0.13 |
-| nbody | 0.49 | 0.21 | 0.15 |
-| sorting | 0.67 | 0.37 | 0.12 |
+| ring | 0.23 | 0.21 | 0.27 |
+| binarytrees | 0.57 | 0.24 | 0.13 |
+| nbody | 0.48 | 0.20 | 0.15 |
+| sorting | 0.66 | 0.35 | 0.12 |
 
 BEAM compiles to machine code here, so its loops are not a fair match for an
 interpreter. `ring`, which passes a message round a ring of a thousand
@@ -195,42 +195,45 @@ benchmarks of the sections above.
 
 | Program | M5, ms (interpreter → JIT) | M5 | i7, GCC | Ryzen, Clang |
 |---|---|---|---|---|
-| bench/fib | 49 → 24 | −50% | −60% | −61% |
-| bench/loop | 84 → 18 | −79% | −54% | −60% |
-| bench/nbody | 99 → 99 | 0% | +2% | 0% |
-| bench/sieve | 621 → 618 | 0% | 0% | −3% |
-| bench/closures | 100 → 42 | −58% | −54% | −62% |
-| bench/maps | 35 → 33 | −3% | 0% | +2% |
-| bench/binarytrees | 81 → 59 | −27% | −29% | −27% |
-| Erlang fib | 34 → 15 | −57% | −67% | −61% |
-| Erlang ring | 196 → 176 | −10% | −2% | −5% |
-| Erlang binarytrees | 556 → 233 | −58% | −59% | −61% |
-| Erlang nbody | 478 → 194 | −59% | −52% | −60% |
-| Erlang sorting | 644 → 347 | −46% | −45% | −47% |
-| Lua fib | 51 → 24 | −52% | −62% | −62% |
-| Lua loop | 186 → 42 | −77% | −72% | −75% |
-| Lua methods | 527 → 344 | −35% | −28% | −36% |
-| Lua strings | 216 → 152 | −30% | −24% | −28% |
-| Lua iterate | 61 → 23 | −62% | −61% | −59% |
-| Lua binarytrees | 320 → 172 | −46% | −47% | −52% |
-| Lua nbody | 846 → 405 | −52% | −31% | −45% |
-| Lua spectralnorm | 214 → 88 | −59% | −64% | −66% |
-| Lua fannkuch | 1981 → 674 | −66% | −49% | −59% |
-| Lox binary_trees | 697 → 388 | −44% | −46% | −41% |
-| Lox equality | 129 → 63 | −51% | −53% | −50% |
-| Lox fib | 297 → 170 | −43% | −62% | −60% |
-| Lox instantiation | 292 → 188 | −36% | −21% | −29% |
-| Lox invocation | 253 → 192 | −24% | −17% | −15% |
-| Lox method_call | 154 → 100 | −35% | −32% | −28% |
-| Lox properties | 378 → 271 | −28% | −18% | −13% |
-| Lox string_equality | 1.4 → 0.9 | −40% | −44% | −38% |
-| Lox trees | 1745 → 1107 | −36% | −37% | −28% |
-| Lox zoo | 278 → 182 | −34% | −27% | −24% |
+| bench/fib | 48 → 24 | −50% | −59% | −58% |
+| bench/loop | 84 → 18 | −79% | −54% | −59% |
+| bench/nbody | 100 → 100 | 0% | 0% | +1% |
+| bench/sieve | 607 → 610 | +1% | −1% | 0% |
+| bench/closures | 102 → 20 | −80% | −83% | −84% |
+| bench/maps | 35 → 34 | −2% | 0% | 0% |
+| bench/binarytrees | 81 → 61 | −25% | −30% | −29% |
+| Erlang fib | 34 → 15 | −56% | −62% | −62% |
+| Erlang ring | 194 → 176 | −9% | −4% | −6% |
+| Erlang binarytrees | 563 → 234 | −58% | −59% | −60% |
+| Erlang nbody | 471 → 195 | −59% | −54% | −60% |
+| Erlang sorting | 649 → 339 | −48% | −46% | −48% |
+| Lua fib | 51 → 24 | −52% | −60% | −60% |
+| Lua loop | 190 → 42 | −78% | −72% | −74% |
+| Lua methods | 526 → 237 | −55% | −53% | −55% |
+| Lua strings | 210 → 142 | −32% | −29% | −32% |
+| Lua iterate | 62 → 23 | −63% | −62% | −61% |
+| Lua binarytrees | 319 → 172 | −46% | −46% | −51% |
+| Lua nbody | 850 → 399 | −53% | −30% | −46% |
+| Lua spectralnorm | 218 → 90 | −59% | −67% | −66% |
+| Lua fannkuch | 2002 → 680 | −66% | −48% | −59% |
+| Lox binary_trees | 714 → 354 | −50% | −54% | −49% |
+| Lox equality | 129 → 65 | −50% | −53% | −51% |
+| Lox fib | 306 → 170 | −44% | −59% | −63% |
+| Lox instantiation | 296 → 194 | −34% | −22% | −29% |
+| Lox invocation | 261 → 88 | −66% | −55% | −56% |
+| Lox method_call | 155 → 85 | −45% | −44% | −39% |
+| Lox properties | 389 → 180 | −54% | −46% | −36% |
+| Lox string_equality | 1.4 → 0.9 | −41% | −44% | −36% |
+| Lox trees | 1788 → 818 | −54% | −55% | −50% |
+| Lox zoo | 284 → 129 | −54% | −52% | −52% |
 
 Calls and loops gain the most: the machine code has no dispatch, keeps a
 block's registers in machine registers, and a loop's across iterations (with
 up to two calls inside it on arm64), and pairs its calls and returns for the
-CPU's return predictor. Field, element and capture access gain less, since
+CPU's return predictor. A closure call is compiled for the function it
+called last ([JIT.md](JIT.md#how-it-runs-with-the-interpreter)), so method
+calls and callbacks cost a direct call: that is most of what `closures`,
+Lua's `methods` and the Lox programs gain. Field, element and capture access gain less, since
 each still checks its object's type and bounds, as the interpreter does,
 though not again for an object the block has checked.
 

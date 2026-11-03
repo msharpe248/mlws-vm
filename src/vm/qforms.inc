@@ -121,7 +121,10 @@
             int argc = (int)ri->ops[1].imm, nres = ri->nops - 2 - argc;
             if (nres > n)
                 vm_trap(QPRC, "E_RET_COUNT", "%s returned %d value(s) but the caller expects %d", callee, n, nres);
-            if (ri->xop == Q_CALL_R) { /* both sides are registers of the right banks */
+            /* A quickened call to this function: both sides are registers of
+             * the right banks. (Not if a tail call replaced the callee's frame:
+             * the function returning is another, with other result types.) */
+            if (ri->xop == Q_CALL_R && ((const Function *)ri->ops[0].rv.ptr)->mf == mf) {
                 for (int k = 0; k < nres; k++) {
                     uint8_t r = ri->ops[2 + argc + k].reg;
                     switch (REG_BANK(r)) {

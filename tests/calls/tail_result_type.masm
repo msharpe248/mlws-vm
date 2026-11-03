@@ -1,0 +1,22 @@
+; A tail call's callee returns to its caller's caller, whose result
+; registers were matched to the function it called, not to this one: g
+; declares a ref, h, which g tail-calls, an i64. Storing h's i64 in b's R
+; register is a runtime type error. (Builds without tail-call dispatch once
+; copied it across: an integer's bits read as a reference.)
+; expect-error: E_TYPE
+.func h(i64 x) -> i64
+    mov I1, 0x4141414141414141
+    ret I1
+.endf
+.func g(i64 x) -> ref
+    tcall h (x)
+.endf
+.func b(i64 x) -> i64
+    call g (x) -> (R0)
+    len I1, R0
+    ret I1
+.endf
+.func main
+    call b (1) -> (I1)
+    ret 0
+.endf
