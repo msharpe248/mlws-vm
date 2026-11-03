@@ -704,11 +704,14 @@ static void jit_push_frame(JComp *j, const Insn *in, uint32_t pc, const Function
     else jm_stz(b, JR_S4, FR_OFF(closure));
     jm_movi(b, t, 1);
     jm_st8(b, t, JR_S4, FR_OFF(qret));
-    jm_ld(b, t, P, P_OFF(sp));
-    jm_st(b, t, JR_S4, FR_OFF(entry_sp));
-    jm_ld(b, t2, P, P_OFF(fp));
-    jm_st(b, t2, JR_S4, FR_OFF(saved_fp));
-    jm_st(b, t, P, P_OFF(fp));
+    jm_st8(b, fn->stackless ? t : t2, JR_S4, FR_OFF(stackless)); /* (t is 1 and t2 still 0) */
+    if (!fn->stackless) {
+        jm_ld(b, t, P, P_OFF(sp));
+        jm_st(b, t, JR_S4, FR_OFF(entry_sp));
+        jm_ld(b, t2, P, P_OFF(fp));
+        jm_st(b, t2, JR_S4, FR_OFF(saved_fp));
+        jm_st(b, t, P, P_OFF(fp));
+    }
     jm_st32(b, JR_S1, JR_S4, FR_OFF(base));
     jm_st32(b, JR_S2, P, P_OFF(rtop));
     jm_ld32(b, t, P, P_OFF(max_depth));
@@ -968,10 +971,12 @@ static void jit_ret(JComp *j, const Insn *in, uint32_t pc) {
         jm_st(b, JR_S0, JR_CTX, C_OFF(retv) + 8 * k);
     }
     int P = jm_proc(b, JR_S3);
-    jm_ld(b, JR_S0, JR_FR, FR_OFF(entry_sp));
-    jm_st(b, JR_S0, P, P_OFF(sp));
-    jm_ld(b, JR_S0, JR_FR, FR_OFF(saved_fp));
-    jm_st(b, JR_S0, P, P_OFF(fp));
+    if (!j->f->stackless) {
+        jm_ld(b, JR_S0, JR_FR, FR_OFF(entry_sp));
+        jm_st(b, JR_S0, P, P_OFF(sp));
+        jm_ld(b, JR_S0, JR_FR, FR_OFF(saved_fp));
+        jm_st(b, JR_S0, P, P_OFF(fp));
+    }
     jm_ld32(b, JR_S0, JR_FR, FR_OFF(base));
     jm_st32(b, JR_S0, P, P_OFF(rtop));
     jm_ld32(b, JR_S0, P, P_OFF(nframes));
@@ -1043,11 +1048,31 @@ static void jit_tail_frame(JComp *j, const Insn *in, uint32_t pc, const Function
     jm_ld32(b, JR_S1, JR_FR, FR_OFF(base)); /* (a call keeps no scratch register) */
     jm_add32i(b, JR_S2, JR_S1, fn->rsize);
     P = jm_proc(b, JR_S3);
-    jm_ld(b, JR_S0, JR_FR, FR_OFF(entry_sp)); /* popped and pushed: sp and fp are the entry sp */
-    jm_st(b, JR_S0, P, P_OFF(sp));
-    jm_st(b, JR_S0, P, P_OFF(fp));
+    /* This frame popped, then fn's pushed (proc_pop_frame, then
+     * proc_push_frame_fitting), each saving and restoring sp and fp only for
+     * a function that is not stackless. */
+    if (!j->f->stackless && !fn->stackless) { /* both: sp and fp are the entry sp */
+        jm_ld(b, JR_S0, JR_FR, FR_OFF(entry_sp));
+        jm_st(b, JR_S0, P, P_OFF(sp));
+        jm_st(b, JR_S0, P, P_OFF(fp));
+    } else if (!j->f->stackless) { /* this one's back, and fn leaves them so */
+        jm_ld(b, JR_S0, JR_FR, FR_OFF(entry_sp));
+        jm_st(b, JR_S0, P, P_OFF(sp));
+        jm_ld(b, JR_S0, JR_FR, FR_OFF(saved_fp));
+        jm_st(b, JR_S0, P, P_OFF(fp));
+    } else if (!fn->stackless) { /* fn's saved, as its call would */
+        jm_ld(b, JR_S0, P, P_OFF(sp));
+        jm_st(b, JR_S0, JR_FR, FR_OFF(entry_sp));
+        jm_ld(b, JR_S4, P, P_OFF(fp)); /* (S2 holds the new rtop) */
+        jm_st(b, JR_S4, JR_FR, FR_OFF(saved_fp));
+        jm_st(b, JR_S0, P, P_OFF(fp));
+    }
     jm_movi(b, JR_S4, (uint64_t)(uintptr_t)fn);
     jm_st(b, JR_S4, JR_FR, FR_OFF(fn));
+    if (fn->stackless != j->f->stackless) {
+        jm_movi(b, JR_S4, fn->stackless);
+        jm_st8(b, JR_S4, JR_FR, FR_OFF(stackless));
+    }
     jm_movi(b, JR_S0, 0);
     jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
     if (clo < 0) jm_stz(b, JR_FR, FR_OFF(closure));

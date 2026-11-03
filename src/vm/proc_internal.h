@@ -49,9 +49,12 @@ PROC_INLINE void proc_push_frame_fitting(Process *p, Function *fn, const Insn *r
     fr->ret_insn = ret_insn;
     fr->closure = NULL;
     fr->qret = 0;
-    fr->entry_sp = p->sp;
-    fr->saved_fp = p->fp;
-    p->fp = p->sp;
+    fr->stackless = fn->stackless;
+    if (!fn->stackless) {
+        fr->entry_sp = p->sp;
+        fr->saved_fp = p->fp;
+        p->fp = p->sp;
+    }
     fr->base = p->rtop;
     p->rtop += fn->rsize;
     uint64_t *w = p->regs + fr->base;
@@ -69,8 +72,10 @@ PROC_INLINE void proc_push_frame(Process *p, Function *fn, const Insn *ret_insn)
 
 PROC_INLINE void proc_pop_frame(Process *p) {
     Frame *fr = &p->frames[--p->nframes];
-    p->sp = fr->entry_sp;
-    p->fp = fr->saved_fp;
+    if (!fr->stackless) { /* (a stackless function's leaves them as they were) */
+        p->sp = fr->entry_sp;
+        p->fp = fr->saved_fp;
+    }
     p->rtop = fr->base;
 }
 void proc_backtrace(Process *p);

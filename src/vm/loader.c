@@ -150,6 +150,17 @@ static bool resolve_operand(LModule *lm, Function *f, Operand *o, MlwsError *err
     return true;
 }
 
+/* An operand that names SP or FP, as a register or a memory operand's base
+ * (or its index, or inside it). */
+static bool uses_stack_reg(const Operand *o) {
+    if (o->mode == OM_MIND || o->mode == OM_MINDB) return o->inner && uses_stack_reg(o->inner);
+    bool regs = o->mode == OM_REG || (o->mode >= OM_IND && o->mode <= OM_PREDECB) || o->mode == OM_ELEM;
+    if (!regs) return false;
+    if (REG_BANK(o->reg) == BANK_S && REG_IDX(o->reg) != SREG_PID) return true;
+    bool idx = o->mode == OM_IDX || o->mode == OM_IDXB || o->mode == OM_ELEM;
+    return idx && REG_BANK(o->ireg) == BANK_S && REG_IDX(o->ireg) != SREG_PID;
+}
+
 static bool decode_function(LModule *lm, Function *f, MlwsError *err) {
     const MFunc *mf = f->mf;
     Module *m = lm->m;
@@ -185,6 +196,13 @@ static bool decode_function(LModule *lm, Function *f, MlwsError *err) {
     for (uint32_t i = 0; i < f->ncode; i++)
         for (int k = 0; k < f->code[i].nops; k++)
             if (!resolve_operand(lm, f, &f->code[i].ops[k], err)) return false;
+    f->stackless = true;
+    for (uint32_t i = 0; i < f->ncode && f->stackless; i++) {
+        const Insn *in = &f->code[i];
+        if (in->op == OP_PUSH || in->op == OP_POP || in->op == OP_DROP || in->op == OP_ENTER) f->stackless = false;
+        for (int k = 0; k < in->nops && f->stackless; k++)
+            if (uses_stack_reg(&in->ops[k])) f->stackless = false;
+    }
     return true;
 }
 
