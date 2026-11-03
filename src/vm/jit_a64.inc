@@ -9,7 +9,7 @@
 enum { JR_CTX = 19, JR_WIN = 20, JR_LEFT = 23, JR_FR = 24, JR_PROC = 25, JR_CODE = 26, JR_TMP = 27 };
 /* Scratch, for a form's own use; C's argument and result registers. */
 enum { JR_S0 = 9, JR_S1 = 10, JR_S2 = 11, JR_S3 = 16, JR_S4 = 17 };
-enum { JR_A0 = 0, JR_A1 = 1, JR_A2 = 2, JR_R0 = 0, JR_R1 = 1 };
+enum { JR_A0 = 0, JR_A1 = 1, JR_A2 = 2, JR_A3 = 3, JR_R0 = 0, JR_R1 = 1 };
 enum { JF_S0 = 0, JF_S1 = 1 };
 #define JIT_ARCH "arm64"
 /* The register cache's machine registers (none of the above). */

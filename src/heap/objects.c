@@ -141,6 +141,8 @@ static void list_reserve(Process *p, ObjList *l, uint64_t need) {
     gc_account(p, (int64_t)grown * (int64_t)(sizeof(Word) + 1));
 }
 
+void list_grow(Process *p, ObjList *l, uint64_t need) { list_reserve(p, l, need); }
+
 void list_push(Process *p, ObjList *l, Word v, uint8_t tag) {
     list_reserve(p, l, (uint64_t)l->len + 1);
     l->items[l->len] = v;

@@ -95,6 +95,7 @@ ObjStruct *struct_new(Process *p, const StructDef *def);
 #define LIST_INLINE_MAX 24
 ObjList *list_new(Process *p, int64_t cap);
 void list_push(Process *p, ObjList *l, Word v, uint8_t tag);
+void list_grow(Process *p, ObjList *l, uint64_t need); /* capacity for need elements (may collect, or trap) */
 void list_insert(Process *p, ObjList *l, int64_t at, Word v, uint8_t tag);
 void list_delete(Process *p, ObjList *l, int64_t at);
 void list_resize(Process *p, ObjList *l, int64_t len);

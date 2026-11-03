@@ -571,6 +571,49 @@
             if (__builtin_expect(young && (ob->flags & (OBJF_OLD | OBJF_REMEMBERED)) == OBJF_OLD, 0)) GC_REMEMBER(R0, ob);
             NEXT;
         }
+        QCASE(Q_STRCAT_RK) { /* (q_strcat and the others: interp.c) */
+            SPILL();
+            Obj *s = q_strcat(QPRC, in, QR);
+            if (!s) GENERIC();
+            QR[in->r[0]] = s;
+            NEXT;
+        }
+        QCASE(Q_BUFCAT_RK) {
+            SPILL();
+            if (!q_bufcat(QPRC, in, QR)) GENERIC();
+            NEXT;
+        }
+        QCASE(Q_TOSTR_I) {
+            SPILL();
+            Word v;
+            v.i = IR(1);
+            QR[in->r[0]] = &value_to_string(QPRC, v, T_I64)->h;
+            NEXT;
+        }
+        QCASE(Q_TOSTR_F) {
+            SPILL();
+            Word v;
+            v.f = FR(1);
+            QR[in->r[0]] = &value_to_string(QPRC, v, T_F64)->h;
+            NEXT;
+        }
+        QCASE(Q_SUBSTR_RII) {
+            SPILL();
+            Obj *s = q_substr(QPRC, in, QR, QI);
+            if (!s) GENERIC();
+            QR[in->r[0]] = s;
+            NEXT;
+        }
+        QCASE(Q_BUFNEW_K) {
+            SPILL();
+            QR[in->r[0]] = &bytes_new(QPRC, in->k.i)->h;
+            NEXT;
+        }
+        QCASE(Q_BUFPUSH_I) {
+            SPILL();
+            if (!q_bufpush(QPRC, QR[in->r[0]], IR(1))) GENERIC();
+            NEXT;
+        }
 #define X(N, f)                                                               \
         QCASE(Q_##N##_F) FR(0) = f(FR(0)); NEXT;                                \
         QCASE(Q_##N##_FF) FR(0) = f(FR(1)); NEXT;

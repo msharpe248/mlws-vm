@@ -11,7 +11,7 @@ enum { JR_CTX = RBX, JR_WIN = R12, JR_LEFT = R13, JR_FR = R14, JR_TMP = R11 };
 /* Scratch, for a form's own use (a shift's count goes through rcx, a
  * division through rax and rdx); C's argument and result registers. */
 enum { JR_S0 = RAX, JR_S1 = RCX, JR_S2 = RDX, JR_S3 = R10, JR_S4 = R8 };
-enum { JR_A0 = RDI, JR_A1 = RSI, JR_A2 = RDX, JR_R0 = RAX, JR_R1 = RDX };
+enum { JR_A0 = RDI, JR_A1 = RSI, JR_A2 = RDX, JR_A3 = RCX, JR_R0 = RAX, JR_R1 = RDX };
 enum { JF_S0 = 0, JF_S1 = 1, JF_TMP = 15 };
 #define JIT_ARCH "x86-64"
 /* The register cache's machine registers (none of the above). */

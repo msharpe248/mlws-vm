@@ -223,6 +223,13 @@ typedef struct {
     bool unset;
     uint8_t ubank, uval;
     uint32_t back;
+    /* lpush into a full list: the stub writes back, grows the list (glist,
+     * for gn more), loads every cached register again (all of them: na, the
+     * R ones as bank 2), the list in S0 and its length in S1, and goes back
+     * to `back`. */
+    bool grow;
+    uint8_t glist, gn, na;
+    uint8_t abank[3 * JC_MAX], amreg[3 * JC_MAX], avreg[3 * JC_MAX];
 } JSide;
 
 /* The register cache. Bank 0 is I (general registers), bank 1 F (float
@@ -498,7 +505,7 @@ static void jside_record(const JComp *j, JSide *sd, uint32_t pc) {
     const JCache *c = &j->jc;
     sd->pc = pc;
     sd->n = 0;
-    sd->unset = false;
+    sd->unset = sd->grow = false;
     for (int bank = 0; bank < 2; bank++)
         for (int k = 0; k < jc_nslots(bank); k++)
             if (c->vm[bank][k] >= 0 && c->dirty[bank][k]) {
@@ -576,6 +583,7 @@ static bool jit_handles(uint16_t x) {
     case Q_STEC: case Q_STECK: case Q_STGK:
     case Q_SEQ_RR: case Q_SNE_RR: case Q_SEQ_RK: case Q_SNE_RK: case Q_MGET_R:
     case Q_MGETV_I: case Q_MGETV_F: case Q_MGETV_R:
+    case Q_STRCAT_RK: case Q_BUFCAT_RK: case Q_TOSTR_I: case Q_TOSTR_F: case Q_SUBSTR_RII: case Q_BUFNEW_K: case Q_BUFPUSH_I:
 #define X(N, o) case Q_##N##_FF: case Q_##N##_FK:
         QSET_OPS(X)
 #undef X
@@ -1285,6 +1293,25 @@ static size_t jit_list_tag(JComp *j, uint32_t pc, unsigned type, int bank, int v
     return j->sides.n - 1;
 }
 static void jit_list_back(JComp *j, size_t side) { j->sides.v[side].back = (uint32_t)j->b.n; }
+/* The side just made for a list without room for n more (lpush): growing
+ * it, in its stub, instead of the exit. (Growing collects nothing: an
+ * allocation only asks for a collection, at the next safepoint, so what the
+ * block knows young stays young.) */
+static void jit_grow_side(JComp *j, unsigned list, unsigned n) {
+    const JCache *c = &j->jc;
+    JSide *sd = &j->sides.v[j->sides.n - 1];
+    sd->grow = true, sd->glist = (uint8_t)list, sd->gn = (uint8_t)n, sd->na = 0;
+    for (int bank = 0; bank < 2; bank++)
+        for (int k = 0; k < jc_nslots(bank); k++) {
+            int v = c->vm[bank][k];
+            if (v < 0) continue;
+            sd->abank[sd->na] = (uint8_t)(bank == 0 && v >= JC_RBASE ? 2 : bank);
+            sd->amreg[sd->na] = (uint8_t)jc_mreg(bank, k);
+            sd->avreg[sd->na++] = (uint8_t)(v >= JC_RBASE ? v - JC_RBASE : v);
+        }
+    sd->back = (uint32_t)j->b.n;
+}
+static JIT_CC void jit_list_grow(Process *p, ObjList *l, uint64_t n) { list_grow(p, l, (uint64_t)l->len + n); }
 
 static void jit_elem(JComp *j, const Insn *in, uint32_t pc, unsigned r, int ix, bool store, int bank, int val) {
     JBuf *b = &j->b;
@@ -1467,6 +1494,25 @@ static JIT_CC ObjList *jit_list_new(Process *p, int64_t cap) { return list_new(p
 #define jit_struct_new struct_new
 #define jit_list_new list_new
 #endif
+
+/* The string builders' quickened forms, called from the machine code with
+ * the windows written back (q_strcat and the others, interp.c): NULL or 0
+ * leaves the instruction to the interpreter, nothing done. */
+static JIT_CC Obj *jit_strcat(Process *p, const Insn *in, Obj **R) { return q_strcat(p, in, R); }
+static JIT_CC uintptr_t jit_bufcat(Process *p, const Insn *in, Obj **R) { return q_bufcat(p, in, R); }
+static JIT_CC Obj *jit_substr(Process *p, const Insn *in, Obj **R, const int64_t *I) { return q_substr(p, in, R, I); }
+static JIT_CC uintptr_t jit_bufpush(Process *p, Obj *b, int64_t v) { return q_bufpush(p, b, v); }
+static JIT_CC Obj *jit_bufnew(Process *p, int64_t n) { return &bytes_new(p, n)->h; }
+static JIT_CC Obj *jit_tostr_i(Process *p, int64_t v) {
+    Word w;
+    w.i = v;
+    return &value_to_string(p, w, T_I64)->h;
+}
+static JIT_CC Obj *jit_tostr_f(Process *p, int64_t bits) {
+    Word w;
+    w.i = bits;
+    return &value_to_string(p, w, T_F64)->h;
+}
 
 static JitWord jit_mgetv(const Obj *ob, const Insn *in, uint64_t key, uint8_t tag) {
     if (!ob || ob->kind != OBJ_MAP) return (JitWord){0, 0};
@@ -1758,6 +1804,44 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         j->jc.rk[in->r[0]] = (JRKnown){x == Q_NEW ? OBJ_STRUCT : OBJ_LIST, true, x == Q_NEW ? in->k.p : NULL};
         return;
     }
+    case Q_STRCAT_RK: case Q_BUFCAT_RK: case Q_TOSTR_I: case Q_TOSTR_F: case Q_SUBSTR_RII: case Q_BUFNEW_K:
+    case Q_BUFPUSH_I: { /* by their C functions, from the windows; they may trap (a quota), as new may */
+        jc_flush(j);
+        jm_movi(b, JR_S0, pc + 1);
+        jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
+        jit_sync_insns(j, j->rest[pc] - 1);
+        jm_mov(b, JR_A0, jm_proc(b, JR_S3));
+        const void *fn;
+        bool obj = true; /* (the result an object for r[0], else a flag) */
+        switch (x) {
+        case Q_STRCAT_RK: case Q_BUFCAT_RK: case Q_SUBSTR_RII:
+            jm_movi(b, JR_A1, (uint64_t)(uintptr_t)in);
+            jm_alui(b, JA_ADD, JR_A2, JR_WIN, jwoff(j, BANK_R, 0));
+            if (x == Q_SUBSTR_RII) jm_mov(b, JR_A3, JR_WIN);
+            fn = x == Q_STRCAT_RK ? (const void *)jit_strcat : x == Q_BUFCAT_RK ? (const void *)jit_bufcat
+                                                                               : (const void *)jit_substr;
+            obj = x != Q_BUFCAT_RK;
+            break;
+        case Q_TOSTR_I: case Q_TOSTR_F: /* (an f64's bits, as an integer) */
+            jm_ld(b, JR_A1, JR_WIN, jwoff(j, x == Q_TOSTR_I ? BANK_I : BANK_F, in->r[1]));
+            fn = x == Q_TOSTR_I ? (const void *)jit_tostr_i : (const void *)jit_tostr_f;
+            break;
+        case Q_BUFNEW_K:
+            jm_movi(b, JR_A1, (uint64_t)in->k.i);
+            fn = (const void *)jit_bufnew;
+            break;
+        default: /* bufpush */
+            jm_ld(b, JR_A1, JR_WIN, jwoff(j, BANK_R, in->r[0]));
+            jm_ld(b, JR_A2, JR_WIN, jwoff(j, BANK_I, in->r[1]));
+            fn = (const void *)jit_bufpush;
+            obj = false;
+            break;
+        }
+        jm_ccall(b, fn);
+        SIDE_IF_NULL(JR_R0);
+        if (obj) jst_r(j, JR_R0, in->r[0]);
+        return;
+    }
     case Q_MGET_R:
         jc_flush(j);
         jld_r(j, JR_A0, in->r[1]);
@@ -1962,6 +2046,7 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         jm_sub32(b, JR_S2, JR_S2, JR_S1);
         jm_cmpi32(b, JR_S2, nv);
         SIDE_IF(JC_LO);
+        jit_grow_side(j, in->r[0], nv);
         for (unsigned k = 0; k < nv; k++) /* (a constant is never young) */
             if (in->ops[1 + k].mode == OM_REG && REG_BANK(in->ops[1 + k].reg) == BANK_R)
                 jld_r(j, JR_S2, (unsigned)REG_IDX(in->ops[1 + k].reg)), jit_barrier(j, pc, in->r[0], JR_S0, JR_S2, JR_S3);
@@ -2144,7 +2229,7 @@ static bool jit_worth_entering(const Function *f, const uint16_t *xop, uint32_t 
  * registers would not survive it). */
 static bool jit_calls_out(uint16_t x) {
     return jit_calls(x) || x == Q_JTAB || x == Q_NEW || x == Q_LNEW || x == Q_MGET_R || x == Q_MGETV_I ||
-           x == Q_MGETV_F || x == Q_MGETV_R;
+           x == Q_MGETV_F || x == Q_MGETV_R || (x >= Q_STRCAT_RK && x <= Q_BUFPUSH_I);
 }
 
 /* Where an instruction can go next, into out (at most 2 + its operands):
@@ -2461,6 +2546,24 @@ static void jit_compile(VM *vm, Function *f) {
             jm_bind(b, other);
         }
         jside_stores(j, sd);
+        if (sd->grow) { /* grown in C (which may trap, as new may), and back */
+            jm_movi(b, JR_S0, sd->pc + 1);
+            jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
+            jit_sync_insns(j, rest[sd->pc] - 1);
+            jm_mov(b, JR_A0, jm_proc(b, JR_S3));
+            jm_ld(b, JR_A1, JR_WIN, jwoff(j, BANK_R, sd->glist));
+            jm_movi(b, JR_A2, sd->gn);
+            jm_ccall(b, (const void *)jit_list_grow);
+            for (int r = 0; r < sd->na; r++) {
+                if (sd->abank[r] == 1) jm_fld(b, sd->amreg[r], JR_WIN, jwoff(j, BANK_F, sd->avreg[r]));
+                else jm_ld(b, sd->amreg[r], JR_WIN, jwoff(j, sd->abank[r] ? BANK_R : BANK_I, sd->avreg[r]));
+            }
+            jm_ld(b, JR_S0, JR_WIN, jwoff(j, BANK_R, sd->glist));
+            jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, len));
+            uint32_t at = jm_emit_branch(b, FX_B, 0, 0, false);
+            jm_patch_at(b->v, at, sd->back);
+            continue;
+        }
         jm_add32i(b, JR_LEFT, JR_LEFT, rest[sd->pc]);
         jexit(j, &f->code[sd->pc]);
     }

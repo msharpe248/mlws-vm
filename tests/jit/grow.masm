@@ -1,0 +1,122 @@
+; lpush into a list without room: the machine code grows the list in a stub
+; (src/vm/jit.inc, jit_grow_side) and goes on, instead of stopping for the
+; interpreter. The stub writes the block's changed registers back, calls C
+; (which may collect, or trap on the heap quota), loads every cached register
+; again, and comes back. Every result must be the interpreter's:
+;   * I and F registers set before the push and read after it, across many
+;     growths (cached registers reloaded);
+;   * a list made in the same block, growing while new objects go into it,
+;     their registers cleared: growing collects nothing (a collection waits
+;     for a safepoint), so the list is still young and its stores need no
+;     barrier; check-gc collects at every safepoint after it;
+;   * the heap quota reached while growing: E_QUOTA, caught, with the
+;     registers the block set before it.
+; option: --jit all
+.include "std/test.inc"
+
+.struct Box
+    v: i64
+.ends
+
+.const HEAP = 0
+
+; n values pushed, each with the I and F registers it changes around it.
+.func fill(i64 n) -> (ref, i64, f64)
+    lnew R1
+    mov I1, 0
+    mov I2, 0
+    mov.f64 F1, 0.0
+1:  add I2, I1, 7                         ; set before the push, read after
+    add.f64 F1, F1, 0.5
+    lpush R1, I1, F1
+    add I2, I2, I1
+    inc I1
+    blt I1, n, 1b
+    ret R1, I2, F1
+.endf
+
+; New boxes into a new list, all in one block: the list grows as they go in,
+; and each box is then held by the list alone.
+.func boxes -> ref
+    lnew R1
+    new R2, Box
+    mov R2->Box.v, 1
+    lpush R1, R2                          ; grows
+    new R3, Box
+    mov R3->Box.v, 2
+    lpush R1, R3
+    mov.r R2, null
+    mov.r R3, null
+    new R4, Box
+    mov R4->Box.v, 3
+    lpush R1, R4, R4, R4, R4, R4, R4, R4  ; grows again
+    new R5, Box
+    mov R5->Box.v, 4
+    lpush R1, R5
+    mov.r R4, null
+    mov.r R5, null
+    new R6, Box
+    new R7, Box
+    lpush R1, R7, R7, R7, R7, R7, R7, R7, R7
+    ret R1
+.endf
+
+; Grows a list until the quota stops it; I2 counts the pushes before.
+.func until_quota -> (i64, i64)
+    lnew R1
+    mov I2, 0
+.try 9f
+1:  inc I2
+    lpush R1, I2, I2, I2, I2
+    jmp 1b
+.endtry
+9:  catch R5
+    strcmp I3, R5->Error.code, "E_QUOTA"
+    len I4, R1
+    ret I3, I2
+.endf
+
+.func check_boxes(ref l) -> i64
+    mov I0, 0
+    mov I1, 0
+    len I2, l
+1:  mov R3, l[I1]
+    mov I3, R3->Box.v
+    add I0, I3
+    inc I1
+    blt I1, I2, 1b
+    ret I0
+.endf
+
+.func main
+    call fill (1000) -> (R0, I0, F0)
+    len I1, R0
+    ASSERT_EQ I1, 2000
+    ASSERT_EQ I0, 2005                    ; the last (999 + 7) + 999
+    ASSERT_EQ F0, 500.0
+    mov I3, R0[1998]
+    ASSERT_EQ I3, 999
+    mov.f64 F3, R0[1999]
+    ASSERT_EQ F3, 500.0
+
+    mov I5, 0
+2:  call boxes -> (R1)
+    ncall "gc.collect" ()
+    call check_boxes (R1) -> (I4)
+    ASSERT_EQ I4, 28                      ; 1 + 2 + 3*7 + 4 (and eight boxes of 0)
+    inc I5
+    blt I5, 50, 2b
+
+    spawnm quota_child -> (I6)
+    recv R2
+    ASSERT_FALSE R2->Down.code, r         ; a normal exit: its checks passed
+    ret 0
+.endf
+
+.func quota_child
+    quota HEAP, 100000
+    call until_quota -> (I0, I1)
+    ASSERT_EQ I0, 0                       ; E_QUOTA
+    ASSERT_GT I1, 100                     ; the pushes before it were kept
+    ret
+.endf

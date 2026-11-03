@@ -1,0 +1,144 @@
+; The string builders' quickened forms (src/vm/qforms.inc, Q_STRCAT_RK and
+; the others after it; in the JIT, calls of their C functions): strcat and
+; bufcat of R registers and string constants, tostr of an I or an F register,
+; substr of registers, bufnew of a constant size and bufpush of an I
+; register. Each must give what the generic instruction gives, and leave
+; anything else to it (and its error):
+;   * strings and byte buffers as parts, a buffer appended to itself;
+;   * a part that is null or not text, a target that is not a buffer;
+;   * tostr of integers and floats at their extremes;
+;   * substr at the ends, empty, out of range, of a byte buffer, of a list;
+;   * bufnew of 0 and of a size, bufpush of a value past a byte (its low 8
+;     bits) and into something that is not a buffer.
+; Run in every mode (the JIT's included, by check-jit).
+.include "std/test.inc"
+
+.macro EXPECT_ERROR code, insn...
+.try .Lh\@
+    \insn
+.endtry
+    FAIL "an error was expected"
+.Lh\@:
+    catch R31
+    strcmp I31, R31->Error.code, \code
+    ASSERT_EQ I31, 0
+.endm
+
+.macro EXPECT_STR reg, text
+    strcmp I30, \reg, \text
+    ASSERT_EQ I30, 0
+.endm
+
+; One of each, in a function of its own (compiled with --jit all).
+.func build(ref a, ref b, i64 n, f64 x) -> ref
+    strcat R2, a, "-", b
+    tostr R3, n
+    tostr R4, x
+    bufnew R5, 0
+    bufcat R5, R2, ":"
+    bufcat R5, R3, "/", R4
+    bufpush R5, I0
+    bufpush R5, I0
+    strcat R6, R5
+    ret R6
+.endf
+
+.func cut(ref s, i64 start, i64 n) -> ref
+    substr R1, s, start, n
+    ret R1
+.endf
+
+.func cat2(ref a, ref b) -> ref
+    strcat R2, a, b
+    ret R2
+.endf
+
+.func append(ref buf, ref s) -> ref
+    bufcat buf, s
+    ret buf
+.endf
+
+.func push(ref buf, i64 v) -> ref
+    bufpush buf, v
+    ret buf
+.endf
+
+.func main
+    mov.r R0, "ab"
+    mov.r R1, "cd"
+    mov I0, 42
+    mov.f64 F0, 2.5
+    call build (R0, R1, I0, F0) -> (R2)
+    EXPECT_STR R2, "ab-cd:42/2.5**"
+
+    ; ---- strcat ----
+    bufnew R3, 0
+    bufcat R3, "xy"
+    call cat2 (R0, R3) -> (R4)            ; a string and a byte buffer
+    EXPECT_STR R4, "abxy"
+    call cat2 (R0, R0) -> (R4)
+    EXPECT_STR R4, "abab"
+    mov.r R5, ""
+    call cat2 (R5, R5) -> (R4)
+    EXPECT_STR R4, ""
+    mov.r R6, null
+    EXPECT_ERROR "E_NULL", call cat2 (R0, R6) -> (R4)
+    lnew R7
+    EXPECT_ERROR "E_TYPE", call cat2 (R7, R0) -> (R4)
+
+    ; ---- bufcat ----
+    bufnew R8, 0
+    call append (R8, R0) -> (R8)
+    call append (R8, R8) -> (R8)          ; itself: "abab"
+    call append (R8, R3) -> (R8)
+    strcat R9, R8
+    EXPECT_STR R9, "ababxy"
+    EXPECT_ERROR "E_TYPE", call append (R0, R1) -> (R8)     ; a string is not a buffer
+    EXPECT_ERROR "E_TYPE", call append (R3, R7) -> (R8)     ; a list is not text
+    EXPECT_ERROR "E_NULL", call append (R6, R0) -> (R8)
+
+    ; ---- tostr ----
+    mov I1, -9223372036854775808
+    tostr R10, I1
+    EXPECT_STR R10, "-9223372036854775808"
+    mov I1, 0
+    tostr R10, I1
+    EXPECT_STR R10, "0"
+    mov.f64 F1, -0.0
+    tostr R10, F1
+    EXPECT_STR R10, "-0"
+    mov.f64 F1, 1e300
+    tostr R10, F1
+    EXPECT_STR R10, "1e+300"
+    mov.f64 F1, 0.1
+    tostr R10, F1
+    EXPECT_STR R10, "0.1"
+
+    ; ---- substr ----
+    mov.r R11, "hello"
+    call cut (R11, 1, 3) -> (R12)
+    EXPECT_STR R12, "ell"
+    call cut (R11, 5, 0) -> (R12)         ; empty, at the end
+    EXPECT_STR R12, ""
+    call cut (R11, 0, 5) -> (R12)
+    EXPECT_STR R12, "hello"
+    call cut (R8, 2, 3) -> (R12)          ; of a byte buffer
+    EXPECT_STR R12, "abx"
+    EXPECT_ERROR "E_BOUNDS", call cut (R11, 3, 3) -> (R12)
+    EXPECT_ERROR "E_BOUNDS", call cut (R11, -1, 2) -> (R12)
+    EXPECT_ERROR "E_BOUNDS", call cut (R11, 6, 0) -> (R12)
+    EXPECT_ERROR "E_BOUNDS", call cut (R11, 1, -1) -> (R12)
+    EXPECT_ERROR "E_TYPE", call cut (R7, 0, 0) -> (R12)
+
+    ; ---- bufnew and bufpush ----
+    bufnew R13, 3                         ; three zero bytes
+    len I2, R13
+    ASSERT_EQ I2, 3
+    call push (R13, 300) -> (R13)         ; 300's low byte: 44, ','
+    call push (R13, 65) -> (R13)
+    substr R14, R13, 3, 2
+    EXPECT_STR R14, ",A"
+    EXPECT_ERROR "E_TYPE", call push (R0, 65) -> (R13)
+    EXPECT_ERROR "E_NULL", call push (R6, 65) -> (R13)
+    ret 0
+.endf

@@ -1070,6 +1070,12 @@ enum {
      * in k) and by a constant index (in target), and to a global; the
      * constant's word in ops[1].kw. */
     Q_STEC, Q_STECK, Q_STGK,
+    /* M51: the string builders, as compiled Lua and Erlang build text:
+     * strcat and bufcat of R registers and string constants, tostr of an I
+     * or an F register, substr of registers (the count's in target), bufnew
+     * of a constant size and bufpush of an I register. Each checks its
+     * operands and leaves anything else to the generic form. */
+    Q_STRCAT_RK, Q_BUFCAT_RK, Q_TOSTR_I, Q_TOSTR_F, Q_SUBSTR_RII, Q_BUFNEW_K, Q_BUFPUSH_I,
     Q_JIT, Q_JITC,
     Q__COUNT
 };
@@ -1634,6 +1640,29 @@ void interp_quicken(Insn *in) {
             in->target = REG_BANK(o[2].reg) == BANK_I ? T_I64 : REG_BANK(o[2].reg) == BANK_F ? T_F64 : T_R; /* the key's type */
         }
         break;
+    case OP_STRCAT: case OP_BUFCAT: { /* every part a register or a string constant */
+        bool ok = RREG(0) && n >= 2;
+        for (int k = 1; k < n && ok; k++)
+            ok = RREG(k) || (o[k].mode == OM_CONST && o[k].rv.ptr && ((const Obj *)o[k].rv.ptr)->kind == OBJ_STRING);
+        if (ok) in->xop = in->op == OP_STRCAT ? Q_STRCAT_RK : Q_BUFCAT_RK;
+        break;
+    }
+    case OP_TOSTR: /* of a register in its natural type */
+        if (n == 2 && RREG(0) && (t == T_NONE || t == T_I64) && IREG(1)) in->xop = Q_TOSTR_I;
+        else if (n == 2 && RREG(0) && (t == T_NONE || t == T_F64) && FREG(1)) in->xop = Q_TOSTR_F;
+        break;
+    case OP_SUBSTR:
+        if (n == 4 && RREG(0) && RREG(1) && IREG(2) && IREG(3)) {
+            in->xop = Q_SUBSTR_RII;
+            in->target = (uint32_t)REG_IDX(o[3].reg);
+        }
+        break;
+    case OP_BUFNEW:
+        if (n == 2 && RREG(0) && KINT(1)) in->xop = Q_BUFNEW_K;
+        break;
+    case OP_BUFPUSH:
+        if (n == 2 && RREG(0) && IREG(1)) in->xop = Q_BUFPUSH_I;
+        break;
     default: break;
     }
     if (in->xop >= Q__FIRST) /* the compact operand copy the quickened handlers read */
@@ -1799,6 +1828,60 @@ static MLWS_NOINLINE bool call_rk(Process *p, const Insn *in) {
 #else
 #define MLWS_THREADED 0
 #endif
+
+/* The string builders' quickened forms (M51), out of their handlers: each
+ * checks every operand first, and returns NULL (false) for the generic form
+ * to take the instruction (and raise its error), having done nothing. */
+static inline const uint8_t *qtext(const Obj *ob, uint32_t *n) { /* a string's or byte buffer's bytes, or NULL */
+    if (ob && ob->kind == OBJ_STRING) return *n = ((const ObjString *)ob)->len, (const uint8_t *)((const ObjString *)ob)->data;
+    if (ob && ob->kind == OBJ_BYTES) return *n = ((const ObjBytes *)ob)->len, bytes_data((ObjBytes *)ob);
+    return NULL;
+}
+static inline const Obj *qpart(Obj **R, const Operand *o) {
+    return o->mode == OM_REG ? R[REG_IDX(o->reg)] : (const Obj *)o->rv.ptr;
+}
+static MLWS_NOINLINE Obj *q_strcat(Process *p, const Insn *in, Obj **R) {
+    uint64_t total = 0;
+    uint32_t len;
+    for (int k = 1; k < in->nops; k++) {
+        if (!qtext(qpart(R, &in->ops[k]), &len)) return NULL;
+        total += len;
+    }
+    if (total >= (uint64_t)1 << 31) return NULL;
+    ObjString *s = str_alloc(p, (size_t)total); /* (no collection runs before the instruction ends) */
+    size_t at = 0;
+    for (int k = 1; k < in->nops; k++) {
+        const uint8_t *d = qtext(qpart(R, &in->ops[k]), &len);
+        memcpy(s->data + at, d, len);
+        at += len;
+    }
+    return &s->h;
+}
+static MLWS_NOINLINE bool q_bufcat(Process *p, const Insn *in, Obj **R) {
+    Obj *b = R[in->r[0]];
+    uint32_t len;
+    if (!b || b->kind != OBJ_BYTES) return false;
+    for (int k = 1; k < in->nops; k++)
+        if (!qtext(qpart(R, &in->ops[k]), &len)) return false;
+    for (int k = 1; k < in->nops; k++) { /* (each read again: appending may move the buffer's own bytes) */
+        const uint8_t *d = qtext(qpart(R, &in->ops[k]), &len);
+        bytes_append(p, (ObjBytes *)b, d, len);
+    }
+    return true;
+}
+static MLWS_NOINLINE Obj *q_substr(Process *p, const Insn *in, Obj **R, const int64_t *I) {
+    uint32_t len;
+    const uint8_t *d = qtext(R[in->r[1]], &len);
+    int64_t start = I[in->r[2]], cnt = I[in->target];
+    if (!d || start < 0 || cnt < 0 || start > (int64_t)len - cnt) return NULL;
+    return &str_new(p, (const char *)d + start, (size_t)cnt)->h;
+}
+static MLWS_NOINLINE bool q_bufpush(Process *p, Obj *b, int64_t v) {
+    if (!b || b->kind != OBJ_BYTES) return false;
+    uint8_t byte = (uint8_t)v;
+    bytes_append(p, (ObjBytes *)b, &byte, 1);
+    return true;
+}
 
 /* A byte of a string or byte buffer, for the element load forms: false for
  * any other object, or an index out of range, which the generic mov handles. */
