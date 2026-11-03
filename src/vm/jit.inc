@@ -98,8 +98,21 @@ struct Jit {
     uint64_t entries, ran, nsteps;
     uint64_t stops[Q__COUNT], steps[Q__COUNT];
     uint16_t opof[Q__COUNT];
+    VEC(uintptr_t *) words; /* blocks of the words the machine code keeps data in (jit_word) */
+    size_t nwords;          /* used of the last block */
 };
 enum { JIT_COMPILED = 1, JIT_NONE = 2 }; /* Function.jit_state */
+#define JIT_WORDS 512
+
+/* A word of data for the machine code, zero, kept for the VM's life (the
+ * code itself is never written again). Under the JIT lock. */
+static uintptr_t *jit_word(Jit *jt) {
+    if (!jt->words.n || jt->nwords == JIT_WORDS) {
+        VEC_PUSH(jt->words, xcalloc(JIT_WORDS, sizeof(uintptr_t)));
+        jt->nwords = 0;
+    }
+    return &jt->words.v[jt->words.n - 1][jt->nwords++];
+}
 
 #define JIT_MEM_SIZE ((size_t)64 << 20)
 
@@ -171,6 +184,8 @@ void interp_jit_free(VM *vm) {
     Jit *jt = vm->jit;
     if (!jt) return;
     plat_code_free(jt->mem, JIT_MEM_SIZE);
+    for (size_t i = 0; i < jt->words.n; i++) free(jt->words.v[i]);
+    VEC_FREE(jt->words);
     free(jt);
     vm->jit = NULL;
 }
@@ -969,7 +984,14 @@ static void jit_ret(JComp *j, const Insn *in, uint32_t pc) {
 /* A direct tail call (Q_TCALL_R): the callee's frame replaces this one at
  * the same base, as in the handler. The arguments go through Ctx.retv, since
  * the callee's window is this one's. */
-static JIT_CC uint8_t jit_tail_qret(const Frame *fr, const Function *fn) { return tail_qret(fr->ret_insn, fr->qret, fn->mf); }
+/* For a tail call to fn from a frame with qret: tail_qret, which depends only
+ * on the frame's ret_insn, kept in the call site's word as ret_insn | qret
+ * (one atomic store: threads share the word). */
+static JIT_CC uint8_t jit_tail_qret(const Frame *fr, const Function *fn, uintptr_t *word) {
+    uint8_t q = tail_qret(fr->ret_insn, 1, fn->mf);
+    __atomic_store_n(word, (uintptr_t)fr->ret_insn | q, __ATOMIC_RELAXED);
+    return q;
+}
 
 static void jit_tcall(JComp *j, const Insn *in, uint32_t pc) { jit_tail_frame(j, in, pc, in->ops[0].rv.ptr, -1); }
 
@@ -995,15 +1017,28 @@ static void jit_tail_frame(JComp *j, const Insn *in, uint32_t pc, const Function
     if (clo >= 0) jm_st(b, clo, JR_FR, FR_OFF(closure)); /* (before the call below, which may clobber clo) */
     /* Whether the callee's ret may copy its results straight to the caller
      * (tail_qret): no, if this frame's may not; for a call to itself, what
-     * this frame's may, since every frame given qret checked the same. */
+     * this frame's may, since every frame given qret checked the same;
+     * otherwise what the call site's word says for this frame's ret_insn,
+     * or what the helper works out (and puts in the word). */
     if (fn != j->f) {
+        uintptr_t *word = jit_word(j->jt);
         jm_ld8(b, JR_S0, JR_FR, FR_OFF(qret));
         uint32_t no = jm_fwd_cbz(b, JR_S0, false);
+        jm_ld(b, JR_S1, JR_FR, FR_OFF(ret_insn));
+        jm_movi(b, JR_S2, (uint64_t)(uintptr_t)word);
+        jm_ld(b, JR_S2, JR_S2, 0);
+        jm_alu(b, JA_XOR, JR_S2, JR_S2, JR_S1); /* the word's qret, if it is for this ret_insn */
+        jm_cmpi(b, JR_S2, 1);
+        uint32_t miss = jm_fwd(b, JC_HI);
+        jm_st8(b, JR_S2, JR_FR, FR_OFF(qret));
+        uint32_t hit = jm_fwd(b, JC_AL);
+        jm_bind(b, miss);
         jm_mov(b, JR_A0, JR_FR);
         jm_movi(b, JR_A1, (uint64_t)(uintptr_t)fn);
+        jm_movi(b, JR_A2, (uint64_t)(uintptr_t)word);
         jm_ccall(b, (const void *)jit_tail_qret);
         jm_st8(b, JR_R0, JR_FR, FR_OFF(qret));
-        jm_bind(b, no);
+        jm_bind(b, no), jm_bind(b, hit);
     }
     jm_ld32(b, JR_S1, JR_FR, FR_OFF(base)); /* (a call keeps no scratch register) */
     jm_add32i(b, JR_S2, JR_S1, fn->rsize);

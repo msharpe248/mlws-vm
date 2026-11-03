@@ -114,6 +114,22 @@ address, and a return checks it against the frame's continuation. A call
 stops for the interpreter when the machine stack is near 256 KB deep, and
 the interpreter grows the frame and register stacks when they are full.
 
+**Closure calls.** A closure call (`calli`) or closure tail call (`tcalli`)
+records, in its call site, the function it called last. Compiled once hot,
+it is compiled for that function, if the call suits it (its arguments and
+results fit the function's parameters and results): the machine code checks
+that the value called is a closure of that function, and then calls it as a
+direct call does, with the closure in the frame; anything else (a closure of
+another function, something that is not a closure) takes the general
+closure call, which checks the callee's parameters at each call. Both go on
+at the same machine call, so the continuation is the same either way. A
+call site that calls one function from many closures (a method, a callback)
+is the common case: on the M5, compiled Lox's `invocation` and `properties`
+take 56% and 36% less time than with the general call, and Lua's `methods`
+31% less. With
+`--jit all` every function is compiled before any call has run, so nothing
+is compiled for a callee.
+
 **Registers.** Inside a block, I and F registers live in machine registers
 once read or written, and those changed are written back at the block's
 end: 16 general and 16 float registers on arm64, 5 and 13 on x86-64. On
@@ -170,6 +186,7 @@ mlwsvm jit (arm64): a function compiled after 1000 calls or loop iterations
   functions compiled  5
   instructions        6571 of 6745 compiled (97.4%)
   loops               0 with their registers in machine registers
+  closure calls       0 of 0 compiled for the function they called last
   machine code        601076 bytes, in 1.89 ms
   entries             567441, 1130332729 instructions run in machine code (1992.0 per entry)
   stepped             2 instructions
@@ -194,17 +211,21 @@ only for a report.
   with its side exits; calls, tail calls, closures, unwinding through
   machine-code frames and coroutines; loops with their registers in machine
   registers, entered from the interpreter in the middle; hot compiling;
+  closure calls compiled for their callees, given closures of other
+  functions and values that are not closures; a tail call made for callers
+  that take its results differently;
   processes on four threads compiling the same functions; and an
   instruction quota stopping a process at the same instruction. Their
   expected output is the interpreter's.
-* `; expect-jit: compiled FUNCTION N`, `; expect-jit: loops FUNCTION N` and
-  `; expect-jit: steps N` in a test check what the JIT did (where the build
-  has one). A line ending with `arm64` or `x86-64` is checked only for that
+* `; expect-jit: compiled FUNCTION N`, `; expect-jit: loops FUNCTION N`,
+  `; expect-jit: speculated FUNCTION N` (closure calls compiled for a callee)
+  and `; expect-jit: steps N` in a test check what the JIT did (where the
+  build has one). A line ending with `arm64` or `x86-64` is checked only for that
   JIT.
 * `make check-jit` runs every test and example with `--jit all` (also under
   GC stress and with every module optimized) and with `--jit on
   --jit-hot 2` (also on one worker thread). `make check-asan` runs the tests
-  with `--jit all` too. CI runs both on Linux (x86-64 and arm64) and
+  with `--jit all` and `--jit on --jit-hot 2` too. CI runs both on Linux (x86-64 and arm64) and
   macOS, and `check-jit` on Windows.
 * The Brainfuck, Lox, Lua and Erlang compilers' suites pass with the JIT,
   plainly, under GC stress and at `-O3`.
@@ -232,7 +253,7 @@ against the interpreter's results under `--jit all`, and so do the whole
 suite and the compilers' suites.
 
 What it does not do: it does not reorder or remove instructions (that is
-the optimizer's job, [OPTIMIZER.md](OPTIMIZER.md)), speculate on types,
-inline, or keep values in machine registers across calls (a call in a loop
-is a hole). A function's
+the optimizer's job, [OPTIMIZER.md](OPTIMIZER.md)), speculate on types
+(only on a closure call's callee), inline, or keep values in machine
+registers across calls (a call in a loop is a hole). A function's
 machine code is kept for the life of the VM.

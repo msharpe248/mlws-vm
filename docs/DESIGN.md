@@ -841,6 +841,16 @@ interpreter returns. A stepped instruction calls `jit_step`, which runs its
 handler with no slice left (so the handler stops after it, as at a slice's
 end) and returns the machine code of wherever the frame now is.
 
+A closure call's quickened plan (`QPlan`, which `Insn.k` points to) has a
+`seen` field: the function the call site called last, written by the
+interpreter's handler and the JIT's C helper when it changes (a site that
+calls one function writes it once; threads race to write a pointer, and any
+of the values is right). The compiler reads it once: a call that suits the
+function (`jit_spec_callee`, the checks the general call makes at each
+call) is compiled to compare the closure's `fn` with it and to push the
+frame as a direct call does; the general path follows, and both reach the
+one machine call whose return address is the continuation.
+
 Code memory is per VM (`struct Jit`, freed with it), through the platform
 layer (`plat_code_*`, §21).
 

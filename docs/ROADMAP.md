@@ -216,8 +216,8 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   the compilers.
 * ~~A JIT~~ (M43, M44: done; [JIT.md](JIT.md)). It keeps registers in machine
   registers within a block or a loop (across up to two calls in a loop on
-  arm64), but does not speculate on types or inline; those would be the next
-  steps, if programs show the time in calls and type tests. On x86-64 it
+  arm64), and compiles a closure call for the function it called last (M48),
+  but does not speculate on types otherwise or inline. On x86-64 it
   keeps 5 integer registers; more would mean moving the frame out of a
   register, which calls would pay for.
 * Compiling the string builders (`bufcat`, `tostr`, `strcat`), which the JIT
