@@ -30,6 +30,11 @@ The JIT is off unless asked for. It is also `MLWSVM_JIT=on`, `; option:
 `MLWSVM_JIT_DUMP=FILE` writes each piece of machine code as `.byte` lines,
 to check with an assembler and a disassembler (`cc -c FILE.s && objdump -d
 FILE.o`).
+`MLWSVM_JIT_MAP=FILE` writes where each compiled instruction's machine code
+starts, a line `ADDRESS FUNCTION PC MNEMONIC` per instruction, then where the
+function's stubs (its side exits' and stops' code) and its code end, so a
+sampling profiler's addresses can be put back on the program's
+instructions.
 
 ## When a function is compiled
 
@@ -140,6 +145,22 @@ an R register's object (a struct of a type, or a list) holds until the
 register is set again, so a second field or element of the same object
 skips the checks.
 
+**Falling through.** A block that only the conditional branch ending the
+block before reaches by falling through (no branch, `jmp` or `jtab` goes to
+it), outside a loop, goes on with that block's machine registers: the branch
+writes the changed ones back to the window before it, as at any block's
+end, but the block after it does not load them again, and keeps what the
+block before checked of R registers. Such a block is never entered from the
+interpreter.
+
+**Globals.** A global of the function's own module is read or written
+without checking its segment's size, since a process's segment of a module
+is that module's size; a global of another module is checked. That the
+process has a module's globals at all is checked once a block. Together with
+falling through, against 0.12.0 on the M5, the i7 and the Ryzen: compiled
+Lua's `nbody` 6–7% less time, `methods` 5–9%, `fannkuch` 1–13%, and Lox's
+`zoo` and `properties` 4–13% and 3–9%.
+
 **Loops.** A loop keeps its I and F registers in machine registers across
 iterations when they fit: they are loaded on the way in and written back on
 every way out (a branch out, a side exit, the slice's end). The loop is the
@@ -234,10 +255,10 @@ only for a report.
 
 [PERFORMANCE.md](PERFORMANCE.md#the-jit) has the results on the three
 machines, for the benchmarks and the compilers' programs. Calls (`fib`) take
-52–66% less time, closure calls (`closures`, compiled Lox's `invocation`)
-56–85% less, loops (`loop`, `fannkuch`, `spectralnorm`) 48–78% less, and
+51–65% less time, closure calls (`closures`, compiled Lox's `invocation`)
+56–86% less, loops (`loop`, `fannkuch`, `spectralnorm`) 51–78% less, and
 field and element access with method calls (`nbody`, `methods`, compiled
-Lox's `trees`) 30–58% less. Where the time goes to natives (`maps`), raw memory (`sieve`)
+Lox's `trees`) 34–58% less. Where the time goes to natives (`maps`), raw memory (`sieve`)
 or the scheduler (Erlang's `ring`), the JIT changes little.
 
 ## Design

@@ -87,15 +87,15 @@ interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | JIT, M5 | Lua 5.5, M5 | MLWSVM, i7 | JIT, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|---|---|
-| loop | 199 | 55 | 218 | 339 | 106 | 290 |
-| iterate | 73 | 35 | 58 | 115 | 54 | 80 |
-| fib | 62 | 32 | 53 | 104 | 47 | 102 |
-| methods | 544 | 248 | 348 | 940 | 446 | 567 |
-| strings | 228 | 155 | 134 | 407 | 286 | 213 |
-| binarytrees (15) | 332 | 182 | 382 | 554 | 291 | 578 |
-| nbody (500,000) | 866 | 412 | 424 | 1,355 | 936 | 591 |
-| spectralnorm (500) | 226 | 91 | 185 | 385 | 137 | 269 |
-| fannkuch (10) | 2,002 | 691 | 808 | 2,977 | 1,556 | 1,157 |
+| loop | 198 | 52 | 218 | 338 | 105 | 290 |
+| iterate | 71 | 32 | 58 | 116 | 51 | 80 |
+| fib | 60 | 30 | 53 | 104 | 47 | 102 |
+| methods | 531 | 229 | 348 | 938 | 409 | 567 |
+| strings | 222 | 151 | 134 | 409 | 282 | 213 |
+| binarytrees (15) | 329 | 173 | 382 | 546 | 289 | 578 |
+| nbody (500,000) | 860 | 378 | 424 | 1,335 | 882 | 591 |
+| spectralnorm (500) | 225 | 92 | 185 | 399 | 129 | 269 |
+| fannkuch (10) | 1,975 | 676 | 808 | 2,990 | 1,475 | 1,157 |
 
 Interpreted, `loop` and `binarytrees` take less time than in Lua on the M5,
 and `binarytrees` on the i7 too; with the JIT, eight of the nine take less
@@ -130,9 +130,9 @@ included on both sides; Erlang's is about 0.08 s):
 | Benchmark | MLWSVM | MLWSVM with its JIT | Erlang/OTP 29 |
 |---|---|---|---|
 | fib | 0.04 | 0.02 | 0.09 |
-| ring | 0.24 | 0.22 | 0.27 |
-| binarytrees | 0.57 | 0.23 | 0.13 |
-| nbody | 0.49 | 0.21 | 0.15 |
+| ring | 0.23 | 0.21 | 0.27 |
+| binarytrees | 0.56 | 0.23 | 0.13 |
+| nbody | 0.48 | 0.19 | 0.15 |
 | sorting | 0.66 | 0.34 | 0.12 |
 
 BEAM compiles to machine code here, so its loops are not a fair match for an
@@ -195,37 +195,37 @@ benchmarks of the sections above.
 
 | Program | M5, ms (interpreter → JIT) | M5 | i7, GCC | Ryzen, Clang |
 |---|---|---|---|---|
-| bench/fib | 49 → 20 | −58% | −64% | −63% |
-| bench/loop | 87 → 19 | −78% | −54% | −60% |
-| bench/nbody | 104 → 104 | 0% | 0% | 0% |
-| bench/sieve | 617 → 613 | −1% | −1% | −1% |
-| bench/closures | 105 → 18 | −83% | −84% | −85% |
-| bench/maps | 37 → 36 | −2% | 0% | 0% |
-| bench/binarytrees | 82 → 60 | −27% | −31% | −31% |
-| Erlang fib | 35 → 13 | −63% | −66% | −64% |
-| Erlang ring | 201 → 179 | −11% | −6% | −9% |
-| Erlang binarytrees | 563 → 218 | −61% | −60% | −60% |
-| Erlang nbody | 480 → 199 | −58% | −54% | −60% |
-| Erlang sorting | 650 → 332 | −49% | −48% | −50% |
-| Lua fib | 51 → 20 | −60% | −65% | −63% |
-| Lua loop | 188 → 44 | −77% | −72% | −75% |
-| Lua methods | 536 → 236 | −56% | −54% | −53% |
-| Lua strings | 215 → 143 | −34% | −30% | −32% |
-| Lua iterate | 62 → 23 | −62% | −62% | −62% |
-| Lua binarytrees | 320 → 168 | −47% | −49% | −53% |
-| Lua nbody | 848 → 398 | −53% | −30% | −47% |
-| Lua spectralnorm | 218 → 79 | −64% | −67% | −71% |
-| Lua fannkuch | 1992 → 678 | −66% | −48% | −59% |
-| Lox binary_trees | 707 → 346 | −51% | −54% | −50% |
-| Lox equality | 129 → 64 | −50% | −52% | −51% |
-| Lox fib | 317 → 154 | −52% | −62% | −63% |
-| Lox instantiation | 293 → 186 | −37% | −22% | −30% |
-| Lox invocation | 265 → 80 | −70% | −56% | −56% |
-| Lox method_call | 156 → 84 | −47% | −44% | −35% |
-| Lox properties | 391 → 171 | −56% | −47% | −41% |
-| Lox string_equality | 1.5 → 0.9 | −38% | −42% | −41% |
-| Lox trees | 1852 → 784 | −58% | −56% | −48% |
-| Lox zoo | 285 → 124 | −56% | −53% | −50% |
+| bench/fib | 50 → 20 | −60% | −63% | −54% |
+| bench/loop | 86 → 18 | −78% | −54% | −59% |
+| bench/nbody | 100 → 101 | +1% | 0% | −1% |
+| bench/sieve | 608 → 621 | +2% | −2% | −1% |
+| bench/closures | 100 → 17 | −83% | −84% | −86% |
+| bench/maps | 35 → 35 | 0% | +2% | +2% |
+| bench/binarytrees | 82 → 59 | −28% | −32% | −25% |
+| Erlang fib | 35 → 13 | −62% | −65% | −62% |
+| Erlang ring | 200 → 179 | −10% | −5% | −6% |
+| Erlang binarytrees | 558 → 220 | −61% | −62% | −58% |
+| Erlang nbody | 481 → 184 | −62% | −55% | −60% |
+| Erlang sorting | 655 → 330 | −50% | −48% | −44% |
+| Lua fib | 51 → 20 | −60% | −64% | −54% |
+| Lua loop | 190 → 44 | −77% | −72% | −76% |
+| Lua methods | 531 → 222 | −58% | −57% | −55% |
+| Lua strings | 215 → 141 | −34% | −31% | −32% |
+| Lua iterate | 62 → 22 | −65% | −64% | −68% |
+| Lua binarytrees | 322 → 165 | −49% | −49% | −49% |
+| Lua nbody | 865 → 368 | −58% | −34% | −47% |
+| Lua spectralnorm | 221 → 80 | −64% | −69% | −71% |
+| Lua fannkuch | 1992 → 671 | −66% | −51% | −67% |
+| Lox binary_trees | 710 → 334 | −53% | −56% | −50% |
+| Lox equality | 129 → 65 | −50% | −60% | −56% |
+| Lox fib | 314 → 154 | −51% | −62% | −58% |
+| Lox instantiation | 292 → 183 | −37% | −25% | −24% |
+| Lox invocation | 259 → 74 | −71% | −61% | −56% |
+| Lox method_call | 155 → 79 | −49% | −47% | −34% |
+| Lox properties | 385 → 165 | −57% | −52% | −37% |
+| Lox string_equality | 1.4 → 0.9 | −38% | −49% | −38% |
+| Lox trees | 1837 → 763 | −58% | −58% | −48% |
+| Lox zoo | 283 → 118 | −58% | −59% | −46% |
 
 Calls and loops gain the most: the machine code has no dispatch, keeps a
 block's registers in machine registers, and a loop's across iterations (with
