@@ -1,8 +1,9 @@
 # Build MLWSVM and run its tests on the platforms the other workflows do
 # not cover: macOS on x86-64, Windows on arm64, the BSDs (in VMs, through
-# cross-platform-actions), and Linux on a big-endian, a 32-bit and a RISC-V
-# processor (under QEMU). Kept apart from CI while these are being ported:
-# it runs on the platforms branch, or when started by hand.
+# cross-platform-actions), Linux on a 32-bit build, and Linux on a
+# big-endian and a RISC-V processor (under QEMU). Kept apart from CI while
+# these are being ported: it runs on the platforms branch, or when started
+# by hand.
 name: Platforms
 
 on:
@@ -126,7 +127,6 @@ jobs:
             uname -a; cc --version
             ${{ matrix.setup }}
             gmake CC=cc -k -j4
-            printf '#include <netdb.h>\n#include <stdio.h>\nint main(void){struct addrinfo *r;int rc=getaddrinfo("no-such-host.invalid","80",0,&r);printf("getaddrinfo: %%d %%s\\n",rc,rc?gai_strerror(rc):"ok");return 0;}\n' > build/gai.c && cc -o build/gai build/gai.c && build/gai
             cat > build/checks.sh <<'EOF'
             st=0
             ./mlwsvm run --jit on --jit-hot 2 --jit-report - examples/fib.masm 2>&1 | grep -A2 "mlwsvm jit" || echo "no JIT in this build"
@@ -138,6 +138,33 @@ jobs:
             EOF
             if [ -n "${{ matrix.fds }}" ]; then sudo sh -c "ulimit -n ${{ matrix.fds }} && sh build/checks.sh"; else sh build/checks.sh; fi
 
+  # A 32-bit build on the x86-64 runner, which runs it natively (without
+  # libffi, which the runner has only for x86-64).
+  linux-i386:
+    name: linux i386 / gcc -m32
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the 32-bit C library
+        run: sudo apt-get update && sudo apt-get install -y gcc-multilib
+
+      - name: Build
+        run: make CC="gcc -m32" FFI=0 -k -j4
+
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: make CC="gcc -m32" FFI=0 test
+
+      - name: GC stress
+        if: ${{ !cancelled() }}
+        run: make CC="gcc -m32" FFI=0 check-gc
+
+      - name: Fuzzer
+        if: ${{ !cancelled() }}
+        run: make CC="gcc -m32" FFI=0 check-fuzz
+
   # Debian under QEMU's user-mode emulation: slow, so the tests only.
   emulated:
     name: linux ${{ matrix.platform }} (QEMU)
@@ -146,7 +173,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [linux/s390x, linux/386, linux/riscv64]
+        platform: [linux/s390x, linux/riscv64]
     steps:
       - uses: actions/checkout@v4
 
