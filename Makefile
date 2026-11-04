@@ -81,6 +81,8 @@ endif
 endif
 ifeq ($(shell uname -s),Linux)
 DL_LIBS := -ldl -lpthread
+else ifneq ($(OS),Windows_NT)
+DL_LIBS := -lpthread
 endif
 ifeq ($(OS),Windows_NT)
 DL_LIBS := -lws2_32 -lbcrypt

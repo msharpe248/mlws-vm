@@ -2,8 +2,13 @@
  * poller (kqueue on macOS and the BSDs, epoll on Linux), for std.fs, std.os and
  * std.net. Errors are errno values; plat_err_code names them for MLWSVM. */
 #ifndef _WIN32
+/* FreeBSD's headers hide their own interfaces (MAP_ANON, _SC_NPROCESSORS_ONLN)
+ * when _POSIX_C_SOURCE is defined, and show POSIX's without it. */
+#if !defined(__FreeBSD__) && !defined(__DragonFly__)
 #define _POSIX_C_SOURCE 200809L
+#endif
 #define _DARWIN_C_SOURCE
+#define _NETBSD_SOURCE
 #ifdef __linux__
 #define _GNU_SOURCE /* pipe2 */
 #endif
