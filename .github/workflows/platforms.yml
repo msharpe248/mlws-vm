@@ -1,0 +1,154 @@
+# Build MLWSVM and run its tests on the platforms the other workflows do
+# not cover: macOS on x86-64, Windows on arm64, the BSDs (in VMs, through
+# cross-platform-actions), and Linux on a big-endian, a 32-bit and a RISC-V
+# processor (under QEMU). Kept apart from CI while these are being ported:
+# it runs on the platforms branch, or when started by hand.
+name: Platforms
+
+on:
+  push:
+    branches: [platforms]
+  workflow_dispatch:
+
+jobs:
+  macos-intel:
+    name: macos-15-intel / clang
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make CC=clang -k -j4
+
+      - name: The JIT is built in
+        if: ${{ !cancelled() }}
+        run: ./mlwsvm run --jit on --jit-hot 2 --jit-report - examples/fib.masm 2>&1 | grep -A2 "mlwsvm jit (x86-64)"
+
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: make CC=clang test
+
+      - name: GC stress
+        if: ${{ !cancelled() }}
+        run: make CC=clang check-gc
+
+      - name: Optimizer
+        if: ${{ !cancelled() }}
+        run: make CC=clang check-opt
+
+      - name: JIT
+        if: ${{ !cancelled() }}
+        run: make CC=clang check-jit
+
+      - name: Fuzzer
+        if: ${{ !cancelled() }}
+        run: make CC=clang check-fuzz
+
+      - name: Tools
+        if: ${{ !cancelled() }}
+        run: make CC=clang check-tools
+
+  windows-arm64:
+    name: windows-11-arm / clang
+    runs-on: windows-11-arm
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: false
+          install: >-
+            make
+            diffutils
+            perl
+            mingw-w64-clang-aarch64-clang
+            mingw-w64-clang-aarch64-libffi
+            mingw-w64-clang-aarch64-pkgconf
+
+      - name: Build
+        run: make CC=clang -k -j4
+
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: make CC=clang test
+
+      - name: GC stress
+        if: ${{ !cancelled() }}
+        run: make CC=clang check-gc
+
+      - name: Optimizer
+        if: ${{ !cancelled() }}
+        run: make CC=clang check-opt
+
+      - name: JIT (runs in the interpreter here)
+        if: ${{ !cancelled() }}
+        run: make CC=clang check-jit
+
+      - name: Fuzzer
+        if: ${{ !cancelled() }}
+        run: make CC=clang check-fuzz
+
+      - name: Tools
+        if: ${{ !cancelled() }}
+        run: make CC=clang check-tools
+
+  # Each check runs after a failed one; the job fails if any did.
+  bsd:
+    name: ${{ matrix.os }} ${{ matrix.version }} / ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: freebsd, version: '15.1', arch: x86-64, setup: 'sudo pkg install -y gmake libffi pkgconf' }
+          - { os: freebsd, version: '15.1', arch: arm64, setup: 'sudo pkg install -y gmake libffi pkgconf' }
+          - { os: openbsd, version: '8.0', arch: x86-64, setup: 'sudo pkg_add -I gmake libffi pkgconf' }
+          - { os: netbsd, version: '11.0', arch: x86-64, setup: 'sudo pkgin -y install gmake libffi pkgconf' }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cross-platform-actions/action@v1.7.0
+        with:
+          operating_system: ${{ matrix.os }}
+          version: ${{ matrix.version }}
+          architecture: ${{ matrix.arch }}
+          cpu_count: 4
+          run: |
+            uname -a; cc --version
+            ${{ matrix.setup }}
+            gmake CC=cc -k -j4
+            st=0
+            ./mlwsvm run --jit on --jit-hot 2 --jit-report - examples/fib.masm 2>&1 | grep -A2 "mlwsvm jit" || echo "no JIT in this build"
+            gmake CC=cc test || st=1
+            gmake CC=cc check-gc || st=1
+            gmake CC=cc check-jit || st=1
+            gmake CC=cc check-fuzz || st=1
+            exit $st
+
+  # Debian under QEMU's user-mode emulation: slow, so the tests only.
+  emulated:
+    name: linux ${{ matrix.platform }} (QEMU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/s390x, linux/386, linux/riscv64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - name: Build and test
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} -v "$PWD":/src -w /src debian:trixie sh -c '
+            apt-get update -qq && apt-get install -y -qq build-essential libffi-dev pkg-config >/dev/null &&
+            uname -m && cc --version | head -1 &&
+            make -k -j4 && make test'
