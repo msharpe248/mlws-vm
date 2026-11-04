@@ -20,7 +20,7 @@
 .const LOW = 0
 .const MID = 10
 .const HIGH = 11
-.extern c.strlen, "", "strlen" (cstr) -> (u64)
+.extern c.strlen, "", "strlen" (cstr) -> (usize)
 .extern c.abs, "", "abs" (i32) -> (i32)
 .extern c.ldexp, "", "ldexp" (f64, i32) -> (f64)
 .extern c.div, "", "div" (i32, i32) -> (struct div_t)
@@ -28,5 +28,5 @@
 .extern c._mkgmtime64, "", "_mkgmtime64" (struct* tm) -> (i64)
 .extern c._gmtime64_s, "", "_gmtime64_s" (struct* tm, buf) -> (i32)
 .callback qsort_compar (ptr, ptr) -> (i32)
-.extern c.qsort, "", "qsort" (buf, u64, u64, callback qsort_compar)
+.extern c.qsort, "", "qsort" (buf, usize, usize, callback qsort_compar)
 ; fabsl: skipped (long double): long double (long double)
