@@ -215,6 +215,38 @@ pacman -S make diffutils mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-lib
 make CC=clang && make CC=clang test
 ```
 
+## Platforms
+
+MLWSVM is C11 and needs only the C library, its math library and threads
+(libffi is optional). All of its OS-specific code is in `src/platform/`.
+Where it runs, and how much of that is tested:
+
+| Platform | Tested | JIT |
+|---|---|---|
+| macOS, arm64 (Apple silicon) | CI (Clang), and an Apple M5 Pro | yes |
+| Linux, x86-64 | CI (GCC and Clang), and two Ubuntu 26.04 desktops: an Intel i7-11700KF (GCC) and an AMD Ryzen 9 5900X (Clang) | yes |
+| Linux, arm64 | CI (Clang): the tests, the JIT, the fuzzer and AddressSanitizer | yes |
+| Windows, x86-64 | CI (Clang in MSYS2), every test mode but the sanitizers | yes |
+| macOS, x86-64 | not tested; should work | should work |
+| Windows, arm64 | not tested | no |
+| FreeBSD, OpenBSD, NetBSD | never built; the I/O code has their cases | built in on arm64 and x86-64; not tested |
+| Other processors (RISC-V, 32-bit, big-endian) | not tested | no |
+
+On macOS, Linux x86-64 and Windows, CI runs every test mode: the plain
+suite, GC stress, the optimizer, the JIT, the fuzzer and the tools, and
+builds without libffi, tail calls or computed goto; AddressSanitizer and
+ThreadSanitizer run on Linux and macOS. Before each release, `make
+release-check` runs all of it, and the compilers' suites, on the three
+machines named above.
+
+The JIT needs arm64 or x86-64 and the tail-call interpreter, which needs
+Clang or GCC 15 and later. Without them `--jit` is accepted and programs
+run in the interpreter, with the same results. On other processors and
+other Unix systems the interpreter should build and run: VM memory is
+little-endian on every host by design, and the dispatch falls back to
+computed `goto` or a `switch` where tail calls cannot be guaranteed. None of
+this has been tried, though; reports are welcome.
+
 ## Documentation
 
 | | |
@@ -271,10 +303,7 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 
 The current release is 0.15.1 (`mlwsvm version`); releases are tagged `vX.Y.Z`
 on GitHub. Everything described in `docs/` is implemented and tested on macOS, Linux and
-Windows (GitHub Actions: Linux GCC and Clang, macOS Clang, Windows Clang in MSYS2), in every test
-mode: the plain suite, GC stress, the optimizer, the JIT, the fuzzer, the tools, and builds
-without libffi, tail calls or computed goto; AddressSanitizer and ThreadSanitizer on Linux and macOS.
-On Windows only x86-64 is tested, and the JIT is x86-64 only there.
+Windows ([Platforms](#platforms) has the details).
 [docs/ROADMAP.md](docs/ROADMAP.md) lists the milestones and what remains.
 
 ## License
