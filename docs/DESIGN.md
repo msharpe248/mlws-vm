@@ -779,8 +779,8 @@ exactly the instruction's type without building a slot.
 An allocation only sets `gc_pending`, and a kill from the process's own
 thread sets `kill_pending`. Both are checked at a **safepoint**: at the
 start of every slice, and after every generic instruction. Quickened
-handlers do not trap, and the two that allocate (`new` and `lnew`) save the
-`pc` first, so a collection never runs inside an instruction, and a run of
+handlers do not trap, and those that allocate (`new`, `lnew` and the
+string builders' forms) save the `pc` first, so a collection never runs inside an instruction, and a run of
 quickened instructions delays one by at most a slice.
 
 ### 8.6 Around the dispatch
@@ -807,6 +807,9 @@ optimizer's constant folding both use this code, so a folded value is
 always the value the instruction would have computed.
 
 ### 8.8 The JIT
+
+(For how a JIT works, from the start, with this one's code and machine code:
+[learn/08-jit-what.md](learn/08-jit-what.md) and the three chapters after it.)
 
 The JIT ([JIT.md](JIT.md)) is part of the tail-call interpreter:
 `vm/jit.inc` is included by `interp.c` before the handler table, so it can
@@ -2093,7 +2096,7 @@ runtime):
 
 ## 22. Testing
 
-**Tests are MLWSVM programs.** `tests/` holds the suite (314 programs) and
+**Tests are MLWSVM programs.** `tests/` holds the suite (318 programs) and
 `examples/` holds self-checking examples, all in documented assembly. The
 test runner reads expectations from comments in each file: expected output
 lines, exit code or error code; VM options; a debugger script; what the
@@ -2107,7 +2110,7 @@ with `_` hold helper modules.
 | Mode | What it catches |
 |---|---|
 | `make test` | Wrong results |
-| `make check-gc` | A collection at every allocation (freed memory filled with a pattern): missing roots, use after free |
+| `make check-gc` | A collection at every allocation (freed memory filled with a pattern): missing roots, use after free; then each minor collection verified against the whole heap, also with the JIT: missing write barriers |
 | `make check-opt` | Every module optimized by every pass, also under GC stress: optimizer bugs, on all the suite's code |
 | `make check-jit` | Every function compiled and every block entered (`--jit all`), also under GC stress and optimized, and hot functions: JIT bugs, on all the suite's code |
 | `make check-asan` | AddressSanitizer and UBSan, also under GC stress and with the JIT: memory errors and undefined behaviour in the VM |

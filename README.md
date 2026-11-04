@@ -219,6 +219,7 @@ make CC=clang && make CC=clang test
 
 | | |
 |---|---|
+| [docs/learn/](docs/learn/README.md) | How MLWSVM works, for readers new to virtual machines: twelve chapters from bytecode and the interpreter loop to garbage collection, processes and the JIT, each linked to the code that does it |
 | [docs/DESIGN.md](docs/DESIGN.md) | How the whole system is put together and why: the path from source to running code, and each part's data structures, algorithms and connections (a process in memory, the collector, the scheduler, the optimizer's analyses, ...) |
 | [docs/ASSEMBLY.md](docs/ASSEMBLY.md) | The assembly language: syntax, directives, functions, data, macros, modules and libraries |
 | [docs/ADDRESSING.md](docs/ADDRESSING.md) | Every addressing mode |

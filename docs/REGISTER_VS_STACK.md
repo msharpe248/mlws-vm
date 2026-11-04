@@ -372,7 +372,7 @@ RETURN_VALUE
 
 The stack versions spend most of their instructions on `load` and `const`. The
 register versions read `n` where it is and write results where they are needed.
-The JVM needs three instructions (`lcmp`, then `ifge`, after two loads) for what
+The JVM needs four instructions (two loads, `lcmp`, then `ifge`) for what
 MLWSVM does in one `blt`. Lua needs two (`LTI` and `JMP`), although it executes the
 `JMP` as part of `LTI`.
 

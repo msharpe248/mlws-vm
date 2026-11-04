@@ -327,7 +327,9 @@ it measured faster.
    something can look at them: before a generic instruction (which may trap,
    call a native or switch frames), at calls and returns, before the tools'
    hook, and at the end of the slice. Quickened instructions do not trap,
-   except `new` and `lnew`, which save the `pc` before allocating. An
+   except those that allocate (`new`, `lnew` and the string builders' forms:
+   `strcat`, `bufcat`, `tostr`, `substr`, `bufnew`, `bufpush`), which save the
+   `pc` first, since an allocation can reach the heap quota. An
    allocation only marks a collection as due: the safepoint that runs a pending
    collection or kill comes after each generic instruction and at the start of
    each slice, so a run of quickened instructions delays a collection by at most

@@ -147,12 +147,13 @@ $ MLWSVM_QUOTA=heap=256M,insns=10000000000 mlwsvm run untrusted.masm
 ```
 
 Three environment variables are for testing the VM itself:
-`MLWSVM_GC_STRESS=1` (or `mlwsvm run --gc-stress`) collects garbage at every
-instruction boundary after an allocation (every eighth collection of the
-whole heap, the rest minor); `MLWSVM_GC_VERIFY=1` (or `--gc-verify`) checks each minor
+`MLWSVM_GC_STRESS=1` (or `mlwsvm run --gc-stress`) collects garbage at the
+first safepoint after every allocation, after the next generic instruction or
+at the next slice's start (every eighth collection of the whole heap, the rest
+minor); `MLWSVM_GC_VERIFY=1` (or `--gc-verify`) checks each minor
 collection against a walk of the whole heap, and aborts naming the object
 that holds a young one without having been remembered (a missing write
-barrier); `MLWSVM_NO_SLABS=1` allocates every object with
+barrier), with a young generation of 16 KiB unless `--gc-min` is given; `MLWSVM_NO_SLABS=1` allocates every object with
 `malloc` instead of the small-object allocator
 ([PERFORMANCE.md](PERFORMANCE.md#the-small-object-allocator)); and
 `MLWSVM_SLABS=1` uses that allocator even in an AddressSanitizer build, which
@@ -491,11 +492,11 @@ every check a release needs, on the machine it runs on:
 * the fuzzer for `FUZZ_SECONDS` (default 300), and a tenth of that under
   AddressSanitizer;
 * if `../mlws-compilers` (or `COMPILERS_DIR`) is there, the Brainfuck, Lox,
-  Lua and Erlang compilers' suites in eleven modes with this build: the JIT
+  Lua and Erlang compilers' suites in ten modes with this build: the JIT
   off, on, on compiling every function at its first call, and `all`; GC
   stress and `MLWSVM_OPT=3`, each also with `all`; `MLWSVM_GC_VERIFY` with the
-  JIT off and `all`; and, with the AddressSanitizer build, `all` and `all` at
-  `MLWSVM_OPT=3`.
+  JIT off and `all`; and three with the AddressSanitizer build: `all`, `all`
+  at `MLWSVM_OPT=3`, and on compiling functions once hot (`MLWSVM_JIT_HOT=2`).
 
 It goes on after a failure, prints one line per step, keeps each step's
 output in `build/release-check/STEP.log`, and exits with 1 if any step

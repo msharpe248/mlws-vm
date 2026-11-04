@@ -393,9 +393,13 @@ exception is constant-pool strings, which are immutable and immortal.
 * **Statistics.** `mlwsvm run --stats` reports peak heap, objects allocated and
   collected, and GC count (and how many were of the whole heap) and time. `gc.heap_bytes` and `gc.collections` read them
   from inside a program.
-* **Stress testing.** `--gc-stress` (or `MLWSVM_GC_STRESS=1`) collects at every
-  instruction boundary after an allocation. `--gc-verify` (or `MLWSVM_GC_VERIFY=1`)
-  checks each minor collection against a walk of the whole heap. `make check-gc` runs the
+* **Stress testing.** `--gc-stress` (or `MLWSVM_GC_STRESS=1`) collects at the
+  first safepoint after every allocation: after the next generic instruction,
+  or at the next slice's start, so a run of quickened instructions delays it by
+  at most a slice ([DESIGN.md §8.5](DESIGN.md#85-safepoints)). `--gc-verify` (or
+  `MLWSVM_GC_VERIFY=1`) checks each minor collection against a walk of the whole
+  heap, and makes the young generation 16 KiB unless `--gc-min` is given, so
+  that minor collections are frequent. `make check-gc` runs the
   whole test suite both ways, and `mlwsvm fuzz` random programs, with the JIT and without.
 
 ## 7. Exceptions and traps
