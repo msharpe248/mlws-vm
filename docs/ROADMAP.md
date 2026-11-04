@@ -231,6 +231,23 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   callgrind after M51, the x86-64 code is about as long as arm64's for the
   same instructions; the i7 runs it at about half the M5's instructions a
   cycle. What is left is the processors' difference.
+* Type speculation in the JIT, and keeping registers across the places where
+  slow paths rejoin. Measured after 0.15.0, on compiled Lua's `nbody` and
+  `methods`, Lox's `trees` and `zoo`, and Erlang's `nbody` and
+  `binarytrees`, with each instruction's count and, on x86-64, callgrind's
+  count of each machine instruction:
+  * **Checks.** Checks of R registers (null, a constant tag, a type) are
+    8–31% of the machine code's instructions, and none is redundant as the
+    code stands, since slow paths rejoin and may change a value's tag.
+    Treating code that never ran as a side exit would make 1–8% of the
+    machine instructions redundant checks, and 0–6% checks a loop could
+    hoist.
+  * **Merges.** 57–98% of the labels run have only one predecessor that ran,
+    but keeping registers across them would save 0.1–1.1% in loads and at
+    most 0.8–4.4% in stores.
+  
+  What the machine code spends is spread over checks, branches and memory,
+  with no one overhead left to remove, so neither is worth its complexity.
 * Inlining in the JIT. Measured in M48: of the calls in the compilers'
   benchmarks, few go to small functions that call nothing (none in `fib`,
   `binarytrees` or Lox's `trees`; 22–29% in Erlang's `nbody` and `sorting`),
