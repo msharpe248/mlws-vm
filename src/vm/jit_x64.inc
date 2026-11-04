@@ -172,11 +172,11 @@ static void x_alu32i(JBuf *b, unsigned ext, int d, uint32_t v) {
     else jb32(b, v);
 }
 static void jm_add32i(JBuf *b, int d, int a, uint32_t v) {
-    jm_mov32(b, d, a);
+    if (d != a) jm_mov32(b, d, a);
     x_alu32i(b, 0, d, v);
 }
 static void jm_sub32i(JBuf *b, int d, int a, uint32_t v) {
-    jm_mov32(b, d, a);
+    if (d != a) jm_mov32(b, d, a);
     x_alu32i(b, 5, d, v);
 }
 static void jm_subs32i(JBuf *b, int d, int a, uint32_t v) { jm_sub32i(b, d, a, v); } /* (sub sets the flags) */
@@ -185,7 +185,7 @@ static void jm_sub32(JBuf *b, int d, int a, int c) {
         jm_mov32(b, JR_TMP, c);
         c = JR_TMP;
     }
-    jm_mov32(b, d, a);
+    if (d != a) jm_mov32(b, d, a);
     x_rr(b, 0, false, 0x2B, d, c, false);
 }
 static void jm_addsh3(JBuf *b, int d, int n, int m) { x_memx(b, 0, true, 0x8D, d, n, m, 3, 0, false); }
