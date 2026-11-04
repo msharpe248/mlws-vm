@@ -155,6 +155,12 @@ static void n_foreign_release(Process *p, Word *a, Word *r) {
     foreign_finalize(p, o); /* idempotent: the handle forgets its pointer */
 }
 
+static void n_ffi_little_endian(Process *p, Word *a, Word *r) {
+    (void)p;
+    (void)a;
+    r[0].i = !MLWS_BIG_ENDIAN;
+}
+
 static void n_test_fail(Process *p, Word *a, Word *r) {
     (void)r;
     ObjString *s = a[0].r;
@@ -208,6 +214,7 @@ static const NativeDef BUILTINS[] = {
     {"str.byte", 2, {T_R, T_I64}, 1, {T_U8}, n_str_byte, "Byte at an index of a string (bounds checked)."},
     {"test.fail", 1, {T_R}, 0, {0}, n_test_fail, "Trap with E_ASSERT and the given message."},
     {"foreign.release", 1, {T_R}, 0, {0}, n_foreign_release, "Release a foreign handle now: run its finalizer (an extension's, or the tag's .ffi_free function) once; later uses see a released handle."},
+    {"ffi.little_endian", 0, {0}, 1, {T_B}, n_ffi_little_endian, "True if C stores numbers little-endian on this host (VM memory is little-endian on every host): how to lay out a byte buffer that C reads as numbers."},
     {"ffi.async_callback", 2, {T_R, T_I64}, 1, {T_R}, n_ffi_async_callback, "A C function pointer for an async .callback type (by name) whose calls, from any thread, become Callback{name, args} messages to a process. Keep the handle while C may call it."},
     {"gc.collect", 0, {0}, 0, {0}, n_gc_collect, "Request a collection of the whole heap; it runs before the next instruction."},
     {"gc.heap_bytes", 0, {0}, 1, {T_I64}, n_gc_heap_bytes, "Bytes currently allocated on this process's heap (live and not yet collected)."},

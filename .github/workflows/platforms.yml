@@ -165,7 +165,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: make CC="gcc -m32" FFI=0 check-fuzz
 
-  # Debian under QEMU's user-mode emulation: slow, so the tests only.
+  # Debian under QEMU's user-mode emulation: slow, so the tests, GC stress,
+  # the optimizer and the fuzzer (whose programs use memory every way).
   emulated:
     name: linux ${{ matrix.platform }} (QEMU)
     runs-on: ubuntu-latest
@@ -184,4 +185,4 @@ jobs:
           docker run --rm --network host --platform ${{ matrix.platform }} -v "$PWD":/src -w /src debian:trixie sh -c '
             apt-get update -qq && apt-get install -y -qq build-essential libffi-dev pkg-config >/dev/null &&
             uname -m && cc --version | head -1 &&
-            make -k -j4 && make test'
+            make -k -j4 && { st=0; make test || st=1; make check-gc || st=1; make check-opt || st=1; make check-fuzz || st=1; exit $st; }'

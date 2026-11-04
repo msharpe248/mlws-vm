@@ -32,17 +32,21 @@
 
 calls:  .i64 0                         ; comparisons made (a global: per process)
 
-; Store v as the i-th little-endian int of buffer b.
+; Store v as the i-th int of buffer b, in the host's byte order, as C reads it
+; (VM memory is little-endian everywhere; C's numbers are not).
 .func put_i32(ref b, i64 i, i64 v)
     mul I3, i, 4
     mov I4, v
-    mov I5, 0
-1:  and I6, I4, 0xFF
+    ncall "ffi.little_endian" () -> (I8)
+    bnz I8, 1f
+    bswap.u32 I4, I4                   ; big-endian: the high byte first
+1:  mov I5, 0
+2:  and I6, I4, 0xFF
     add I7, I3, I5
     mov R0[I7], I6
     shr I4, I4, 8
     inc I5
-    blt I5, 4, 1b
+    blt I5, 4, 2b
     ret
 .endf
 
@@ -168,8 +172,13 @@ h:  catch R5
 
 ; Check that buffer b holds 1, 2, ..., n.
 .func check_sorted(ref b, i64 n)
-    mov I1, 0
+    ncall "ffi.little_endian" () -> (I5)
+    mov I6, 0                          ; an int's low byte: first, or last (big-endian)
+    bnz I5, 2f
+    mov I6, 3
+2:  mov I1, 0
 1:  mul I2, I1, 4
+    add I2, I2, I6
     mov I3, R0[I2]                     ; the low byte is enough for small values
     add I4, I1, 1
     ASSERT_EQ I3, I4

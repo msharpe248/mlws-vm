@@ -1262,6 +1262,7 @@ static void quicken_store_const(Insn *in, MlwsType t) {
     } else if (o[0].mode == OM_GLOBAL || o[0].mode == OM_GLOBALB) {
         if (!const_word(&o[1], t, &w) || !quicken_global(in, &o[0])) return;
         in->xop = Q_STGK;
+        if (t != T_R) word_le(&w); /* the word as memory holds it */
         memcpy(&o[1].kw, &w, 8);
         return; /* no object register */
     } else {

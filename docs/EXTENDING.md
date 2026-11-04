@@ -203,7 +203,7 @@ reported at load time and never crashes.
 | `i8` … `i64`, `u8` … `u64` | an integer | that C integer type |
 | `f32`, `f64` | a float | `float`, `double` |
 | `cstr` | a string (its bytes, NUL-terminated) or a byte buffer (copied and NUL-terminated); as a result, the C string is copied into a new string; NULL is null | `const char *` |
-| `buf` | a byte buffer, passed as its own bytes, which C may change | `void *` |
+| `buf` | a byte buffer, passed as its own bytes, which C may change; C reads numbers in it in the host's byte order (`ffi.little_endian`) | `void *` |
 | `ptr`, `ptr<tag>` | an opaque foreign handle; as a result, a new handle (freed by the tag's `.ffi_free` function, if it has one); NULL is null | `void *` |
 | `callback NAME` | a closure, or an async callback handle (below) | a function pointer |
 | `struct NAME`, `struct* NAME` | a `.cstruct` (below): by value, or a pointer to a copy | `struct NAME`, `struct NAME *` |

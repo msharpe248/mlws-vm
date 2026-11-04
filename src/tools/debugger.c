@@ -356,14 +356,16 @@ static void cmd_stack(Debugger *d, const char *arg) {
         uint8_t tag = p->stack.tags[o / 8];
         Word w;
         memcpy(&w, p->stack.data + o, 8);
+        if (tag != T_R) word_le(&w);
         StrBuf s = {0};
         sb_printf(&s, "SP[%u] = ", i);
         if (tag == TAG_RAW) sb_printf(&s, "0x%016llx (raw bytes)", (unsigned long long)w.u);
         else {
             MlwsType t = tag == T_NONE ? T_I64 : (MlwsType)tag;
-            if (t == T_F32) { /* f32 values occupy the low 4 bytes */
+            if (t == T_F32) { /* an f32 is the word's first 4 bytes */
+                uint32_t u = (uint32_t)w.u;
                 float fv;
-                memcpy(&fv, p->stack.data + o, 4);
+                memcpy(&fv, &u, 4);
                 w.f = fv;
             }
             fmt_value(&s, w, t, 1);

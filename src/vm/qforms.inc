@@ -248,6 +248,7 @@
             /* a reference only from a word tagged r; nothing else from one */ \
             if (off + 8 > s->size || (s->tags[off >> 3] == T_R) != (in->type == T_R)) GENERIC(); \
             memcpy(&QB(bank)[in->r[0]], s->data + off, 8);                      \
+            if (in->type != T_R) word_le(&QB(bank)[in->r[0]]);                 \
             NEXT;                                                             \
         }                                                                     \
         QCASE(Q_STG_##B) {                                                    \
@@ -256,6 +257,7 @@
             Segment *s = &QPRC->globals[g];                                      \
             if (off + 8 > s->size) GENERIC();                              \
             memcpy(s->data + off, &QB(bank)[in->r[1]], 8);                      \
+            if (in->type != T_R) word_le(s->data + off);                       \
             s->tags[off >> 3] = in->type;                                     \
             NEXT;                                                             \
         }

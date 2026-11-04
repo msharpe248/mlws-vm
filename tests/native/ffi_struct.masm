@@ -28,8 +28,8 @@
 .ends
 
 ; struct in_addr, which inet_ntoa takes by value: the IPv4 address in network
-; byte order. These tests run on little-endian machines, where 127.0.0.1 is
-; the u32 0x0100007F.
+; byte order. 127.0.0.1 is the u32 0x7F000001 on a big-endian host, and
+; 0x0100007F on a little-endian one (ffi.little_endian).
 .cstruct InAddr
     s_addr: u32
 .ends
@@ -91,7 +91,11 @@
 
     ; ---- passed by value ----
     new R1, InAddr
-    mov R1->InAddr.s_addr, 0x0100007F
+    ncall "ffi.little_endian" () -> (I1)
+    mov I2, 0x7F000001
+    bz I1, 1f
+    mov I2, 0x0100007F
+1:  mov R1->InAddr.s_addr, I2
     ncall "c.inet_ntoa" (R1) -> (R2)
     strcmp I0, R2, "127.0.0.1"
     ASSERT_EQ I0, 0

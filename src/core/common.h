@@ -23,6 +23,25 @@
 #define MLWS_NOINLINE
 #endif
 
+/* VM memory is little-endian on every host (docs/ADDRESSING.md). A word of it
+ * copied with memcpy to or from a host word has its bytes reversed in place by
+ * word_le on a big-endian host; elsewhere that is nothing. */
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define MLWS_BIG_ENDIAN 1
+#else
+#define MLWS_BIG_ENDIAN 0
+#endif
+static inline void word_le(void *w) {
+#if MLWS_BIG_ENDIAN
+    uint64_t v;
+    memcpy(&v, w, 8);
+    v = __builtin_bswap64(v);
+    memcpy(w, &v, 8);
+#else
+    (void)w;
+#endif
+}
+
 #if defined(_MSC_VER) && !defined(__clang__)
 #define MLWS_THREAD_LOCAL __declspec(thread)
 #else
