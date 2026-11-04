@@ -109,7 +109,9 @@ jobs:
         include:
           - { os: freebsd, version: '15.1', arch: x86-64, setup: 'sudo pkg install -y gmake libffi pkgconf' }
           - { os: freebsd, version: '15.1', arch: arm64, setup: 'sudo pkg install -y gmake libffi pkgconf' }
-          - { os: openbsd, version: '8.0', arch: x86-64, setup: 'sudo pkg_add -I gmake libffi pkgconf' }
+          # OpenBSD allows a user 1024 open files; tests/net/many_idle.masm holds
+          # about 2000, so its checks run as root with more.
+          - { os: openbsd, version: '8.0', arch: x86-64, setup: 'sudo pkg_add -I gmake libffi pkgconf', fds: 8192 }
           - { os: netbsd, version: '11.0', arch: x86-64, setup: 'sudo pkgin -y install gmake libffi pkgconf' }
     steps:
       - uses: actions/checkout@v4
@@ -124,6 +126,8 @@ jobs:
             uname -a; cc --version
             ${{ matrix.setup }}
             gmake CC=cc -k -j4
+            printf '#include <netdb.h>\n#include <stdio.h>\nint main(void){struct addrinfo *r;int rc=getaddrinfo("no-such-host.invalid","80",0,&r);printf("getaddrinfo: %%d %%s\\n",rc,rc?gai_strerror(rc):"ok");return 0;}\n' > build/gai.c && cc -o build/gai build/gai.c && build/gai
+            cat > build/checks.sh <<'EOF'
             st=0
             ./mlwsvm run --jit on --jit-hot 2 --jit-report - examples/fib.masm 2>&1 | grep -A2 "mlwsvm jit" || echo "no JIT in this build"
             gmake CC=cc test || st=1
@@ -131,6 +135,8 @@ jobs:
             gmake CC=cc check-jit || st=1
             gmake CC=cc check-fuzz || st=1
             exit $st
+            EOF
+            if [ -n "${{ matrix.fds }}" ]; then sudo sh -c "ulimit -n ${{ matrix.fds }} && sh build/checks.sh"; else sh build/checks.sh; fi
 
   # Debian under QEMU's user-mode emulation: slow, so the tests only.
   emulated:
@@ -148,7 +154,7 @@ jobs:
 
       - name: Build and test
         run: |
-          docker run --rm --platform ${{ matrix.platform }} -v "$PWD":/src -w /src debian:trixie sh -c '
+          docker run --rm --network host --platform ${{ matrix.platform }} -v "$PWD":/src -w /src debian:trixie sh -c '
             apt-get update -qq && apt-get install -y -qq build-essential libffi-dev pkg-config >/dev/null &&
             uname -m && cc --version | head -1 &&
             make -k -j4 && make test'

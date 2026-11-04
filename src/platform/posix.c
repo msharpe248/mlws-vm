@@ -30,6 +30,9 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__FreeBSD__) || defined(__DragonFly__) || defined(__NetBSD__)
+#include <sys/sysctl.h>
+#endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -94,7 +97,8 @@ void plat_sleep_ns(uint64_t ns) {
     while (nanosleep(&ts, &ts) != 0) {}
 }
 
-char *plat_exe_path(const char *argv0) {
+/* The executable's path from the system, where it has a call for it. */
+static char *exe_path_system(void) {
 #ifdef __APPLE__
     char buf[PATH_MAX];
     uint32_t size = sizeof buf;
@@ -106,8 +110,50 @@ char *plat_exe_path(const char *argv0) {
         buf[len] = 0;
         return xstrdup(buf);
     }
+#elif defined(__FreeBSD__) || defined(__DragonFly__) || defined(__NetBSD__)
+#ifdef __NetBSD__
+    int mib[4] = {CTL_KERN, KERN_PROC_ARGS, -1, KERN_PROC_PATHNAME};
+#else
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
 #endif
-    return argv0 ? plat_realpath(argv0) : NULL;
+    char buf[PATH_MAX];
+    size_t len = sizeof buf;
+    if (sysctl(mib, 4, buf, &len, NULL, 0) == 0 && len > 1) return xstrdup(buf);
+#endif
+    return NULL;
+}
+
+/* Elsewhere (OpenBSD) from argv[0], found through $PATH if it has no '/'. main
+ * passes it before any thread starts; later calls without it get the same. */
+char *plat_exe_path(const char *argv0) {
+    static char *from_argv0;
+    char *p = exe_path_system();
+    if (p) return p;
+    if (argv0 && !from_argv0) {
+        char *found = strchr(argv0, '/') ? NULL : plat_find_in_path(argv0);
+        from_argv0 = plat_realpath(found ? found : argv0);
+        free(found);
+    }
+    return from_argv0 ? xstrdup(from_argv0) : NULL;
+}
+
+/* The first executable file named `name` in a directory of $PATH. */
+char *plat_find_in_path(const char *name) {
+    const char *path = getenv("PATH");
+    if (!path || !*name) return NULL;
+    size_t nlen = strlen(name);
+    for (const char *d = path;; d++) {
+        const char *e = strchr(d, ':');
+        size_t dlen = e ? (size_t)(e - d) : strlen(d);
+        char *f = xmalloc(dlen + nlen + 3);
+        if (dlen) memcpy(f, d, dlen), f[dlen] = '/', memcpy(f + dlen + 1, name, nlen + 1);
+        else memcpy(f, "./", 2), memcpy(f + 2, name, nlen + 1); /* an empty entry is the current directory */
+        struct stat st;
+        if (stat(f, &st) == 0 && S_ISREG(st.st_mode) && access(f, X_OK) == 0) return f;
+        free(f);
+        if (!e) return NULL;
+        d = e;
+    }
 }
 
 char plat_path_sep(void) { return ':'; }

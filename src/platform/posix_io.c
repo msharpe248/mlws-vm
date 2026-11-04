@@ -234,6 +234,16 @@ static bool cloexec_pipe(int fds[2]) {
 }
 
 bool plat_spawn(char *const argv[], int pipes, PlatChild *c, int *err) {
+    /* posix_spawnp may report a command that cannot run only through the
+     * child's exit status, 127 (OpenBSD; glibc under QEMU's emulation). */
+    if (!strchr(argv[0], '/')) {
+        char *f = plat_find_in_path(argv[0]);
+        if (!f) {
+            *err = ENOENT;
+            return false;
+        }
+        free(f);
+    }
     int p[3][2] = {{-1, -1}, {-1, -1}, {-1, -1}};
     posix_spawn_file_actions_t fa;
     posix_spawnattr_t attr;
@@ -313,6 +323,9 @@ static bool resolve(const char *host, int port, int type, bool passive, struct a
     int rc = getaddrinfo(host && *host ? host : NULL, ps, &hints, res);
     if (rc == 0) return true;
     if (rc == EAI_SYSTEM) *err = errno;
+#ifdef EAI_NODATA
+    else if (rc == EAI_NODATA) *err = ERR_UNKNOWN_HOST; /* a name with no address */
+#endif
     else *err = rc == EAI_NONAME ? ERR_UNKNOWN_HOST : ERR_RESOLVE;
     return false;
 }
