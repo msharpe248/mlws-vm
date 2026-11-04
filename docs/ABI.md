@@ -277,12 +277,13 @@ encoding, the pointer layout or the object headers.
 | Operands per instruction | 32 (calls: target + count + 30 arguments/results) |
 | Call depth | 100,000 frames (`E_CALL_DEPTH`); *option* `--max-frames`. Frames live on the heap, not the C stack, so a deeper limit only costs memory |
 | Data stack | 131,072 words (1 MiB) per process, allocated when first used; *option* `--stack-words` |
-| Coroutine data stack | 1,024 words (8 KiB) by default; 16 to 2^29 − 1 words, set by `conew`'s third operand (§8) |
+| Coroutine data stack | 1,024 words (8 KiB) by default; 16 to 2^29 − 1 words (2^27 on a 32-bit host), set by `conew`'s third operand (§8) |
 | Time slice | 2,000 instructions; *option* `--slice` |
 | Starting quotas | unlimited; *option* `--quota heap=…,raw=…,mailbox=…,insns=…,foreign=…,os=…` (§1.4) |
-| Raw block size | < 4 GiB |
+| Raw block size | < 4 GiB (1 GiB on a 32-bit host) |
 | Modules per VM | 4,094 |
-| Elements in a string, buffer, array, list or map | < 2^31 |
+| Elements in a string or buffer | < 2^31 |
+| Elements in an array, list or map | < 2^31 (2^26 on a 32-bit host) |
 | BigInt / decimal coefficient | 2^24 limbs of 32 bits (about 160 million digits) |
 | Decimal exponent | ±1,000,000 |
 

@@ -397,8 +397,8 @@ static void mark_segment(Process *p, const Segment *s, uint32_t from_word);
 static void mark_frames(Process *p, uint64_t *regs, const Frame *frames, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) {
         const Frame *f = &frames[i];
-        Obj *const *r = (Obj *const *)frame_reg(regs, f, BANK_R, 0);
-        for (uint32_t k = 0; k < f->fn->mf->nregs[BANK_R]; k++) mark(p, r[k]);
+        const Word *r = (const Word *)frame_reg(regs, f, BANK_R, 0);
+        for (uint32_t k = 0; k < f->fn->mf->nregs[BANK_R]; k++) mark(p, r[k].r);
         mark(p, f->closure);
     }
 }

@@ -54,6 +54,7 @@ civil-date conversions.
 | MLWSVM | Influences | How MLWSVM differs |
 |---|---|---|
 | Checked pointers: segment, generation and offset; use-after-free detection | Generational references (the Vale language), handle tables, CHERI capabilities (in spirit), fat pointers | Done in software for every raw memory access. Raw memory is per process, and the pointers can't reach another process's memory. |
+| Memory little-endian on every host, a reference in an 8-byte word on every host | **WebAssembly**'s little-endian linear memory; Java's fixed (big-endian) `DataInput` order | A program reads the same bytes on s390x as on x86-64, and the register file has the same layout on a 32-bit host as on a 64-bit one, so only the code that touches host memory (the FFI) knows the difference. |
 | A type tag on every stack and global word | Tagged memory: Lisp machines, the Burroughs B5000, Erlang term tags | Tags exist *alongside* untagged 64-bit values, rather than stealing bits from them. They make the GC precise without stack maps, and they forbid forged or leaked references. |
 | Precise, non-moving mark-sweep, one heap per process, collecting only at instruction boundaries | Classic mark-sweep (McCarthy; Jones and Lins, *Garbage Collection*); per-process heaps in **BEAM** | Collecting only between instructions removes the need for C code inside an instruction to register roots, which is a big simplification. |
 | Insertion-ordered maps (entry array plus open-addressing index) | **CPython**'s compact dict (Raymond Hettinger's 2012 design) | Keys compare by value across integer widths, and strings by content. |
@@ -104,6 +105,7 @@ civil-date conversions.
 | Async callbacks as messages; `api->post_*` and `api->hold` | Erlang's `enif_send` and port drivers; libuv's `uv_async_send`; GUI toolkits' "post to the main loop" | A C thread never runs MLWSVM code: its calls arrive in a process's mailbox, so process isolation holds even for multi-threaded libraries. |
 | `.ffi_free` finalizers and `foreign.release` | ctypes/cffi `ffi.gc(ptr, destructor)`; Java's `Cleaner`; Rust's `Drop` | Declared once per pointer tag, so every handle of that kind is covered; a released handle refuses further calls instead of passing a dangling pointer. |
 | `mlwsvm bindgen`: FFI declarations from clang's JSON syntax tree (M20) | Rust's bindgen (libclang), ctypesgen, cffi's `cdef` from headers, Zig's `@cImport`, SWIG | Writes plain assembly declarations to review, with every skipped declaration explained in a comment, and checks each symbol against the library as it goes. |
+| FFI types `isize`, `usize`, `long` and `ulong`; `ffi.sizeof`, `ffi.little_endian` | ctypes `c_size_t`, `c_long` and `sizeof`; Rust's `usize` and `core::ffi::c_long`; Zig's `c_long`; LuaJIT's `ffi.sizeof` and `ffi.abi` | Stored by name in the module and sized when it is linked, so one `.mlwso` calls C correctly on 32- and 64-bit hosts, and on 64-bit Windows, where a `long` is 32 bits; bindgen writes them for `size_t` and `long`. |
 | Trusted extension directories, SHA-256 pinning, permission checks | SSH's `StrictModes` checks of `~/.ssh`; lockfile and trust-on-first-use pinning; Deno's explicit permissions | Native code is opt-in per directory and per library, and a sandboxed process can be denied native code completely with a quota (kind 4). |
 
 ### Embedding (M16)
@@ -272,6 +274,7 @@ of the instructions in call-heavy code.
 | M50 | Extended basic blocks and superblocks (Hwu and others), register allocation along traces (LuaJIT, Dynamo); sampling profilers mapped to JIT code (Linux `perf` map files) |
 | M51 | Superinstructions (Proebsting; Ertl and Gregg), out-of-line slow paths that rejoin (V8 deferred code), Lua's `string.gsub` |
 | M52 | Register return conventions of native ABIs, register-based returns between compiled frames (LuaJIT, V8), wide-store `memset`; Valgrind's callgrind for counting a JIT's instructions |
+| Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types |
 
 ## References
 

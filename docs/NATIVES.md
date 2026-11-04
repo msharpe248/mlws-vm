@@ -24,6 +24,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `str.byte` | r, i64 | u8 | Byte at an index of a string (bounds checked). |
 | `test.fail` | r | - | Trap with E_ASSERT and the given message. |
 | `foreign.release` | r | - | Release a foreign handle now: run its finalizer (an extension's, or the tag's .ffi_free function) once; later uses see a released handle. |
+| `ffi.sizeof` | r | i64 | The size in bytes of a .cstruct (by name), as C lays it out on this host: for malloc and memcpy. |
 | `ffi.little_endian` | - | b | True if C stores numbers little-endian on this host (VM memory is little-endian on every host): how to lay out a byte buffer that C reads as numbers. |
 | `ffi.async_callback` | r, i64 | r | A C function pointer for an async .callback type (by name) whose calls, from any thread, become Callback{name, args} messages to a process. Keep the handle while C may call it. |
 | `gc.collect` | - | - | Request a collection of the whole heap; it runs before the next instruction. |

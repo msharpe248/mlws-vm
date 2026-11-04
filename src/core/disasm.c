@@ -218,7 +218,8 @@ static void put_ffi_type(StrBuf *b, uint8_t kind, const char *tag) {
         sb_printf(b, "struct%s %s", k == FFI_STRUCTP ? "*" : "", tag ? tag : "?");
         return;
     }
-    sb_puts(b, k < FFI_STRUCT ? K[k] : "?");
+    static const char *const H[] = {"isize", "usize", "long", "ulong"}; /* FFI_ISIZE.. */
+    sb_puts(b, k < FFI_STRUCT ? K[k] : k >= FFI_ISIZE && k < FFI__COUNT ? H[k - FFI_ISIZE] : "?");
     if (tag) sb_printf(b, "<%s>", tag);
 }
 

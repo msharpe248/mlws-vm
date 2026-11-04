@@ -8,6 +8,9 @@
 #include "numeric.h"
 
 #define MAX_ELEMS ((int64_t)1 << 31)
+/* Elements of a list, array or map, whose storage takes 8 bytes or more for
+ * each: fewer on a 32-bit host, for the storage's size to fit a size_t. */
+#define MAX_WORDS (SIZE_MAX > UINT32_MAX ? MAX_ELEMS : (int64_t)1 << 26)
 
 const char *obj_kind_name(int kind) {
     static const char *const names[] = {"null", "string", "bytes",  "array",   "struct", "list",
@@ -15,8 +18,8 @@ const char *obj_kind_name(int kind) {
     return kind >= 0 && kind <= OBJ_CORO ? names[kind] : "object";
 }
 
-static void check_len(Process *p, int64_t n, const char *what) {
-    if (n < 0 || n >= MAX_ELEMS) vm_trap(p, "E_BAD_ALLOC", "invalid %s length %lld", what, (long long)n);
+static void check_len(Process *p, int64_t n, int64_t max, const char *what) {
+    if (n < 0 || n >= max) vm_trap(p, "E_BAD_ALLOC", "invalid %s length %lld", what, (long long)n);
 }
 
 /* ---- strings and bytes ---------------------------------------------------- */
@@ -25,7 +28,7 @@ static void check_len(Process *p, int64_t n, const char *what) {
  * them, is 0). Its hash is computed when first needed (str_hash), since most
  * strings are never a map key. */
 ObjString *str_alloc(Process *p, size_t n) {
-    check_len(p, (int64_t)n, "string");
+    check_len(p, (int64_t)n, MAX_ELEMS, "string");
     ObjString *o = (ObjString *)gc_alloc(p, OBJ_STRING, sizeof(ObjString) + n + 1);
     o->len = (uint32_t)n;
     return o;
@@ -43,7 +46,7 @@ uint32_t str_hash(ObjString *s) {
 }
 
 ObjBytes *bytes_new(Process *p, int64_t len) {
-    check_len(p, len, "bytes");
+    check_len(p, len, MAX_ELEMS, "bytes");
     ObjBytes *b = (ObjBytes *)gc_alloc(p, OBJ_BYTES, sizeof(ObjBytes));
     if (len) {
         b->data = xcalloc((size_t)len, 1);
@@ -55,7 +58,7 @@ ObjBytes *bytes_new(Process *p, int64_t len) {
 
 static void bytes_reserve(Process *p, ObjBytes *b, uint64_t need) {
     if (need <= b->cap) return;
-    check_len(p, (int64_t)need, "bytes");
+    check_len(p, (int64_t)need, MAX_ELEMS, "bytes");
     uint64_t nc = b->cap ? b->cap : 16;
     while (nc < need) nc *= 2;
     if (nc >= (uint64_t)MAX_ELEMS) nc = (uint64_t)MAX_ELEMS - 1;
@@ -78,7 +81,7 @@ void bytes_append(Process *p, ObjBytes *b, const void *data, size_t n) {
 }
 
 void bytes_resize(Process *p, ObjBytes *b, int64_t len) {
-    check_len(p, len, "bytes");
+    check_len(p, len, MAX_ELEMS, "bytes");
     bytes_reserve(p, b, (uint64_t)len);
     if ((uint32_t)len < b->len) memset(b->data + len, 0, b->len - (uint32_t)len);
     b->len = (uint32_t)len;
@@ -87,7 +90,7 @@ void bytes_resize(Process *p, ObjBytes *b, int64_t len) {
 /* ---- arrays and structs ---------------------------------------------------- */
 
 ObjArray *array_new(Process *p, MlwsType elem, int64_t len) {
-    check_len(p, len, "array");
+    check_len(p, len, MAX_WORDS, "array");
     ObjArray *a = (ObjArray *)gc_alloc(p, OBJ_ARRAY, sizeof(ObjArray) + (size_t)len * sizeof(Word));
     a->elem = (uint8_t)elem;
     a->len = (uint32_t)len;
@@ -103,7 +106,7 @@ ObjStruct *struct_new(Process *p, const StructDef *def) {
 /* ---- lists ------------------------------------------------------------------ */
 
 ObjList *list_new(Process *p, int64_t cap) {
-    check_len(p, cap, "list");
+    check_len(p, cap, MAX_WORDS, "list");
     if (cap > 0 && cap <= LIST_INLINE_MAX) {
         ObjList *l = (ObjList *)gc_alloc(p, OBJ_LIST, sizeof(ObjList) + (size_t)cap * (sizeof(Word) + 1));
         l->items = (Word *)(l + 1);
@@ -123,10 +126,10 @@ ObjList *list_new(Process *p, int64_t cap) {
 
 static void list_reserve(Process *p, ObjList *l, uint64_t need) {
     if (need <= l->cap) return;
-    check_len(p, (int64_t)need, "list");
+    check_len(p, (int64_t)need, MAX_WORDS, "list");
     uint64_t nc = l->cap ? l->cap : 8;
     while (nc < need) nc *= 2;
-    if (nc >= (uint64_t)MAX_ELEMS) nc = (uint64_t)MAX_ELEMS - 1;
+    if (nc >= (uint64_t)MAX_WORDS) nc = (uint64_t)MAX_WORDS - 1;
     Word *items = gc_buf_alloc(p, &l->h, (size_t)nc * (sizeof(Word) + 1));
     uint8_t *tags = (uint8_t *)(items + nc);
     if (l->len) {
@@ -174,7 +177,7 @@ void list_delete(Process *p, ObjList *l, int64_t at) {
 }
 
 void list_resize(Process *p, ObjList *l, int64_t len) {
-    check_len(p, len, "list");
+    check_len(p, len, MAX_WORDS, "list");
     list_reserve(p, l, (uint64_t)len);
     for (uint32_t i = (uint32_t)len; i < l->len; i++) {
         l->items[i].u = 0;
@@ -298,7 +301,7 @@ void map_set(Process *p, ObjMap *m, Word key, uint8_t ktag, Word val, uint8_t vt
     }
     if (m->nentries == m->entry_cap) {
         uint32_t cap = m->count < m->entry_cap / 2 ? m->entry_cap : (m->entry_cap ? m->entry_cap * 2 : 8);
-        if (m->count + 1 >= (uint32_t)MAX_ELEMS) vm_trap(p, "E_BAD_ALLOC", "map too large");
+        if (m->count + 1 >= (uint32_t)MAX_WORDS) vm_trap(p, "E_BAD_ALLOC", "map too large");
         map_rebuild(p, m, cap);
     }
     uint32_t idx = m->nentries++;

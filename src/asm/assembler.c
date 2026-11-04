@@ -1061,14 +1061,16 @@ static bool dir_extension(Asm *A, Cur *c) {
     return expect_eol(A, c);
 }
 
-/* One FFI type: i8..u64, f32, f64, cstr, buf, ptr or ptr<tag>, optionally after `out`. */
+/* One FFI type: i8..u64, isize, usize, long, ulong, f32, f64, cstr, buf, ptr or
+ * ptr<tag>, optionally after `out`. */
 static bool ffi_type(Asm *A, Cur *c, bool param, uint8_t *kind, char **tag) {
     static const struct {
         const char *name;
         uint8_t kind;
     } K[] = {{"i8", FFI_I8},   {"i16", FFI_I16}, {"i32", FFI_I32}, {"i64", FFI_I64}, {"u8", FFI_U8},
              {"u16", FFI_U16}, {"u32", FFI_U32}, {"u64", FFI_U64}, {"f32", FFI_F32}, {"f64", FFI_F64},
-             {"cstr", FFI_CSTR}, {"buf", FFI_BUF}, {"ptr", FFI_PTR}};
+             {"cstr", FFI_CSTR}, {"buf", FFI_BUF}, {"ptr", FFI_PTR}, {"isize", FFI_ISIZE},
+             {"usize", FFI_USIZE}, {"long", FFI_LONG}, {"ulong", FFI_ULONG}};
     bool out = false;
     if (param && tok_ident(cur(c), "out")) {
         out = true;
@@ -1284,7 +1286,7 @@ static bool dir_callback(Asm *A, Cur *c) {
         uint8_t k;
         if (!ffi_type(A, c, true, &k, &cb.tags[cb.nargs])) goto fail;
         cb.args[cb.nargs++] = k;
-        if (k & FFI_OUT || (k > FFI_CSTR && k != FFI_PTR)) {
+        if (k & FFI_OUT || !(ffi_number(k) || k == FFI_CSTR || k == FFI_PTR)) {
             aerr(A, c->pl, col, "E_ASM_SYNTAX", "callback parameters are numbers, cstr or ptr");
             goto fail;
         }
@@ -1300,7 +1302,7 @@ static bool dir_callback(Asm *A, Cur *c) {
         if (!expect_punct(A, c, "(")) goto fail;
         int col = cur(c)->col;
         if (!tok_is(cur(c), ")") && !ffi_type(A, c, false, &cb.ret, &cb.ret_tag)) goto fail;
-        if (cb.ret > FFI_F64 && cb.ret != FFI_PTR) {
+        if (cb.ret != FFI_VOID && !ffi_number(cb.ret) && cb.ret != FFI_PTR) {
             aerr(A, c->pl, col, "E_ASM_SYNTAX", "a callback returns a number or ptr");
             goto fail;
         }
@@ -1404,16 +1406,18 @@ static bool cstruct_line(Asm *A, Cur *c) {
     } else {
         if (!ffi_type(A, c, true, &kind, &tag)) goto fail;
         /* a buf field has no buffer to point at; a callback lives only for a call */
-        if (kind & FFI_OUT || kind == FFI_BUF || kind > FFI_PTR) goto bad;
+        if (kind & FFI_OUT || kind == FFI_BUF || (kind > FFI_PTR && !ffi_number(kind))) goto bad;
         if (kind <= FFI_F64) {
             static const MlwsType T[] = {T_NONE, T_I8, T_I16, T_I32, T_I64, T_U8, T_U16, T_U32, T_U64, T_F32, T_F64};
             vt = T[kind];
+        } else if (ffi_number(kind)) { /* of the host's size: 64 bits in a struct field on every host */
+            vt = kind == FFI_ISIZE || kind == FFI_LONG ? T_I64 : T_U64;
         }
         if (tok_is(cur(c), "[")) { /* an array of numbers */
             c->pos++;
             int64_t n;
             int col = cur(c)->col;
-            if (kind > FFI_F64 || !eval_int(A, c, &n)) goto bad;
+            if (!ffi_number(kind) || !eval_int(A, c, &n)) goto bad;
             if (n <= 0 || n > 65536) {
                 aerr(A, c->pl, col, "E_ASM_RANGE", "array length must be 1 to 65536");
                 goto fail;

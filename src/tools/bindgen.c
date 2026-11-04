@@ -185,6 +185,8 @@ typedef struct CType {
     CKind k;
     int size;           /* CT_INT, CT_FLOAT: bytes */
     bool is_signed, is_char, is_bool;
+    bool is_long;       /* CT_INT: C's long, whose size is the host's */
+    bool is_size;       /* CT_INT: size_t, ssize_t or ptrdiff_t, whose size is the host's */
     bool is_const;      /* declared const (what a pointer points to may not be changed) */
     bool is_union;      /* CT_RECORD */
     char *name;         /* CT_RECORD, CT_ENUM; CT_BAD: why */
@@ -288,7 +290,16 @@ static CType *specifiers_(TLex *l, bool *is_const_out) {
                    !is_unsigned && !is_signed) {
             tnext(l); /* a typedef name that clang left in the type */
             void *v;
-            if (l->depth < 32 && smap_get(l->typedefs, l->tok, &v)) named = parse_type_string(v, l->typedefs, l->depth + 1);
+            static const char *const SIZES[] = {"size_t", "__size_t", "ssize_t", "__signed_size_t", "ptrdiff_t",
+                                                "__ptrdiff_t"};
+            bool size = false;
+            for (size_t i = 0; i < sizeof SIZES / sizeof SIZES[0]; i++) size = size || !strcmp(l->tok, SIZES[i]);
+            if (size) { /* pointer-sized, whatever its base type on this host */
+                named = ct_new(CT_INT);
+                named->size = (int)sizeof(size_t);
+                named->is_size = true;
+                named->is_signed = l->tok[0] != 's' && l->tok[2] != 's'; /* not size_t or __size_t */
+            } else if (l->depth < 32 && smap_get(l->typedefs, l->tok, &v)) named = parse_type_string(v, l->typedefs, l->depth + 1);
             else {
                 char why[300];
                 snprintf(why, sizeof why, "the type %s", l->tok);
@@ -323,6 +334,7 @@ static CType *specifiers_(TLex *l, bool *is_const_out) {
         return ct_bad("an unknown type");
     }
     t->size = shorts ? (int)sizeof(short) : longs >= 2 ? (int)sizeof(long long) : longs ? (int)sizeof(long) : (int)sizeof(int);
+    t->is_long = longs == 1;
     t->is_signed = !is_unsigned;
     return t;
 }
@@ -463,8 +475,23 @@ typedef struct {
     int skipped;
 } Gen;
 
+/* A declaration's type as written, so that size_t stays size_t; desugared if
+ * that does not parse (a typedef bindgen does not know). */
+static CType *decl_type(Gen *g, const Json *ty) {
+    const char *qt = jstr(ty, "qualType"), *dq = jstr(ty, "desugaredQualType");
+    CType *t = qt ? parse_type_string(qt, &g->typedefs, 0) : NULL;
+    if (dq && (!t || t->k == CT_BAD)) {
+        if (t) ct_free(t);
+        t = parse_type_string(dq, &g->typedefs, 0);
+    }
+    return t;
+}
+
 static const char *int_type(const CType *t) {
     static const char *const S[] = {"i8", "i16", "i32", "i64"}, *const U[] = {"u8", "u16", "u32", "u64"};
+    /* the host's sizes by name, so the bindings hold on 32- and 64-bit hosts alike */
+    if (t->is_size) return t->is_signed ? "isize" : "usize";
+    if (t->is_long) return t->is_signed ? "long" : "ulong";
     int k = t->size == 1 ? 0 : t->size == 2 ? 1 : t->size == 4 ? 2 : 3;
     return t->is_signed && !t->is_bool ? S[k] : U[k];
 }
@@ -528,7 +555,7 @@ static bool record_ok(Gen *g, const char *name) {
             why = "an unnamed field";
             break;
         }
-        CType *t = parse_type_string(qt, &g->typedefs, 0);
+        CType *t = decl_type(g, ty);
         sb_printf(&body, "    %s: ", fname);
         if (!field_type(g, t, &body, &why)) {
             snprintf(whybuf, sizeof whybuf, "%s", why); /* it may point into t */
@@ -665,9 +692,9 @@ static void gen_function(Gen *g, const Json *n) {
     smap_put(&g->written, name, (void *)name);
     if (smap_get(&g->last_decl, name, &v)) n = v; /* the declaration in force */
     const Json *ty = jget(n, "type");
-    const char *qt = jstr(ty, "desugaredQualType") ? jstr(ty, "desugaredQualType") : jstr(ty, "qualType");
+    const char *qt = jstr(ty, "desugaredQualType") ? jstr(ty, "desugaredQualType") : jstr(ty, "qualType"); /* to show */
     if (!name || !qt) return;
-    CType *ft = parse_type_string(qt, &g->typedefs, 0);
+    CType *ft = decl_type(g, ty);
     const char *why = NULL;
     StrBuf b = {0};
     if (ft->k != CT_FUNC) why = ft->k == CT_BAD ? ft->name : "not a function type";
@@ -681,8 +708,14 @@ static void gen_function(Gen *g, const Json *n) {
         if (ft->params.n > FFI_MAX_ARGS) why = "more than 8 parameters";
         sb_printf(&b, ".extern %s.%s, \"%s\", \"%s\" (", g->prefix, name, g->lib, symbol_of(n));
         for (size_t i = 0; i < ft->params.n && !why; i++) {
-            const CType *pt = ft->params.v[i];
-            if (pt->k == CT_VOID) break; /* (void) */
+            /* the parameter's own declaration keeps size_t's name where a builtin's type (strlen's) does not */
+            CType *own = i < parms.n ? decl_type(g, jget(parms.v[i], "type")) : NULL;
+            if (own && own->k == CT_BAD) ct_free(own), own = NULL;
+            const CType *pt = own ? own : ft->params.v[i];
+            if (pt->k == CT_VOID) {
+                if (own) ct_free(own);
+                break; /* (void) */
+            }
             if (i) sb_puts(&b, ", ");
             /* a callback is named after its typedef, or after the function and parameter */
             char cb[200];
@@ -691,7 +724,9 @@ static void gen_function(Gen *g, const Json *n) {
             if (pq && (isalpha((unsigned char)pq[0]) || pq[0] == '_') && !strpbrk(pq, " *()[]")) snprintf(cb, sizeof cb, "%s", pq);
             else if (pname) snprintf(cb, sizeof cb, "%s_%s", name, pname);
             else snprintf(cb, sizeof cb, "%s_arg%zu", name, i + 1);
-            if (!ffi_type_of(g, pt, true, cb, &b, &why)) break;
+            bool ok = ffi_type_of(g, pt, true, cb, &b, &why);
+            if (own) ct_free(own);
+            if (!ok) break;
         }
         if (!why && ft->variadic) sb_puts(&b, ", ...");
         sb_puts(&b, ")");

@@ -109,7 +109,21 @@ static ffi_type *ctype(uint8_t k) {
 static MlwsType vmtype(uint8_t k) {
     static const MlwsType T[] = {T_NONE, T_I8, T_I16, T_I32, T_I64, T_U8, T_U16, T_U32, T_U64, T_F32, T_F64};
     k &= (uint8_t)~FFI_OUT;
+    if (k == FFI_ISIZE || k == FFI_LONG) return T_I64; /* on every host, whatever C's size */
+    if (k == FFI_USIZE || k == FFI_ULONG) return T_U64;
     return k <= FFI_F64 ? T[k] : T_R;
+}
+
+/* isize, usize, long and ulong as this host's C has them; other kinds as they are. */
+static uint8_t host_kind(uint8_t k) {
+    uint8_t out = k & FFI_OUT;
+    switch (k & (uint8_t)~FFI_OUT) {
+    case FFI_ISIZE: return out | (sizeof(size_t) == 8 ? FFI_I64 : FFI_I32);
+    case FFI_USIZE: return out | (sizeof(size_t) == 8 ? FFI_U64 : FFI_U32);
+    case FFI_LONG: return out | (sizeof(long) == 8 ? FFI_I64 : FFI_I32);
+    case FFI_ULONG: return out | (sizeof(long) == 8 ? FFI_U64 : FFI_U32);
+    default: return k;
+    }
 }
 
 static size_t kind_size(uint8_t k) {
@@ -372,7 +386,7 @@ bool ffi_define_struct(VM *vm, LModule *lm, const MCStruct *c, MlwsError *err) {
     fs->decl = decl;
     fs->nfields = c->nfields;
     fs->kinds = xmalloc(c->nfields);
-    memcpy(fs->kinds, c->kinds, c->nfields);
+    for (uint32_t k = 0; k < c->nfields; k++) fs->kinds[k] = host_kind(c->kinds[k]);
     fs->counts = xcalloc(c->nfields + 1, sizeof *fs->counts);
     fs->nested = xcalloc(c->nfields + 1, sizeof *fs->nested);
     fs->tags = xcalloc(c->nfields + 1, sizeof *fs->tags);
@@ -393,7 +407,7 @@ bool ffi_define_struct(VM *vm, LModule *lm, const MCStruct *c, MlwsError *err) {
     fs->elems = xcalloc(nelems + 1, sizeof *fs->elems);
     size_t e = 0, off = 0, align = 1;
     for (uint32_t k = 0; k < c->nfields; k++) {
-        ffi_type *et = c->kinds[k] == FFI_STRUCT ? (ffi_type *)&fs->nested[k]->type : ctype(c->kinds[k]);
+        ffi_type *et = c->kinds[k] == FFI_STRUCT ? (ffi_type *)&fs->nested[k]->type : ctype(fs->kinds[k]);
         size_t n = c->counts[k] ? c->counts[k] : 1;
         off = (off + et->alignment - 1) / et->alignment * et->alignment;
         fs->offsets[k] = off;
@@ -632,6 +646,15 @@ void n_ffi_async_callback(Process *p, Word *args, Word *rets) {
     rets[0].r = foreign_new_obj(p, &cb->handle, a, NULL);
 }
 
+/* ffi.sizeof(cstruct name) -> bytes, as this host's C lays it out */
+void n_ffi_sizeof(Process *p, Word *args, Word *rets) {
+    ObjString *name = args[0].r;
+    if (!name || name->h.kind != OBJ_STRING) vm_trap(p, "E_TYPE", "ffi.sizeof needs a .cstruct name");
+    const FfiStruct *fs = find_struct(p->vm, name->data);
+    if (!fs) vm_trap(p, "E_TYPE", "ffi.sizeof: no .cstruct %s", name->data);
+    rets[0].i = (int64_t)fs->type.size;
+}
+
 /* A closure for a sync callback parameter, valid until the call returns. */
 static bool make_sync(Process *p, const FfiCallback *cb, Obj *o, SyncCb **out, const char *what) {
     const NativeDef *nd = p->cur_native;
@@ -686,10 +709,10 @@ bool ffi_define_callback(VM *vm, const MCallback *m, MlwsError *err) {
     cb->decl = decl;
     cb->async = (m->flags & MCB_ASYNC) != 0;
     cb->nargs = m->nargs;
-    cb->ret = m->ret;
+    cb->ret = host_kind(m->ret);
     for (int k = 0; k < m->nargs; k++) {
-        cb->args[k] = m->args[k];
-        cb->atypes[k] = ctype(m->args[k]);
+        cb->args[k] = host_kind(m->args[k]);
+        cb->atypes[k] = ctype(cb->args[k]);
         if (m->args[k] == FFI_PTR) cb->tags[k] = tag_type(vm, m->tags[k]);
     }
     if (m->ret == FFI_PTR) cb->ret_tag = tag_type(vm, m->ret_tag);
@@ -857,10 +880,10 @@ bool ffi_define(VM *vm, const MExtern *x, MlwsError *err) {
     fc->fn = fn;
     fc->decl = decl;
     fc->nargs = x->nargs;
-    fc->ret = x->ret;
+    fc->ret = host_kind(x->ret);
     NativeDef *nd = xcalloc(1, sizeof *nd);
     for (int k = 0; k < x->nargs; k++) {
-        uint8_t kind = x->args[k], base = kind & (uint8_t)~FFI_OUT;
+        uint8_t kind = host_kind(x->args[k]), base = kind & (uint8_t)~FFI_OUT;
         fc->args[k] = kind;
         if (base == FFI_STRUCT || base == FFI_STRUCTP) {
             fc->structs[k] = find_struct(vm, x->tags[k]);
@@ -880,10 +903,10 @@ bool ffi_define(VM *vm, const MExtern *x, MlwsError *err) {
         if (kind == FFI_STRUCT) fc->atypes[k] = (ffi_type *)&fc->structs[k]->type;
         else fc->atypes[k] = kind & FFI_OUT || base == FFI_STRUCTP ? &ffi_type_pointer : ctype(kind);
         if (base == FFI_PTR) fc->tags[k] = tag_type(vm, x->tags[k]);
-        if (kind & FFI_OUT) nd->rt[nd->nr++] = (uint8_t)vmtype(kind);
-        else nd->pt[nd->np++] = (uint8_t)vmtype(kind);
+        if (kind & FFI_OUT) nd->rt[nd->nr++] = (uint8_t)vmtype(x->args[k]);
+        else nd->pt[nd->np++] = (uint8_t)vmtype(x->args[k]);
     }
-    ffi_type *rtype = ctype(x->ret);
+    ffi_type *rtype = ctype(fc->ret);
     if (x->ret == FFI_PTR) fc->ret_tag = tag_type(vm, x->ret_tag);
     if (x->ret == FFI_STRUCT) {
         fc->ret_struct = find_struct(vm, x->ret_tag);
@@ -962,6 +985,11 @@ bool ffi_define_callback(VM *vm, const MCallback *cb, MlwsError *err) {
 void n_ffi_async_callback(Process *p, Word *args, Word *rets) {
     (void)args, (void)rets;
     vm_trap(p, "E_LINK_FFI", "ffi.async_callback: this mlwsvm was built without libffi");
+}
+
+void n_ffi_sizeof(Process *p, Word *args, Word *rets) {
+    (void)args, (void)rets;
+    vm_trap(p, "E_LINK_FFI", "ffi.sizeof: this mlwsvm was built without libffi");
 }
 
 void ffi_free_data(void *data) { (void)data; }

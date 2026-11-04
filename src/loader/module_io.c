@@ -553,9 +553,10 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
             c->counts[k] = (uint32_t)br_uleb(&r);
             CHECK();
             if (!*c->tags[k]) free(c->tags[k]), c->tags[k] = NULL;
-            if (c->kinds[k] == FFI_VOID || c->kinds[k] >= FFI_STRUCTP || c->kinds[k] == FFI_BUF ||
+            if (!(ffi_number(c->kinds[k]) || c->kinds[k] == FFI_CSTR || c->kinds[k] == FFI_PTR ||
+                  c->kinds[k] == FFI_STRUCT) ||
                 (c->kinds[k] == FFI_STRUCT && !c->tags[k]) ||
-                (c->counts[k] && (c->kinds[k] > FFI_F64 || c->counts[k] > 65536))) /* arrays: of numbers */
+                (c->counts[k] && (!ffi_number(c->kinds[k]) || c->counts[k] > 65536))) /* arrays: of numbers */
                 FAIL("cstruct %s: bad field kind", c->name);
         }
     }
@@ -587,14 +588,14 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
             if (!*cb->tags[k]) free(cb->tags[k]), cb->tags[k] = NULL;
             uint8_t kind = cb->args[k];
             /* numbers, cstr and ptr; an async callback's arguments travel in a message: no ptr */
-            if (kind == FFI_VOID || (kind > FFI_CSTR && kind != FFI_PTR) || (kind == FFI_PTR && cb->flags & MCB_ASYNC))
+            if (!(ffi_number(kind) || kind == FFI_CSTR || kind == FFI_PTR) || (kind == FFI_PTR && cb->flags & MCB_ASYNC))
                 FAIL("callback %s: bad parameter kind", cb->name);
         }
         cb->ret = br_u8(&r);
         cb->ret_tag = br_str(&r);
         CHECK();
         if (!*cb->ret_tag) free(cb->ret_tag), cb->ret_tag = NULL;
-        if ((cb->ret > FFI_F64 && cb->ret != FFI_PTR) || (cb->ret != FFI_VOID && cb->flags & MCB_ASYNC))
+        if ((cb->ret != FFI_VOID && !ffi_number(cb->ret) && cb->ret != FFI_PTR) || (cb->ret != FFI_VOID && cb->flags & MCB_ASYNC))
             FAIL("callback %s: bad result kind", cb->name);
     }
     n = br_uleb(&r);

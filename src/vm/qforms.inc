@@ -9,7 +9,8 @@
  *   JUMPTO(t)       make the next instruction the one at index t of the code
  *   GENERIC()       hand this instruction to the generic forms
  *   SPILL()/RELOAD() write the fast path's state back / read it again
- *   QI QF QR QP     the current register windows of each bank; QB(I) is QI
+ *   QI QF QR QP     the current register windows of each bank (QR's are Words:
+ *                   a register's reference is QR[i].r); QREG(I, i) is QI[i]
  *   QCTX            the Ctx pointer; IR(k), FR(k) the I/F register operand k
  *   in              the instruction
  *   QPRC, QFRM      the process and the current frame
@@ -22,7 +23,7 @@
         QCASE(Q_MOV_IK) IR(0) = in->k.i; NEXT;
         QCASE(Q_MOV_FF) FR(0) = FR(1); NEXT;
         QCASE(Q_MOV_FK) FR(0) = in->k.f; NEXT;
-        QCASE(Q_MOV_RR) QR[in->r[0]] = QR[in->r[1]]; NEXT;
+        QCASE(Q_MOV_RR) QR[in->r[0]].r = QR[in->r[1]].r; NEXT;
         QCASE(Q_MOV_PP) QP[in->r[0]] = QP[in->r[1]]; NEXT;
 #define X(N, op_)                                                             \
         QCASE(Q_##N##_III) IR(0) = (int64_t)(U(IR(1)) op_ U(IR(2))); NEXT;     \
@@ -101,7 +102,7 @@
                 switch (REG_BANK(r)) {
                 case BANK_I: vals[k].i = QI[REG_IDX(r)]; break;
                 case BANK_F: vals[k].f = QF[REG_IDX(r)]; break;
-                case BANK_R: vals[k].r = QR[REG_IDX(r)]; break;
+                case BANK_R: vals[k].r = QR[REG_IDX(r)].r; break;
                 default: vals[k].p = QP[REG_IDX(r)]; break;
                 }
             }
@@ -130,7 +131,7 @@
                     switch (REG_BANK(r)) {
                     case BANK_I: QI[REG_IDX(r)] = vals[k].i; break;
                     case BANK_F: QF[REG_IDX(r)] = vals[k].f; break;
-                    case BANK_R: QR[REG_IDX(r)] = vals[k].r; break;
+                    case BANK_R: QR[REG_IDX(r)].r = vals[k].r; break;
                     default: QP[REG_IDX(r)] = vals[k].p; break;
                     }
                 }
@@ -141,10 +142,10 @@
 #endif
             NEXT;
         }
-        QCASE(Q_BZ_R) if (!QR[in->r[0]]) JUMP(); NEXT;
-        QCASE(Q_BNZ_R) if (QR[in->r[0]]) JUMP(); NEXT;
+        QCASE(Q_BZ_R) if (!QR[in->r[0]].r) JUMP(); NEXT;
+        QCASE(Q_BNZ_R) if (QR[in->r[0]].r) JUMP(); NEXT;
         /* Fields and elements: anything unexpected goes to the generic mov. */
-#define STRUCT_OF(reg) ((ObjStruct *)QR[reg])
+#define STRUCT_OF(reg) ((ObjStruct *)QR[reg].r)
 #define IS_STRUCT(o) ((o) && (o)->h.kind == OBJ_STRUCT && (o)->def == in->k.p)
 /* An array element of exactly the instruction's type, or a list element
  * tagged with it (a store retags a list element) or never written (zero of
@@ -156,20 +157,20 @@
 #define ELEM_BYTE_R(N, ob, i) GENERIC();
 #define ELEM_LOAD(N, bank, w, i_)                                             \
         {                                                                     \
-            Obj *ob = QR[in->r[1]];                                          \
+            Obj *ob = QR[in->r[1]].r;                                          \
             uint64_t i = (i_);                                                \
             if (!ob) GENERIC();                                            \
             if (ob->kind == OBJ_ARRAY) {                                      \
                 ObjArray *a = (ObjArray *)ob;                                 \
                 if (i >= a->len || a->elem != in->type) GENERIC();         \
-                QB(bank)[in->r[0]] = a->data[i].w;                              \
+                QREG(bank, in->r[0]) = a->data[i].w;                              \
             } else if (ob->kind == OBJ_LIST) {                                \
                 ObjList *l = (ObjList *)ob;                                   \
                 if (i >= l->len) GENERIC();                                   \
                 if (__builtin_expect(l->tags[i] == in->type, 1))              \
-                    QB(bank)[in->r[0]] = l->items[i].w;                         \
+                    QREG(bank, in->r[0]) = l->items[i].w;                         \
                 else if (l->tags[i] == T_NONE) /* never written: zero (null) */ \
-                    QB(bank)[in->r[0]] = 0;                                   \
+                    QREG(bank, in->r[0]) = 0;                                   \
                 else                                                          \
                     GENERIC();                                                \
             } else {                                                          \
@@ -183,22 +184,22 @@
 #define GC_WRITE_F(o, N)
 #define GC_WRITE_R(o, N)                                                      \
             if (__builtin_expect(((o)->flags & (OBJF_OLD | OBJF_REMEMBERED)) == OBJF_OLD, 0) && \
-                gc_young(QR[in->r[1]]))                                       \
+                gc_young(QR[in->r[1]].r))                                       \
                 GC_REMEMBER(N, o);
 #define ELEM_STORE(bank, w, i_)                                               \
         {                                                                     \
-            Obj *ob = QR[in->r[0]];                                          \
+            Obj *ob = QR[in->r[0]].r;                                          \
             uint64_t i = (i_);                                                \
             if (!ob) GENERIC();                                            \
             if (ob->kind == OBJ_ARRAY) {                                      \
                 ObjArray *a = (ObjArray *)ob;                                 \
                 if (i >= a->len || a->elem != in->type) GENERIC();         \
-                a->data[i].w = QB(bank)[in->r[1]];                              \
+                a->data[i].w = QREG(bank, in->r[1]);                              \
             } else if (ob->kind == OBJ_LIST) {                                \
                 ObjList *l = (ObjList *)ob;                                   \
                 if (i >= l->len) GENERIC();                                \
                 l->tags[i] = in->type;                                        \
-                l->items[i].w = QB(bank)[in->r[1]];                             \
+                l->items[i].w = QREG(bank, in->r[1]);                             \
             } else {                                                          \
                 GENERIC();                                                 \
             }                                                                 \
@@ -209,13 +210,13 @@
         QCASE(Q_LDF_##B) {                                                    \
             ObjStruct *so = STRUCT_OF(in->r[1]);                              \
             if (!IS_STRUCT(so)) GENERIC();                                 \
-            QB(bank)[in->r[0]] = so->fields[in->target].w;                      \
+            QREG(bank, in->r[0]) = so->fields[in->target].w;                      \
             NEXT;                                                             \
         }                                                                     \
         QCASE(Q_STF_##B) {                                                    \
             ObjStruct *so = STRUCT_OF(in->r[0]);                              \
             if (!IS_STRUCT(so)) GENERIC();                                 \
-            so->fields[in->target].w = QB(bank)[in->r[1]];                      \
+            so->fields[in->target].w = QREG(bank, in->r[1]);                      \
             GC_WRITE_##bank(&so->h, R0)                                       \
             NEXT;                                                             \
         }                                                                     \
@@ -229,7 +230,7 @@
             const ObjClosure *cl = (const ObjClosure *)QFRM->closure;          \
             uint32_t u = in->target;                                          \
             if (!cl || u >= cl->nup || cl->tags[u] != in->type) GENERIC(); \
-            QB(bank)[in->r[0]] = cl->up[u].w;                                   \
+            QREG(bank, in->r[0]) = cl->up[u].w;                                   \
             NEXT;                                                             \
         }                                                                     \
         QCASE(Q_STU_##B) {                                                    \
@@ -237,7 +238,7 @@
             uint32_t u = in->target;                                          \
             if (!cl || u >= cl->nup) GENERIC();                            \
             cl->tags[u] = in->type;                                           \
-            cl->up[u].w = QB(bank)[in->r[1]];                                   \
+            cl->up[u].w = QREG(bank, in->r[1]);                                   \
             GC_WRITE_##bank(&cl->h, UP)                                       \
             NEXT;                                                             \
         }                                                                     \
@@ -247,8 +248,8 @@
             const Segment *s = &QPRC->globals[g];                                \
             /* a reference only from a word tagged r; nothing else from one */ \
             if (off + 8 > s->size || (s->tags[off >> 3] == T_R) != (in->type == T_R)) GENERIC(); \
-            memcpy(&QB(bank)[in->r[0]], s->data + off, 8);                      \
-            if (in->type != T_R) word_le(&QB(bank)[in->r[0]]);                 \
+            memcpy(&QREG(bank, in->r[0]), s->data + off, 8);                      \
+            if (in->type != T_R) word_le(&QREG(bank, in->r[0]));                 \
             NEXT;                                                             \
         }                                                                     \
         QCASE(Q_STG_##B) {                                                    \
@@ -256,7 +257,7 @@
             if (g >= QPRC->nglobals) GENERIC();                               \
             Segment *s = &QPRC->globals[g];                                      \
             if (off + 8 > s->size) GENERIC();                              \
-            memcpy(s->data + off, &QB(bank)[in->r[1]], 8);                      \
+            memcpy(s->data + off, &QREG(bank, in->r[1]), 8);                      \
             if (in->type != T_R) word_le(s->data + off);                       \
             s->tags[off >> 3] = in->type;                                     \
             NEXT;                                                             \
@@ -273,7 +274,7 @@
  * a list element, which takes the type's tag; the word in Operand.kw. */
 #define ELEM_STORE_K(i_)                                                      \
         {                                                                     \
-            Obj *ob = QR[in->r[0]];                                          \
+            Obj *ob = QR[in->r[0]].r;                                          \
             uint64_t i = (i_);                                                \
             if (!ob) GENERIC();                                               \
             if (ob->kind == OBJ_LIST) {                                       \
@@ -314,7 +315,7 @@
 #undef IS_STRUCT
         QCASE(Q_CALLI_R) {
             const Operand *qo = in->ops;
-            Obj *ob = QR[in->r[0]];
+            Obj *ob = QR[in->r[0]].r;
             if (!ob || ob->kind != OBJ_CLOSURE) GENERIC();
             ObjClosure *cl = (ObjClosure *)ob;
             Function *fn = cl->fn;
@@ -357,7 +358,7 @@
             /* A closure tail call: the callee's frame replaces this one, at
              * the same base, and returns to this frame's caller. */
             const Operand *qo = in->ops;
-            Obj *ob = QR[in->r[0]];
+            Obj *ob = QR[in->r[0]].r;
             if (!ob || ob->kind != OBJ_CLOSURE) GENERIC();
             ObjClosure *cl = (ObjClosure *)ob;
             Function *fn = cl->fn;
@@ -433,12 +434,12 @@
          * (as for any instruction that can fail). */
         QCASE(Q_NEW) {
             SPILL();
-            QR[in->r[0]] = &struct_new(QPRC, in->k.p)->h;
+            QR[in->r[0]].r = &struct_new(QPRC, in->k.p)->h;
             NEXT;
         }
         QCASE(Q_LNEW) {
             SPILL();
-            QR[in->r[0]] = &list_new(QPRC, in->k.i)->h;
+            QR[in->r[0]].r = &list_new(QPRC, in->k.i)->h;
             NEXT;
         }
         QCASE(Q_JTAB) { /* out of range: on to the next instruction */
@@ -452,7 +453,7 @@
          * the other destination gets zero. */
 #define LDV_ELEM(i_)                                                          \
         {                                                                     \
-            const Obj *ob = QR[in->k.i];                                      \
+            const Obj *ob = QR[in->k.i].r;                                      \
             uint64_t i = (i_);                                                \
             if (!ob) GENERIC();                                               \
             uint8_t tag;                                                      \
@@ -491,15 +492,15 @@
         QSHIFT_OPS(X)
 #undef X
         /* ---- M24: the shapes of dynamically typed languages' code ---- */
-        QCASE(Q_MOV_RK) QR[in->r[0]] = (Obj *)in->k.p; NEXT;
-        QCASE(Q_BEQ_RR) if (QR[in->r[0]] == QR[in->r[1]]) JUMP(); NEXT;
-        QCASE(Q_BNE_RR) if (QR[in->r[0]] != QR[in->r[1]]) JUMP(); NEXT;
-        QCASE(Q_BEQ_RK) if (QR[in->r[0]] == (Obj *)in->k.p) JUMP(); NEXT;
-        QCASE(Q_BNE_RK) if (QR[in->r[0]] != (Obj *)in->k.p) JUMP(); NEXT;
-        QCASE(Q_SEQ_RR) QI[in->r[0]] = QR[in->r[1]] == QR[in->r[2]]; NEXT;
-        QCASE(Q_SNE_RR) QI[in->r[0]] = QR[in->r[1]] != QR[in->r[2]]; NEXT;
-        QCASE(Q_SEQ_RK) QI[in->r[0]] = QR[in->r[1]] == (Obj *)in->k.p; NEXT;
-        QCASE(Q_SNE_RK) QI[in->r[0]] = QR[in->r[1]] != (Obj *)in->k.p; NEXT;
+        QCASE(Q_MOV_RK) QR[in->r[0]].r = (Obj *)in->k.p; NEXT;
+        QCASE(Q_BEQ_RR) if (QR[in->r[0]].r == QR[in->r[1]].r) JUMP(); NEXT;
+        QCASE(Q_BNE_RR) if (QR[in->r[0]].r != QR[in->r[1]].r) JUMP(); NEXT;
+        QCASE(Q_BEQ_RK) if (QR[in->r[0]].r == (Obj *)in->k.p) JUMP(); NEXT;
+        QCASE(Q_BNE_RK) if (QR[in->r[0]].r != (Obj *)in->k.p) JUMP(); NEXT;
+        QCASE(Q_SEQ_RR) QI[in->r[0]] = QR[in->r[1]].r == QR[in->r[2]].r; NEXT;
+        QCASE(Q_SNE_RR) QI[in->r[0]] = QR[in->r[1]].r != QR[in->r[2]].r; NEXT;
+        QCASE(Q_SEQ_RK) QI[in->r[0]] = QR[in->r[1]].r == (Obj *)in->k.p; NEXT;
+        QCASE(Q_SNE_RK) QI[in->r[0]] = QR[in->r[1]].r != (Obj *)in->k.p; NEXT;
 #define X(N, op_)                                                             \
         QCASE(Q_##N##_FF) QI[in->r[0]] = QF[in->r[1]] op_ QF[in->r[2]]; NEXT;     \
         QCASE(Q_##N##_FK) QI[in->r[0]] = QF[in->r[1]] op_ in->k.f; NEXT;
@@ -511,7 +512,7 @@
         QBRANCH_OPS(X)
 #undef X
         QCASE(Q_LEN) {
-            const Obj *ob = QR[in->r[1]];
+            const Obj *ob = QR[in->r[1]].r;
             if (!ob) GENERIC();
             switch (ob->kind) {
             case OBJ_LIST: QI[in->r[0]] = ((const ObjList *)ob)->len; break;
@@ -524,7 +525,7 @@
             NEXT;
         }
         QCASE(Q_LPUSH_R) { /* grows (allocates) only on the generic path */
-            Obj *ob = QR[in->r[0]];
+            Obj *ob = QR[in->r[0]].r;
             if (!ob || ob->kind != OBJ_LIST) GENERIC();
             ObjList *l = (ObjList *)ob;
             uint32_t n = (uint32_t)in->nops - 1;
@@ -537,8 +538,8 @@
                 case BANK_I: l->items[l->len].i = QI[REG_IDX(r)]; l->tags[l->len] = T_I64; break;
                 case BANK_F: l->items[l->len].f = QF[REG_IDX(r)]; l->tags[l->len] = T_F64; break;
                 default:
-                    l->items[l->len].r = QR[REG_IDX(r)], l->tags[l->len] = T_R;
-                    young |= gc_young(QR[REG_IDX(r)]);
+                    l->items[l->len].r = QR[REG_IDX(r)].r, l->tags[l->len] = T_R;
+                    young |= gc_young(QR[REG_IDX(r)].r);
                     break;
                 }
             }
@@ -546,7 +547,7 @@
             NEXT;
         }
         QCASE(Q_LPUSH_RK) { /* the same, with constants (interp_quicken; a constant is never young) */
-            Obj *ob = QR[in->r[0]];
+            Obj *ob = QR[in->r[0]].r;
             if (!ob || ob->kind != OBJ_LIST) GENERIC();
             ObjList *l = (ObjList *)ob;
             uint32_t n = (uint32_t)in->nops - 1;
@@ -565,8 +566,8 @@
                 case BANK_I: l->items[l->len].i = QI[REG_IDX(r)]; l->tags[l->len] = T_I64; break;
                 case BANK_F: l->items[l->len].f = QF[REG_IDX(r)]; l->tags[l->len] = T_F64; break;
                 default:
-                    l->items[l->len].r = QR[REG_IDX(r)], l->tags[l->len] = T_R;
-                    young |= gc_young(QR[REG_IDX(r)]);
+                    l->items[l->len].r = QR[REG_IDX(r)].r, l->tags[l->len] = T_R;
+                    young |= gc_young(QR[REG_IDX(r)].r);
                     break;
                 }
             }
@@ -577,7 +578,7 @@
             SPILL();
             Obj *s = q_strcat(QPRC, in, QR);
             if (!s) GENERIC();
-            QR[in->r[0]] = s;
+            QR[in->r[0]].r = s;
             NEXT;
         }
         QCASE(Q_BUFCAT_RK) {
@@ -589,31 +590,31 @@
             SPILL();
             Word v;
             v.i = IR(1);
-            QR[in->r[0]] = &value_to_string(QPRC, v, T_I64)->h;
+            QR[in->r[0]].r = &value_to_string(QPRC, v, T_I64)->h;
             NEXT;
         }
         QCASE(Q_TOSTR_F) {
             SPILL();
             Word v;
             v.f = FR(1);
-            QR[in->r[0]] = &value_to_string(QPRC, v, T_F64)->h;
+            QR[in->r[0]].r = &value_to_string(QPRC, v, T_F64)->h;
             NEXT;
         }
         QCASE(Q_SUBSTR_RII) {
             SPILL();
             Obj *s = q_substr(QPRC, in, QR, QI);
             if (!s) GENERIC();
-            QR[in->r[0]] = s;
+            QR[in->r[0]].r = s;
             NEXT;
         }
         QCASE(Q_BUFNEW_K) {
             SPILL();
-            QR[in->r[0]] = &bytes_new(QPRC, in->k.i)->h;
+            QR[in->r[0]].r = &bytes_new(QPRC, in->k.i)->h;
             NEXT;
         }
         QCASE(Q_BUFPUSH_I) {
             SPILL();
-            if (!q_bufpush(QPRC, QR[in->r[0]], IR(1))) GENERIC();
+            if (!q_bufpush(QPRC, QR[in->r[0]].r, IR(1))) GENERIC();
             NEXT;
         }
 #define X(N, f)                                                               \
@@ -622,7 +623,7 @@
         QFUNARY_OPS(X)
 #undef X
         QCASE(Q_TAGOF_E) {
-            const Obj *ob = QR[in->r[1]];
+            const Obj *ob = QR[in->r[1]].r;
             uint64_t i = (uint64_t)QI[in->r[2]];
             if (ob && ob->kind == OBJ_LIST && i < ((const ObjList *)ob)->len)
                 QI[in->r[0]] = ((const ObjList *)ob)->tags[i];
@@ -633,7 +634,7 @@
             NEXT;
         }
         QCASE(Q_TYPEOF) {
-            const Obj *ob = QR[in->r[1]];
+            const Obj *ob = QR[in->r[1]].r;
             IR(0) = ob ? ob->kind : OBJ_NULL;
             NEXT;
         }
@@ -643,7 +644,7 @@
  * or an element of an r array; anything else goes to the generic branch. */
 #define ELEM_REF_BRANCH(cmp)                                                  \
         {                                                                     \
-            const Obj *ob = QR[in->r[0]];                                     \
+            const Obj *ob = QR[in->r[0]].r;                                     \
             uint32_t i = in->r[1] | (uint32_t)in->r[2] << 8;                  \
             const Obj *v;                                                     \
             if (!ob) GENERIC();                                               \
@@ -665,17 +666,17 @@
         QCASE(Q_BNE_EKK) ELEM_REF_BRANCH(!=)
 #undef ELEM_REF_BRANCH
         QCASE(Q_ISA) {
-            const Obj *ob = QR[in->r[1]];
+            const Obj *ob = QR[in->r[1]].r;
             QI[in->r[0]] = ob && ob->kind == OBJ_STRUCT && ((const ObjStruct *)ob)->def == in->k.p;
             NEXT;
         }
         QCASE(Q_BISA) {
-            const Obj *ob = QR[in->r[0]];
+            const Obj *ob = QR[in->r[0]].r;
             if (ob && ob->kind == OBJ_STRUCT && ((const ObjStruct *)ob)->def == in->k.p) JUMP();
             NEXT;
         }
         QCASE(Q_BNISA) {
-            const Obj *ob = QR[in->r[0]];
+            const Obj *ob = QR[in->r[0]].r;
             if (!(ob && ob->kind == OBJ_STRUCT && ((const ObjStruct *)ob)->def == in->k.p)) JUMP();
             NEXT;
         }
@@ -693,28 +694,28 @@
         QCASE(Q_BEQ_RG) {
             Obj *v;
             GLOBAL_REF(v);
-            if (QR[in->r[0]] == v) JUMP();
+            if (QR[in->r[0]].r == v) JUMP();
             NEXT;
         }
         QCASE(Q_BNE_RG) {
             Obj *v;
             GLOBAL_REF(v);
-            if (QR[in->r[0]] != v) JUMP();
+            if (QR[in->r[0]].r != v) JUMP();
             NEXT;
         }
 #undef GLOBAL_REF
         QCASE(Q_MGET_R) { /* mget.r R0, R1, "key" [, null] */
-            const Obj *ob = QR[in->r[1]];
+            const Obj *ob = QR[in->r[1]].r;
             if (!ob || ob->kind != OBJ_MAP) GENERIC();
             Word key;
             key.r = (Obj *)in->k.p;
             const MapEntry *e = map_find((ObjMap *)ob, key, T_R);
             if (e) {
                 if (e->vtag != T_R) GENERIC();
-                QR[in->r[0]] = e->val.r;
+                QR[in->r[0]].r = e->val.r;
             } else {
                 if (in->nops < 4) GENERIC(); /* no default: E_KEY */
-                QR[in->r[0]] = NULL;
+                QR[in->r[0]].r = NULL;
             }
             NEXT;
         }
@@ -723,19 +724,19 @@
          * (in k). */
 #define X(B, bank, w, tag)                                                    \
         QCASE(Q_MGETV_##B) {                                                  \
-            const Obj *ob = QR[in->r[1]];                                     \
+            const Obj *ob = QR[in->r[1]].r;                                     \
             if (!ob || ob->kind != OBJ_MAP) GENERIC();                        \
             Word key;                                                         \
             if (in->target == T_I64) key.i = QI[in->r[2]];                    \
             else if (in->target == T_F64) key.f = QF[in->r[2]];               \
-            else key.r = QR[in->r[2]];                                        \
+            else key.r = QR[in->r[2]].r;                                        \
             const MapEntry *e = map_find((ObjMap *)ob, key, (uint8_t)in->target); \
             if (e) {                                                          \
                 if (e->vtag != (tag)) GENERIC();                              \
-                QB(bank)[in->r[0]] = e->val.w;                                \
+                QREG(bank, in->r[0]) = e->val.w;                                \
             } else {                                                          \
                 if (in->nops < 4) GENERIC(); /* no default: E_KEY */          \
-                memcpy(&QB(bank)[in->r[0]], &in->k, 8);                       \
+                memcpy(&QREG(bank, in->r[0]), &in->k, 8);                       \
             }                                                                 \
             NEXT;                                                             \
         }

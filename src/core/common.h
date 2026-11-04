@@ -23,6 +23,12 @@
 #define MLWS_NOINLINE
 #endif
 
+/* On 32-bit x86, floating point is SSE2's, as on every 64-bit host: the x87's
+ * 80-bit intermediate results round differently (the Makefile adds the flags). */
+#if defined(__i386__) && !defined(__SSE2_MATH__)
+#error "32-bit x86 needs SSE2 floating point: build with -msse2 -mfpmath=sse"
+#endif
+
 /* VM memory is little-endian on every host (docs/ADDRESSING.md). A word of it
  * copied with memcpy to or from a host word has its bytes reversed in place by
  * word_le on a big-endian host; elsewhere that is nothing. */

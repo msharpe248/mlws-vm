@@ -176,8 +176,8 @@ reported at load time and never crashes.
 ```asm
 .extern m.pow,    "libm.so.6|libm", "pow"    (f64, f64) -> (f64)
 .extern m.frexp,  "libm.so.6|libm", "frexp"  (f64, out i32) -> (f64)
-.extern c.strlen, "",               "strlen" (cstr) -> (u64)
-.extern c.malloc, "",               "malloc" (u64) -> (ptr<mem>)
+.extern c.strlen, "",               "strlen" (cstr) -> (usize)
+.extern c.malloc, "",               "malloc" (usize) -> (ptr<mem>)
 .extern c.free,   "",               "free"   (ptr<mem>)
 .extern c.usleep, "",               "usleep" (u32) -> (i32), blocking
 
@@ -201,6 +201,7 @@ reported at load time and never crashes.
 | Type | MLWSVM side | C side |
 |---|---|---|
 | `i8` … `i64`, `u8` … `u64` | an integer | that C integer type |
+| `isize`, `usize`, `long`, `ulong` | an integer (`i64` or `u64`) | `ssize_t`, `size_t`, `long`, `unsigned long`: 32 or 64 bits, as the host's C has them |
 | `f32`, `f64` | a float | `float`, `double` |
 | `cstr` | a string (its bytes, NUL-terminated) or a byte buffer (copied and NUL-terminated); as a result, the C string is copied into a new string; NULL is null | `const char *` |
 | `buf` | a byte buffer, passed as its own bytes, which C may change; C reads numbers in it in the host's byte order (`ffi.little_endian`) | `void *` |
@@ -237,10 +238,10 @@ the handle would still free the pointer again later. Use `foreign.release`.
 .cstruct Tm                      ; struct tm, fields in C order
     tm_sec: i32
     ...
-    tm_gmtoff: i64
+    tm_gmtoff: long
     tm_zone: cstr
 .ends
-.extern c.timegm,   "", "timegm"   (struct* Tm) -> (i64)
+.extern c.timegm,   "", "timegm"   (struct* Tm) -> (long)
 .extern c.gmtime_r, "", "gmtime_r" (struct* TimeT, out struct Tm) -> (ptr)
 .extern c.div,      "", "div"      (i32, i32) -> (struct DivT)
 
@@ -251,12 +252,14 @@ the handle would still free the pointer again later. Use `foreign.release`.
 
 `.cstruct NAME` … `.ends` describes a C struct, and also declares an MLWSVM
 struct of the same name to build and read it with. Fields are laid out exactly
-as a C compiler would: each aligned to its own size, and the whole padded to its
-largest alignment. Field types:
+as the host's C compiler would: each aligned as C aligns its type (on 32-bit
+x86, 8-byte numbers to 4), and the whole padded to its largest alignment. `ffi.sizeof("NAME")` is its size in bytes on this host, for
+the C functions that take one (`malloc`, `memcpy`). Field types:
 
 | Field | In the MLWSVM struct | In C |
 |---|---|---|
 | `i8` … `u64`, `f32`, `f64` | that type | that type |
+| `isize`, `usize`, `long`, `ulong` | `i64`, `u64` | as for parameters |
 | `cstr` | a string, or null | `const char *` (as for parameters) |
 | `ptr`, `ptr<tag>` | a foreign handle, or null | `void *` |
 | `struct NAME` | a NAME struct, or null (zeros) | the struct itself, nested |
@@ -281,7 +284,7 @@ A struct crosses into C in one of three ways:
 ### Variadic functions
 
 ```asm
-.extern c.snprintf, "", "snprintf" (buf, u64, cstr, ..., i64, f64, cstr) -> (i32)
+.extern c.snprintf, "", "snprintf" (buf, usize, cstr, ..., i64, f64, cstr) -> (i32)
 ```
 
 `...` marks where the fixed parameters end. The types after it are the ones this
@@ -295,7 +298,7 @@ structs by value.
 
 ```asm
 .callback cmp_t (ptr, ptr) -> (i32)            ; a C function-pointer type
-.extern c.qsort, "", "qsort" (buf, u64, u64, callback cmp_t)
+.extern c.qsort, "", "qsort" (buf, usize, usize, callback cmp_t)
 
 .func compare(ref a, ref b) -> i32             ; parameters match the callback's
     ...
@@ -344,8 +347,8 @@ parameters make handles that own their pointer.
 ### Async callbacks
 
 ```asm
-.callback start_t (u64), async
-.extern c.pthread_create, "", "pthread_create" (out u64, ptr, callback start_t, u64) -> (i32)
+.callback start_t (usize), async
+.extern c.pthread_create, "", "pthread_create" (out ulong, ptr, callback start_t, usize) -> (i32)
 
     ncall "ffi.async_callback" ("start_t", I0) -> (R0)   ; calls become messages to process I0
     ncall "c.pthread_create" (null, R0, 42) -> (I1, I2)

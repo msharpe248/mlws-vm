@@ -320,6 +320,9 @@ typedef struct VM {
 #define SEG_GLOBAL0 2u    /* module k's globals live in segment 2 + k */
 #define SEG_RAW0 4096u    /* raw heap blocks */
 #define SEG_MAX (1u << 20)
+/* The most bytes in one block of memory (a raw block or a stack): 4 GB, or
+ * 1 GB on a 32-bit host, where a block's size and overheads must fit a size_t. */
+#define MAX_BLOCK (SIZE_MAX > UINT32_MAX ? (int64_t)UINT32_MAX : (int64_t)1 << 30)
 
 enum { SEGK_STACK = 1, SEGK_GLOBAL, SEGK_RAW };
 
@@ -802,6 +805,7 @@ struct MCallback;
 bool ffi_define_callback(VM *vm, const struct MCallback *cb, MlwsError *err);                  /* `.callback` */
 void ffi_free_callback(void *v);
 void n_ffi_async_callback(Process *p, Word *args, Word *rets); /* the ffi.async_callback native */
+void n_ffi_sizeof(Process *p, Word *args, Word *rets);         /* ffi.sizeof */
 void ffi_free_data(void *data);   /* an `.extern` native's call data */
 void ffi_free_struct(void *v);    /* a `.cstruct` layout */
 bool ffi_available(void);

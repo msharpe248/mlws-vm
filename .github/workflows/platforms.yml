@@ -138,32 +138,45 @@ jobs:
             EOF
             if [ -n "${{ matrix.fds }}" ]; then sudo sh -c "ulimit -n ${{ matrix.fds }} && sh build/checks.sh"; else sh build/checks.sh; fi
 
-  # A 32-bit build on the x86-64 runner, which runs it natively (without
-  # libffi, which the runner has only for x86-64).
+  # A 32-bit build on the x86-64 runner, which runs it natively, with the
+  # i386 libffi (pkg-config finds it, and not the x86-64 one).
   linux-i386:
     name: linux i386 / gcc -m32
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    env:
+      PKG_CONFIG_LIBDIR: /usr/lib/i386-linux-gnu/pkgconfig
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the 32-bit C library
-        run: sudo apt-get update && sudo apt-get install -y gcc-multilib
+      - name: Install the 32-bit C library and libffi
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib libffi-dev:i386
 
       - name: Build
-        run: make CC="gcc -m32" FFI=0 -k -j4
+        run: make CC="gcc -m32" -k -j4
 
       - name: Tests
         if: ${{ !cancelled() }}
-        run: make CC="gcc -m32" FFI=0 test
+        run: make CC="gcc -m32" test
 
       - name: GC stress
         if: ${{ !cancelled() }}
-        run: make CC="gcc -m32" FFI=0 check-gc
+        run: make CC="gcc -m32" check-gc
+
+      - name: Optimizer
+        if: ${{ !cancelled() }}
+        run: make CC="gcc -m32" check-opt
 
       - name: Fuzzer
         if: ${{ !cancelled() }}
-        run: make CC="gcc -m32" FFI=0 check-fuzz
+        run: make CC="gcc -m32" check-fuzz
+
+      - name: Tools
+        if: ${{ !cancelled() }}
+        run: make CC="gcc -m32" check-tools
 
   # Debian under QEMU's user-mode emulation: slow, so the tests, GC stress,
   # the optimizer and the fuzzer (whose programs use memory every way).

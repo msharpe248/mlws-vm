@@ -17,11 +17,12 @@
 ; requires: posix
 ; option: --ext-path build/test-ext
 .include "std/test.inc"
-; void *(*start_routine)(void *): the argument is passed as a u64 (a pointer
-; and a u64 travel the same way), and the result is ignored by pthread_join.
-.callback start_t (u64), async
-.extern c.pthread_create, "", "pthread_create" (out u64, ptr, callback start_t, u64) -> (i32)
-.extern c.pthread_join, "", "pthread_join" (u64, ptr) -> (i32), blocking
+; void *(*start_routine)(void *): the argument is passed as a usize (a pointer
+; and a usize travel the same way), and the result is ignored by pthread_join.
+; A pthread_t is an unsigned long on Linux, and a pointer (as wide) on macOS.
+.callback start_t (usize), async
+.extern c.pthread_create, "", "pthread_create" (out ulong, ptr, callback start_t, usize) -> (i32)
+.extern c.pthread_join, "", "pthread_join" (ulong, ptr) -> (i32), blocking
 
 .func main
     mov I0, PID

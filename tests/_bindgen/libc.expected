@@ -15,22 +15,22 @@
     tm_wday: i32    ; int
     tm_yday: i32    ; int
     tm_isdst: i32    ; int
-    tm_gmtoff: i64    ; long
+    tm_gmtoff: long    ; long
     tm_zone: cstr    ; const char *
 .ends
 ; enum level
 .const LOW = 0
 .const MID = 10
 .const HIGH = 11
-.extern c.strlen, "", "strlen" (cstr) -> (u64)
+.extern c.strlen, "", "strlen" (cstr) -> (ulong)
 .extern c.abs, "", "abs" (i32) -> (i32)
 .extern c.ldexp, "", "ldexp" (f64, i32) -> (f64)
 .extern c.div, "", "div" (i32, i32) -> (struct div_t)
 .extern c.strchr, "", "strchr" (cstr, i32) -> (cstr)
-.extern c.timegm, "", "timegm" (struct* tm) -> (i64)
+.extern c.timegm, "", "timegm" (struct* tm) -> (long)
 .extern c.gmtime_r, "", "gmtime_r" (buf, struct* tm) -> (ptr<tm>)
 .callback qsort_compar (ptr, ptr) -> (i32)
-.extern c.qsort, "", "qsort" (buf, u64, u64, callback qsort_compar)
-.extern c.snprintf, "", "snprintf" (buf, u64, cstr, ...) -> (i32)
+.extern c.qsort, "", "qsort" (buf, usize, usize, callback qsort_compar)
+.extern c.snprintf, "", "snprintf" (buf, usize, cstr, ...) -> (i32)
 ; (snprintf is variadic: add the types it passes after `...`)
 ; fabsl: skipped (long double): long double (long double)

@@ -109,8 +109,13 @@ enum {
     FFI_STRUCT,  /* a .cstruct by value (tag: its name); with FFI_OUT, returned through a pointer */
     FFI_STRUCTP, /* a pointer to a .cstruct: copied in, and copied back after the call */
     FFI_CALLBACK, /* a C function pointer for a .callback type (tag): a closure, or an async callback handle */
+    /* ssize_t, size_t, long and unsigned long: integers of the host's C sizes
+     * (the FFI makes them i32/u32 or i64/u64 when it links) */
+    FFI_ISIZE, FFI_USIZE, FFI_LONG, FFI_ULONG,
     FFI__COUNT
 };
+/* A number: an integer, of a fixed size or the host's, or a float. */
+static inline bool ffi_number(uint8_t k) { return (k >= FFI_I8 && k <= FFI_F64) || (k >= FFI_ISIZE && k < FFI__COUNT); }
 #define FFI_OUT 0x80
 #define FFI_MAX_ARGS 8
 

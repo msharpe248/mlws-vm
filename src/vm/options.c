@@ -104,8 +104,8 @@ static bool parse_quota(VM *vm, const char *value, MlwsError *err) {
 bool vm_set_option(VM *vm, const char *name, const char *value, MlwsError *err) {
     uint64_t n;
     switch (opt_find(name)) {
-    case OPT_STACK_WORDS: /* the stack's size in bytes must fit in 32 bits */
-        if (!parse_range(name, value, false, 64, UINT32_MAX / 8, &n, err)) return false;
+    case OPT_STACK_WORDS: /* the stack is one block of memory */
+        if (!parse_range(name, value, false, 64, MAX_BLOCK / 8, &n, err)) return false;
         vm->stack_words = (uint32_t)n;
         return true;
     case OPT_THREADS:

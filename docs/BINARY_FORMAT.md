@@ -92,7 +92,9 @@ externs      uleb n, then n × {             .extern declarations (the FFI)
              }
              kinds: 0 void, 1..4 i8..i64, 5..8 u8..u64, 9 f32, 10 f64,
              11 cstr, 12 buf, 13 ptr, 14 struct (by value), 15 struct*,
-             16 callback (tag: the .callback type);
+             16 callback (tag: the .callback type), 17 isize, 18 usize,
+             19 long, 20 ulong (C's ssize_t, size_t, long and unsigned long:
+             numbers the FFI sizes for the host it runs on);
              +0x80 = an out parameter (numbers, ptr, or 14: an out struct);
              tag: the ptr<tag> name or the .cstruct name, or "" for none
 

@@ -17,7 +17,7 @@
 ; option: --ext-path build/test-ext
 .include "std/test.inc"
 .callback cmp_t (ptr, ptr) -> (i32)
-.extern c.qsort, "", "qsort" (buf, u64, u64, callback cmp_t), serial
+.extern c.qsort, "", "qsort" (buf, usize, usize, callback cmp_t), serial
 .ffi_free file, "", "fclose"
 .extern c.fopen, "", "fopen" (cstr, cstr) -> (ptr<file>)
 .extern c.fputs, "", "fputs" (cstr, ptr<file>) -> (i32)

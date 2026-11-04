@@ -20,7 +20,7 @@
 ; threads: 4
 .include "std/test.inc"
 .callback cmp_t (ptr, ptr) -> (i32)
-.extern c.qsortb, "", "qsort" (buf, u64, u64, callback cmp_t), blocking
+.extern c.qsortb, "", "qsort" (buf, usize, usize, callback cmp_t), blocking
 
 .const SENDERS = 6
 

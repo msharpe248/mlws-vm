@@ -76,7 +76,7 @@ void proc_start(Process *p, Function *fn, Obj *closure, const Word *args, int na
         switch (b) {
         case BANK_I: *(int64_t *)at = args[k].i; break;
         case BANK_F: *(double *)at = args[k].f; break;
-        case BANK_R: *(Obj **)at = args[k].r; break;
+        case BANK_R: ((Word *)at)->r = args[k].r; break;
         default: *at = args[k].p; break;
         }
     }
@@ -450,7 +450,7 @@ static void raw_quota(Process *p, uint64_t more) {
 }
 
 uint64_t proc_alloc(Process *p, int64_t size) {
-    if (size < 0 || size > (int64_t)UINT32_MAX)
+    if (size < 0 || size > MAX_BLOCK)
         vm_trap(p, "E_BAD_ALLOC", "cannot allocate %lld bytes", (long long)size);
     raw_quota(p, (uint64_t)size);
     uint32_t idx;
@@ -501,7 +501,7 @@ void proc_free_block(Process *p, uint64_t ptr) {
 
 uint64_t proc_realloc(Process *p, uint64_t ptr, int64_t size) {
     if (ptr == 0) return proc_alloc(p, size);
-    if (size < 0 || size > (int64_t)UINT32_MAX)
+    if (size < 0 || size > MAX_BLOCK)
         vm_trap(p, "E_BAD_ALLOC", "cannot allocate %lld bytes", (long long)size);
     Segment *s = raw_block(p, ptr, "realloc");
     if ((uint32_t)size > s->size) raw_quota(p, (uint64_t)size - s->size);

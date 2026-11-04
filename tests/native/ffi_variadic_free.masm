@@ -14,8 +14,8 @@
 ; requires: posix
 ; option: --ext-path build/test-ext
 .include "std/test.inc"
-.extern c.snprintf, "", "snprintf" (buf, u64, cstr, ..., i64, f64, cstr) -> (i32)
-.extern c.snprintf2, "", "snprintf" (buf, u64, cstr, ..., u32, u32) -> (i32)
+.extern c.snprintf, "", "snprintf" (buf, usize, cstr, ..., i64, f64, cstr) -> (i32)
+.extern c.snprintf2, "", "snprintf" (buf, usize, cstr, ..., u32, u32) -> (i32)
 
 ; stdio streams: fputs output stays in the FILE's buffer until fclose, so the
 ; file's contents show whether the finalizer ran.

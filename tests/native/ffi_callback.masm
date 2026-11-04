@@ -23,12 +23,12 @@
     v: i32
 .ends
 .callback cmp_t (ptr, ptr) -> (i32)
-.extern c.qsort, "", "qsort" (buf, u64, u64, callback cmp_t)
+.extern c.qsort, "", "qsort" (buf, usize, usize, callback cmp_t)
 ; The same, on the I/O thread pool: the callbacks run there too.
-.extern c.qsort_blocking, "", "qsort" (buf, u64, u64, callback cmp_t), blocking
-.extern c.bsearch, "", "bsearch" (buf, buf, u64, u64, callback cmp_t) -> (ptr)
+.extern c.qsort_blocking, "", "qsort" (buf, usize, usize, callback cmp_t), blocking
+.extern c.bsearch, "", "bsearch" (buf, buf, usize, usize, callback cmp_t) -> (ptr)
 ; Read the int a pointer points to: memcpy(&out, ptr, 4).
-.extern c.load_i32, "", "memcpy" (out struct I32, ptr, u64) -> (ptr)
+.extern c.load_i32, "", "memcpy" (out struct I32, ptr, usize) -> (ptr)
 
 calls:  .i64 0                         ; comparisons made (a global: per process)
 

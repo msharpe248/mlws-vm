@@ -16,13 +16,18 @@
 ; option: --ext-path build/test-ext
 .include "std/test.inc"
 
-; div_t and ldiv_t: what div() and ldiv() return, by value (small structs come
-; back in registers).
+; div_t, ldiv_t and lldiv_t: what div(), ldiv() and lldiv() return, by value
+; (small structs come back in registers). A long is 32 or 64 bits, as the
+; host's C has it.
 .cstruct DivT
     quot: i32
     rem: i32
 .ends
 .cstruct LDivT
+    quot: long
+    rem: long
+.ends
+.cstruct LLDivT
     quot: i64
     rem: i64
 .ends
@@ -35,8 +40,8 @@
 .ends
 
 ; struct tm, as C declares it on Linux (glibc) and macOS. tm_gmtoff (a long)
-; follows nine ints, so 4 bytes of padding come before it: the layout check
-; below only passes if the offsets are C's.
+; follows nine ints, so where a long is 8 bytes, 4 bytes of padding come
+; before it: the layout check below only passes if the offsets are C's.
 .cstruct Tm
     tm_sec: i32
     tm_min: i32
@@ -47,16 +52,16 @@
     tm_wday: i32               ; 0 = Sunday
     tm_yday: i32               ; 0 = January 1st
     tm_isdst: i32
-    tm_gmtoff: i64
+    tm_gmtoff: long
     tm_zone: cstr              ; read back as a new string (null for NULL)
 .ends
-; A time_t, for the functions that take a pointer to one.
+; A time_t (a long on these systems), for the functions that take a pointer to one.
 .cstruct TimeT
-    t: i64
+    t: long
 .ends
 
 ; Every kind of field: a nested struct, number arrays (u8 arrays are byte
-; buffers, others are lists), a cstr. C lays it out as
+; buffers, others are lists), a cstr. On a 64-bit host C lays it out as
 ;   tag 0, x 8, ids 16..22, inner 24..32 (Inner: a 0, b 4, size 8), name 32,
 ;   raw 40..45, size 48 (a multiple of 8, x's alignment)
 .cstruct Inner
@@ -73,21 +78,25 @@
 .ends
 
 .extern c.div, "", "div" (i32, i32) -> (struct DivT)
-.extern c.ldiv, "", "ldiv" (i64, i64) -> (struct LDivT)
+.extern c.ldiv, "", "ldiv" (long, long) -> (struct LDivT)
+.extern c.lldiv, "", "lldiv" (i64, i64) -> (struct LLDivT)
 .extern c.inet_ntoa, "", "inet_ntoa" (struct InAddr) -> (cstr)
-.extern c.timegm, "", "timegm" (struct* Tm) -> (i64)
+.extern c.timegm, "", "timegm" (struct* Tm) -> (long)
 .extern c.gmtime_r, "", "gmtime_r" (struct* TimeT, out struct Tm) -> (ptr)
 ; memcpy copies one Rec into a fresh one: a round trip through C memory.
-.extern c.copy_rec, "", "memcpy" (out struct Rec, struct* Rec, u64) -> (ptr)
+.extern c.copy_rec, "", "memcpy" (out struct Rec, struct* Rec, usize) -> (ptr)
 
 .func main
     ; ---- returned by value ----
     ncall "c.div" (17, 5) -> (R0)
     ASSERT_EQ R0->DivT.quot, 3
     ASSERT_EQ R0->DivT.rem, 2
-    ncall "c.ldiv" (-10000000000, 3) -> (R0)
-    ASSERT_EQ R0->LDivT.quot, -3333333333
+    ncall "c.ldiv" (-1000000, 7) -> (R0)
+    ASSERT_EQ R0->LDivT.quot, -142857
     ASSERT_EQ R0->LDivT.rem, -1
+    ncall "c.lldiv" (-10000000000, 3) -> (R0)
+    ASSERT_EQ R0->LLDivT.quot, -3333333333
+    ASSERT_EQ R0->LLDivT.rem, -1
 
     ; ---- passed by value ----
     new R1, InAddr
@@ -143,7 +152,8 @@
     mov R10[0], 9
     mov R10[1], 8
     mov R7->Rec.raw, R10
-    ncall "c.copy_rec" (R7, 48) -> (R11, R12)
+    ncall "ffi.sizeof" ("Rec") -> (I9)   ; 48 on a 64-bit host
+    ncall "c.copy_rec" (R7, I9) -> (R11, R12)
     ASSERT_EQ R12->Rec.tag, 200
     ASSERT_EQ R12->Rec.x, 2.5
     mov R13, R12->Rec.ids              ; a list of 3 u16 values
@@ -163,7 +173,7 @@
 
     ; a null nested struct is all zeros, and reads back as a new one
     mov R7->Rec.inner, null
-    ncall "c.copy_rec" (R7, 48) -> (R11, R12)
+    ncall "c.copy_rec" (R7, I9) -> (R11, R12)
     mov R14, R12->Rec.inner
     ASSERT_EQ R14->Inner.a, 0
 

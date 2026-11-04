@@ -42,7 +42,7 @@ typedef struct {
     Frame *fr;
     int64_t *I;
     double *F;
-    Obj **R;
+    Word *R; /* a reference register is a Word's .r: 8 bytes apart on every host */
     uint64_t *P;
 #if MLWS_TAILCALL
     /* the slice, as run_loop's locals hold it in the dispatch loop */
@@ -72,7 +72,7 @@ static inline void ctx_set(Ctx *c, Frame *fr, const Function *fn, uint64_t *w) {
     c->fr = fr;
     c->I = (int64_t *)w; /* roff[BANK_I] is 0 */
     c->F = (double *)(w + fn->roff[BANK_F]);
-    c->R = (Obj **)(w + fn->roff[BANK_R]);
+    c->R = (Word *)(w + fn->roff[BANK_R]);
     c->P = w + fn->roff[BANK_P];
 }
 
@@ -138,7 +138,7 @@ static Word reg_read(Ctx *c, uint8_t reg, MlwsType t) {
     switch (REG_BANK(reg)) {
     case BANK_I: w.i = t != T_I64 && t != T_U64 && t != T_NONE ? canon_int(t, c->I[idx]) : c->I[idx]; break;
     case BANK_F: w.f = t == T_F32 ? (double)(float)c->F[idx] : c->F[idx]; break;
-    case BANK_R: w.r = c->R[idx]; break;
+    case BANK_R: w.r = c->R[idx].r; break;
     case BANK_P: w.p = c->P[idx]; break;
     default:
         w.p = idx == SREG_SP ? c->p->sp : idx == SREG_FP ? c->p->fp : c->p->pid;
@@ -161,7 +161,7 @@ static void reg_write(Ctx *c, uint8_t reg, MlwsType t, Word w) {
     switch (bank) {
     case BANK_I: c->I[idx] = canon_int(t, w.i); break;
     case BANK_F: c->F[idx] = canon_float(t, w.f); break;
-    case BANK_R: c->R[idx] = w.r; break;
+    case BANK_R: c->R[idx].r = w.r; break;
     default: c->P[idx] = w.p; break;
     }
 }
@@ -213,7 +213,7 @@ static const char *obj_desc(const Obj *o) {
 }
 
 static Obj *obj_reg(Ctx *c, uint8_t reg) {
-    Obj *o = c->R[REG_IDX(reg)];
+    Obj *o = c->R[REG_IDX(reg)].r;
     char b[8];
     if (!o) vm_trap(c->p, "E_NULL", "%s is null", reg_name(reg, b));
     return o;
@@ -525,13 +525,13 @@ static Word rdn(Ctx *c, const Operand *o, MlwsType *t) {
         w.r = o->rv.ptr;
         return w;
     case OM_ELEM: { /* shortcut: an array element of exactly this type, in range */
-        const ObjArray *a = (const ObjArray *)c->R[REG_IDX(o->reg)];
+        const ObjArray *a = (const ObjArray *)c->R[REG_IDX(o->reg)].r;
         uint64_t i = (uint64_t)c->I[REG_IDX(o->ireg)] + (uint64_t)o->imm;
         if (a && a->h.kind == OBJ_ARRAY && a->elem == *t && i < a->len) return a->data[i];
         break;
     }
     case OM_FIELD: { /* shortcut: a field of exactly this type */
-        const ObjStruct *so = (const ObjStruct *)c->R[REG_IDX(o->reg)];
+        const ObjStruct *so = (const ObjStruct *)c->R[REG_IDX(o->reg)].r;
         const FieldRef *f = o->rv.ptr;
         if (so && so->h.kind == OBJ_STRUCT && so->def == f->def && f->def->types[f->index] == *t)
             return so->fields[f->index];
@@ -553,7 +553,7 @@ static void wr(Ctx *c, const Operand *o, MlwsType t, Word w) {
         return;
     }
     if (o->mode == OM_ELEM) { /* shortcut: an array element of exactly this type, in range */
-        ObjArray *a = (ObjArray *)c->R[REG_IDX(o->reg)];
+        ObjArray *a = (ObjArray *)c->R[REG_IDX(o->reg)].r;
         uint64_t i = (uint64_t)c->I[REG_IDX(o->ireg)] + (uint64_t)o->imm;
         if (a && a->h.kind == OBJ_ARRAY && a->elem == t && i < a->len && wide_type(t)) {
             a->data[i] = w;
@@ -561,7 +561,7 @@ static void wr(Ctx *c, const Operand *o, MlwsType t, Word w) {
             return;
         }
     } else if (o->mode == OM_FIELD) { /* shortcut: a field of exactly this type */
-        ObjStruct *so = (ObjStruct *)c->R[REG_IDX(o->reg)];
+        ObjStruct *so = (ObjStruct *)c->R[REG_IDX(o->reg)].r;
         const FieldRef *f = o->rv.ptr;
         if (so && so->h.kind == OBJ_STRUCT && so->def == f->def && f->def->types[f->index] == t && wide_type(t)) {
             so->fields[f->index] = w;
@@ -837,7 +837,7 @@ static void bind_args(Ctx *c, const MlwsType *types, const uint8_t *ptypes, int 
         switch (b) {
         case BANK_I: c->I[idx] = args[k].i; break;
         case BANK_F: c->F[idx] = args[k].f; break;
-        case BANK_R: c->R[idx] = args[k].r; break;
+        case BANK_R: c->R[idx].r = args[k].r; break;
         default: c->P[idx] = args[k].p; break;
         }
     }
@@ -1838,10 +1838,10 @@ static inline const uint8_t *qtext(const Obj *ob, uint32_t *n) { /* a string's o
     if (ob && ob->kind == OBJ_BYTES) return *n = ((const ObjBytes *)ob)->len, bytes_data((ObjBytes *)ob);
     return NULL;
 }
-static inline const Obj *qpart(Obj **R, const Operand *o) {
-    return o->mode == OM_REG ? R[REG_IDX(o->reg)] : (const Obj *)o->rv.ptr;
+static inline const Obj *qpart(const Word *R, const Operand *o) {
+    return o->mode == OM_REG ? R[REG_IDX(o->reg)].r : (const Obj *)o->rv.ptr;
 }
-static MLWS_NOINLINE Obj *q_strcat(Process *p, const Insn *in, Obj **R) {
+static MLWS_NOINLINE Obj *q_strcat(Process *p, const Insn *in, Word *R) {
     uint64_t total = 0;
     uint32_t len = 0; /* (set by qtext when it returns text) */
     for (int k = 1; k < in->nops; k++) {
@@ -1858,8 +1858,8 @@ static MLWS_NOINLINE Obj *q_strcat(Process *p, const Insn *in, Obj **R) {
     }
     return &s->h;
 }
-static MLWS_NOINLINE bool q_bufcat(Process *p, const Insn *in, Obj **R) {
-    Obj *b = R[in->r[0]];
+static MLWS_NOINLINE bool q_bufcat(Process *p, const Insn *in, Word *R) {
+    Obj *b = R[in->r[0]].r;
     uint32_t len = 0; /* (set by qtext when it returns text) */
     if (!b || b->kind != OBJ_BYTES) return false;
     for (int k = 1; k < in->nops; k++)
@@ -1870,9 +1870,9 @@ static MLWS_NOINLINE bool q_bufcat(Process *p, const Insn *in, Obj **R) {
     }
     return true;
 }
-static MLWS_NOINLINE Obj *q_substr(Process *p, const Insn *in, Obj **R, const int64_t *I) {
+static MLWS_NOINLINE Obj *q_substr(Process *p, const Insn *in, Word *R, const int64_t *I) {
     uint32_t len = 0; /* (set by qtext when it returns text) */
-    const uint8_t *d = qtext(R[in->r[1]], &len);
+    const uint8_t *d = qtext(R[in->r[1]].r, &len);
     int64_t start = I[in->r[2]], cnt = I[in->target];
     if (!d || start < 0 || cnt < 0 || start > (int64_t)len - cnt) return NULL;
     return &str_new(p, (const char *)d + start, (size_t)cnt)->h;
@@ -1901,6 +1901,12 @@ static inline bool elem_byte(const Obj *ob, uint64_t i, int64_t *v) {
     }
     return false;
 }
+
+/* Register i of a bank, in the bank's own type (qforms.inc's per-bank forms). */
+#define QREG(b, i) QREG_##b(i)
+#define QREG_I(i) QI[i]
+#define QREG_F(i) QF[i]
+#define QREG_R(i) QR[i].r
 
 #if MLWS_TAILCALL
 /* ---- tail-call dispatch ---------------------------------------------------------
@@ -1942,13 +1948,13 @@ static inline bool elem_byte(const Obj *ob, uint64_t i, int64_t *v) {
  * and its code travel with the rest, not through c->fr and c->code (a store in
  * one handler and a load on the critical path of the next). */
 #if QWIDE
-#define QPARAMS Ctx *c, const Insn *in, uint32_t left, int64_t *I, double *F, Obj **R, Frame *qfr, const Insn *qcode
+#define QPARAMS Ctx *c, const Insn *in, uint32_t left, int64_t *I, double *F, Word *R, Frame *qfr, const Insn *qcode
 #define QARGSN(n) c, n, left, I, F, R, qfr, qcode
 #define QFRAME qfr
 #define QCODE qcode
 #define QSETFRAME() (qfr = c->fr, qcode = qfr->fn->code)
 #else
-#define QPARAMS Ctx *c, const Insn *in, uint32_t left, int64_t *I, double *F, Obj **R
+#define QPARAMS Ctx *c, const Insn *in, uint32_t left, int64_t *I, double *F, Word *R
 #define QARGSN(n) c, n, left, I, F, R
 #define QFRAME (c->fr)
 #define QCODE (c->code)
@@ -1964,7 +1970,6 @@ static QCC int h_slice(QPARAMS);
 #define QF F
 #define QR R
 #define QP (c->P)
-#define QB(b) Q##b
 #define QCTX c
 /* The process and frame as locals of each handler (unused ones cost nothing):
  * read through `c`, every byte stored (a frame's qret, a list tag) could
@@ -2000,7 +2005,7 @@ static QCC int h_slice(QPARAMS);
 #define X(N, i_)                                                               \
     static QCC int h_elem_byte_##N(QPARAMS) {                                  \
         QLOCALS                                                                \
-        if (!elem_byte(QR[in->r[1]], (i_), &QI[in->r[0]])) GENERIC();          \
+        if (!elem_byte(QR[in->r[1]].r, (i_), &QI[in->r[0]])) GENERIC();          \
         NEXT;                                                                  \
     }
 X(E, (uint64_t)QI[in->r[2]])
@@ -2012,7 +2017,7 @@ X(EK, (uint64_t)in->target)
  * a handler of its own, for the same reason; the store is done. */
 static QCC int h_gc_remember_R0(QPARAMS) {
     QLOCALS
-    gc_remember(QPRC, QR[in->r[0]]);
+    gc_remember(QPRC, QR[in->r[0]].r);
     NEXT;
 }
 static QCC int h_gc_remember_UP(QPARAMS) {
@@ -2060,7 +2065,6 @@ static __attribute__((unused)) QCC int qforms_start(QPARAMS) {
 #undef QF
 #undef QR
 #undef QP
-#undef QB
 #undef QCTX
 #undef QPRC
 #undef QFRM
@@ -2247,7 +2251,6 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 #define QF c.F
 #define QR c.R
 #define QP c.P
-#define QB(b) Q##b
 #define QCTX (&c)
 #define QPRC p
 #define QFRM fr
@@ -2283,7 +2286,6 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 #undef QF
 #undef QR
 #undef QP
-#undef QB
 #undef QCTX
 #undef QPRC
 #undef QFRM

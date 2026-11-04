@@ -44,9 +44,9 @@ void coro_swap(Process *p, ObjCoro *co) {
 
 ObjCoro *coro_new(Process *p, ObjClosure *fn, int64_t words) {
     if (words == 0) words = CORO_STACK_WORDS;
-    if (words < 16 || words > (int64_t)(UINT32_MAX / 8))
-        vm_trap(p, "E_BAD_ALLOC", "a coroutine stack of %lld words is out of range (16 to %u)", (long long)words,
-                UINT32_MAX / 8);
+    if (words < 16 || words > MAX_BLOCK / 8)
+        vm_trap(p, "E_BAD_ALLOC", "a coroutine stack of %lld words is out of range (16 to %lld)", (long long)words,
+                (long long)(MAX_BLOCK / 8));
     ObjCoro *co = (ObjCoro *)gc_alloc_unaccounted(p, OBJ_CORO, sizeof(ObjCoro));
     co->fn = fn;
     co->words = (uint32_t)words;

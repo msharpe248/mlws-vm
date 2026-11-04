@@ -36,6 +36,11 @@ WARN    := -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wno-unused-parameter
 # does not move the others across cache lines: without it, unrelated programs
 # take up to 5% more or less time from one build to the next.
 ALIGN   := -falign-functions=64
+# 32-bit x86: floating point in SSE2 registers, as on every 64-bit host, not in
+# the x87's 80 bits, whose intermediate results round differently.
+ifneq ($(findstring __i386__,$(shell $(CC) -dM -E - </dev/null 2>/dev/null)),)
+FPMATH  := -msse2 -mfpmath=sse
+endif
 BUILD   ?= build
 # Windows (MSYS2's CLANG64 environment): programs end in .exe, and the
 # libraries are Winsock and the random-number API.
@@ -98,7 +103,7 @@ $(BIN): $(OBJ)
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(WARN) $(ALIGN) $(CFLAGS) -fPIC $(FFI_CFLAGS) -MMD -MP -c $< -o $@
+	$(CC) $(WARN) $(ALIGN) $(FPMATH) $(CFLAGS) -fPIC $(FFI_CFLAGS) -MMD -MP -c $< -o $@
 
 # The web dashboard is compiled into the binary (served by --monitor).
 $(BUILD)/embed$(EXE): build-tools/embed.c

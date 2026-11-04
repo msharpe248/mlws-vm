@@ -232,9 +232,9 @@ Where it runs, and how much of that is tested:
 | FreeBSD 15, x86-64 and arm64 | CI, in VMs: the tests, GC stress, the JIT and the fuzzer | yes |
 | OpenBSD 8, x86-64 | CI, in a VM: the same | yes |
 | NetBSD 11, x86-64 | CI, in a VM: the same | no (its GCC has no guaranteed tail calls) |
-| Linux, RISC-V (riscv64) | CI, under QEMU: the tests | no |
-| 32-bit processors | CI (`gcc -m32`): fails; references do not yet fit a 32-bit word | no |
-| Big-endian processors | CI (s390x, under QEMU): 316 of 324 tests pass; the FFI and some fast paths read memory in the host's byte order | no |
+| Linux, RISC-V (riscv64) | CI, under QEMU: the tests, GC stress, the optimizer and the fuzzer | no |
+| Linux, s390x (big-endian) | CI, under QEMU: the same | no |
+| Linux, 32-bit x86 (i386) | CI (`gcc -m32`, with libffi): the tests, GC stress, the optimizer, the fuzzer and the tools | no |
 
 On macOS, Linux x86-64 and Windows, CI runs every test mode: the plain
 suite, GC stress, the optimizer, the JIT, the fuzzer and the tools, and
@@ -246,9 +246,12 @@ three machines named above.
 
 The JIT needs arm64 or x86-64 and the tail-call interpreter, which needs
 Clang or GCC 15 and later. Without them `--jit` is accepted and programs
-run in the interpreter, with the same results. In short, MLWSVM needs a
-64-bit, little-endian processor, a C11 compiler, and POSIX threads or
-Windows; every such system tried so far passes its tests.
+run in the interpreter, with the same results. MLWSVM's memory is
+little-endian on every host, so a program reads the same bytes on s390x as
+on x86-64. On a 32-bit host, lists, arrays and maps hold up to 2^26 elements
+and raw blocks up to 1 GiB ([ABI.md §2.8](docs/ABI.md#28-limits)). In short, MLWSVM
+needs a C11 compiler and POSIX threads or Windows; every system tried so far
+passes its tests.
 
 ## Documentation
 

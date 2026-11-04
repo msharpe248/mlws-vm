@@ -1504,9 +1504,9 @@ static JIT_CC ObjList *jit_list_new(Process *p, int64_t cap) { return list_new(p
 /* The string builders' quickened forms, called from the machine code with
  * the windows written back (q_strcat and the others, interp.c): NULL or 0
  * leaves the instruction to the interpreter, nothing done. */
-static JIT_CC Obj *jit_strcat(Process *p, const Insn *in, Obj **R) { return q_strcat(p, in, R); }
-static JIT_CC uintptr_t jit_bufcat(Process *p, const Insn *in, Obj **R) { return q_bufcat(p, in, R); }
-static JIT_CC Obj *jit_substr(Process *p, const Insn *in, Obj **R, const int64_t *I) { return q_substr(p, in, R, I); }
+static JIT_CC Obj *jit_strcat(Process *p, const Insn *in, Word *R) { return q_strcat(p, in, R); }
+static JIT_CC uintptr_t jit_bufcat(Process *p, const Insn *in, Word *R) { return q_bufcat(p, in, R); }
+static JIT_CC Obj *jit_substr(Process *p, const Insn *in, Word *R, const int64_t *I) { return q_substr(p, in, R, I); }
 static JIT_CC uintptr_t jit_bufpush(Process *p, Obj *b, int64_t v) { return q_bufpush(p, b, v); }
 static JIT_CC Obj *jit_bufnew(Process *p, int64_t n) { return &bytes_new(p, n)->h; }
 static JIT_CC Obj *jit_tostr_i(Process *p, int64_t v) {
