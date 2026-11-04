@@ -614,4 +614,4 @@ language, the same files run unchanged on all of them.
 | The release check and CI | [tests/release-check.sh](../../tests/release-check.sh), [.github/workflows/](../../.github/workflows/) |
 | Reference | [DESIGN.md §22](../DESIGN.md#22-testing); [TOOLING.md](../TOOLING.md#differential-fuzzing-mlwsvm-fuzz) on the fuzzer, [the release check](../TOOLING.md#before-a-release-make-release-check) and [VM options](../TOOLING.md#vm-options); [ASSEMBLY.md §11](../ASSEMBLY.md#11-tools); [JIT.md](../JIT.md#testing) |
 
-Previous: [11. JIT 4: measuring and testing](11-jit-measuring.md)
+Previous: [11. JIT 4: measuring and testing](11-jit-measuring.md) · Next: [Further reading](reading.md)

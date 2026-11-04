@@ -35,6 +35,8 @@ Read them in order the first time; later chapters use the earlier ones'
 words. The reference documents ([DESIGN.md](../DESIGN.md), [ISA.md](../ISA.md),
 [JIT.md](../JIT.md) and the rest) have every detail; these chapters have the
 ideas, and link to the reference where you will want more.
+[Further reading](reading.md) lists the books and papers to go on with,
+chapter by chapter.
 
 ## Trying things
 
