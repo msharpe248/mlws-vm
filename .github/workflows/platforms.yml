@@ -87,7 +87,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: make CC=clang check-opt
 
-      - name: JIT (runs in the interpreter here)
+      - name: The JIT is built in
+        if: ${{ !cancelled() }}
+        run: ./mlwsvm run --jit on --jit-hot 2 --jit-report - examples/fib.masm 2>&1 | grep -A2 "mlwsvm jit (arm64)"
+
+      - name: JIT (every function and block, also with GC stress and the optimizer; hot functions)
         if: ${{ !cancelled() }}
         run: make CC=clang check-jit
 

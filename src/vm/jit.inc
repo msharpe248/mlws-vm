@@ -37,15 +37,17 @@
  * struct of another type, an index out of range, a tag that is not the
  * instruction's type) is a side exit: the machine code stops before the
  * instruction, for the interpreter to run it. */
-#if MLWS_TAILCALL && (defined(__aarch64__) || defined(__x86_64__)) && (!defined(_WIN32) || defined(__x86_64__))
+#if MLWS_TAILCALL && (defined(__aarch64__) || defined(__x86_64__))
 #define MLWS_JIT 1
 #include "../platform/platform.h"
 
 /* The C functions the machine code calls, and the entry it is called at,
- * use System V's convention on Windows too (Clang's sysv_abi): one encoder
- * serves both, and the C code around a call saves what Windows' convention
- * keeps and System V's does not (rsi, rdi, xmm6-15). */
-#ifdef _WIN32
+ * use System V's convention on Windows x86-64 too (Clang's sysv_abi): one
+ * encoder serves both, and the C code around a call saves what Windows'
+ * convention keeps and System V's does not (rsi, rdi, xmm6-15). Windows on
+ * arm64 has the standard arm64 convention, and reserves x18, which the
+ * arm64 encoder never uses (macOS reserves it too). */
+#if defined(_WIN32) && defined(__x86_64__)
 #define JIT_CC __attribute__((sysv_abi))
 #else
 #define JIT_CC
@@ -1493,7 +1495,7 @@ static JIT_CC JitWord jit_mget(const Obj *ob, const Insn *in) {
 
 /* Q_MGETV_*'s, by a key in a register (its bits in key, its type in
  * Insn.target), of a value of type tag, or the default in Insn.k. */
-#ifdef _WIN32
+#if defined(_WIN32) && defined(__x86_64__)
 static JIT_CC ObjStruct *jit_struct_new(Process *p, const StructDef *def) { return struct_new(p, def); }
 static JIT_CC ObjList *jit_list_new(Process *p, int64_t cap) { return list_new(p, cap); }
 #else

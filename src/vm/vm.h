@@ -9,13 +9,13 @@
 /* On macOS and the BSDs setjmp saves the signal mask with a system call; the
  * VM never changes signal masks, so use the cheap variant there (one setjmp
  * per time slice). glibc's setjmp is already the cheap kind. On Windows
- * (MinGW, x86-64), longjmp unwinds the frames it leaves with the system's
- * unwinder unless setjmp was given no frame: the JIT's machine code has no
- * unwind tables, and nothing on the way needs unwinding. */
+ * (MinGW), longjmp unwinds the frames it leaves with the system's unwinder
+ * unless setjmp was given no frame: the JIT's machine code has no unwind
+ * tables, and nothing on the way needs unwinding. */
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 #define VM_SETJMP(b) _setjmp(b)
 #define VM_LONGJMP(b, v) _longjmp(b, v)
-#elif defined(__MINGW64__) && defined(__x86_64__)
+#elif defined(__MINGW64__) && (defined(__x86_64__) || defined(__aarch64__))
 #define VM_SETJMP(b) _setjmp((b), NULL)
 #define VM_LONGJMP(b, v) longjmp(b, v)
 #else
