@@ -9,15 +9,19 @@
 /* On macOS and the BSDs setjmp saves the signal mask with a system call; the
  * VM never changes signal masks, so use the cheap variant there (one setjmp
  * per time slice). glibc's setjmp is already the cheap kind. On Windows
- * (MinGW), longjmp unwinds the frames it leaves with the system's unwinder
- * unless setjmp was given no frame: the JIT's machine code has no unwind
- * tables, and nothing on the way needs unwinding. */
+ * (MinGW), longjmp unwinds the frames it leaves with the system's unwinder:
+ * the JIT's machine code has no unwind tables, and nothing on the way needs
+ * unwinding, so on x86-64 setjmp is given no frame, and on arm64 (which has
+ * no such setjmp) MinGW's own pair, which never unwinds, is used. */
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 #define VM_SETJMP(b) _setjmp(b)
 #define VM_LONGJMP(b, v) _longjmp(b, v)
-#elif defined(__MINGW64__) && (defined(__x86_64__) || defined(__aarch64__))
+#elif defined(__MINGW64__) && defined(__x86_64__)
 #define VM_SETJMP(b) _setjmp((b), NULL)
 #define VM_LONGJMP(b, v) longjmp(b, v)
+#elif defined(__MINGW64__) && defined(__aarch64__)
+#define VM_SETJMP(b) __mingw_setjmp(b)
+#define VM_LONGJMP(b, v) __mingw_longjmp(b, v)
 #else
 #define VM_SETJMP(b) setjmp(b)
 #define VM_LONGJMP(b, v) longjmp(b, v)
