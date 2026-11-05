@@ -183,9 +183,9 @@ untrusted process cannot reach the OS at all (compare Deno's permissions).
 ## 3. Platform
 
 * Linux and CI: M11.
-* Windows: M47, on x86-64 with Clang (MSYS2). Not done: Windows on arm64
-  (untested, and without the JIT), MSVC builds, and a completion-port
-  poller ([DESIGN.md](DESIGN.md) §23).
+* Windows: M47, on x86-64 with Clang (MSYS2); arm64 too, with the JIT,
+  tested in the Platforms workflow. Not done: MSVC builds, and a
+  completion-port poller ([DESIGN.md](DESIGN.md) §23).
 
 ## 4. Performance (when measurements call for it)
 

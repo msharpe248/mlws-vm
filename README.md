@@ -228,7 +228,7 @@ Where it runs, and how much of that is tested:
 | Linux, arm64 | CI (Clang): the tests, the JIT, the fuzzer and AddressSanitizer | yes |
 | Windows, x86-64 | CI (Clang in MSYS2), every test mode but the sanitizers | yes |
 | macOS, x86-64 | CI (Clang): the tests, GC stress, the optimizer, the JIT, the fuzzer and the tools | yes |
-| Windows, arm64 | CI (Clang in MSYS2): the same | no |
+| Windows, arm64 | CI (Clang in MSYS2): the same | yes |
 | FreeBSD 15, x86-64 and arm64 | CI, in VMs: the tests, GC stress, the JIT and the fuzzer | yes |
 | OpenBSD 8, x86-64 | CI, in a VM: the same | yes |
 | NetBSD 11, x86-64 | CI, in a VM: the same | no (its GCC has no guaranteed tail calls) |

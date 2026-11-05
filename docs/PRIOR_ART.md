@@ -274,7 +274,7 @@ of the instructions in call-heavy code.
 | M50 | Extended basic blocks and superblocks (Hwu and others), register allocation along traces (LuaJIT, Dynamo); sampling profilers mapped to JIT code (Linux `perf` map files) |
 | M51 | Superinstructions (Proebsting; Ertl and Gregg), out-of-line slow paths that rejoin (V8 deferred code), Lua's `string.gsub` |
 | M52 | Register return conventions of native ABIs, register-based returns between compiled frames (LuaJIT, V8), wide-store `memset`; Valgrind's callgrind for counting a JIT's instructions |
-| Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types |
+| Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References
 

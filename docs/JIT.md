@@ -208,12 +208,16 @@ JIT compiles nothing.
 ## Platforms
 
 The JIT needs the tail-call interpreter (Clang, or GCC 15 and later) on
-arm64 or x86-64: macOS and Linux on arm64, Linux and Windows on x86-64. On
-Windows, the machine code is the same as on Linux: the C functions it calls
-use System V's calling convention there too (Clang's `sysv_abi`). macOS on
-x86-64 should work but is not tested. Elsewhere (other processors, Windows
-on arm64, older GCC, ThreadSanitizer builds, which use the dispatch loop)
-`--jit` is accepted and the program runs in the interpreter.
+arm64 or x86-64: macOS, Linux, Windows, FreeBSD and OpenBSD. On Windows,
+the machine code is the same as elsewhere. On x86-64 the C functions it
+calls use System V's calling convention there too (Clang's `sysv_abi`);
+on arm64 the convention is the usual one, and x18, which Windows reserves,
+is never used (macOS reserves it too). The machine code has no unwind
+tables, so on Windows a trap's `longjmp` must not unwind: on x86-64 `setjmp`
+is given no frame, and on arm64 MinGW's `__mingw_setjmp` and
+`__mingw_longjmp` are used. Elsewhere (other processors, older GCC,
+ThreadSanitizer builds, which use the dispatch loop) `--jit` is accepted
+and the program runs in the interpreter.
 
 ## The report
 
@@ -264,7 +268,7 @@ only for a report.
   GC stress and with every module optimized) and with `--jit on
   --jit-hot 2` (also on one worker thread). `make check-asan` runs the tests
   with `--jit all` and `--jit on --jit-hot 2` too. CI runs both on Linux (x86-64 and arm64) and
-  macOS, and `check-jit` on Windows.
+  macOS, and `check-jit` on Windows (x86-64 and arm64).
 * The Brainfuck, Lox, Lua and Erlang compilers' suites pass with the JIT,
   plainly, under GC stress and at `-O3`.
 
