@@ -4,18 +4,25 @@
 ; destination, so only connections to this one port run out: about 28,000
 ; (32768-60999), two descriptors each. check_tools.sh runs it on Linux; on
 ; macOS and the BSDs it would take the ports of every program on the machine.
+;
+; Then it closes the server's ends first, so that what waits after the close
+; (TIME_WAIT) holds the listening port only: had the clients' ends closed
+; first, or both at once at exit, every local port would stay taken for a
+; minute, and the next program to listen on port 0 would find none.
 .include "std/io.inc"
 .func main
     ncall "net.listen" ("127.0.0.1", 0) -> (R0)
     ncall "net.port" (R0) -> (I5)
-    lnew R6                            ; every connection's two ends, kept open
+    lnew R6                            ; the clients' ends, kept open
+    lnew R7                            ; the server's ends
     mov I1, 0
 1:
 .try h
     ncall "net.connect" ("127.0.0.1", I5, 2000) -> (R1)
 .endtry
     ncall "net.accept" (R0) -> (R2)
-    lpush R6, R1, R2
+    lpush R6, R1
+    lpush R7, R2
     inc I1
     blt I1, 40000, 1b
     PRINTLN_S "all 40000 connected"
@@ -27,5 +34,16 @@ h:  catch R3
     PRINT_S R3->Error.code
     PRINT_S " "
     PRINTLN_S R3->Error.message
+2:  len I2, R7                         ; the server's ends first
+    bz I2, 3f
+    lpop R8, R7
+    ncall "fs.close" (R8)
+    jmp 2b
+3:  len I2, R6
+    bz I2, 4f
+    lpop R8, R6
+    ncall "fs.close" (R8)
+    jmp 3b
+4:  ncall "fs.close" (R0)
     ret 0
 .endf
