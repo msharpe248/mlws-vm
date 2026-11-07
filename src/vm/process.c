@@ -11,8 +11,10 @@ static void global_init(Segment *s, const Module *m) {
     s->size = m->gsize;
     s->data = xcalloc(m->gsize + 1, 1);
     s->tags = xcalloc(m->gsize / 8 + 1, 1);
-    memcpy(s->data, m->gdata, m->gsize);
-    memcpy(s->tags, m->gtags, m->gsize / 8);
+    if (m->gsize) { /* (a version module.purge freed has none, nor an image) */
+        memcpy(s->data, m->gdata, m->gsize);
+        memcpy(s->tags, m->gtags, m->gsize / 8);
+    }
     s->gen = 1;
     s->kind = SEGK_GLOBAL;
     s->live = 1;
