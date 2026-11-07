@@ -264,6 +264,10 @@ any pattern and text. `(a|a)*b` cannot be made slow. That is why there are no
 backreferences or lookaround, which raise `E_REGEX`. A match's work counts against
 the process's instruction quota, so a sandboxed program cannot hide in one.
 
+`make check-regex` compares the engine with Python's `re` on 12,000 random patterns
+and texts: the same whole match every time, and the same groups but where a loop
+over something that can match nothing leaves its capture, which follows RE2 and Go.
+
 ### JSON
 
 | JSON | MLWSVM |

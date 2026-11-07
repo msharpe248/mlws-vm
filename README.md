@@ -188,6 +188,7 @@ make check-tsan              # the tests on several threads, under ThreadSanitiz
 make check-switch            # the tests with switch dispatch (for compilers without computed goto)
 make check-loop              # the tests with the dispatch loop (for compilers without guaranteed tail calls)
 make check-poison            # the tests with new register windows full of garbage (checks what calls clear)
+make check-regex             # regular expressions against Python's re, on 12,000 random patterns and texts
 make lib check-embed         # the embedding library, and its example host program
 make check-bindgen           # generate, compare and call bindings for a test header (needs clang)
 make release-check           # all of the above, longer fuzzing, and the compilers' suites in every mode

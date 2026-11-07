@@ -101,6 +101,7 @@ step check-tsan check_tsan
 step check-switch make CC="$CC" check-switch
 step check-loop make CC="$CC" check-loop
 step check-poison make CC="$CC" check-poison
+step check-regex make CC="$CC" check-regex
 step no-ffi no_ffi
 step bench sh bench/run.sh ./mlwsvm
 step version ./mlwsvm version

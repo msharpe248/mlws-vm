@@ -577,8 +577,8 @@ every check a release needs, on the machine it runs on:
 * `make test`, also on one worker thread, and `check-gc`, `check-opt`,
   `check-jit`, `check-embed`, `check-tools`, `check-bindgen`, `check-asan`
   (also with `MLWSVM_OPT=3`, and with the JIT and `MLWSVM_OPT=3`),
-  `check-tsan`, `check-switch`, `check-loop`, `check-poison`, a build without
-  libffi, and the benchmarks' output checks;
+  `check-tsan`, `check-switch`, `check-loop`, `check-poison`, `check-regex`, a
+  build without libffi, and the benchmarks' output checks;
 * the fuzzer for `FUZZ_SECONDS` (default 300), and a tenth of that under
   AddressSanitizer;
 * if `../mlws-compilers` (or `COMPILERS_DIR`) is there, the Brainfuck, Lox,

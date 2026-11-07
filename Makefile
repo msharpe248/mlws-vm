@@ -94,7 +94,7 @@ DL_LIBS := -lws2_32 -lbcrypt
 endif
 OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
 
-.PHONY: check-fuzz release-check check-jit check-opt all test test-ext test-libs check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
+.PHONY: check-fuzz check-regex release-check check-jit check-opt all test test-ext test-libs check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
 
 all: $(BIN)
 
@@ -196,6 +196,12 @@ test-ext: $(BIN) build/ext/demo.mlwsx test-libs
 
 test: $(BIN) test-ext
 	./$(BIN) test tests examples
+
+# The regular expressions against Python's re, on random patterns and texts
+# (tests/text/_regex/compare.py); skipped without python3.
+check-regex: $(BIN)
+	@if command -v python3 >/dev/null 2>&1; then python3 -I tests/text/_regex/compare.py ./$(BIN); \
+	else echo "check-regex: skipped (no python3)"; fi
 
 check-tools: $(BIN)
 	sh tests/tools/check_tools.sh ./$(BIN)
