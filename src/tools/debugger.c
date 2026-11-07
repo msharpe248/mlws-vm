@@ -334,7 +334,7 @@ static bool run_formatter(Process *p, const Frame *fr, const MVar *v, Function *
     q->quota[QUOTA_INSNS] = FMT_INSNS;
     q->quota[QUOTA_HEAP] = FMT_HEAP;
     Word args[MVAR_REGS];
-    char why[300] = "";
+    char why[sizeof q->err.code + sizeof q->err.msg + 2] = ""; /* "code: message" */
     bool ok = true;
     for (int k = 0; k < v->nregs && ok; k++) {
         MlwsType t;
