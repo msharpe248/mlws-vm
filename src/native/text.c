@@ -6,8 +6,10 @@
  * character-based work goes through text.next, text.chars and text.length,
  * which treat each invalid byte as one U+FFFD. Case mapping, normalization,
  * segmentation and character properties are Unicode's (src/core/unicode.c). */
+#include "../../include/mlwsvm/mlwsvm.h"
 #include "../heap/heap.h"
 #include "../heap/numeric.h"
+#include "../core/regex.h"
 #include "../core/unicode.h"
 
 #include <math.h>
@@ -385,6 +387,197 @@ static void n_replace_n(Process *p, Word *a, Word *r) {
     uint32_t n, on, nn;
     const char *s = str_arg(p, a[0], &n), *old = str_arg(p, a[1], &on), *new_ = str_arg(p, a[2], &nn);
     r[0] = text_replace(p, s, n, old, on, new_, nn, a[3].i < 0 ? -1 : a[3].i, &r[1].i);
+}
+
+/* ---- regular expressions ------------------------------------------------------------------ */
+
+static void re_finalize(void *ptr) { regex_free(ptr); }
+static const MlwsForeignType REGEX_T = {"regex", re_finalize};
+
+static const Regex *re_arg(Process *p, Word a) {
+    ObjForeign *o = a.r;
+    if (!o || o->h.kind != OBJ_FOREIGN || o->type != &REGEX_T)
+        vm_trap(p, "E_TYPE", "expected a compiled regex (regex.compile)");
+    return o->ptr;
+}
+
+static void n_re_compile(Process *p, Word *a, Word *r) {
+    uint32_t n, fn;
+    const char *pat = str_arg(p, a[0], &n), *fl = str_arg(p, a[1], &fn);
+    unsigned flags = 0;
+    for (uint32_t i = 0; i < fn; i++) {
+        if (fl[i] == 'i') flags |= REGEX_ICASE;
+        else if (fl[i] == 'm') flags |= REGEX_MULTILINE;
+        else if (fl[i] == 's') flags |= REGEX_DOTALL;
+        else vm_trap(p, "E_REGEX", "regex.compile: unknown flag '%c' (i, m or s)", fl[i]);
+    }
+    char err[256];
+    Regex *re = regex_compile(pat, n, flags, err, sizeof err);
+    if (!re) vm_trap(p, "E_REGEX", "regex.compile: %s", err);
+    r[0].r = &foreign_new_obj(p, &REGEX_T, re, NULL)->h;
+}
+
+/* A search, whose work counts against the process's instructions: a native
+ * cannot be preempted, so a quota must see what it spends. */
+#define RE_STEPS_PER_INSN 8
+
+static bool re_search(Process *p, const Regex *re, const char *s, size_t n, size_t start, int64_t *caps) {
+    uint64_t left = p->quota[QUOTA_INSNS] > p->insns ? p->quota[QUOTA_INSNS] - p->insns : 0;
+    uint64_t steps = left > UINT64_MAX / RE_STEPS_PER_INSN ? UINT64_MAX : left * RE_STEPS_PER_INSN, given = steps;
+    int got = regex_search(re, s, n, start, caps, &steps);
+    p->insns += (given - steps) / RE_STEPS_PER_INSN;
+    if (got == REGEX_OUT_OF_STEPS)
+        vm_trap(p, "E_QUOTA", "instruction quota of %llu exceeded in a regex match", (unsigned long long)p->quota[QUOTA_INSNS]);
+    return got == REGEX_MATCH;
+}
+
+/* Where the next search goes after a match: an empty one moves on a character. */
+static size_t re_after(const char *s, size_t n, const int64_t *caps) {
+    size_t e = (size_t)caps[1];
+    if (caps[0] != caps[1] || e >= n) return caps[0] == caps[1] ? e + 1 : e;
+    uni_utf8_next((const unsigned char *)s, n, &e);
+    return e;
+}
+
+static int64_t *re_caps(const Regex *re) { return xmalloc(sizeof(int64_t) * (size_t)(2 * (regex_groups(re) + 1))); }
+
+static void n_re_test(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const Regex *re = re_arg(p, a[0]);
+    const char *s = str_arg(p, a[1], &n);
+    int64_t *caps = re_caps(re);
+    r[0].i = re_search(p, re, s, n, 0, caps);
+    free(caps);
+}
+
+/* find: each group's start and end, as a list of integers. */
+static void n_re_find(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const Regex *re = re_arg(p, a[0]);
+    const char *s = str_arg(p, a[1], &n);
+    if (a[2].i < 0 || a[2].i > (int64_t)n) vm_trap(p, "E_BOUNDS", "regex.find: offset %lld out of range", (long long)a[2].i);
+    int64_t *caps = re_caps(re);
+    r[0].r = NULL;
+    if (re_search(p, re, s, n, (size_t)a[2].i, caps)) {
+        int ns = 2 * (regex_groups(re) + 1);
+        ObjList *l = list_new(p, ns);
+        for (int k = 0; k < ns; k++) list_push(p, l, (Word){.i = caps[k]}, T_I64);
+        r[0].r = &l->h;
+    }
+    free(caps);
+}
+
+/* groups: the text of the match and of each group, null for one that took no part. */
+static void n_re_groups(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const Regex *re = re_arg(p, a[0]);
+    const char *s = str_arg(p, a[1], &n);
+    if (a[2].i < 0 || a[2].i > (int64_t)n) vm_trap(p, "E_BOUNDS", "regex.groups: offset %lld out of range", (long long)a[2].i);
+    int64_t *caps = re_caps(re);
+    r[0].r = NULL;
+    if (re_search(p, re, s, n, (size_t)a[2].i, caps)) {
+        int ng = regex_groups(re) + 1;
+        ObjList *l = list_new(p, ng);
+        for (int k = 0; k < ng; k++) {
+            Word w = {.r = caps[2 * k] < 0 ? NULL : str_new(p, s + caps[2 * k], (size_t)(caps[2 * k + 1] - caps[2 * k]))};
+            list_push(p, l, w, T_R);
+        }
+        r[0].r = &l->h;
+    }
+    free(caps);
+}
+
+static void n_re_find_all(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const Regex *re = re_arg(p, a[0]);
+    const char *s = str_arg(p, a[1], &n);
+    int64_t *caps = re_caps(re);
+    ObjList *l = list_new(p, 0);
+    r[0].r = &l->h;
+    for (size_t at = 0; at <= n && re_search(p, re, s, n, at, caps); at = re_after(s, n, caps)) {
+        Word w = {.r = str_new(p, s + caps[0], (size_t)(caps[1] - caps[0]))};
+        list_push(p, l, w, T_R);
+    }
+    free(caps);
+}
+
+static void n_re_split(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const Regex *re = re_arg(p, a[0]);
+    const char *s = str_arg(p, a[1], &n);
+    int64_t *caps = re_caps(re);
+    ObjList *l = list_new(p, 0);
+    r[0].r = &l->h;
+    size_t last = 0;
+    for (size_t at = 0; at <= n && re_search(p, re, s, n, at, caps); at = re_after(s, n, caps)) {
+        if (caps[0] == caps[1] && (caps[0] == 0 || caps[0] == (int64_t)n)) continue; /* nothing either side */
+        Word w = {.r = str_new(p, s + last, (size_t)caps[0] - last)};
+        list_push(p, l, w, T_R);
+        last = (size_t)caps[1];
+    }
+    Word w = {.r = str_new(p, s + last, n - last)};
+    list_push(p, l, w, T_R);
+    free(caps);
+}
+
+/* $1, ${1}, ${name}, $$ in a replacement. */
+static void re_expand(Process *p, const Regex *re, StrBuf *b, const char *s, const int64_t *caps, const char *rep, size_t rn) {
+    for (size_t i = 0; i < rn; i++) {
+        if (rep[i] != '$' || i + 1 == rn) {
+            sb_putc(b, rep[i]);
+            continue;
+        }
+        char c = rep[++i];
+        int g = -1;
+        if (c == '$') {
+            sb_putc(b, '$');
+            continue;
+        }
+        if (c >= '0' && c <= '9') {
+            g = c - '0';
+        } else if (c == '{') {
+            size_t e = i + 1;
+            while (e < rn && rep[e] != '}') e++;
+            if (e == rn) vm_trap(p, "E_REGEX", "regex.replace: missing } in the replacement");
+            char name[64];
+            size_t len = e - i - 1 < sizeof name - 1 ? e - i - 1 : sizeof name - 1;
+            memcpy(name, rep + i + 1, len);
+            name[len] = 0;
+            g = name[0] >= '0' && name[0] <= '9' ? atoi(name) : regex_group_named(re, name);
+            if (g < 0) vm_trap(p, "E_REGEX", "regex.replace: no group named %s", name);
+            i = e;
+        } else {
+            vm_trap(p, "E_REGEX", "regex.replace: $ needs a group, or $$ for itself");
+        }
+        if (g > regex_groups(re)) vm_trap(p, "E_REGEX", "regex.replace: no group %d", g);
+        if (caps[2 * g] >= 0) sb_putn(b, s + caps[2 * g], (size_t)(caps[2 * g + 1] - caps[2 * g]));
+    }
+}
+
+static void n_re_replace(Process *p, Word *a, Word *r) {
+    uint32_t n, rn;
+    const Regex *re = re_arg(p, a[0]);
+    const char *s = str_arg(p, a[1], &n), *rep = str_arg(p, a[2], &rn);
+    int64_t limit = a[3].i, count = 0;
+    int64_t *caps = re_caps(re);
+    StrBuf b = {0};
+    size_t last = 0;
+    for (size_t at = 0; at <= n && (limit < 0 || count < limit) && re_search(p, re, s, n, at, caps); at = re_after(s, n, caps), count++) {
+        sb_putn(&b, s + last, (size_t)caps[0] - last);
+        re_expand(p, re, &b, s, caps, rep, rn);
+        last = (size_t)caps[1];
+    }
+    sb_putn(&b, s + last, n - last);
+    r[0].r = str_new(p, b.s ? b.s : "", b.n);
+    r[1].i = count;
+    sb_free(&b);
+    free(caps);
+}
+
+static void n_re_group_named(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const Regex *re = re_arg(p, a[0]);
+    r[0].i = regex_group_named(re, str_arg(p, a[1], &n));
 }
 
 static void n_starts_with(Process *p, Word *a, Word *r) {
@@ -1053,6 +1246,18 @@ static const NativeDef TEXT_NATIVES[] = {
     N("text.find", 3, T(T_R, T_R, T_I64), 1, T(T_I64), n_find,
       "The byte offset of the first occurrence at or after an offset, or -1."),
     N("text.replace", 3, T(T_R, T_R, T_R), 1, T(T_R), n_replace, "Replace every occurrence."),
+    N("regex.compile", 2, T(T_R, T_R), 1, T(T_R), n_re_compile,
+      "A compiled regular expression, from a pattern and flags (\"\", or any of i, m, s). It runs in time linear in the text, whatever the pattern. E_REGEX if the pattern is bad."),
+    N("regex.test", 2, T(T_R, T_R), 1, T(T_B), n_re_test, "Whether a regex matches anywhere in a text."),
+    N("regex.find", 3, T(T_R, T_R, T_I64), 1, T(T_R), n_re_find,
+      "The first match at or after a byte offset: a list of byte offsets, the start and end of the match and then of each group (-1: it took no part), or null."),
+    N("regex.groups", 3, T(T_R, T_R, T_I64), 1, T(T_R), n_re_groups,
+      "The first match at or after a byte offset: a list of the text of the match and of each group (null: it took no part), or null."),
+    N("regex.find_all", 2, T(T_R, T_R), 1, T(T_R), n_re_find_all, "The text of every match, as a list of strings."),
+    N("regex.split", 2, T(T_R, T_R), 1, T(T_R), n_re_split, "A text split at every match, as a list of strings."),
+    N("regex.replace", 4, T(T_R, T_R, T_R, T_I64), 2, T(T_R, T_I64), n_re_replace,
+      "A text with up to n matches replaced (negative: all), and how many were: $1, ${1} and ${name} in the replacement are groups, and $$ is a dollar sign."),
+    N("regex.group", 2, T(T_R, T_R), 1, T(T_I64), n_re_group_named, "The number of a named group, or -1."),
     N("text.replace_n", 4, T(T_R, T_R, T_R, T_I64), 2, T(T_R, T_I64), n_replace_n,
       "Replace the first n occurrences (every one, if n < 0), and how many were: Lua's gsub of a plain pattern, but for n < 0."),
     N("text.starts_with", 2, T(T_R, T_R), 1, T(T_B), n_starts_with, "Whether a string starts with a prefix."),

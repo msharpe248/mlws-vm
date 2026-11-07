@@ -213,6 +213,48 @@ line breaking, and mappings that depend on a language (Turkish and
 Lithuanian casing): these need locale data, and belong to a library above.
 A character outside the code space reads as an unassigned one.
 
+### Regular expressions
+
+```asm
+    ncall "regex.compile" ("(?P<key>\\w+)=(\\d+)", "") -> (R0)
+    ncall "regex.groups" (R0, "size=42", 0) -> (R1)        ; ["size=42", "size", "42"]
+    ncall "regex.replace" (R0, "a=1 b=2", "$2:${key}", -1) -> (R2, I0)  ; "1:a 2:b", 2
+```
+
+`regex.compile(pattern, flags)` makes a regex; `flags` holds any of `i` (case
+ignored), `m` (`^` and `$` at lines) and `s` (`.` matches a newline). It is a
+handle of the process, and cannot be sent. A bad pattern is `E_REGEX`.
+
+| Native | Result |
+|---|---|
+| `regex.test(re, text)` | whether it matches anywhere |
+| `regex.find(re, text, from)` | the first match at or after a byte offset: byte offsets, the match's start and end, then each group's (-1: it took no part), or null |
+| `regex.groups(re, text, from)` | the same, as strings (null: it took no part) |
+| `regex.find_all(re, text)` | the text of every match |
+| `regex.split(re, text)` | the pieces between matches |
+| `regex.replace(re, text, with, n)` | up to n matches replaced (negative: all), and how many |
+| `regex.group(re, name)` | a named group's number, or -1 |
+
+**Syntax.** `.`, `[abc]`, `[^a-z]`, `*`, `+`, `?`, `{m}`, `{m,}`, `{m,n}` (up to
+1000), lazy forms `*?`, `+?`, `??`, `{m,n}?`, `a|b`, `(...)`, `(?:...)`,
+`(?P<name>...)`, `(?<name>...)`, `^`, `$`, `\b`, `\B`, `\A`, `\z`, flags `(?i)` and
+`(?i:...)`, the escapes `\n \t \r \f \v \a \e \0 \xHH \x{H...} \uHHHH`, and classes
+`\d \w \s \D \W \S`, `\p{L}`, `\p{Lu}`, `\p{Ll}`, `\p{N}`, `\p{Nd}`, `\p{P}` and their
+`\P{...}` opposites, which are Unicode's. In a replacement, `$1`, `${1}` and
+`${name}` are groups, and `$$` is a dollar sign.
+
+**Matching** works on characters, not bytes: an invalid byte reads as one
+U+FFFD. Of the matches starting at the leftmost place, the one the pattern
+prefers wins, as in Perl: `a|ab` matches `a` in `ab`. `$` without `m` is the very
+end of the text. After an empty match `regex.find_all` moves on a character, and
+an empty match next to the previous match counts.
+
+**Linear time.** The engine is a Pike VM: it follows every way of matching at
+once, so its work is proportional to the text's length times the pattern's, for
+any pattern and text. `(a|a)*b` cannot be made slow. That is why there are no
+backreferences or lookaround, which raise `E_REGEX`. A match's work counts against
+the process's instruction quota, so a sandboxed program cannot hide in one.
+
 ### JSON
 
 | JSON | MLWSVM |

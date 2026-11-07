@@ -123,6 +123,14 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `text.trim_end` | r | r | Remove whitespace from the end. |
 | `text.find` | r, r, i64 | i64 | The byte offset of the first occurrence at or after an offset, or -1. |
 | `text.replace` | r, r, r | r | Replace every occurrence. |
+| `regex.compile` | r, r | r | A compiled regular expression, from a pattern and flags ("", or any of i, m, s). It runs in time linear in the text, whatever the pattern. E_REGEX if the pattern is bad. |
+| `regex.test` | r, r | b | Whether a regex matches anywhere in a text. |
+| `regex.find` | r, r, i64 | r | The first match at or after a byte offset: a list of byte offsets, the start and end of the match and then of each group (-1: it took no part), or null. |
+| `regex.groups` | r, r, i64 | r | The first match at or after a byte offset: a list of the text of the match and of each group (null: it took no part), or null. |
+| `regex.find_all` | r, r | r | The text of every match, as a list of strings. |
+| `regex.split` | r, r | r | A text split at every match, as a list of strings. |
+| `regex.replace` | r, r, r, i64 | r, i64 | A text with up to n matches replaced (negative: all), and how many were: $1, ${1} and ${name} in the replacement are groups, and $$ is a dollar sign. |
+| `regex.group` | r, r | i64 | The number of a named group, or -1. |
 | `text.replace_n` | r, r, r, i64 | r, i64 | Replace the first n occurrences (every one, if n < 0), and how many were: Lua's gsub of a plain pattern, but for n < 0. |
 | `text.starts_with` | r, r | b | Whether a string starts with a prefix. |
 | `text.ends_with` | r, r | b | Whether a string ends with a suffix. |

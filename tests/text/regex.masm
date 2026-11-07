@@ -1,0 +1,224 @@
+; Regular expressions: regex.compile and what uses it. Characters, classes
+; (Unicode's, in \d \w \s and \p), anchors, flags, groups and names, greedy and
+; lazy repeats, the first alternative winning, replacing, splitting, and text
+; that is not valid UTF-8. A pattern that takes a backtracking matcher longer
+; than the universe takes here what any other does: the work is linear in the
+; text, and it counts against the process's instruction quota.
+.include "std/test.inc"
+
+; Whether pattern matches text, with these flags.
+.func test(ref pattern, ref flags, ref text) -> i64
+    ncall "regex.compile" (pattern, flags) -> (R3)
+    ncall "regex.test" (R3, text) -> (I0)
+    ret I0
+.endf
+
+; The text of group g of the first match, or null.
+.func group(ref pattern, ref text, i64 g) -> ref
+    ncall "regex.compile" (pattern, "") -> (R2)
+    ncall "regex.groups" (R2, text, 0) -> (R3)
+    bz R3, 1f
+    mov R4, R3[g]
+    ret R4
+1:  ret null
+.endf
+
+.macro GROUP_IS pattern, text, g, expected
+    call group (\pattern, \text, \g) -> (R10)
+    strcmp I10, R10, \expected
+    ASSERT_EQ I10, 0
+.endm
+
+.macro MATCHES pattern, flags, text
+    call test (\pattern, \flags, \text) -> (I11)
+    ASSERT_TRUE I11
+.endm
+
+.macro MISSES pattern, flags, text
+    call test (\pattern, \flags, \text) -> (I11)
+    ASSERT_FALSE I11
+.endm
+
+; What compiling a bad pattern raises.
+.func bad(ref pattern) -> ref
+.try h
+    ncall "regex.compile" (pattern, "") -> (R1)
+.endtry
+    ret null
+h:
+    catch R2
+    mov R3, R2->Error.code
+    ret R3
+.endf
+
+.macro BAD pattern
+    call bad (\pattern) -> (R10)
+    strcmp I10, R10, "E_REGEX"
+    ASSERT_EQ I10, 0
+.endm
+
+; Spends its instructions in one match: it ends there, as a quota ends any
+; process.
+.func spender
+    quota 3, 100000
+    ncall "text.repeat" ("a", 1000000) -> (R0)
+    ncall "regex.compile" ("(a|b)*c", "") -> (R1)
+    ncall "regex.test" (R1, R0) -> (I1)
+    ret
+.endf
+
+.func main
+    ; Characters and classes.
+    MATCHES "abc", "", "xxabcxx"
+    MISSES "abd", "", "xxabcxx"
+    MATCHES "a.c", "", "abc"
+    MISSES "a.c", "", "a\nc"
+    MATCHES "a.c", "s", "a\nc"
+    MATCHES "[a-c]x", "", "bx"
+    MISSES "[^a-c]x", "", "bx"
+    MATCHES "\\d+", "", "abc 123"
+    MATCHES "^\\d+$", "", "٣٤"          ; Arabic-Indic digits are digits
+    MATCHES "^\\w+$", "", "naïve_1"
+    MISSES "^\\w+$", "", "a b"
+    MATCHES "\\s", "", "a\tb"
+    MATCHES "^\\p{Lu}\\p{Ll}+$", "", "Éclair"
+    MATCHES "\\x41\\u00e9\\x{1F600}", "", "Aé😀"
+    MATCHES "a\\.b", "", "a.b"
+    MISSES "a\\.b", "", "axb"
+    MATCHES "[\\d_]+", "", "4_2"
+    MATCHES "[]a]", "", "]"
+
+    ; Anchors, and the flags.
+    MATCHES "^abc$", "", "abc"
+    MISSES "^b", "", "a\nb"
+    MATCHES "^b", "m", "a\nb"
+    MATCHES "a$", "m", "a\nb"
+    MISSES "a$", "", "a\nb"
+    MATCHES "\\Aa", "m", "a\nb"
+    MISSES "\\Ab", "m", "a\nb"
+    MATCHES "\\bfoo\\b", "", "a foo b"
+    MISSES "\\bfoo\\b", "", "afoob"
+    MATCHES "\\Boo", "", "foo"
+    MATCHES "HELLO", "i", "hello"
+    MATCHES "(?i)hello", "", "HeLLo"
+    MATCHES "(?i:he)llo", "", "HEllo"
+    MISSES "(?i:he)llo", "", "HELLO"
+    MATCHES "straSSe", "i", "STRASSE"
+    MATCHES "[a-z]+é", "i", "ABCÉ"
+
+    ; Groups, and which match is taken.
+    GROUP_IS "(\\w+)@(\\w+)", "to bob@example now", 1, "bob"
+    GROUP_IS "(\\w+)@(\\w+)", "to bob@example now", 2, "example"
+    GROUP_IS "a+", "caaab", 0, "aaa"
+    GROUP_IS "a+?", "caaab", 0, "a"
+    GROUP_IS "a{2}", "aaaa", 0, "aa"
+    GROUP_IS "a{2,3}", "aaaa", 0, "aaa"
+    GROUP_IS "a{2,3}?", "aaaa", 0, "aa"
+    GROUP_IS "a{2,}", "aaaa", 0, "aaaa"
+    GROUP_IS "a|ab", "ab", 0, "a"       ; the first alternative, not the longest
+    GROUP_IS "ab|a", "ab", 0, "ab"
+    GROUP_IS "(?:ab)+", "ababx", 0, "abab"
+    GROUP_IS "(a|b)+", "abab", 1, "b"   ; a group's last time round
+    GROUP_IS "x*", "aaa", 0, ""
+    GROUP_IS "(a*)*", "b", 0, ""        ; a loop that matches nothing ends
+    GROUP_IS "(a|b)*?c", "abc", 0, "abc"
+    call group ("(a)|(b)", "b", 1) -> (R0)
+    ASSERT_FALSE R0, r                  ; a group that took no part
+
+    ; Names, offsets, and searching on from one.
+    ncall "regex.compile" ("(?P<year>\\d{4})-(?<month>\\d\\d)", "") -> (R1)
+    ncall "regex.group" (R1, "month") -> (I0)
+    ASSERT_EQ I0, 2
+    ncall "regex.group" (R1, "day") -> (I0)
+    ASSERT_EQ I0, -1
+    ncall "regex.find" (R1, "on 2026-11 and 2027-01", 0) -> (R2)
+    len I0, R2
+    ASSERT_EQ I0, 6
+    mov I1, R2[0]
+    ASSERT_EQ I1, 3
+    mov I1, R2[1]
+    ASSERT_EQ I1, 10
+    mov I1, R2[4]
+    ASSERT_EQ I1, 8
+    ncall "regex.find" (R1, "on 2026-11 and 2027-01", 10) -> (R2)
+    mov I1, R2[0]
+    ASSERT_EQ I1, 15
+    ncall "regex.find" (R1, "no date", 0) -> (R2)
+    ASSERT_FALSE R2, r
+
+    ; All the matches, including empty ones, which move on a character.
+    ncall "regex.compile" ("\\d+", "") -> (R3)
+    ncall "regex.find_all" (R3, "1 22 333") -> (R4)
+    len I0, R4
+    ASSERT_EQ I0, 3
+    mov R5, R4[2]
+    strcmp I0, R5, "333"
+    ASSERT_EQ I0, 0
+    ncall "regex.compile" ("", "") -> (R6)
+    ncall "regex.find_all" (R6, "é1") -> (R7)
+    len I0, R7
+    ASSERT_EQ I0, 3                     ; before each character, and at the end
+
+    ; Splitting.
+    ncall "regex.compile" (",\\s*", "") -> (R8)
+    ncall "regex.split" (R8, "a, b,c") -> (R9)
+    len I0, R9
+    ASSERT_EQ I0, 3
+    mov R10, R9[1]
+    strcmp I0, R10, "b"
+    ASSERT_EQ I0, 0
+    ncall "regex.split" (R8, "none") -> (R9)
+    len I0, R9
+    ASSERT_EQ I0, 1
+
+    ; Replacing, with groups by number and name, and a limit.
+    ncall "regex.compile" ("(?P<k>\\w+)=(\\w+)", "") -> (R11)
+    ncall "regex.replace" (R11, "a=1 b=2", "$2:${k}", -1) -> (R12, I1)
+    strcmp I0, R12, "1:a 2:b"
+    ASSERT_EQ I0, 0
+    ASSERT_EQ I1, 2
+    ncall "regex.replace" (R11, "a=1 b=2", "$$", 1) -> (R12, I1)
+    strcmp I0, R12, "$ b=2"
+    ASSERT_EQ I0, 0
+    ASSERT_EQ I1, 1
+
+    ; Text that is not UTF-8: each bad byte is a character.
+    bufnew R13, 0
+    bufpush R13, 97
+    bufpush R13, 255
+    bufpush R13, 98
+    ncall "regex.compile" ("a.b", "") -> (R14)
+    ncall "regex.test" (R14, R13) -> (I0)
+    ASSERT_TRUE I0
+
+    ; Refused: what would need backtracking, and what is malformed.
+    BAD "(a)\\1"
+    BAD "(?=a)"
+    BAD "(?!a)"
+    BAD "(?<=a)"
+    BAD "(a"
+    BAD "a)"
+    BAD "[a"
+    BAD "[z-a]"
+    BAD "*a"
+    BAD "a{2,1}"
+    BAD "a{1001}"
+    BAD "\\q"
+    BAD "\\p{Nope}"
+    BAD "(?z)"
+    BAD "((((((((a{1000}){1000}){1000}){1000}){1000}){1000}){1000}){1000})"
+
+    ; The classic blow-ups, on text a backtracking matcher could never finish.
+    ncall "text.repeat" ("a", 100000) -> (R15)
+    MISSES "(a|a)*b", "", R15
+    MISSES "(a+)+b", "", R15
+    MISSES "(a|aa)+$b", "", R15
+
+    ; A match cannot outrun the instruction quota.
+    spawn spender -> (I0)
+    monitor I0
+    recv R16
+    strcmp I1, R16->Down.code, "E_QUOTA"
+    ASSERT_EQ I1, 0
+    ret 0
+.endf

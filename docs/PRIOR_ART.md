@@ -180,6 +180,7 @@ civil-date conversions.
 | A debugger for editors over the Debug Adapter Protocol, for whatever language compiled to the VM | Microsoft's Debug Adapter Protocol; GDB's and LLDB's adapters; source maps in browsers, whose role `.loc` plays | One adapter serves every language on the VM, in its own source files, since compilers already mark their lines with `.loc`. Processes appear as the protocol's threads. |
 | Large strings sent by reference between otherwise isolated heaps: promoted in place on the first send, reference-counted by heaps rather than by references, each heap finding out what it still holds at its own major collection | Erlang's reference-counted binaries, which live off the process heap; constant pools | Nothing about a string changes for those who read it, and there is no new object kind to a program: it takes the path constants already take. The count changes only when a heap gains or loses the string, not with each reference. |
 | TLS on a connection, loaded at run time, with waits in the same poller as plain sockets | OpenSSL's non-blocking `SSL_read` and `SSL_write`, which say what to wait for; Erlang's `ssl`, Python's `ssl`, Go's `crypto/tls`; `curl`'s loading of TLS back ends | A connection stays one handle whatever it carries, so `fs.read_line` is the same on both, and TLS can start after plain traffic. No build or run dependency: the library is found by name when first asked for. |
+| Regular expressions in linear time, inside the VM, with their work charged to the process's quota | Thompson's NFA construction; Pike's VM, and Russ Cox's account of both; RE2, Go's and Rust's `regexp`, whose syntax it follows, and Go's `(x+)?` for loops over what can match nothing | In a VM built to run untrusted code in sandboxes, a pattern must not be a way to stall it, or to spend CPU that a quota cannot see. |
 
 ---
 
@@ -286,6 +287,7 @@ of the instructions in call-heavy code.
 | M56 | The Debug Adapter Protocol; source maps |
 | M57 | Erlang's reference-counted binaries |
 | M58 | OpenSSL's non-blocking I/O; Erlang's `ssl`, Python's `ssl`, Go's `crypto/tls` |
+| M59 | Thompson's construction, Pike's VM, Russ Cox's articles, RE2, Go's and Rust's `regexp` |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

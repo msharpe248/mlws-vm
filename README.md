@@ -73,7 +73,8 @@ base:
   waits in `recv`, holding no thread, so 10,000 open connections are 10,000 small
   processes. File I/O runs on a thread pool. Sandboxes can deny OS access with a
   quota.
-* **Text and JSON**: a typed, safe `text.format` (`{:>8.2f}`), string utilities,
+* **Text and JSON**: a typed, safe `text.format` (`{:>8.2f}`), regular expressions
+  in linear time (`regex.*`, Unicode-aware), string utilities,
   UTF-8 iteration, and JSON that maps onto maps and lists with exact integers.
 * **Unicode 17**: full case mapping and folding, NFC/NFD/NFKC/NFKD
   normalization, grapheme clusters and words, display width, and character

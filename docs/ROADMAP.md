@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M58
+## Milestones M11–M59
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -80,6 +80,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M56 A debugger for editors** (done) | `mlwsvm dap`: the Debug Adapter Protocol on stdin and stdout, over the engine of `mlwsvm debug`, so an editor debugs any language compiled to MLWSVM in that language's own files, through `.loc`: breakpoints by file and line, stepping by lines, processes as threads, registers and the contents of objects, watch and hover, pause. `editors/vscode/` declares it to VS Code | `make check-tools`: whole sessions through the protocol: a breakpoint and one that moves to the next line with code, the stack, registers, an object's fields, evaluate, step in and out, output, the exit status, a `.loc` file's breakpoint and frame, a program that does not load, and pausing one that never ends |
 | **M57 Large strings by reference** (done) | A string of 4 KiB or more is sent by reference: the first send makes it, in place, an immortal object of no heap with a count of the heaps that hold it, so that everything that reads constants reads it unchanged. A major collection tells which a heap still reaches; the last to let go frees it. A holder's heap counts its bytes, so quotas hold | `tests/processes/send_large_string`: one string to two processes, hashed and compared at once, outliving the sender's hold; a smaller one copied; a thousand of 64 KiB dropped as they arrive not piling up; and an out-of-heap object's life under GC stress and AddressSanitizer |
 | **M58 TLS** (done) | `tls.connect` and `tls.accept` put TLS on a connection, which is then read and written as any other, its process waiting in the poller. A client always checks the certificate against the host name and the authorities given; no call turns that off. The system's OpenSSL or LibreSSL is loaded when first asked, by name, with no headers, so `mlwsvm` needs it neither to build nor to run | `tests/net/tls`: lines, a megabyte each way, certificates for another name and from another authority refused, and a peer that speaks no TLS, between processes in one VM |
+| **M59 Regular expressions** (done) | `regex.*`: a Pike VM of its own, so a pattern's cost is linear in the text whatever it is, and untrusted patterns are safe; it needs no native code, so sandboxes have it. Unicode classes, leftmost-first matching as in Perl, groups and names, replacing and splitting. Its work counts against the instruction quota | `tests/text/regex`: syntax, flags, Unicode, groups, replacing, invalid UTF-8, each refusal, the classic blow-ups on 100,000 characters, and a quota ending a match. Compared against Python's `re` on 18,000 random patterns and texts: the same whole match in all of them |
 
 ## 1. Calling existing libraries (M10: done)
 
