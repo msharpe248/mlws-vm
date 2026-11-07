@@ -155,18 +155,27 @@ grep -q '"reason":"pause"' "$DAPD/d.out" || fail "dap: pause"
 grep -q '"name":"spin.main"' "$DAPD/d.out" || fail "dap: stack after a pause"
 rm -rf "${DAPD:?}"
 
-# std.node: two VMs on this machine. Node 1 checks all of it against node 2, and
-# ends it.
+# std.node: two VMs on this machine, plainly and, if there is a TLS library,
+# over TLS. Node 1 checks all of it against node 2, and ends it.
 NODED=$(mktemp -d)
-$BIN run tests/tools/_node/two.masm > "$NODED/port" 2>/dev/null &
-TWO=$!
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    [ -s "$NODED/port" ] && break
-    perl -e 'select(undef, undef, undef, 0.25)'
-done
-[ -s "$NODED/port" ] || { kill $TWO; fail "node: the second VM did not start"; }
-perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_node/one.masm "$(tr -d '\r\n' < "$NODED/port")" >/dev/null 2>"$NODED/err" || { kill $TWO 2>/dev/null || true; cat "$NODED/err" >&2; fail "node"; }
-wait $TWO
+node_pair() { # [tls]
+    $BIN run tests/tools/_node/two.masm ${1:-} > "$NODED/port" 2>/dev/null &
+    TWO=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        [ -s "$NODED/port" ] && break
+        perl -e 'select(undef, undef, undef, 0.25)'
+    done
+    [ -s "$NODED/port" ] || { kill $TWO 2>/dev/null || true; fail "node ${1:-}: the second VM did not start"; }
+    perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_node/one.masm "$(tr -d '\r\n' < "$NODED/port")" ${1:-} >/dev/null 2>"$NODED/err" || { kill $TWO 2>/dev/null || true; cat "$NODED/err" >&2; fail "node ${1:-}"; }
+    wait $TWO
+    rm -f "$NODED/port"
+}
+node_pair
+printf '.func main\n    ncall "tls.available" () -> (I0)\n    ret I0\n.endf\n' > "$NODED/tls.masm"
+set +e
+$BIN run "$NODED/tls.masm"; HAVE_TLS=$?
+set -e
+[ $HAVE_TLS = 1 ] && node_pair tls
 rm -rf "${NODED:?}"
 
 # A .mlwso whose global word is tagged as a reference (the assembler never

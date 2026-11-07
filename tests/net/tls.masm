@@ -5,7 +5,9 @@
 ; echoed, a megabyte each way (through a socket buffer's worth at a time, so
 ; both ends wait to read and to write), a certificate for another name and one
 ; from another authority refused by the client, and a peer that does not speak
-; TLS failing the handshake. Skipped where no TLS library is installed: it
+; TLS failing the handshake. A connection keeps its TLS when it is handed to
+; another process after the handshake (fs.give), and when one process reads it
+; while another writes (net.split): with neither, what went on would be plain. Skipped where no TLS library is installed: it
 ; passes as a program that does nothing.
 .include "std/test.inc"
 
@@ -42,6 +44,46 @@ failed:
     ret
 .endf
 
+; Lines back, from a connection given after its handshake: no tls.accept here.
+.func echo_given(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+1:  ncall "fs.read_line" (R0) -> (R1)
+    bz R1, 2f
+    strcat R2, R1, "\n"
+    ncall "fs.write" (R0, R2)
+    jmp 1b
+2:  ncall "fs.close" (R0)
+    ret
+.endf
+
+; Writes what it is sent, on the second handle of a split connection.
+.func split_writer(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+1:  recv R1
+    bz R1, 2f
+    ncall "fs.write" (R0, R1)
+    jmp 1b
+2:  ncall "fs.close" (R0)
+    ret
+.endf
+
+; Lines back, read here and written by another process.
+.func echo_split(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+    ncall "tls.accept" (R0, "tests/net/_tls/cert.pem", "tests/net/_tls/key.pem")
+    ncall "net.split" (R0) -> (R1)
+    ncall "fs.give" (R1) -> (I1)
+    spawn split_writer (I1) -> (I2)
+1:  ncall "fs.read_line" (R0) -> (R2)
+    bz R2, 2f
+    strcat R3, R2, "\n"
+    send I2, R3
+    jmp 1b
+2:  mov R4, null
+    send I2, R4
+    ret
+.endf
+
 .func server(i64 parent)
     ncall "net.listen" ("127.0.0.1", 0) -> (R0)
     ncall "net.port" (R0) -> (I1)
@@ -50,11 +92,36 @@ failed:
 1:  ncall "net.accept" (R0) -> (R1)
     ncall "fs.give" (R1) -> (I3)
     beq I2, 1, 2f
+    beq I2, 5, 4f
+    beq I2, 6, 5f
     spawn echo (I3)
     jmp 3f
 2:  spawn bulk (I3)
+    jmp 3f
+4:  ncall "fs.take" (I3) -> (R2)       ; the handshake here, then given
+    ncall "tls.accept" (R2, "tests/net/_tls/cert.pem", "tests/net/_tls/key.pem")
+    ncall "fs.give" (R2) -> (I4)
+    spawn echo_given (I4)
+    jmp 3f
+5:  spawn echo_split (I3)
 3:  inc I2
-    blt I2, 5, 1b
+    blt I2, 7, 1b
+    ret
+.endf
+
+; Two lines, each back: over a connection that the server handles as `how`.
+.func two_lines(i64 port)
+    ncall "net.connect" ("127.0.0.1", port, 5000) -> (R0)
+    ncall "tls.connect" (R0, "localhost", "tests/net/_tls/cert.pem")
+    ncall "fs.write" (R0, "one\n")
+    ncall "fs.read_line" (R0) -> (R1)
+    strcmp I1, R1, "one"
+    ASSERT_EQ I1, 0
+    ncall "fs.write" (R0, "two\n")
+    ncall "fs.read_line" (R0) -> (R1)
+    strcmp I1, R1, "two"
+    ASSERT_EQ I1, 0
+    ncall "fs.close" (R0)
     ret
 .endf
 
@@ -127,11 +194,16 @@ h:
 .try reset
     ncall "fs.read_all" (R8) -> (R9)   ; TLS's alert, or the end of input
 .endtry
-    ncall "fs.close" (R8)
-    ret 0
+    jmp read
 reset:
     catch R10                          ; or a reset: the server hung up on unread input
     strcmp I2, R10->Error.code, "E_RESET"
     ASSERT_EQ I2, 0
+read:
+    ncall "fs.close" (R8)
+
+    ; Given after the handshake, and split between two processes.
+    call two_lines (I1)
+    call two_lines (I1)
     ret 0
 .endf

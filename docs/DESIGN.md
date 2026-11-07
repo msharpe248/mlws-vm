@@ -1706,7 +1706,11 @@ one thing at a time. C provides only what must be C: the routing above, `node.fr
 and `node.decode`, and the challenge. The handshake sends each side's number and a
 random nonce, then an HMAC-SHA-256 of the peer's nonce, keyed by the cookie and
 marked with the prover's role, so that a proof cannot be reflected back at its
-maker. `node.proof_ok` compares in constant time.
+maker. `node.proof_ok` compares in constant time. With `start_tls` and `connect_tls`
+the connection is TLS before any of that. The reader and the writer then share one
+session: `net.split` gives the second handle the same `Tls`, whose calls take its
+lock, and which has its own descriptor of the socket, so that it outlives whichever
+handle closes first.
 
 `node.decode` reads bytes from the network. Every length is checked against what
 is left, before anything is allocated, recursion is bounded, type codes and kinds
@@ -1761,7 +1765,9 @@ ncall ─► native returns with native_req =
 
 TLS rides on a stream handle: `FileH.tls` is set, and `fill` and `fs.write` call
 `tls_read` and `tls_write` instead of the socket's read and write. So `fs.read_line`
-and the rest are unchanged, and TLS can start after plain traffic. The socket stays
+and the rest are unchanged, and TLS can start after plain traffic. The session goes
+with the handle when it is given to another process: a ticket carries it, since
+the descriptor alone would leave the rest of the traffic plain. The socket stays
 non-blocking, and OpenSSL says what it needs: `SSL_ERROR_WANT_READ` or
 `SSL_ERROR_WANT_WRITE` becomes `native_wait_fd` on the descriptor, and the native
 runs again after the wait, as any checked native does. Handshakes wait the same

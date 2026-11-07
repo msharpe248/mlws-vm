@@ -47,10 +47,7 @@ typedef struct {
 
 static void file_finalize(void *ptr) {
     FileH *h = ptr;
-    if (h->tls) {
-        tls_close_write(h->tls);
-        tls_free(h->tls);
-    }
+    if (h->tls) tls_release(h->tls);
     if (h->owned && h->fd >= 0) plat_fd_close(h->fd);
     free(h->rbuf);
     free(h);
@@ -409,7 +406,7 @@ static void fs_give(Process *p, Word *a, Word *r) {
         native_fail(p, "E_TYPE", "fs.give: the handle has buffered input or a write in progress");
         return;
     }
-    FdTicket t = {0, h->fd, h->kind};
+    FdTicket t = {0, h->fd, h->kind, h->tls, h->shook}; /* a TLS session goes with it, or what follows would be plain */
     while (!t.id) {
         if (!plat_random_bytes(&t.id, sizeof t.id)) t.id = plat_now_ns() * 0x9E3779B97F4A7C15ull;
     }
@@ -418,13 +415,14 @@ static void fs_give(Process *p, Word *a, Word *r) {
     plat_unlock(p->vm->lock);
     h->owned = false;
     h->fd = -1;
+    h->tls = NULL;
     foreign_finalize(p, a[0].r);
     r[0].i = (int64_t)t.id;
 }
 
 static void fs_take(Process *p, Word *a, Word *r) {
     VM *vm = p->vm;
-    FdTicket t = {0, -1, 0};
+    FdTicket t = {0, -1, 0, NULL, false};
     plat_lock(vm->lock);
     for (size_t i = 0; i < vm->tickets.n; i++)
         if (vm->tickets.v[i].id == a[0].u) {
@@ -437,7 +435,11 @@ static void fs_take(Process *p, Word *a, Word *r) {
         native_fail(p, "E_NOT_FOUND", "fs.take: no handle was given with that ticket (or it was already taken)");
         return;
     }
-    r[0].r = new_file(p, t.fd, t.kind, true);
+    Obj *o = new_file(p, t.fd, t.kind, true);
+    FileH *h = ((ObjForeign *)o)->ptr;
+    h->tls = t.tls;
+    h->shook = t.shook;
+    r[0].r = o;
 }
 
 /* ---- std.fs: whole files and paths (on the I/O pool) ------------------------------------ */
@@ -810,13 +812,19 @@ static void net_close_write(Process *p, Word *a, Word *r) {
 static void net_split(Process *p, Word *a, Word *r) {
     FileH *h = get_kind(p, a[0], H_STREAM, "a connection");
     if (!h) return;
-    if (h->tls) {
-        native_fail(p, "E_TLS", "net.split: a connection with TLS cannot be split");
+    int err = 0, fd = plat_sock_dup(h->fd, &err);
+    if (fd < 0) {
+        fail_os(p, err, "split");
         return;
     }
-    int err = 0, fd = plat_sock_dup(h->fd, &err);
-    if (fd < 0) fail_os(p, err, "split");
-    else r[0].r = new_file(p, fd, H_STREAM, true);
+    Obj *o = new_file(p, fd, H_STREAM, true);
+    FileH *nh = ((ObjForeign *)o)->ptr;
+    if (h->tls) { /* the same session, which each call locks */
+        tls_retain(h->tls);
+        nh->tls = h->tls;
+        nh->shook = h->shook;
+    }
+    r[0].r = o;
 }
 
 #define MAX_FRAME (64u << 20)
@@ -879,7 +887,10 @@ static void tls_start_client(Process *p, Word *a, Word *r) {
     if (!h || !host || !ca || (*ca && !may_path(p, CAP_READ, ca))) return;
     if (!h->tls) {
         char why[256] = "";
-        h->tls = tls_client(plat_fd_socket(h->fd), host, ca, why, sizeof why);
+        int err = 0, fd = plat_sock_dup(h->fd, &err); /* the session's own, as it may outlive this handle */
+        h->tls = fd < 0 ? NULL : tls_client(fd, host, ca, why, sizeof why);
+        if (!h->tls && fd >= 0) plat_fd_close(fd);
+        if (fd < 0) snprintf(why, sizeof why, "%s", plat_err_text(err));
         if (!h->tls) {
             native_fail(p, "E_TLS", "tls.connect: %s", why);
             return;
@@ -895,7 +906,10 @@ static void tls_start_server(Process *p, Word *a, Word *r) {
     if (!h || !cert || !key || !may_path(p, CAP_READ, cert) || !may_path(p, CAP_READ, key)) return;
     if (!h->tls) {
         char why[256] = "";
-        h->tls = tls_server(plat_fd_socket(h->fd), cert, key, why, sizeof why);
+        int err = 0, fd = plat_sock_dup(h->fd, &err);
+        h->tls = fd < 0 ? NULL : tls_server(fd, cert, key, why, sizeof why);
+        if (!h->tls && fd >= 0) plat_fd_close(fd);
+        if (fd < 0) snprintf(why, sizeof why, "%s", plat_err_text(err));
         if (!h->tls) {
             native_fail(p, "E_TLS", "tls.accept: %s", why);
             return;
@@ -1043,7 +1057,7 @@ static const NativeDef OS_NATIVES[] = {
     N("net.peer", 1, T(T_R), 2, T(T_R, T_I64), net_peer, F, "The address and port of a connection's other end."),
     N("net.close_write", 1, T(T_R), 0, T(0), net_close_write, F,
       "Finish sending on a connection (the other end reads end of input) but keep reading."),
-    N("net.split", 1, T(T_R), 1, T(T_R), net_split, F, "A second handle on a connection, so that one process can read it while another writes."),
+    N("net.split", 1, T(T_R), 1, T(T_R), net_split, F, "A second handle on a connection, with its TLS if it has any, so that one process can read it while another writes."),
     N("net.read_frame", 1, T(T_R), 1, T(T_R), net_read_frame, F,
       "The bytes of the next frame, a 32-bit little-endian length and that many bytes (up to 64 MiB), or null at the end of input."),
     N("net.resolve", 1, T(T_R), 1, T(T_R), net_resolve, F, "A host name's addresses, as a list of strings."),

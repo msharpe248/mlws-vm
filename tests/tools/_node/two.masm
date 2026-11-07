@@ -1,5 +1,6 @@
 ; Node 2 of the pair check_tools.sh starts: a registered process that doubles
 ; numbers, and one that ends this VM when told. It prints the port it took.
+; With the argument "tls", it takes only TLS.
 .import std.node as node
 .import worker
 .func doubler
@@ -18,7 +19,13 @@
     ret
 .endf
 .func main
-    call node.start (2, "the cookie", 0) -> (I1)
+    ncall "os.args" () -> (R0)
+    len I0, R0
+    bz I0, 2f
+    call node.start_tls (2, "the cookie", 0, "tests/net/_tls/cert.pem", "tests/net/_tls/key.pem") -> (I1)
+    jmp 3f
+2:  call node.start (2, "the cookie", 0) -> (I1)
+3:
     spawn doubler
     spawn stopper
     sleep 100                          ; (both registered by now)

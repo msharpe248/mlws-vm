@@ -223,6 +223,8 @@ struct Sched;
 typedef struct {
     uint64_t id; /* random: a ticket cannot be guessed */
     int fd, kind;
+    struct Tls *tls; /* its TLS session, which goes with it (native/tls.c), or NULL */
+    bool shook;
 } FdTicket;
 
 typedef struct VM {

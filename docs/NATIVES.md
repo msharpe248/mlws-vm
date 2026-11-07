@@ -116,7 +116,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `net.port` | r | i64 | A socket's local port (the one chosen for net.listen port 0). |
 | `net.peer` | r | r, i64 | The address and port of a connection's other end. |
 | `net.close_write` | r | - | Finish sending on a connection (the other end reads end of input) but keep reading. |
-| `net.split` | r | r | A second handle on a connection, so that one process can read it while another writes. |
+| `net.split` | r | r | A second handle on a connection, with its TLS if it has any, so that one process can read it while another writes. |
 | `net.read_frame` | r | r | The bytes of the next frame, a 32-bit little-endian length and that many bytes (up to 64 MiB), or null at the end of input. |
 | `net.resolve` | r | r | A host name's addresses, as a list of strings. |
 | `tls.available` | - | b | True if a TLS library (OpenSSL or LibreSSL) can be loaded. |

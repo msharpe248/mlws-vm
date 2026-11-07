@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M61
+## Milestones M11–M62
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -83,6 +83,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M59 Regular expressions** (done) | `regex.*`: a Pike VM of its own, so a pattern's cost is linear in the text whatever it is, and untrusted patterns are safe; it needs no native code, so sandboxes have it. Unicode classes, leftmost-first matching as in Perl, groups and names, replacing and splitting. Its work counts against the instruction quota | `tests/text/regex`: syntax, flags, Unicode, groups, replacing, invalid UTF-8, each refusal, the classic blow-ups on 100,000 characters, and a quota ending a match. Compared against Python's `re` on 18,000 random patterns and texts: the same whole match in all of them |
 | **M60 Capabilities** (done) | `cap.restrict`, and `--cap` for a whole program: what a process may read, write, connect to, listen on, run and see of the environment, by name, inherited by its children, which can only narrow it. What is not granted is denied, foreign code and loading modules too. Paths are judged as they resolve | `tests/os/caps`: each kind allowed and denied, `..` and a path through a missing directory, narrowing, a wider grant dropped, inheritance, and the spawner untouched |
 | **M61 Distribution** (done) | `std.node`: VMs connected as nodes, with `send` working on pids that name a node, remote spawn, a name lookup and monitors, and a watcher told if a connection goes. A pid's top 16 bits are its node. The connections are MLWSVM processes, in `lib/std/node.masm`; C does the routing in `send`, the encoding of values, and the HMAC challenge that admits a peer. Traffic is not encrypted | `tests/native/node_values`: every kind of value through the encoding, what cannot be sent, and random, mutated and truncated bytes giving only `E_PARSE`. `make check-tools`: two VMs, with a wrong cookie refused, a lookup, a message there and back, a spawn, a monitor, a function that does not exist, and a node going away |
+| **M62 TLS between nodes** (done) | `std.node`'s `start_tls` and `connect_tls`: the connection is TLS before the cookie is proved, the connecting node checks the other's certificate, and a TLS node takes no plain connections. A TLS session can be shared by two handles (`net.split`), with a lock and its own descriptor of the socket. Found on the way, and fixed: a connection given to another process after its handshake (`fs.give`) lost its TLS, and went on in plain text | `tests/net/tls`: a connection given after its handshake, and one split between a reader and a writer, both failing without the fix. `make check-tools`: the two VMs again over TLS, with a plain connection refused |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -190,8 +191,7 @@ Capabilities: M60.
   tested in the Platforms workflow. Not done: MSVC builds, and a
   completion-port poller ([DESIGN.md](DESIGN.md) §23).
 
-Not done in distribution (M61): encryption between nodes, which needs a connection
-that two processes can share with TLS on it; `link` and `proc.call` across nodes;
+Not done in distribution (M61): `link` and `proc.call` across nodes;
 and a value's cycles, which do not cross. Not done in hot reloading (M55): freeing
 old versions, and data carried between them.
 

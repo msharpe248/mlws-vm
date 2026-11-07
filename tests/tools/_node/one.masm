@@ -1,12 +1,24 @@
 ; Node 1 of the pair check_tools.sh starts: everything std.node does, against
-; node 2 on the port in its first argument. Exits 0 if all is well.
+; node 2 on the port in its first argument, over TLS if the second is "tls"
+; (and then a plain connection must be refused). Exits 0 if all is well.
 .include "std/test.inc"
 .import std.node as node
+
+tls:    .i64 0                       ; 1: node 2 takes only TLS
+
+; Connect, as node 2 wants.
+.func open(i64 port, ref cookie) -> i64
+    bz @tls, 1f
+    call node.connect_tls ("localhost", port, cookie, "tests/net/_tls/cert.pem") -> (I2)
+    ret I2
+1:  call node.connect ("127.0.0.1", port, cookie) -> (I2)
+    ret I2
+.endf
 
 ; What connecting with a cookie raises, or null.
 .func connect_error(i64 port, ref cookie) -> ref
 .try h
-    call node.connect ("127.0.0.1", port, cookie) -> (I1)
+    call open (port, cookie) -> (I1)
 .endtry
     ret null
 h:
@@ -24,6 +36,10 @@ h:
     ncall "os.args" () -> (R0)
     mov R1, R0[0]
     parse.i64 I0, R1
+    len I30, R0
+    blt I30, 2, 1f
+    mov @tls, 1
+1:
     call node.start (1, "the cookie", 0) -> (I1)
     ncall "node.self" () -> (I2)
     ASSERT_EQ I2, 1
@@ -35,8 +51,17 @@ h:
     call node.connected (2) -> (I20)
     ASSERT_FALSE I20
 
+    ; Over TLS, a plain connection gets nowhere either.
+    bz @tls, 2f
+.try plain_refused
+    call node.connect ("127.0.0.1", I0, "the cookie") -> (I29)
+.endtry
+    FAIL "a plain connection to a TLS node"
+plain_refused:
+    catch R29
+2:
     ; The right one does.
-    call node.connect ("127.0.0.1", I0, "the cookie") -> (I4)
+    call open (I0, "the cookie") -> (I4)
     ASSERT_EQ I4, 2
     call node.connected (2) -> (I20)
     ASSERT_TRUE I20

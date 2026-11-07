@@ -135,7 +135,9 @@ buffered, or a write in progress, cannot be given.
 put TLS on a connection, which is then read and written as before, with
 `fs.read`, `fs.read_line` and `fs.write`, its process waiting in the poller, so
 TLS costs no threads either. They can come after plain traffic, as STARTTLS does.
-`net.close_write` sends TLS's end of input first, and `fs.close` too.
+`net.close_write` sends TLS's end of input first, and `fs.close` too. A connection
+keeps its TLS when it is given to another process (`fs.give`), and `net.split`
+shares it between the two handles, a call at a time.
 
 * **A client always checks the certificate:** it must match `host`, and come
   from an authority in the PEM file named, or the system's for `""`. There is no
@@ -481,7 +483,9 @@ this node's number in it. `node.of(pid)` says which node a pid names.
 | Function | Does |
 |---|---|
 | `start(number, cookie, port)` | number this VM (1 to 65535, unique in the cluster) and accept connections on a port (0: any); returns it |
-| `connect(host, port, cookie)` | connect to a node, and return its number; `E_NODE` if the connection or the cookie fails |
+| `start_tls(number, cookie, port, cert, key)` | the same, taking only TLS, with PEM files of a certificate chain and its key |
+| `connect(host, port, cookie)` | connect to a node, and return its number; `E_NODE`, saying why, if the connection or the cookie fails |
+| `connect_tls(host, port, cookie, ca)` | the same over TLS: the node's certificate must match `host` and come from an authority in `ca` (`""`: the system's) |
 | `connected(number)` | whether a node is connected |
 | `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
 | `spawn(number, module, function, arg)` | run an exported function of one reference there; its pid, or 0 |
@@ -498,8 +502,11 @@ this node's number in it. `node.of(pid)` says which node a pid names.
 * **Security.** Two nodes connect once each proves it knows the cookie, with an
   HMAC over the other's random nonce, marked with which end it is. After that, a
   node may message any process and run any exported function: the cookie is the
-  whole of the boundary, as in Erlang. **Traffic is not encrypted**, so a cluster
-  belongs on a network you trust, or inside a VPN. A restricted process
+  whole of the boundary, as in Erlang. **Plain connections are not encrypted**:
+  use `start_tls` and `connect_tls` unless the network is one you trust. Then the
+  connection is TLS before anything else, the connecting node checks the other's
+  certificate, and the cookie is proved over the encrypted link. A TLS node takes
+  no plain connections. A restricted process
   (`cap.restrict`) can take no part in routing, though it can still `send`.
 * `link`, `monitor` and `proc.call` work on this VM's pids; use `node.monitor` and
   messages between nodes.

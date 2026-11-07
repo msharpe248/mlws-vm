@@ -1,4 +1,5 @@
 /* vm.c - VM lifetime, library path, natives registry, output. */
+#include "../native/tls.h"
 #include "vm.h"
 #include "../heap/heap.h"
 
@@ -169,6 +170,8 @@ void vm_free(VM *vm) {
     VEC_FREE(vm->exits);
     for (size_t i = 0; i < vm->prog_args.n; i++) free(vm->prog_args.v[i]);
     VEC_FREE(vm->prog_args);
+    for (size_t i = 0; i < vm->tickets.n; i++)
+        if (vm->tickets.v[i].tls) tls_release(vm->tickets.v[i].tls);
     for (size_t i = 0; i < vm->tickets.n; i++) plat_fd_close(vm->tickets.v[i].fd); /* given, never taken */
     VEC_FREE(vm->tickets);
     smap_free(&vm->registry);

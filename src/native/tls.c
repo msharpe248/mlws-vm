@@ -70,6 +70,9 @@ CRYPTO_FUNCS(X)
 struct Tls {
     SSL_CTX *ctx;
     SSL *ssl;
+    int fd;          /* its own descriptor of the socket, or -1 */
+    uint32_t refs;   /* the handles sharing it */
+    PlatMutex *lock; /* one call at a time: an SSL is not for two threads at once */
 };
 
 /* Where the library may be, the newest first. Apple's own libssl aborts a
@@ -140,15 +143,28 @@ static void say_error(char *err, size_t errlen, const char *what) {
     snprintf(err, errlen, "%s%s%s", what, *text ? ": " : "", text);
 }
 
-void tls_free(Tls *t) {
+static void tls_free(Tls *t) {
     if (t->ssl) p_SSL_free(t->ssl);
     if (t->ctx) p_SSL_CTX_free(t->ctx);
+    if (t->lock) plat_mutex_free(t->lock);
     free(t);
+}
+
+void tls_retain(Tls *t) { __atomic_add_fetch(&t->refs, 1, __ATOMIC_RELAXED); }
+
+void tls_release(Tls *t) {
+    if (__atomic_sub_fetch(&t->refs, 1, __ATOMIC_ACQ_REL)) return;
+    tls_close_write(t);
+    if (t->fd >= 0) plat_fd_close(t->fd);
+    tls_free(t);
 }
 
 static Tls *tls_new(bool server, char *err, size_t errlen) {
     p_ERR_clear_error();
     Tls *t = xcalloc(1, sizeof *t);
+    t->fd = -1;
+    t->refs = 1;
+    t->lock = plat_mutex_new();
     t->ctx = p_SSL_CTX_new(server ? p_TLS_server_method() : p_TLS_client_method());
     if (!t->ctx) {
         say_error(err, errlen, "cannot set up TLS");
@@ -159,9 +175,9 @@ static Tls *tls_new(bool server, char *err, size_t errlen) {
     return t;
 }
 
-static bool tls_attach(Tls *t, int sock, char *err, size_t errlen) {
+static bool tls_attach(Tls *t, int fd, char *err, size_t errlen) {
     t->ssl = p_SSL_new(t->ctx);
-    if (!t->ssl || !p_SSL_set_fd(t->ssl, sock)) {
+    if (!t->ssl || !p_SSL_set_fd(t->ssl, plat_fd_socket(fd))) {
         say_error(err, errlen, "cannot set up TLS");
         return false;
     }
@@ -169,7 +185,7 @@ static bool tls_attach(Tls *t, int sock, char *err, size_t errlen) {
     return true;
 }
 
-static Tls *client_setup(int sock, const char *host, const char *ca_file, char *err, size_t errlen) {
+static Tls *client_setup(int fd, const char *host, const char *ca_file, char *err, size_t errlen) {
     Tls *t = tls_new(false, err, errlen);
     if (!t) return NULL;
     p_SSL_CTX_set_verify(t->ctx, SSL_VERIFY_PEER, NULL);
@@ -179,10 +195,11 @@ static Tls *client_setup(int sock, const char *host, const char *ca_file, char *
         tls_free(t);
         return NULL;
     }
-    if (!tls_attach(t, sock, err, errlen)) {
+    if (!tls_attach(t, fd, err, errlen)) {
         tls_free(t);
         return NULL;
     }
+    t->fd = fd;
     p_SSL_set_connect_state(t->ssl);
     p_SSL_ctrl(t->ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, 0, (void *)host); /* (SNI; the certificate check is next) */
     if (!p_SSL_set1_host(t->ssl, host)) {
@@ -193,18 +210,18 @@ static Tls *client_setup(int sock, const char *host, const char *ca_file, char *
     return t;
 }
 
-Tls *tls_client(int sock, const char *host, const char *ca_file, char *err, size_t errlen) {
+Tls *tls_client(int fd, const char *host, const char *ca_file, char *err, size_t errlen) {
     if (!tls_available()) {
         snprintf(err, errlen, "no TLS library (OpenSSL or LibreSSL) was found");
         return NULL;
     }
     plat_mutex_lock(setup_lock());
-    Tls *t = client_setup(sock, host, ca_file, err, errlen);
+    Tls *t = client_setup(fd, host, ca_file, err, errlen);
     plat_mutex_unlock(setup_lock());
     return t;
 }
 
-static Tls *server_setup(int sock, const char *cert_file, const char *key_file, char *err, size_t errlen) {
+static Tls *server_setup(int fd, const char *cert_file, const char *key_file, char *err, size_t errlen) {
     Tls *t = tls_new(true, err, errlen);
     if (!t) return NULL;
     p_SSL_CTX_set_verify(t->ctx, SSL_VERIFY_NONE, NULL);
@@ -214,21 +231,22 @@ static Tls *server_setup(int sock, const char *cert_file, const char *key_file, 
         tls_free(t);
         return NULL;
     }
-    if (!tls_attach(t, sock, err, errlen)) {
+    if (!tls_attach(t, fd, err, errlen)) {
         tls_free(t);
         return NULL;
     }
+    t->fd = fd;
     p_SSL_set_accept_state(t->ssl);
     return t;
 }
 
-Tls *tls_server(int sock, const char *cert_file, const char *key_file, char *err, size_t errlen) {
+Tls *tls_server(int fd, const char *cert_file, const char *key_file, char *err, size_t errlen) {
     if (!tls_available()) {
         snprintf(err, errlen, "no TLS library (OpenSSL or LibreSSL) was found");
         return NULL;
     }
     plat_mutex_lock(setup_lock());
-    Tls *t = server_setup(sock, cert_file, key_file, err, errlen);
+    Tls *t = server_setup(fd, cert_file, key_file, err, errlen);
     plat_mutex_unlock(setup_lock());
     return t;
 }
@@ -246,29 +264,38 @@ static int after(const Tls *t, int r, const char *what, char *err, size_t errlen
 }
 
 int tls_handshake(Tls *t, char *err, size_t errlen) {
+    plat_mutex_lock(t->lock);
     p_ERR_clear_error();
     int r = p_SSL_do_handshake(t->ssl);
-    return r == 1 ? TLS_OK : after(t, r, "handshake", err, errlen);
+    int got = r == 1 ? TLS_OK : after(t, r, "handshake", err, errlen);
+    plat_mutex_unlock(t->lock);
+    return got;
 }
 
 long tls_read(Tls *t, void *buf, size_t n, char *err, size_t errlen) {
+    plat_mutex_lock(t->lock);
     p_ERR_clear_error();
     int r = p_SSL_read(t->ssl, buf, n > 1u << 30 ? 1 << 30 : (int)n);
-    if (r > 0) return r;
-    int e = p_SSL_get_error(t->ssl, r);
-    if (e == SSL_ERROR_ZERO_RETURN) return 0;
-    return after(t, r, "read", err, errlen);
+    long got = r;
+    if (r <= 0) got = p_SSL_get_error(t->ssl, r) == SSL_ERROR_ZERO_RETURN ? 0 : after(t, r, "read", err, errlen);
+    plat_mutex_unlock(t->lock);
+    return got;
 }
 
 long tls_write(Tls *t, const void *buf, size_t n, char *err, size_t errlen) {
+    plat_mutex_lock(t->lock);
     p_ERR_clear_error();
     int r = p_SSL_write(t->ssl, buf, n > 1u << 30 ? 1 << 30 : (int)n);
-    return r > 0 ? r : after(t, r, "write", err, errlen);
+    long got = r > 0 ? r : after(t, r, "write", err, errlen);
+    plat_mutex_unlock(t->lock);
+    return got;
 }
 
 void tls_close_write(Tls *t) {
+    plat_mutex_lock(t->lock);
     p_ERR_clear_error();
     p_SSL_shutdown(t->ssl); /* sends close_notify; the socket may be full, and then the close says it */
+    plat_mutex_unlock(t->lock);
 }
 
 const char *tls_version(const Tls *t) { return p_SSL_get_version(t->ssl); }
