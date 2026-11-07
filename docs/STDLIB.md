@@ -96,6 +96,14 @@ Handles belong to their process and cannot be sent to another (`E_TYPE`).
 * `net.connect(host, port, timeout_ms)` resolves the name and connects on the
   I/O pool, trying each address in turn. Everything after that uses the poller.
   Connections have `TCP_NODELAY` set, which suits request/reply protocols.
+* Ports are 1 to 65535 for `net.connect` and `net.send_to`, and 0 to 65535 for
+  `net.listen` and `net.udp`, where 0 picks a free one; any other is `E_RANGE`.
+* The side that closes a connection first keeps its port for a while after
+  (TCP's TIME_WAIT, a minute or more). A client that opens and closes many
+  connections quickly can run out of local ports, and `net.connect` then fails
+  with `E_RESOURCES` (Windows has about 16,000 such ports, Linux about 28,000
+  for each destination). Where the protocol allows it, let the server close
+  first: its waiting connections hold only the port it listens on.
 * UDP: `net.udp(host, port)` makes a bound socket, `net.send_to` sends a
   datagram, and `net.recv_from` waits for one and returns its sender.
 * DNS: `net.resolve(name)` returns the addresses. Names given to `listen`,
@@ -590,14 +598,14 @@ and the path, and gives the OS's description:
 | `E_RESET` | the other end of a pipe or connection closed it |
 | `E_REFUSED` | nothing is listening at that address |
 | `E_ADDR_IN_USE` | `net.listen` on a port already in use |
-| `E_RESOURCES` | out of descriptors, memory or disk space |
+| `E_RESOURCES` | out of descriptors, memory or disk space, or (`net.connect`) of local ports |
 | `E_IO` | any other OS error |
 | `E_TYPE` | a wrong argument (a handle of another kind, a bad mode or format spec) |
 | `E_JSON` | malformed JSON (with line and column), or a value with no JSON form |
 | `E_TIMEOUT`, `E_NOPROC`, `E_DEADLOCK` | `proc.call`: no reply in time, no such process, or no reply possible |
 | `E_RESTARTS` | a supervisor gave up: its children failed too often |
 | `E_PARSE` | malformed text for `time.parse`, `hex.decode`, `base64.decode`, `url.decode` or `csv.parse` |
-| `E_RANGE` | an argument out of range (an offset beyond a day, a time or `Date` outside the years 1678 to 2261, `random.int` with lo > hi, `random.bytes` of more than 16 MiB, a SipHash key that is not 16 bytes, `math.powmod` with e < 0 or m <= 0) |
+| `E_RANGE` | an argument out of range (an offset beyond a day, a time or `Date` outside the years 1678 to 2261, `random.int` with lo > hi, `random.bytes` of more than 16 MiB, a SipHash key that is not 16 bytes, `math.powmod` with e < 0 or m <= 0, a port outside 0 to 65535, or 0 for `net.connect` and `net.send_to`) |
 | `E_OVERFLOW` | a result that does not fit (`math.lcm`) |
 | `E_CALLBACK` | a comparator, probe or C callback tried to wait |
 

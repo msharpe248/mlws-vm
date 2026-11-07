@@ -752,9 +752,16 @@ static FileH *get_kind(Process *p, Word v, int kind, const char *what) {
     return h;
 }
 
+/* A port argument: 0 to 65535, or from 1 where 0 (any port) means nothing. */
+static bool port_ok(Process *p, int64_t port, bool any, const char *who) {
+    if (port >= (any ? 0 : 1) && port <= 65535) return true;
+    native_fail(p, "E_RANGE", "%s: port %lld is not %s to 65535", who, (long long)port, any ? "0" : "1");
+    return false;
+}
+
 static void net_listen(Process *p, Word *a, Word *r) {
     const char *host = get_str(p, a[0], "the host");
-    if (!host || !may_net(p, CAP_LISTEN, host, a[1].i)) return;
+    if (!host || !port_ok(p, a[1].i, true, "net.listen") || !may_net(p, CAP_LISTEN, host, a[1].i)) return;
     if (!plat_host_numeric(host) && !on_pool(p)) return; /* a name: DNS may block */
     int err = 0, fd = plat_sock_listen(host, (int)a[1].i, &err);
     if (fd < 0) fail_os(p, err, host);
@@ -772,7 +779,8 @@ static void net_accept(Process *p, Word *a, Word *r) {
 
 static void net_connect(Process *p, Word *a, Word *r) {
     const char *host = get_str(p, a[0], "the host");
-    if (!host || !may_net(p, CAP_CONNECT, host, a[1].i) || !on_pool(p)) return; /* resolving and connecting block */
+    if (!host || !port_ok(p, a[1].i, false, "net.connect") || !may_net(p, CAP_CONNECT, host, a[1].i) || !on_pool(p))
+        return; /* resolving and connecting block */
     int err = 0, fd = plat_sock_connect(host, (int)a[1].i, a[2].i, &err);
     if (fd < 0) {
         char what[300];
@@ -952,7 +960,7 @@ static void net_resolve(Process *p, Word *a, Word *r) {
 
 static void net_udp(Process *p, Word *a, Word *r) {
     const char *host = get_str(p, a[0], "the host");
-    if (!host || !may_net(p, CAP_LISTEN, host, a[1].i)) return;
+    if (!host || !port_ok(p, a[1].i, true, "net.udp") || !may_net(p, CAP_LISTEN, host, a[1].i)) return;
     if (!plat_host_numeric(host) && !on_pool(p)) return;
     int err = 0, fd = plat_udp_open(host, (int)a[1].i, &err);
     if (fd < 0) fail_os(p, err, host);
@@ -965,7 +973,9 @@ static void net_send_to(Process *p, Word *a, Word *r) {
     const char *host = get_str(p, a[1], "the host");
     const uint8_t *data;
     size_t n;
-    if (!h || !host || !get_data(p, a[3], &data, &n) || timed_out(p, h) || !may_net(p, CAP_CONNECT, host, a[2].i)) return;
+    if (!h || !host || !get_data(p, a[3], &data, &n) || timed_out(p, h) || !port_ok(p, a[2].i, false, "net.send_to") ||
+        !may_net(p, CAP_CONNECT, host, a[2].i))
+        return;
     if (!plat_host_numeric(host) && !on_pool(p)) return;
     int err = 0;
     long s = plat_udp_send(h->fd, host, (int)a[2].i, data, n, &err);

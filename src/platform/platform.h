@@ -92,6 +92,9 @@ bool plat_restrict_writes(const char *path);  /* writable only by its owner (064
 int plat_last_error(void);
 const char *plat_err_code(int err);
 const char *plat_err_text(int err);
+/* plat_sock_connect's error when no local port is free, on every system:
+ * E_RESOURCES, with this text. */
+#define NO_PORT_TEXT "no local port is free (too many connections opened or recently closed)"
 
 #define PLAT_O_READ 1
 #define PLAT_O_WRITE 2

@@ -268,6 +268,14 @@ MLWSVM_OPT=3 $BIN debug tests/tools/debugger_locals.masm < "$DAPD/script" | grep
 $BIN debug --opt 3 tests/tools/debugger_locals.masm < "$DAPD/script" | grep -q "No function named 'area'" || fail "debug --opt 3: not optimized"
 rm -rf "${DAPD:?}"
 
+# A connect with no local port free fails with E_RESOURCES on every system.
+# Only on Linux, which runs out of ports per destination (elsewhere every
+# program on the machine would lose its ports), with descriptors enough.
+if [ "$(uname -s)" = Linux ] && [ "$(ulimit -Hn)" = unlimited -o "$(ulimit -Hn)" -ge 70000 ] 2>/dev/null; then
+    OUT=$($BIN run tests/tools/_net/no_port.masm 2>&1) || fail "no_port: $OUT"
+    echo "$OUT" | grep -q 'E_RESOURCES net.connect: 127.0.0.1:[0-9]*: no local port is free' || fail "no_port: $OUT"
+fi
+
 # std.node: two VMs on this machine, plainly and, if there is a TLS library,
 # over TLS. Node 1 checks all of it against node 2, and ends it.
 NODED=$(mktemp -d)

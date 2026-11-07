@@ -44,6 +44,8 @@ const char *plat_err_code(int err) {
         return "E_RESET";
     case WSAEADDRINUSE: case ERROR_ADDRESS_ALREADY_ASSOCIATED:
         return "E_ADDR_IN_USE";
+    case WERR_NO_PORT:
+        return "E_RESOURCES";
     case ERROR_TOO_MANY_OPEN_FILES: case ERROR_NOT_ENOUGH_MEMORY: case ERROR_OUTOFMEMORY: case ERROR_DISK_FULL:
     case ERROR_HANDLE_DISK_FULL: case ERROR_NO_SYSTEM_RESOURCES: case WSAEMFILE: case WSAENOBUFS:
         return "E_RESOURCES";
@@ -55,6 +57,7 @@ const char *plat_err_code(int err) {
 const char *plat_err_text(int err) {
     static MLWS_THREAD_LOCAL char buf[400];
     if (err == WERR_IS_DIR) return "is a directory";
+    if (err == WERR_NO_PORT) return NO_PORT_TEXT;
     wchar_t w[400];
     DWORD k = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, (DWORD)err,
                              MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), w, 400, NULL);
@@ -618,7 +621,8 @@ int plat_sock_connect(const char *host, int port, int64_t timeout_ms, int *err) 
             }
         }
         if (x) {
-            *err = x;
+            /* An unbound socket's connect: no local port was free. */
+            *err = x == WSAEADDRINUSE ? WERR_NO_PORT : x;
             closesocket(s);
             s = INVALID_SOCKET;
         }

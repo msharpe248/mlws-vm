@@ -32,6 +32,7 @@ int64_t win_filetime_ns(FILETIME ft); /* 100 ns units since 1601 -> ns since 197
 
 /* Error codes of our own, outside Windows' range (bit 29: "customer" codes). */
 #define WERR_IS_DIR 0x20000001
+#define WERR_NO_PORT 0x20000002 /* connect: no local port free */
 
 #endif
 #endif

@@ -1,0 +1,31 @@
+; Holds connections to one port open until a connect fails for want of a
+; local port, and prints why: E_RESOURCES, whatever the system calls it
+; (Linux's EADDRNOTAVAIL, Windows' WSAEADDRINUSE). Linux picks ports per
+; destination, so only connections to this one port run out: about 28,000
+; (32768-60999), two descriptors each. check_tools.sh runs it on Linux; on
+; macOS and the BSDs it would take the ports of every program on the machine.
+.include "std/io.inc"
+.func main
+    ncall "net.listen" ("127.0.0.1", 0) -> (R0)
+    ncall "net.port" (R0) -> (I5)
+    lnew R6                            ; every connection's two ends, kept open
+    mov I1, 0
+1:
+.try h
+    ncall "net.connect" ("127.0.0.1", I5, 2000) -> (R1)
+.endtry
+    ncall "net.accept" (R0) -> (R2)
+    lpush R6, R1, R2
+    inc I1
+    blt I1, 40000, 1b
+    PRINTLN_S "all 40000 connected"
+    ret 1
+h:  catch R3
+    PRINT_S "after "
+    PRINT_I I1
+    PRINT_S " connections: "
+    PRINT_S R3->Error.code
+    PRINT_S " "
+    PRINTLN_S R3->Error.message
+    ret 0
+.endf

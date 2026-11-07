@@ -45,13 +45,17 @@ extern char **environ;
 
 int plat_last_error(void) { return errno; }
 
-/* Name resolution errors are not errno values. */
+/* Name resolution errors are not errno values, nor is a connect's want of
+ * a local port (EADDRNOTAVAIL from connect), which means more than that
+ * elsewhere. */
 #define ERR_UNKNOWN_HOST 100001
 #define ERR_RESOLVE 100002
+#define ERR_NO_PORT 100003
 
 const char *plat_err_code(int err) {
     switch (err) {
     case ERR_UNKNOWN_HOST: return "E_NOT_FOUND";
+    case ERR_NO_PORT: return "E_RESOURCES";
     case ERR_RESOLVE: return "E_IO";
     case ENOENT: case ENOTDIR: return "E_NOT_FOUND";
     case EEXIST: case ENOTEMPTY: return "E_EXISTS";
@@ -70,6 +74,7 @@ const char *plat_err_code(int err) {
 const char *plat_err_text(int err) {
     if (err == ERR_UNKNOWN_HOST) return "unknown host";
     if (err == ERR_RESOLVE) return "name resolution failed";
+    if (err == ERR_NO_PORT) return NO_PORT_TEXT;
     return strerror(err);
 }
 
@@ -394,7 +399,9 @@ int plat_sock_connect(const char *host, int port, int64_t timeout_ms, int *err) 
             errno = soerr;
         }
         if (rc != 0) {
-            *err = errno;
+            /* An unbound socket's connect: no local port was free (Linux's
+             * meaning; the BSDs' too, the port being checked before). */
+            *err = errno == EADDRNOTAVAIL ? ERR_NO_PORT : errno;
             close(fd);
             fd = -1;
         }

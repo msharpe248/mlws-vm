@@ -1,6 +1,9 @@
 ; 1000 connections open at once, each handled by its own waiting process: none
 ; holds a thread (two worker threads here). Then each client sends a line and
-; gets it back.
+; gets it back. The server closes first, so the waiting state after a close
+; (TIME_WAIT) is on the listening port's side, not on 1000 client ports
+; (tcp_echo.masm says why); the clients are linked to main, so one that fails
+; ends the test.
 ; threads: 2
 .include "std/test.inc"
 .const N = 1000
@@ -19,6 +22,10 @@
     ncall "fs.write" (R0, "ping\n")
     ncall "fs.read_line" (R0) -> (R1)
     strcmp I2, R1, "ping"
+    ncall "fs.read_line" (R0) -> (R3)  ; the end of input: the server closed first
+    bz.r R3, 1f
+    mov I2, 1
+1:  ncall "fs.close" (R0)
     send parent, I2
     ret
 .endf
@@ -27,7 +34,7 @@
     ncall "net.port" (R0) -> (I0)
     alloc P0, N * 8
     mov I1, 0
-1:  spawn client (PID, I0) -> (I2)
+1:  spawnl client (PID, I0) -> (I2)
     mov P0[I1], I2
     ncall "net.accept" (R0) -> (R1)
     ncall "fs.give" (R1) -> (I3)

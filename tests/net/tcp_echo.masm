@@ -1,13 +1,22 @@
 ; A TCP echo server with a process per connection: the acceptor hands each
 ; connection to its own handler with fs.give / fs.take, and 50 clients, each
 ; in its own process, talk to it at the same time.
+;
+; The server closes first (after "bye"), so the waiting state that follows a
+; TCP close (TIME_WAIT) is on its side, on the listening port: a client that
+; closed first would leave its own port waiting, and a suite run many times
+; over can use up the client ports (Windows has about 16,000). The clients
+; are linked to main, so one that fails ends the test instead of leaving
+; main waiting for its connection.
 .include "std/test.inc"
 .const CLIENTS = 50
-; Echo lines until the client closes.
+; Echo lines until "bye" (or the end of input), then close.
 .func handler(i64 ticket)
     ncall "fs.take" (ticket) -> (R0)
 1:  ncall "fs.read_line" (R0) -> (R1)
     bz.r R1, 2f
+    strcmp I0, R1, "bye"
+    bz I0, 2f
     strcat R2, R1, "\n"
     ncall "fs.write" (R0, R2)
     jmp 1b
@@ -22,8 +31,12 @@
     ncall "fs.read_line" (R0) -> (R3)
     strcat R4, "hello ", R1
     strcmp I3, R3, R4
-    ncall "fs.close" (R0)
-    send parent, I3                    ; 0: the echo matched
+    ncall "fs.write" (R0, "bye\n")
+    ncall "fs.read_line" (R0) -> (R5)  ; the end of input: the server closed first
+    bz.r R5, 1f
+    mov I3, 1
+1:  ncall "fs.close" (R0)
+    send parent, I3                    ; 0: the echo matched, then the server closed
     ret
 .endf
 .func main
@@ -31,7 +44,7 @@
     ncall "net.port" (R0) -> (I0)
     ASSERT_GT I0, 0
     mov I1, 0
-1:  spawn client (PID, I0, I1)
+1:  spawnl client (PID, I0, I1)
     inc I1
     blt I1, CLIENTS, 1b
     mov I1, 0                          ; accept them all, a handler each
