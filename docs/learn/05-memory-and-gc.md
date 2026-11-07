@@ -334,7 +334,7 @@ object as if it were a root, in `gc_minor`:
 ```c
 static void gc_minor(Process *p) {
     ...
-    mark_roots(p);
+    mark_roots(p, UINT32_MAX);
     uint64_t rescanned = 0;
     for (size_t i = 0; i < p->remset.n; i++) {
         Obj *o = p->remset.v[i];

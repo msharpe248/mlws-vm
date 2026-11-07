@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M64
+## Milestones M11–M65
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -86,6 +86,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M62 TLS between nodes** (done) | `std.node`'s `start_tls` and `connect_tls`: the connection is TLS before the cookie is proved, the connecting node checks the other's certificate, and a TLS node takes no plain connections. A TLS session can be shared by two handles (`net.split`), with a lock and its own descriptor of the socket. Found on the way, and fixed: a connection given to another process after its handshake (`fs.give`) lost its TLS, and went on in plain text | `tests/net/tls`: a connection given after its handshake, and one split between a reader and a writer, both failing without the fix. `make check-tools`: the two VMs again over TLS, with a plain connection refused |
 | **M63 Variables by name in the debuggers** (done) | `.local name, REG`: a register holds a variable of the translated program, from here until the function ends or the name or register is given again. Named parameters and `.alias` names count too. Kept in the module (format version 10) and printed back by `dis`; `locals` and `print NAME` in `mlwsvm debug`, a Locals scope and evaluating by name in `mlwsvm dap`. A function the optimizer changes loses its names | `tests/tools/debugger_locals`: names coming and going, a parameter's register taken by `.local`, an alias ending; `make check-tools`: Locals in a DAP session and a name evaluated; `dis` printing `.local` back |
 | **M64 The regular expressions checked against Python's** (done) | `make check-regex`, also a step of `make release-check`: 12,000 random patterns over classes, groups, alternation, anchors and every repeat, greedy and lazy, run by both engines on random texts. The whole match must agree; groups may differ only where a loop over what can match nothing leaves its capture | itself; it found nothing that 0.17.0's one-off comparison had not |
+| **M65 Freeing old module versions** (done) | `module.purge` frees the versions of a module that reloads replaced, once nothing can run them: no process has one of their functions on its stack, or reaches a closure or a suspended coroutine of theirs, in its heap, a message not yet taken, or a finalizer to call. It stops the world and walks every heap with the write barrier's check, and costs nothing unless called; it returns how many versions it freed and kept. Kept without looking: all, during a blocking native call or with a tool's hook on, and a version with FFI declarations. A freed version keeps its struct types and its `Function` records, without code, so no other function can take their addresses | `tests/loader/purge`: one round for each kind of holder (a closure in a register, a coroutine, another process's heap, a message not taken, a finalizer, a frame), each failing when its check is taken out; objects of a freed version's struct type, a pointer into its data, a call site compiled for it; in every mode |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -194,8 +195,14 @@ Capabilities: M60.
   completion-port poller ([DESIGN.md](DESIGN.md) §23).
 
 Not done in distribution (M61): `link` and `proc.call` across nodes;
-and a value's cycles, which do not cross. Not done in hot reloading (M55): freeing
-old versions, and data carried between them.
+and a value's cycles, which do not cross. Not done in hot reloading (M55): data
+carried between versions.
+
+Not done in single executables (M54): signing on macOS. `codesign` signs the
+executable but rejects the program appended to it, so a bundle cannot be
+notarized. Doing it means writing the program inside the Mach-O file (a
+segment of its own before `__LINKEDIT`, and every load command's offsets
+moved), which waits until bundles are to be given to other people's Macs.
 
 ## 4. Performance (when measurements call for it)
 

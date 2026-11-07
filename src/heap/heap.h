@@ -45,6 +45,9 @@ void *gc_buf_alloc(Process *p, Obj *o, size_t n); /* o's own buffer, zeroed */
 void gc_buf_free(Process *p, const Obj *o, void *b, size_t n); /* n: as allocated */
 void gc_collect(Process *p);
 uint64_t gc_heap_peak(const Process *p); /* the heap's largest size so far */
+struct LModule;
+/* Whether p could still run code of lm, a replaced version (vm_purge; the world stopped). */
+bool gc_holds_code(Process *p, const struct LModule *lm, uint32_t own_global);
 /* The chunks' size, their lines, and the lines old objects were on at the
  * last collection (--stats: how fragmented they are). */
 void gc_chunk_usage(const Process *p, uint64_t *bytes, uint64_t *lines, uint64_t *used);

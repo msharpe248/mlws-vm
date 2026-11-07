@@ -1,8 +1,8 @@
 /* modload.c - module.*: loading modules while the program runs (docs/ABI.md,
  * "Loading modules at run time"). A module is named by its string, looked up
  * as an import from the calling module would be (a program's own module
- * looks in its directory first); once loaded it stays loaded until the VM
- * ends, so a closure for one of its functions never outlives its code. */
+ * looks in its directory first). A version a reload replaced stays until
+ * module.purge finds nothing that can run it. */
 #include "../heap/heap.h"
 
 static const char *name_arg(Process *p, Word a, const char *fn) {
@@ -59,6 +59,16 @@ static void n_reload(Process *p, Word *a, Word *r) {
     proc_grow_globals(p);
 }
 
+static void n_purge(Process *p, Word *a, Word *r) {
+    const char *name = name_arg(p, a[0], "module.purge");
+    no_caps(p, "module.purge");
+    uint32_t freed, kept;
+    MlwsError err = {{0}, {0}};
+    if (!vm_purge(p->vm, name, caller_module(p), &freed, &kept, &err)) vm_trap(p, err.code, "%s", err.msg);
+    r[0].i = freed;
+    r[1].i = kept;
+}
+
 static void n_reload_text(Process *p, Word *a, Word *r) {
     (void)r;
     const char *name = name_arg(p, a[0], "module.reload_text");
@@ -106,6 +116,8 @@ static const NativeDef MODULE_NATIVES[] = {
       "Load a new version of a loaded module from its file: calls from other modules go to it from now on, while code already running, closures made from the old version and the old version's calls to itself stay on the old one. Fails with nothing changed if a module using it would not link to the new version (E_LINK_RELOAD, E_LINK_UNDEF)."),
     N("module.reload_text", 2, T(T_R, T_R), 0, T(0), n_reload_text,
       "The same, with the new version's assembly text: a program's own compiler or deployment can supply it."),
+    N("module.purge", 1, T(T_R), 2, T(T_I64, T_I64), n_purge,
+      "Free the old versions of a module that reloads replaced and that nothing can run now: no process has one of their functions on its stack, or reaches a closure or a suspended coroutine of theirs. Returns how many were freed, and how many were kept (still in use, or not to be checked now: a process is in a blocking native call, or a debugger, profiler or trace is on). Struct types stay, and a pointer into a freed version's data traps."),
     N("module.loaded", 1, T(T_R), 1, T(T_B), n_loaded,
       "Whether a module is loaded: the module that name means to the caller, as for module.load."),
     N("module.function", 2, T(T_R, T_R), 1, T(T_R), n_function,

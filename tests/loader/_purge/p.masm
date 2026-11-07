@@ -1,0 +1,34 @@
+; The first version of the module purge.masm replaces, then frees.
+.export version, address, gen, make, call_back, noted
+.export Point
+.struct Point
+    x: i64
+.ends
+n:  .i64 5
+.func version -> i64
+    ret 1
+.endf
+; A pointer into this version's data.
+.func address -> ptr
+    lea P0, @n
+    ret P0
+.endf
+; A coroutine's body: yields this version, then returns it.
+.func gen -> i64
+    coyield (1)
+    ret 1
+.endf
+.func make(i64 v) -> ref
+    new R0, Point
+    mov R0->Point.x, v
+    ret R0
+.endf
+; Calls f while this version is on the stack.
+.func call_back(ref f) -> (i64, i64)
+    calli f () -> (I0, I1)
+    ret I0, I1
+.endf
+; A finalizer: notes the object in its log, UP-less (the log is the object's).
+.func noted(ref o)
+    ret
+.endf

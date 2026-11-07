@@ -10,6 +10,7 @@
  * shared by every program. */
 #include "../asm/asm.h"
 #include "../platform/platform.h"
+#include "../heap/heap.h"
 #include "../heap/numeric.h"
 #include "../core/version.h"
 #include "../loader/bundle.h"
@@ -851,6 +852,170 @@ LModule *vm_reload(VM *vm, const char *name, const char *text, const LModule *fr
     return nw;
 }
 
+/* ---- freeing replaced versions ---------------------------------------------------- */
+
+/* What a version's FFI declarations made outlives it in the VM (callback
+ * types, foreign functions' descriptions), so a version with any stays. */
+static bool binds_foreign(const Module *m) {
+    return m->nexterns || m->ncallbacks || m->nextensions || m->ncstructs || m->nffrees;
+}
+
+/* Whether anything could still run v's code: another module's code (which a
+ * reload pointed at the new version, so this is only a check), or a process:
+ * see gc_holds_code. The world is stopped. */
+static bool version_in_use(VM *vm, const LModule *v) {
+    for (size_t i = 0; i < vm->mods.n; i++) {
+        const LModule *x = vm->mods.v[i];
+        if (x == v || x->state != LM_READY) continue;
+        for (uint32_t d = 0; d < x->m->nimports; d++)
+            if (x->deps[d] == v) return true;
+        for (uint32_t k = 0; k < x->m->nfuncs; k++) {
+            const Function *f = &x->funcs[k];
+            if (f->target->mod == v) return true;
+            if (f->target != f) continue;
+            for (uint32_t pc = 0; pc < f->ncode; pc++)
+                for (int o = 0; o < f->code[pc].nops; o++)
+                    if (f->code[pc].ops[o].mode == OM_FUNC && ((const Function *)f->code[pc].ops[o].rv.ptr)->mod == v)
+                        return true;
+        }
+    }
+    for (uint64_t pid = 1, end = vm_pid_end(vm); pid < end; pid++) {
+        Process *p = vm_proc_at(vm, pid);
+        if (p && gc_holds_code(p, v, (uint32_t)v->index)) return true;
+    }
+    for (size_t i = 0; i < vm->progs.n; i++) { /* a main that has ended: its results are still read */
+        Process *p = vm->progs.v[i]->main;
+        if (p && vm_proc_at(vm, p->pid) != p && gc_holds_code(p, v, (uint32_t)v->index)) return true;
+    }
+    return false;
+}
+
+/* Whether a process is in a blocking native call, on an I/O thread: the native
+ * may use its heap, and call back into code, while the world is stopped. */
+static bool blocking_call_in_flight(VM *vm) {
+    for (uint64_t pid = 1, end = vm_pid_end(vm); pid < end; pid++) {
+        Process *p = vm_proc_at(vm, pid);
+        if (!p) continue;
+        plat_lock(p->lock);
+        bool busy = p->bcall.state == BCALL_PENDING || p->on_io_thread;
+        plat_unlock(p->lock);
+        if (busy) return true;
+    }
+    return false;
+}
+
+static char *keep_str(VM *vm, const char *s) {
+    char *c = xstrdup(s ? s : "");
+    VEC_PUSH(vm->retired, c);
+    return c;
+}
+
+static void drop_globals(Process *p, uint32_t index) {
+    if (index >= p->nglobals) return;
+    Segment *g = &p->globals[index];
+    free(g->data);
+    free(g->tags);
+    memset(g, 0, sizeof *g); /* not live: a pointer into it traps */
+}
+
+static const MFunc PURGED_MF = {0};
+
+/* Free v, which nothing can run now. What stays: its LModule, for its place
+ * in vm->mods (each process's global segments are numbered by it), with a
+ * module of no functions; its Function records, without code, for their
+ * addresses not to be taken by another function's (compiled closure calls
+ * compare them; interp_forget_callees); and its struct types, which values
+ * and newer versions share. Names that outlive it are copied. */
+static void purge_version(VM *vm, LModule *v) {
+    Module *m = v->m;
+    interp_forget_callees(vm, v);
+    plat_lock(vm->lock);
+    for (uint32_t i = 0; i < m->nfuncs; i++) {
+        Function *f = &v->funcs[i];
+        const char *old = f->name;
+        char *name = keep_str(vm, old); /* a process's entry (Process.entry) and the exits shown may name it */
+        for (size_t k = 0; k < vm->exits.n; k++)
+            if (vm->exits.v[k].entry == old) vm->exits.v[k].entry = name;
+        if (f->target == f)
+            for (uint32_t k = 0; k < f->ncode; k++) insn_free(&f->code[k]);
+        free(f->code);
+        free(f->bp);
+        free(f->prof);
+        free(f->jit_entry);
+        free(f->jit_xop);
+        memset(f, 0, sizeof *f);
+        f->name = name;
+        f->mod = v;
+        f->mf = &PURGED_MF;
+        f->target = f;
+    }
+    plat_unlock(vm->lock);
+    for (uint32_t i = 0; i < m->nstructs; i++) {
+        StructDef *d = &v->sdefs[i];
+        if (!d->name) continue; /* not defined here */
+        d->name = keep_str(vm, d->name);
+        d->module = keep_str(vm, d->module);
+        char **fields = xcalloc(d->nfields + 1, sizeof *fields);
+        for (uint32_t k = 0; k < d->nfields; k++) fields[k] = keep_str(vm, d->fields[k]);
+        uint8_t *types = xmalloc(d->nfields + 1);
+        memcpy(types, d->types, d->nfields);
+        VEC_PUSH(vm->retired, fields);
+        VEC_PUSH(vm->retired, types);
+        d->fields = fields;
+        d->types = types;
+    }
+    for (uint64_t pid = 1, end = vm_pid_end(vm); pid < end; pid++) {
+        Process *p = vm_proc_at(vm, pid);
+        if (p) drop_globals(p, (uint32_t)v->index);
+    }
+    for (size_t i = 0; i < vm->progs.n; i++)
+        if (vm->progs.v[i]->main) drop_globals(vm->progs.v[i]->main, (uint32_t)v->index);
+    free(v->consts);
+    free(v->grefs);
+    free(v->natives);
+    free(v->structs);
+    free(v->frefs);
+    free(v->deps);
+    v->consts = NULL;
+    v->grefs = NULL;
+    v->natives = NULL;
+    v->structs = NULL;
+    v->frefs = NULL;
+    v->deps = NULL;
+    Module *stub = xcalloc(1, sizeof *stub);
+    stub->name = xstrdup(m->name);
+    v->m = stub;
+    v->state = LM_PURGED;
+    module_free(m);
+}
+
+bool vm_purge(VM *vm, const char *name, const LModule *from, uint32_t *freed, uint32_t *kept, MlwsError *err) {
+    *freed = *kept = 0;
+    LModule *cur = vm_module_named(vm, name, from);
+    if (!cur) return mlws_err(err, "E_LOAD_NOT_FOUND", "module %s is not loaded", name);
+    if (atomic_exchange(&vm->reloading, true))
+        return mlws_err(err, "E_BUSY", "a module is being reloaded or purged");
+    sched_stop_world(vm);
+    plat_lock(vm->mods_lock);
+    bool tools = vm->hook != NULL; /* the debugger, profiler and trace hold functions */
+    int unsure = -1;
+    for (size_t i = 0; i < vm->mods.n; i++) {
+        LModule *v = vm->mods.v[i];
+        if (v == cur || !v->replaced || v->state != LM_READY || strcmp(v->key, cur->key)) continue;
+        if (unsure == -1) unsure = tools || blocking_call_in_flight(vm);
+        if (unsure || binds_foreign(v->m) || version_in_use(vm, v)) {
+            ++*kept;
+        } else {
+            purge_version(vm, v);
+            ++*freed;
+        }
+    }
+    plat_unlock(vm->mods_lock);
+    sched_start_world(vm);
+    atomic_store(&vm->reloading, false);
+    return true;
+}
+
 LModule *vm_module_named(VM *vm, const char *name, const LModule *from) {
     void *v = NULL;
     plat_lock(vm->mods_lock);
@@ -869,7 +1034,7 @@ LModule *vm_module_named(VM *vm, const char *name, const LModule *from) {
         int n = 0; /* asked from outside any program: the only program-local module of that name */
         for (size_t i = 0; i < vm->mods.n; i++) {
             LModule *x = vm->mods.v[i];
-            if (x->home && x->state == LM_READY && !strcmp(x->m->name, name)) v = x, n++;
+            if (x->home && x->state == LM_READY && !x->replaced && !strcmp(x->m->name, name)) v = x, n++;
         }
         if (n != 1) v = NULL;
     }

@@ -1230,6 +1230,29 @@ void interp_retarget(VM *vm, Insn *in, int k, Function *to) {
     __atomic_store_n(&in->k.p, (void *)np, __ATOMIC_RELEASE);
 }
 
+/* vm_purge is to free lm, a replaced version: a closure call site of another
+ * module that last called one of its functions forgets it, for the JIT not to
+ * compile for it (QPlan.seen). (Machine code already compiled for it stays:
+ * it compares a closure's function with lm's, which no closure has now, and
+ * Function records are never freed, so no other function can take its address.) */
+void interp_forget_callees(VM *vm, const LModule *lm) {
+    for (size_t i = 0; i < vm->mods.n; i++) {
+        LModule *x = vm->mods.v[i];
+        if (x == lm || x->state != LM_READY) continue;
+        for (uint32_t k = 0; k < x->m->nfuncs; k++) {
+            Function *f = &x->funcs[k];
+            if (f->target != f) continue;
+            for (uint32_t pc = 0; pc < f->ncode; pc++) {
+                uint16_t xo = f->jit_xop ? f->jit_xop[pc] : f->code[pc].xop; /* (the form under Q_JIT and Q_JITC) */
+                if (xo != Q_CALLI_R && xo != Q_CALLI_RK && xo != Q_TCALLI_R) continue;
+                QPlan *pl = (QPlan *)f->code[pc].k.p;
+                const Function *seen = __atomic_load_n(&pl->seen, __ATOMIC_RELAXED);
+                if (seen && seen->mod == lm) __atomic_store_n(&pl->seen, NULL, __ATOMIC_RELAXED);
+            }
+        }
+    }
+}
+
 void interp_quicken_function(Function *f) {
     quicken_fn = f->mf;
     /* Every register operand's slot in f's register window (Function.roff), in

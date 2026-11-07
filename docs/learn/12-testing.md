@@ -255,12 +255,16 @@ that code reading freed memory sees garbage instead of the old values.
 the program can reach may still be young, because a young object held only
 by an old one is found only if a write barrier remembered the old one.
 After each minor collection, `gc_verify` walks everything reachable, and
-`verify_reach` stops the VM at the first young object it meets:
+`verify_reach` stops the VM at the first young object it meets. (The same walk,
+with `walk_mod` set, is how `module.purge` looks for code of an old module
+version.)
 
 ```c
 static void verify_reach(Process *p, Obj *o) {
     if (o->flags & (OBJF_VERIFY | OBJF_IMMORTAL)) return;
-    if (!(o->flags & OBJF_OLD)) {
+    if (walk_mod) {
+        walk_found = walk_found || runs_walk_mod(o);
+    } else if (!(o->flags & OBJF_OLD)) {
         const Obj *by = p->gc_parent;
         fprintf(stderr, "mlwsvm: gc verify: a young %s is held by %s %s that was not remembered (a write barrier is missing)\n",
                 obj_kind_name(o->kind), by ? (by->flags & OBJF_OLD ? "an old" : "a young") : "a root, not",

@@ -1,6 +1,8 @@
 ; Processes on every worker thread call a module in a loop while main replaces
-; it twenty times. Each sees its versions in order and none other, with calls
-; hot enough to be compiled, and all reach the last one.
+; it twenty times, and frees what old versions it can after each (module.purge).
+; Each sees its versions in order and none other, with calls hot enough to be
+; compiled, and all reach the last one. Once they have ended, every old version
+; has been freed.
 .include "std/test.inc"
 .import _reload.count as c
 
@@ -20,6 +22,7 @@
 .endf
 
 .func main
+    mov I6, 0
     mov I0, 0
 1:  spawn caller (PID)
     inc I0
@@ -30,6 +33,8 @@
     ncall "module.reload_text" ("_reload.count", R1)
     call c.version -> (I2)
     ASSERT_EQ I2, I1
+    ncall "module.purge" ("_reload.count") -> (I4, I5)
+    add I6, I4                          ; freed so far
     inc I1
     ble I1, LAST, 2b
     mov I0, 0
@@ -37,5 +42,9 @@
     ASSERT_GT I3, 0
     inc I0
     blt I0, 8, 3b
+    ncall "module.purge" ("_reload.count") -> (I4, I5)
+    ASSERT_EQ I5, 0                     ; nothing runs them now
+    add I6, I4
+    ASSERT_EQ I6, 19                    ; versions 1 to 19
     ret 0
 .endf

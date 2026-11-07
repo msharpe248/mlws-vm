@@ -466,6 +466,7 @@ Segment *proc_segment(Process *p, uint64_t ptr) {
         if (seg - SEG_GLOBAL0 >= p->nglobals) proc_grow_globals(p); /* a module loaded since p started */
         if (seg - SEG_GLOBAL0 >= p->nglobals) vm_trap(p, "E_BAD_PTR", "invalid pointer (unknown global segment %u)", seg);
         s = &p->globals[seg - SEG_GLOBAL0];
+        if (!s->live) vm_trap(p, "E_BAD_PTR", "pointer into the data of a module version that module.purge freed");
     } else {
         uint32_t i = seg - SEG_RAW0;
         if (i >= p->raw.n) vm_trap(p, "E_BAD_PTR", "invalid pointer (unknown segment %u)", seg);

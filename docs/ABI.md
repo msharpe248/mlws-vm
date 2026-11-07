@@ -563,9 +563,10 @@ A running program can load a module it did not import, and call it:
   natives look up as an import from the calling module would: from one of
   the program's own modules, `"util"` means the program's `util` if its
   directory has one.
-* **A loaded module stays loaded** until the VM ends, so a closure can never
-  outlive its code. Loading another version of a module that is already
-  loaded is not possible.
+* **A loaded module stays loaded** until the VM ends. `module.load` of a
+  loaded module does nothing; a new version comes only by a reload (below),
+  and an old version is freed only when nothing can run it, so a closure never
+  outlives its code.
 * **Globals.** Every process has its own copy of each module's global
   segment, as always: a process started before the module was loaded gets
   its copy the first time it uses one of the module's globals.
@@ -603,7 +604,38 @@ compiler or a deployment that sends code over a socket:
   (`E_LINK_RELOAD`). The loader's own errors are raised as for `module.load`.
   A second reload while one is at work is `E_BUSY`.
 * A reload stops the other worker threads for an instant, at the end of their
-  time slices. Old versions stay in memory until the VM ends. It counts as an OS
-  call, as `module.load` does.
+  time slices. It counts as an OS call, as `module.load` does.
+
+### Freeing old versions
+
+An old version stays in memory until `module.purge` finds that nothing can run
+it, and frees it:
+
+```asm
+    ncall "module.purge" ("plugins.csv") -> (I0, I1)   ; freed, kept
+```
+
+* **A version is in use** while any process has one of its functions on its
+  stack, or can reach a closure of its functions or a coroutine suspended in
+  them: in its registers, stack, globals or heap, in a message delivered to it
+  and not yet taken, or as a finalizer still to be called. Its own globals do
+  not count, since only its code reads them.
+* **It returns how many old versions it freed, and how many it kept.** A kept
+  version is freed by a later purge, once whatever held it lets go. Purging is
+  never needed for correctness: an old version only costs memory.
+* **Kept without looking:** every old version while a process is in a blocking
+  native call (the call may use its process's heap) or while the debugger,
+  profiler or trace is on, and, always, a version that declares foreign
+  functions, callbacks or an extension (`.extern`, `.callback`, `.extension`),
+  whose foreign bindings outlive it.
+* **What stays of a freed version:** its struct types, since objects of them
+  live on and newer versions share them; a few bytes for each of its functions;
+  and the machine code the JIT made for it, which is never freed. Its
+  instructions and its data go: a pointer into its data, kept from before,
+  traps (`E_BAD_PTR`).
+* Like a reload, a purge stops the other worker threads while it looks, for as
+  long as it takes to walk every process's heap, and a purge while a reload or
+  another purge is at work is `E_BUSY`. It costs nothing unless called. It is not
+  allowed in a restricted process (`E_PERMISSION`).
 
 

@@ -127,7 +127,8 @@ typedef struct Function {
     uint8_t jit_state;
 } Function;
 
-enum { LM_LOADING = 1, LM_READY = 2, LM_FAILED = 3 }; /* FAILED: a load at run time that did not link */
+enum { LM_LOADING = 1, LM_READY = 2, LM_FAILED = 3, LM_PURGED = 4 }; /* FAILED: a load at run time that did not link;
+                                                                     PURGED: a replaced version freed (vm_purge) */
 
 #include "../core/builtins.h"
 
@@ -654,6 +655,9 @@ LModule *vm_load_dynamic(VM *vm, const char *name, const LModule *from, MlwsErro
  * one. Fails, changing nothing, if a module using it would not link to the
  * new one (docs/ABI.md, "Reloading a module"). */
 LModule *vm_reload(VM *vm, const char *name, const char *text, const LModule *from, MlwsError *err);
+/* Free the versions of a module that reloads replaced and that nothing can run
+ * now: *freed of them; *kept are still in use, or could not be checked. */
+bool vm_purge(VM *vm, const char *name, const LModule *from, uint32_t *freed, uint32_t *kept, MlwsError *err);
 /* The loaded, linked module that `name` means to `from` (as its import
  * would), or NULL. With from NULL: the library-path module of that name, or
  * else the only program-local one. */
@@ -745,6 +749,7 @@ void interp_jit_function(VM *vm, Function *f); /* after quickening: compile it, 
 void interp_jit_forget(VM *vm, Function *f);
 void interp_jit_again(VM *vm, Function *f);
 void interp_retarget(VM *vm, Insn *in, int k, Function *to); /* operand k, a function, is to now */
+void interp_forget_callees(VM *vm, const struct LModule *lm); /* (vm_purge) */
 void interp_jit_free(VM *vm);
 void interp_jit_report(VM *vm, FILE *out);
 bool interp_jit_available(void); /* in this build, on this machine */

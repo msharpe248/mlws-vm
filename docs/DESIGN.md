@@ -109,10 +109,10 @@ what lets the interpreter and the collector run without locks.
 | Structure | Defined in | What it is | Owned by | Lives |
 |---|---|---|---|---|
 | `OpInfo` | `core/opcodes.h` | One instruction's description, from `opcodes.def` | static table | forever |
-| `Module` | `core/module.h` | A module's tables and encoded code, as on disk | the `LModule` | until the VM ends |
+| `Module` | `core/module.h` | A module's tables and encoded code, as on disk | the `LModule` | until the VM ends, or `module.purge` frees its version |
 | `LModule` | `vm/vm.h` | A loaded module: its `Module`, resolved tables, `Function`s | `VM.mods` | until the VM ends |
-| `Function` | `vm/vm.h` | A function ready to run: decoded `Insn[]`, window layout, clear run | its `LModule` | until the VM ends |
-| `Insn`, `Operand` | `core/insn.h` | A decoded instruction (32 bytes) and its operands (72 bytes each) | its `Function` | until the VM ends |
+| `Function` | `vm/vm.h` | A function ready to run: decoded `Insn[]`, window layout, clear run | its `LModule` | until the VM ends (a purged version's, without its code) |
+| `Insn`, `Operand` | `core/insn.h` | A decoded instruction (32 bytes) and its operands (72 bytes each) | its `Function` | until the VM ends, or `module.purge` frees its version |
 | `VM` | `vm/vm.h` | Modules, natives, libraries, options, programs, the scheduler | the host | one run |
 | `Process` | `vm/vm.h` | Everything mutable: registers, frames, stack, globals, heap, mailbox | the scheduler's table | spawn to exit |
 | `Frame` | `vm/vm.h` | One call: function, pc, window base, saved `SP`/`FP` | its process | call to return |
@@ -557,8 +557,8 @@ finds the new segment missing the first time it touches it, and
 had not linked `LM_FAILED` and leaves their names free, and
 `take_back_libraries` drops the library versions it chose (`VM.chosen`) and
 the constraints it stated (`VM.wants`, each with its owner), except those of
-what stays loaded. Modules are never
-unloaded, so a closure never outlives its code.
+what stays loaded. A module is never unloaded; only a version that a reload
+replaced can be freed, by `module.purge`, once nothing can run it (below).
 
 `module.reload` (`vm_reload`, `vm/loader.c`) adds a second version of a module
 beside the first. It works in two steps, so that a failure changes nothing and
@@ -574,8 +574,36 @@ for the interpreter's call, whose operand now names the new version. Functions
 with retargeted sites are compiled again when hot. Call sites keep their
 quickened forms, since the signature is the same, with a new `QPlan` swapped in
 by one store, because a callback on an I/O thread can be running while the world
-is stopped. Old versions are never freed, so frames and closures need no
-tracking: what points at old code stays valid.
+is stopped. Nothing tracks frames and closures of old versions as they run:
+an old version stays valid until `module.purge` frees it, which looks for them.
+
+`module.purge` (`vm_purge`, `vm/loader.c`) stops the world, then asks of each
+replaced version whether anything could still run it. No other module may
+refer to it (a reload pointed them all at the new version, so this is only a
+check), and for every process, `gc_holds_code` (`heap/gc.c`) looks at its
+frames and walks its heap from its roots, as the write barrier's check
+(`gc_verify`) does, with its own mark bit: a closure of the version's
+functions, or a coroutine with one of them on its stack, is a use. The walk's
+roots are the collector's, but for the version's own global segment, which
+only its code reads, plus the finalizer records of old objects, a finished
+main's kept results, and the values of messages delivered but not taken. While a
+process is in a blocking native call on the I/O pool, its heap may be in use,
+so every version is kept, and so it is while a tool's hook is installed (the
+debugger, profiler and trace hold `Function`s). A version with FFI
+declarations is always kept, since what they bind outlives it.
+
+A version found unused is freed (`purge_version`), but for three things. Its
+`LModule` keeps its place in `VM.mods`, whose index numbers every process's
+global segments, with an empty `Module` and the state `LM_PURGED`; each
+process's segment for it is freed and left not live, so an old pointer into it
+traps. Its `Function` records stay, without code: compiled closure calls
+compare a closure's function with the one they were compiled for, and a freed
+record's address could be taken by another function, which would then pass
+the comparison. Closure call sites elsewhere forget it as their last callee
+(`interp_forget_callees`), so the JIT does not compile for it again. Its struct
+types stay too, with their names copied, since objects of them live on and
+newer versions share them. Names that outlive it (a process's entry, the
+monitor's recent exits) are copied into `VM.retired`.
 
 ### 6.7 One executable
 

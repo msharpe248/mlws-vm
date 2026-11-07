@@ -757,13 +757,15 @@ static void recycle_chunks(Process *p, bool major) {
     p->bump_chunk = NULL;
     p->bump = p->bump_lim = p->hole_end = NULL;
 }
-/* The roots: what is live whatever the heap holds. */
-static void mark_roots(Process *p) {
+/* The roots: what is live whatever the heap holds. but_global: a module's
+ * global segment not to count (gc_holds_code), or UINT32_MAX. */
+static void mark_roots(Process *p, uint32_t but_global) {
     mark_frames(p, p->regs, p->frames, p->nframes);
     /* The stack from the lowest word ever tagged as a reference: code may legally
      * write references below SP, so SP is not the bound. */
     mark_segment(p, &p->stack, p->stack_ref_lo);
-    for (uint32_t i = 0; i < p->nglobals; i++) mark_segment(p, &p->globals[i], 0);
+    for (uint32_t i = 0; i < p->nglobals; i++)
+        if (i != but_global) mark_segment(p, &p->globals[i], 0);
     for (size_t i = 0; i < p->handles.n; i++) mark(p, p->handles.v[i]);
     mark(p, p->exception);
     if (p->co) mark(p, &p->co->h); /* the coroutines that resumed it, and the context below each */
@@ -796,10 +798,31 @@ static void drain(Process *p) {
  * while an old object still held it, because a store into that old object
  * did not call the write barrier. The walk's own bit is OBJF_VERIFY. */
 static MLWS_THREAD_LOCAL VEC(Obj *) verify_seen, verify_stack; /* (freed after each walk) */
+/* gc_holds_code's walk, which takes the same path: the module looked for, and
+ * whether it was found. */
+static MLWS_THREAD_LOCAL const struct LModule *walk_mod;
+static MLWS_THREAD_LOCAL bool walk_found;
+
+static bool frames_run(const Frame *fr, uint32_t n, const struct LModule *lm) {
+    for (uint32_t i = 0; i < n; i++)
+        if (fr[i].fn->mod == lm) return true;
+    return false;
+}
+
+/* Whether o is code of walk_mod: a closure of one of its functions, or a
+ * coroutine with one of them on its stack. */
+static bool runs_walk_mod(const Obj *o) {
+    if (o->kind == OBJ_CLOSURE) return ((const ObjClosure *)o)->fn->mod == walk_mod;
+    if (o->kind != OBJ_CORO) return false;
+    const ObjCoro *co = (const ObjCoro *)o;
+    return co->status != CO_DEAD && frames_run(co->ctx.frames, co->ctx.nframes, walk_mod);
+}
 
 static void verify_reach(Process *p, Obj *o) {
     if (o->flags & (OBJF_VERIFY | OBJF_IMMORTAL)) return;
-    if (!(o->flags & OBJF_OLD)) {
+    if (walk_mod) {
+        walk_found = walk_found || runs_walk_mod(o);
+    } else if (!(o->flags & OBJF_OLD)) {
         const Obj *by = p->gc_parent;
         fprintf(stderr, "mlwsvm: gc verify: a young %s is held by %s %s that was not remembered (a write barrier is missing)\n",
                 obj_kind_name(o->kind), by ? (by->flags & OBJF_OLD ? "an old" : "a young") : "a root, not",
@@ -814,7 +837,7 @@ static void verify_reach(Process *p, Obj *o) {
 static void gc_verify(Process *p) {
     p->gc_verifying = true;
     p->gc_parent = NULL;
-    mark_roots(p);
+    mark_roots(p, UINT32_MAX);
     while (verify_stack.n) {
         Obj *o = verify_stack.v[--verify_stack.n];
         p->gc_parent = o;
@@ -826,13 +849,42 @@ static void gc_verify(Process *p) {
     p->gc_verifying = false;
 }
 
+/* Whether p could still run code of module lm, a version that a newer one
+ * replaced (vm_purge): a frame of p's in one of lm's functions, or a closure
+ * or coroutine of lm's that p's heap reaches, counting the finalizers it waits
+ * to call, its kept results and the messages delivered but not yet taken. lm's
+ * own global segment does not count: only lm's code reads it. The world is
+ * stopped, and p is not in a blocking call (whose native may use its heap). */
+bool gc_holds_code(Process *p, const struct LModule *lm, uint32_t own_global) {
+    if (frames_run(p->frames, p->nframes, lm)) return true;
+    walk_mod = lm;
+    walk_found = false;
+    p->gc_verifying = true;
+    p->gc_parent = NULL;
+    mark_roots(p, own_global);
+    for (size_t i = 0; i < p->fin_old.n; i++) mark(p, p->fin_old.v[i]);
+    for (int k = 0; k < p->nresults; k++)
+        if (type_is_ref(p->result_types[k])) mark(p, p->results[k].r);
+    plat_lock(p->lock); /* messages delivered, not yet taken: what they hold is in no heap yet */
+    for (size_t i = 0; i < p->inbox.n; i++)
+        if (p->inbox.v[i].tag == T_R) mark(p, p->inbox.v[i].v.r);
+    plat_unlock(p->lock);
+    while (verify_stack.n && !walk_found) scan(p, verify_stack.v[--verify_stack.n]);
+    for (size_t i = 0; i < verify_seen.n; i++) verify_seen.v[i]->flags &= (uint8_t)~OBJF_VERIFY;
+    VEC_FREE(verify_seen);
+    VEC_FREE(verify_stack);
+    p->gc_verifying = false;
+    walk_mod = NULL;
+    return walk_found;
+}
+
 /* A minor collection: the young objects reached from the roots and from
  * the remembered old objects become old, and the others are free. Neither the
  * old objects nor the dead young ones are touched, but for the owners. */
 static void gc_minor(Process *p) {
     uint64_t old0 = p->old_bytes;
     p->gc_live = p->gc_live_bytes = p->gc_kept_bytes = 0;
-    mark_roots(p);
+    mark_roots(p, UINT32_MAX);
     uint64_t rescanned = 0;
     for (size_t i = 0; i < p->remset.n; i++) {
         Obj *o = p->remset.v[i];
@@ -893,7 +945,7 @@ static void gc_major(Process *p) {
     for (Chunk *c = p->chunks; c; c = c->next) memset(c->lines, 0, c->nlines);
     p->gc_live = p->gc_live_bytes = p->gc_kept_bytes = 0;
     p->shared_seen = p->gc_majors + 1;
-    mark_roots(p);
+    mark_roots(p, UINT32_MAX);
     for (size_t i = 0; i < p->fin_old.n; i++) mark(p, p->fin_old.v[i]);
     drain(p);
     weak_finish(p, true);
