@@ -115,6 +115,35 @@ A ticket cannot usefully be guessed, and one never taken is closed when the VM
 ends. This works for files and pipes too. A handle with read-ahead input
 buffered, or a write in progress, cannot be given.
 
+### TLS
+
+```asm
+    ncall "net.connect" ("example.org", 443, 5000) -> (R0)
+    ncall "tls.connect" (R0, "example.org", "")      ; "": the system's authorities
+    ncall "fs.write" (R0, "GET / HTTP/1.0\r\nHost: example.org\r\n\r\n")
+    ncall "fs.read_all" (R0) -> (R1)
+```
+
+`tls.connect(conn, host, authorities)` and `tls.accept(conn, certificate, key)`
+put TLS on a connection, which is then read and written as before, with
+`fs.read`, `fs.read_line` and `fs.write`, its process waiting in the poller, so
+TLS costs no threads either. They can come after plain traffic, as STARTTLS does.
+`net.close_write` sends TLS's end of input first, and `fs.close` too.
+
+* **A client always checks the certificate:** it must match `host`, and come
+  from an authority in the PEM file named, or the system's for `""`. There is no
+  way to turn this off. For a private server, name its certificate as the
+  authority.
+* **A server** gives PEM files of a certificate chain and its key.
+* **Versions:** TLS 1.2 and later. `tls.version` says which a connection got.
+* Failures are `E_TLS`, and a failed handshake leaves the connection to be
+  closed.
+
+MLWSVM has no cryptography of its own. It loads the system's OpenSSL or LibreSSL
+when first asked, so it needs neither to build or to run: `tls.available()` says
+whether one is there, and without one `tls.connect` raises `E_TLS`. On macOS it
+looks only for Homebrew's OpenSSL, since Apple's `libssl` refuses to be loaded.
+
 ## Text and JSON
 
 ### `text.format`

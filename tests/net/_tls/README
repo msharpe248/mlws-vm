@@ -1,0 +1,2 @@
+Test fixtures for tests/net/tls.masm: a self-signed certificate for localhost
+with its key, and another authority's certificate. They protect nothing.

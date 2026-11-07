@@ -32,6 +32,7 @@ int plat_tcp_listen(const char *host, int port, char *err, size_t errlen); /* no
 int plat_tcp_accept(int listen_fd);           /* -1 if nothing is pending */
 int plat_tcp_connect(const char *host, int port);
 bool plat_wait_readable(int fd, uint64_t timeout_ns);
+int plat_fd_socket(int fd); /* what a TLS library takes for a socket descriptor */
 long plat_sock_read(int fd, void *buf, size_t n, uint64_t timeout_ns); /* 0 = closed, -1 = error/timeout */
 bool plat_sock_write_all(int fd, const void *buf, size_t n);
 void plat_sock_close(int fd);

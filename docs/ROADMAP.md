@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M57
+## Milestones M11–M58
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -79,6 +79,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M55 Hot code reloading** (done) | `module.reload` and `module.reload_text` put a new version of a loaded module in place while the program runs, with Erlang's rule: calls from other modules go to the new version, and what is running, closures made from the old version, and its calls to itself stay. Failure changes nothing: the new version links first, and every module using the old one is checked against it. Same struct types are shared, so objects pass between versions. Machine code is not patched: compiled calls find their old callee's entry cleared and stop for the interpreter's call, and are compiled again when hot | `tests/loader/`: `reload` (a function of the old version running across its own replacement, closures, `spawn`, fresh data, shared structs, each refusal with nothing changed, and from its file) and `reload_threads` (eight processes calling a module in a compiled loop while it is replaced twenty times, each seeing its versions in order), in every mode |
 | **M56 A debugger for editors** (done) | `mlwsvm dap`: the Debug Adapter Protocol on stdin and stdout, over the engine of `mlwsvm debug`, so an editor debugs any language compiled to MLWSVM in that language's own files, through `.loc`: breakpoints by file and line, stepping by lines, processes as threads, registers and the contents of objects, watch and hover, pause. `editors/vscode/` declares it to VS Code | `make check-tools`: whole sessions through the protocol: a breakpoint and one that moves to the next line with code, the stack, registers, an object's fields, evaluate, step in and out, output, the exit status, a `.loc` file's breakpoint and frame, a program that does not load, and pausing one that never ends |
 | **M57 Large strings by reference** (done) | A string of 4 KiB or more is sent by reference: the first send makes it, in place, an immortal object of no heap with a count of the heaps that hold it, so that everything that reads constants reads it unchanged. A major collection tells which a heap still reaches; the last to let go frees it. A holder's heap counts its bytes, so quotas hold | `tests/processes/send_large_string`: one string to two processes, hashed and compared at once, outliving the sender's hold; a smaller one copied; a thousand of 64 KiB dropped as they arrive not piling up; and an out-of-heap object's life under GC stress and AddressSanitizer |
+| **M58 TLS** (done) | `tls.connect` and `tls.accept` put TLS on a connection, which is then read and written as any other, its process waiting in the poller. A client always checks the certificate against the host name and the authorities given; no call turns that off. The system's OpenSSL or LibreSSL is loaded when first asked, by name, with no headers, so `mlwsvm` needs it neither to build nor to run | `tests/net/tls`: lines, a megabyte each way, certificates for another name and from another authority refused, and a peer that speaks no TLS, between processes in one VM |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -175,8 +176,7 @@ top. Details are in the design discussion; this list is the starting point.
 | `std.math` | (exists) plus integer helpers: gcd, powmod, bit operations |
 
 Later, through the FFI rather than written from scratch: compression (zlib),
-cryptography (the platform's crypto library), SQLite, regular expressions (a
-linear-time engine such as RE2).
+SQLite.
 
 Possible addition: **capabilities**, meaning permission to use the file system,
 the network or native code, granted per process and inherited like quotas, so an

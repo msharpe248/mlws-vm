@@ -15,6 +15,7 @@
 #include "../../include/mlwsvm/mlwsvm.h"
 #include "../heap/heap.h"
 #include "../platform/platform.h"
+#include "tls.h"
 
 #define MAX_READ (16u << 20) /* the most one fs.read returns */
 #define CHUNK 65536
@@ -40,10 +41,16 @@ typedef struct {
     size_t rpos, rlen, rcap;
     const void *wobj;        /* a write in progress across waits: the data, and how much is done */
     size_t wdone;
+    Tls *tls;                /* a connection with TLS on it: its bytes go through this */
+    bool shook;              /* the handshake is done */
 } FileH;
 
 static void file_finalize(void *ptr) {
     FileH *h = ptr;
+    if (h->tls) {
+        tls_close_write(h->tls);
+        tls_free(h->tls);
+    }
     if (h->owned && h->fd >= 0) plat_fd_close(h->fd);
     free(h->rbuf);
     free(h);
@@ -125,6 +132,13 @@ static ObjBytes *bytes_of(Process *p, const uint8_t *data, size_t n) {
 /* The unread input: NULL before the first read (an empty input reads none). */
 static uint8_t *unread(const FileH *h) { return h->rbuf ? h->rbuf + h->rpos : NULL; }
 
+/* After a TLS call that said to wait, or failed: the native returns. */
+static void tls_wait(Process *p, FileH *h, long r, const char *why) {
+    if (r == TLS_WANT_READ) native_wait_fd(p, h->fd, PLAT_POLL_READ, h->timeout_ms);
+    else if (r == TLS_WANT_WRITE) native_wait_fd(p, h->fd, PLAT_POLL_WRITE, h->timeout_ms);
+    else native_fail(p, "E_TLS", "%s: %s", p->cur_native->name, why);
+}
+
 /* Read more input into h->rbuf. Returns 1 (got some), 0 (end of input), -1
  * (waiting, or failed: the native returns). */
 static int fill(Process *p, FileH *h) {
@@ -140,6 +154,20 @@ static int fill(Process *p, FileH *h) {
             h->rcap = h->rlen + CHUNK * 2;
             h->rbuf = xrealloc(h->rbuf, h->rcap);
         }
+    }
+    if (h->tls) {
+        char why[256] = "";
+        long r = tls_read(h->tls, h->rbuf + h->rlen, h->rcap - h->rlen, why, sizeof why);
+        if (r < 0) {
+            tls_wait(p, h, r, why);
+            return -1;
+        }
+        if (r == 0) {
+            h->eof = true;
+            return 0;
+        }
+        h->rlen += (size_t)r;
+        return 1;
     }
     int err = 0;
     long r = plat_fd_read(h->fd, h->rbuf + h->rlen, h->rcap - h->rlen, &err);
@@ -280,6 +308,17 @@ static void fs_write(Process *p, Word *a, Word *r) {
     if (h->kind == H_POOL && !on_pool(p)) return;
     if (h->kind == H_STREAM && timed_out(p, h)) return;
     size_t done = h->wobj == a[1].r ? h->wdone : 0; /* continuing after a wait */
+    while (done < n && h->tls) {
+        char why[256] = "";
+        long w = tls_write(h->tls, data + done, n - done, why, sizeof why);
+        if (w < 0) {
+            h->wobj = w == TLS_FAILED ? NULL : a[1].r;
+            h->wdone = done;
+            tls_wait(p, h, w, why);
+            return;
+        }
+        done += (size_t)w;
+    }
     while (done < n) {
         int err = 0;
         long w = plat_fd_write(h->fd, data + done, n - done, &err);
@@ -722,7 +761,73 @@ static void net_peer(Process *p, Word *a, Word *r) {
 static void net_close_write(Process *p, Word *a, Word *r) {
     (void)r;
     FileH *h = get_kind(p, a[0], H_STREAM, "a connection");
+    if (h && h->tls) tls_close_write(h->tls);
     if (h && !plat_sock_shutdown_write(h->fd)) fail_os(p, plat_last_error(), "close_write");
+}
+
+/* ---- std.tls -------------------------------------------------------------------------- */
+
+static void tls_is_available(Process *p, Word *a, Word *r) {
+    (void)p, (void)a;
+    r[0].i = tls_available();
+}
+
+/* The handshake, once the handle has its session: runs again after each wait. */
+static void tls_shake(Process *p, FileH *h) {
+    if (timed_out(p, h)) return;
+    char why[256] = "";
+    int r = tls_handshake(h->tls, why, sizeof why);
+    if (r == TLS_OK) h->shook = true;
+    else tls_wait(p, h, r, why);
+}
+
+static FileH *tls_conn(Process *p, Word v) {
+    FileH *h = get_kind(p, v, H_STREAM, "a connection");
+    if (h && h->shook) native_fail(p, "E_TLS", "%s: this connection has TLS already", p->cur_native->name);
+    return h && !h->shook ? h : NULL;
+}
+
+static void tls_start_client(Process *p, Word *a, Word *r) {
+    (void)r;
+    FileH *h = tls_conn(p, a[0]);
+    const char *host = get_str(p, a[1], "the host name"), *ca = get_str(p, a[2], "the authorities' file");
+    if (!h || !host || !ca) return;
+    if (!h->tls) {
+        char why[256] = "";
+        h->tls = tls_client(plat_fd_socket(h->fd), host, ca, why, sizeof why);
+        if (!h->tls) {
+            native_fail(p, "E_TLS", "tls.connect: %s", why);
+            return;
+        }
+    }
+    tls_shake(p, h);
+}
+
+static void tls_start_server(Process *p, Word *a, Word *r) {
+    (void)r;
+    FileH *h = tls_conn(p, a[0]);
+    const char *cert = get_str(p, a[1], "the certificate's file"), *key = get_str(p, a[2], "the key's file");
+    if (!h || !cert || !key) return;
+    if (!h->tls) {
+        char why[256] = "";
+        h->tls = tls_server(plat_fd_socket(h->fd), cert, key, why, sizeof why);
+        if (!h->tls) {
+            native_fail(p, "E_TLS", "tls.accept: %s", why);
+            return;
+        }
+    }
+    tls_shake(p, h);
+}
+
+static void tls_session_version(Process *p, Word *a, Word *r) {
+    FileH *h = get_kind(p, a[0], H_STREAM, "a connection");
+    if (!h) return;
+    if (!h->shook) {
+        native_fail(p, "E_TLS", "tls.version: this connection has no TLS");
+        return;
+    }
+    const char *v = tls_version(h->tls);
+    r[0].r = str_new(p, v, strlen(v));
 }
 
 static void net_resolve(Process *p, Word *a, Word *r) {
@@ -854,6 +959,12 @@ static const NativeDef OS_NATIVES[] = {
     N("net.close_write", 1, T(T_R), 0, T(0), net_close_write, F,
       "Finish sending on a connection (the other end reads end of input) but keep reading."),
     N("net.resolve", 1, T(T_R), 1, T(T_R), net_resolve, F, "A host name's addresses, as a list of strings."),
+    N("tls.available", 0, T(0), 1, T(T_B), tls_is_available, F, "True if a TLS library (OpenSSL or LibreSSL) can be loaded."),
+    N("tls.connect", 3, T(T_R, T_R, T_R), 0, T(0), tls_start_client, F,
+      "Start TLS on a connection as a client: the server's certificate must match the host name and come from an authority in the file named (\"\": the system's). Then read and write the connection as usual."),
+    N("tls.accept", 3, T(T_R, T_R, T_R), 0, T(0), tls_start_server, F,
+      "Start TLS on a connection as a server, with PEM files of a certificate chain and its key."),
+    N("tls.version", 1, T(T_R), 1, T(T_R), tls_session_version, F, "The TLS version a connection uses, such as TLSv1.3."),
     N("net.udp", 2, T(T_R, T_I64), 1, T(T_R), net_udp, F, "A UDP socket bound to a host (\"\" = any) and port (0 = any)."),
     N("net.send_to", 4, T(T_R, T_R, T_I64, T_R), 0, T(0), net_send_to, F,
       "Send a datagram (a string or byte buffer) to a host and port."),

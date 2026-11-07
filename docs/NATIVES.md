@@ -101,6 +101,10 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `net.peer` | r | r, i64 | The address and port of a connection's other end. |
 | `net.close_write` | r | - | Finish sending on a connection (the other end reads end of input) but keep reading. |
 | `net.resolve` | r | r | A host name's addresses, as a list of strings. |
+| `tls.available` | - | b | True if a TLS library (OpenSSL or LibreSSL) can be loaded. |
+| `tls.connect` | r, r, r | - | Start TLS on a connection as a client: the server's certificate must match the host name and come from an authority in the file named ("": the system's). Then read and write the connection as usual. |
+| `tls.accept` | r, r, r | - | Start TLS on a connection as a server, with PEM files of a certificate chain and its key. |
+| `tls.version` | r | r | The TLS version a connection uses, such as TLSv1.3. |
 | `net.udp` | r, i64 | r | A UDP socket bound to a host ("" = any) and port (0 = any). |
 | `net.send_to` | r, r, i64, r | - | Send a datagram (a string or byte buffer) to a host and port. |
 | `net.recv_from` | r | r, r, i64 | Wait for a datagram: its bytes, and the sender's address and port. |

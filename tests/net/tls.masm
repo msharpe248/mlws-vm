@@ -1,0 +1,137 @@
+; tls.connect and tls.accept put TLS on a connection, which is then read and
+; written like any other, its process waiting in the poller. The client checks
+; the server's certificate against the host name and the authorities it is
+; given. Here a process per connection, as a server would have, answers: lines
+; echoed, a megabyte each way (through a socket buffer's worth at a time, so
+; both ends wait to read and to write), a certificate for another name and one
+; from another authority refused by the client, and a peer that does not speak
+; TLS failing the handshake. Skipped where no TLS library is installed: it
+; passes as a program that does nothing.
+.include "std/test.inc"
+
+.const SIZE = 1000000
+
+; Answers one connection: each line back, until the end of input.
+.func echo(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+.try failed
+    ncall "tls.accept" (R0, "tests/net/_tls/cert.pem", "tests/net/_tls/key.pem")
+.endtry
+1:  ncall "fs.read_line" (R0) -> (R1)
+    bz R1, 2f
+    strcat R2, R1, "\n"
+    ncall "fs.write" (R0, R2)
+    jmp 1b
+2:  ncall "fs.close" (R0)
+    ret
+failed:
+    catch R3                           ; a client that went away, or spoke no TLS
+    strcmp I1, R3->Error.code, "E_TLS"
+    ASSERT_EQ I1, 0
+    ncall "fs.close" (R0)
+    ret
+.endf
+
+; Takes all the client sends, and sends it back.
+.func bulk(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+    ncall "tls.accept" (R0, "tests/net/_tls/cert.pem", "tests/net/_tls/key.pem")
+    ncall "fs.read_all" (R0) -> (R1)
+    ncall "fs.write" (R0, R1)
+    ncall "fs.close" (R0)
+    ret
+.endf
+
+.func server(i64 parent)
+    ncall "net.listen" ("127.0.0.1", 0) -> (R0)
+    ncall "net.port" (R0) -> (I1)
+    send parent, I1
+    mov I2, 0
+1:  ncall "net.accept" (R0) -> (R1)
+    ncall "fs.give" (R1) -> (I3)
+    beq I2, 1, 2f
+    spawn echo (I3)
+    jmp 3f
+2:  spawn bulk (I3)
+3:  inc I2
+    blt I2, 5, 1b
+    ret
+.endf
+
+; A connection whose certificate check must fail.
+.func refused(i64 port, ref host, ref ca) -> ref
+    ncall "net.connect" ("127.0.0.1", port, 5000) -> (R2)
+.try h
+    ncall "tls.connect" (R2, host, ca)
+.endtry
+    ret null
+h:
+    catch R3
+    ncall "fs.close" (R2)
+    mov R4, R3->Error.code
+    ret R4
+.endf
+
+.func main
+    ncall "tls.available" () -> (I0)
+    bnz I0, 1f
+    ret 0
+1:  spawn server (PID)
+    recv I1                            ; the port
+
+    ; Lines, and the version.
+    ncall "net.connect" ("127.0.0.1", I1, 5000) -> (R0)
+    ncall "tls.connect" (R0, "localhost", "tests/net/_tls/cert.pem")
+    ncall "fs.write" (R0, "hello\n")
+    ncall "fs.read_line" (R0) -> (R1)
+    strcmp I2, R1, "hello"
+    ASSERT_EQ I2, 0
+    ncall "fs.write" (R0, "again\n")
+    ncall "fs.read_line" (R0) -> (R1)
+    strcmp I2, R1, "again"
+    ASSERT_EQ I2, 0
+    ncall "tls.version" (R0) -> (R2)
+    substr R3, R2, 0, 5
+    strcmp I2, R3, "TLSv1"
+    ASSERT_EQ I2, 0
+    ncall "fs.close" (R0)
+
+    ; A megabyte each way.
+    bufnew R4, SIZE
+    mov I3, 0
+2:  mov R4[I3], 90
+    inc I3
+    blt I3, SIZE, 2b
+    ncall "net.connect" ("127.0.0.1", I1, 5000) -> (R5)
+    ncall "tls.connect" (R5, "localhost", "tests/net/_tls/cert.pem")
+    ncall "fs.write" (R5, R4)
+    ncall "net.close_write" (R5)
+    ncall "fs.read_all" (R5) -> (R6)
+    len I4, R6
+    ASSERT_EQ I4, SIZE
+    mov I5, R6[999999]
+    ASSERT_EQ I5, 90
+    ncall "fs.close" (R5)
+
+    ; Refused: another name, another authority.
+    call refused (I1, "example.org", "tests/net/_tls/cert.pem") -> (R7)
+    strcmp I2, R7, "E_TLS"
+    ASSERT_EQ I2, 0
+    call refused (I1, "localhost", "tests/net/_tls/other_ca.pem") -> (R7)
+    strcmp I2, R7, "E_TLS"
+    ASSERT_EQ I2, 0
+
+    ; A peer that speaks no TLS: the server's handshake fails, and that is all.
+    ncall "net.connect" ("127.0.0.1", I1, 5000) -> (R8)
+    ncall "fs.write" (R8, "GET / HTTP/1.0\r\n\r\n")
+.try reset
+    ncall "fs.read_all" (R8) -> (R9)   ; TLS's alert, or the end of input
+.endtry
+    ncall "fs.close" (R8)
+    ret 0
+reset:
+    catch R10                          ; or a reset: the server hung up on unread input
+    strcmp I2, R10->Error.code, "E_RESET"
+    ASSERT_EQ I2, 0
+    ret 0
+.endf

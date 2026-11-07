@@ -94,6 +94,7 @@ status 70.
 | `E_UNCAUGHT` | An exception that is not an `Error` struct (e.g. `throw "text"`) was not caught |
 | `E_DEADLOCK` | `recv` (or `proc.call`) in `main` while every process is waiting, so no message can ever arrive; or `proc.call` of the calling process itself |
 | `E_QUOTA` | A heap, raw-memory, mailbox, foreign-call or OS-call quota was exceeded (catchable), or the instruction quota (the process is stopped); also `quota` with an unknown kind or a negative limit |
+| `E_TLS` | TLS on a connection failed: no TLS library, a certificate that does not match or that no authority given vouches for, a peer that does not speak TLS, or a file that cannot be loaded |
 | `E_NOT_FOUND`, `E_EXISTS`, `E_PERMISSION`, `E_IS_DIR`, `E_NOT_DIR`, `E_CLOSED`, `E_TIMEOUT`, `E_RESET`, `E_REFUSED`, `E_ADDR_IN_USE`, `E_RESOURCES`, `E_IO` | Files, commands, sockets and other OS calls ([STDLIB.md](STDLIB.md#errors)). Also `E_EXISTS` for `proc.register` of a name a live process holds, and `E_TIMEOUT` for a `proc.call` with no reply in time |
 | `E_RESTARTS` | A supervisor (`std.supervisor`) gave up: more failures than its restart limit within its period |
 | `E_JSON` | `json.parse` of malformed JSON (the message gives line and column) or of a document that is not an object or array, or `json.stringify` of a value with no JSON form |

@@ -67,7 +67,8 @@ base:
   quotas on heap, raw memory, mailbox size and CPU. A waiting process takes
   about 4 KB, and spawning, waking and ending one takes one to two
   microseconds.
-* **Files, commands, the OS and the network** (`std.fs`, `std.os`, `std.net`): a
+* **Files, commands, the OS and the network** (`std.fs`, `std.os`, `std.net`,
+  and TLS through the system's OpenSSL, loaded when asked for): a
   process waiting on a pipe or socket waits in the poller (kqueue/epoll) like it
   waits in `recv`, holding no thread, so 10,000 open connections are 10,000 small
   processes. File I/O runs on a thread pool. Sandboxes can deny OS access with a

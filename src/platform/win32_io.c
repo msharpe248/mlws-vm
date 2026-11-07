@@ -118,6 +118,11 @@ int plat_file_open(const char *path, int mode, int *err) {
  * pipe's free space can ever be: write at most this much at once. */
 #define PIPE_WRITE_MAX 16384
 
+int plat_fd_socket(int fd) {
+    WFd *e = wfd_get(fd);
+    return e ? (int)e->s : -1;
+}
+
 long plat_fd_read(int fd, void *buf, size_t n, int *err) {
     WFd *e = wfd_get(fd);
     if (!e) return set_err(err, ERROR_INVALID_HANDLE);
