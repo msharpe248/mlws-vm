@@ -1,0 +1,14 @@
+; A recursion 150,000 deep, past the default limit of 100,000 frames: with
+; --max-frames 200000 it ends with 7 (check_tools.sh, VM options for `mlwsvm
+; dap` and `mlwsvm debug`).
+.func down(i64 n) -> i64
+    bz n, 1f
+    dec n
+    call down (n) -> (n)
+1:  ret n
+.endf
+
+.func main
+    call down (150000) -> (I0)
+    ret 7
+.endf
