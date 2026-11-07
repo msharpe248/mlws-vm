@@ -65,6 +65,7 @@ static void no_pointer(Process *from, uint8_t tag) {
 
 /* Allocate a copy of o without its references (they are fixed up from the worklist). */
 static Obj *shallow(Process *from, Process *to, struct CopyState *cs, Obj *o) {
+    if (o && o->kind == OBJ_STRING && gc_share(from, to, (ObjString *)o)) return o;
     if (!o || (o->flags & OBJF_IMMORTAL)) return o;
     Obj *c = map_lookup(cs, o);
     if (c) return c;

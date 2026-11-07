@@ -143,6 +143,11 @@ static void n_proc_count(Process *p, Word *a, Word *r) {
     r[0].i = (int64_t)p->vm->live;
 }
 
+static void n_gc_shared_bytes(Process *p, Word *a, Word *r) {
+    (void)a;
+    r[0].i = (int64_t)p->shared_bytes;
+}
+
 static void n_gc_collections(Process *p, Word *a, Word *r) {
     (void)a;
     r[0].i = (int64_t)p->gc_count;
@@ -260,6 +265,7 @@ static const NativeDef BUILTINS[] = {
     {"gc.collect", 0, {0}, 0, {0}, n_gc_collect, "Request a collection of the whole heap; it runs before the next instruction."},
     {"gc.heap_bytes", 0, {0}, 1, {T_I64}, n_gc_heap_bytes, "Bytes currently allocated on this process's heap (live and not yet collected)."},
     {"gc.collections", 0, {0}, 1, {T_I64}, n_gc_collections, "Number of garbage collections so far in this process."},
+    {"gc.shared_bytes", 0, {0}, 1, {T_I64}, n_gc_shared_bytes, "Bytes of the large strings this process shares with others: they are sent by reference, and counted in each holder's heap."},
     {"gc.finalize", 2, {T_R, T_R}, 0, {0}, n_gc_finalize, "Call a closure with an object, once, after a collection finds nothing else holds it; the closure must not hold the object itself. It runs in this process between two instructions, cannot wait, and what it throws is dropped. Strings, BigInts and decimals are values and cannot be finalized."},
     {"weak.ref", 1, {T_R}, 1, {T_R}, n_weak_ref, "A weak reference to an object: it does not keep the object alive. Strings, BigInts and decimals are values, and it holds them like any other value."},
     {"weak.get", 1, {T_R}, 1, {T_R}, n_weak_get, "What a weak reference refers to, or null once a collection has found nothing else holds it."},

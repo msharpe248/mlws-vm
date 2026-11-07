@@ -598,6 +598,12 @@ struct Process {
     VEC(Obj *) fin_young, fin_old;   /* gc.finalize records: since the last collection, and before */
     VEC(Obj *) fin_ready;            /* records whose targets were found dead: waiting to run (GC roots) */
     bool fin_running;
+    /* large strings this heap holds (gc.c): a set, by address */
+    struct SharedHold *shared;
+    uint32_t shared_cap, shared_n;
+    uint64_t shared_bytes;
+    uint64_t shared_seen;  /* the major collection marking now, or 0 */
+    bool is_frag;          /* a fragment heap, whose objects go to a process with a message (sched.c) */
 };
 
 /* vm.c */

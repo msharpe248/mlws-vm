@@ -358,8 +358,10 @@ A pointer (`p`) is a checked 64-bit value:
 ## 6. The garbage-collected heap
 
 Objects (strings, byte buffers, arrays, structs, lists, maps) live on the heap of
-the process that created them. Processes never share heap objects; the only
-exception is constant-pool strings, which are immutable and immortal.
+the process that created them. Processes never share heap objects, with two
+exceptions, both immutable strings: constant-pool strings, which are immortal,
+and strings of 4 KiB or more that have been sent, which are sent by reference
+and counted in each holder's heap (`gc.shared_bytes`).
 
 * **Collector.** Precise, non-moving, generational mark-region. A minor
   collection, of the objects allocated since the last one, starts when the

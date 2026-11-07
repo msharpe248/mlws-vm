@@ -1124,7 +1124,7 @@ typedef struct Obj {
 | decimal | `sign`, `exp`, `n`, limbs | value = sign × coefficient × 10^exp; immutable |
 | foreign | `type`, `ptr`, `lib` | A C resource; finalized when collected |
 | coroutine | status, body, resumer chain, a whole execution context | §16 |
-| weak | `target`, `fn` | A weak reference, or a `gc.finalize` record (§11.10) |
+| weak | `target`, `fn` | A weak reference, or a `gc.finalize` record (§11.11) |
 
 **Lists.** A list's storage is `cap` words followed by `cap` tag bytes. A
 list made with a capacity of up to 24 has its storage inside its own
@@ -1347,7 +1347,35 @@ combining marks and recomposes, per UAX #15; grapheme and word boundaries
 are state machines over the break classes, per UAX #29.
 
 
-### 11.10 Weak references and finalizers
+### 11.10 Shared strings
+
+A message is copied, so that heaps stay private and a collection needs no locks.
+A large string is the exception, since a string is immutable, and copying 10 MB
+to each of a thousand workers buys nothing. `msg_copy` hands any string of
+`GC_SHARE_MIN` (4 KiB) or more to `gc_share`.
+
+The first send turns the sender's string into a shared one, in place: every
+reference to it stays good. It gets `OBJF_IMMORTAL`, which is all that marking,
+the write barrier, message copying and every reader need to know, since
+constants already work that way, and `OBJF_SHARED`, with a count of the heaps
+holding it in `Obj.off`, which objects from `malloc` do not use. Strings that
+large always come from `malloc`. It leaves the sender's heap list at the next
+sweep that passes it.
+
+Each heap has a set of the shared strings it holds. A major collection notes
+which of them marking reaches, and lets go of the others; the last holder frees
+the string. A minor collection cannot tell, since old objects may hold them, so
+a heap's shared bytes count towards the next major collection, or a process
+dropping large strings as they arrive would hold them all. While a message is on
+its way there is no heap to hold the string: an `ObjShare` among the message's
+objects holds it, which `gc_adopt` turns into a member of the set and
+`gc_free_list` into a release.
+
+Each holder's `heap_bytes` includes the string, so a heap quota means what it
+says, even though the memory exists once. A string's hash is computed on first
+use, by any thread, with a relaxed atomic: they all write the same value.
+
+### 11.11 Weak references and finalizers
 
 Weakness is decided after marking, in `weak_finish`. Marking goes through
 everything but an `ObjWeak`'s target, a weak map's weak keys and values, and a

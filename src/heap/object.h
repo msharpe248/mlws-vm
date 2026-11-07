@@ -23,6 +23,7 @@ enum {
     OBJ_FOREIGN = 10, /* a C resource owned by native code (docs/EXTENDING.md) */
     OBJ_CORO = 11,    /* a coroutine (ObjCoro, in vm/vm.h) */
     OBJ_WEAK = 12,    /* a weak reference, or a gc.finalize record (ObjWeak) */
+    OBJ_SHARE = 13,   /* in a message on its way: a hold on a shared string (ObjShare); never reaches a program */
 };
 
 #define OBJF_IMMORTAL 0x01
@@ -32,6 +33,7 @@ enum {
 #define OBJF_REMEMBERED 0x10 /* old, and written since the last collection (Process.remset) */
 #define OBJF_VERIFY 0x20     /* reached by gc_verify's walk */
 #define OBJF_OWNS 0x40       /* in the chunks, and owns memory besides itself: on an owner list (gc.c) */
+#define OBJF_SHARED 0x80     /* with IMMORTAL: a large string several heaps hold, counted in Obj.off (gc.c) */
 
 typedef struct Obj {
     uint8_t kind;
@@ -138,6 +140,11 @@ typedef struct {
     Obj *target;
     Obj *fn;
 } ObjWeak;
+
+typedef struct {
+    Obj h;
+    ObjString *s;
+} ObjShare;
 
 /* A foreign handle: an opaque C pointer with a typed finalizer. MLWSVM code
  * can hold one as a reference but cannot see or forge the pointer, and it

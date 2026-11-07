@@ -28,6 +28,7 @@ size_t obj_footprint(const Obj *o) {
     case OBJ_FOREIGN: return sizeof(ObjForeign);
     case OBJ_CORO: return sizeof(ObjCoro) + (size_t)((const ObjCoro *)o)->words * 9; /* the stack and its tags */
     case OBJ_WEAK: return sizeof(ObjWeak);
+    case OBJ_SHARE: return sizeof(ObjShare);
     default: return sizeof(Obj);
     }
 }
@@ -320,8 +321,117 @@ static void obj_release_buffers(Process *p, Obj *o) {
     }
 }
 
+/* ---- shared strings ----
+ * A large string is sent by reference. The first send turns the sender's
+ * string, in place, into an object of no heap: IMMORTAL, so marking, the write
+ * barrier and every reader treat it as a constant, and SHARED, with a count in
+ * Obj.off (unused by what comes from malloc) of the heaps that hold it. Each
+ * heap keeps a set of those, so that a major collection can tell which it still
+ * reaches and let go of the rest; the last to let go frees it. It leaves the
+ * sender's heap list at that heap's next sweep. Until a message is taken, a
+ * hold is an ObjShare among its objects, which gc_adopt turns into an entry in
+ * the set, and gc_free_list into a release. A holder's heap counts the string's
+ * bytes, for its quota. */
+typedef struct SharedHold {
+    ObjString *s; /* NULL: a free slot */
+    uint64_t seen;
+} SharedHold;
+
+static void shared_release(ObjString *s) {
+    if (__atomic_sub_fetch(&s->h.off, 1, __ATOMIC_ACQ_REL) == 0) free(s);
+}
+
+static SharedHold *shared_slot(const Process *p, const ObjString *s) {
+    uint32_t mask = p->shared_cap - 1;
+    uint32_t i = (uint32_t)(((uintptr_t)s >> 4) * 0x9E3779B1u) & mask;
+    while (p->shared[i].s && p->shared[i].s != s) i = (i + 1) & mask;
+    return &p->shared[i];
+}
+
+static void shared_grow(Process *p) {
+    SharedHold *old = p->shared;
+    uint32_t cap = p->shared_cap;
+    p->shared_cap = cap ? cap * 2 : 16;
+    p->shared = xcalloc(p->shared_cap, sizeof *p->shared);
+    for (uint32_t i = 0; i < cap; i++)
+        if (old[i].s) *shared_slot(p, old[i].s) = old[i];
+    free(old);
+}
+
+/* p holds s: true if that is new, the count being the caller's to raise. */
+static bool shared_add(Process *p, ObjString *s) {
+    if ((p->shared_n + 1) * 2 > p->shared_cap) shared_grow(p);
+    SharedHold *h = shared_slot(p, s);
+    if (h->s) return false;
+    h->s = s;
+    h->seen = p->shared_seen; /* (during no collection, as 0) */
+    p->shared_n++;
+    p->shared_bytes += s->len;
+    p->heap_bytes += s->len;
+    return true;
+}
+
+/* Marking reached s. */
+static void shared_mark(Process *p, Obj *o) {
+    if (p->shared_seen && p->shared_cap) shared_slot(p, (ObjString *)o)->seen = p->shared_seen;
+}
+
+/* After a major collection's marking: what it did not reach goes. */
+static void shared_sweep(Process *p) {
+    if (!p->shared_n) return;
+    SharedHold *old = p->shared;
+    uint32_t cap = p->shared_cap;
+    p->shared = xcalloc(cap, sizeof *p->shared);
+    p->shared_n = 0;
+    p->shared_bytes = 0;
+    for (uint32_t i = 0; i < cap; i++) {
+        if (!old[i].s) continue;
+        if (old[i].seen != p->shared_seen) {
+            shared_release(old[i].s);
+            continue;
+        }
+        *shared_slot(p, old[i].s) = old[i];
+        p->shared_n++;
+        p->shared_bytes += old[i].s->len;
+    }
+    free(old);
+}
+
+static void shared_free_all(Process *p) {
+    for (uint32_t i = 0; i < p->shared_cap; i++)
+        if (p->shared[i].s) shared_release(p->shared[i].s);
+    free(p->shared);
+    p->shared = NULL;
+    p->shared_cap = p->shared_n = 0;
+    p->shared_bytes = 0;
+}
+
+bool gc_share(Process *from, Process *to, ObjString *s) {
+    uint8_t f = s->h.flags;
+    if (!(f & OBJF_SHARED)) {
+        if ((f & OBJF_IMMORTAL) || s->len < GC_SHARE_MIN || s->h.slab) return false;
+        if (f & OBJF_OLD) {
+            from->old_bytes -= obj_footprint(&s->h);
+            from->old_count--;
+        }
+        from->heap_bytes -= obj_footprint(&s->h);
+        s->h.flags = (uint8_t)((f & ~(OBJF_OLD | OBJF_MARK | OBJF_REMEMBERED)) | OBJF_IMMORTAL | OBJF_SHARED);
+        s->h.off = 1;
+        shared_add(from, s);
+    }
+    if (to->is_frag) {
+        ObjShare *h = (ObjShare *)gc_alloc(to, OBJ_SHARE, sizeof(ObjShare));
+        h->s = s;
+        __atomic_add_fetch(&s->h.off, 1, __ATOMIC_ACQ_REL);
+    } else if (shared_add(to, s)) {
+        __atomic_add_fetch(&s->h.off, 1, __ATOMIC_ACQ_REL);
+    }
+    return true;
+}
+
 /* An object from malloc (on a list, not in a chunk). */
 static void obj_release(Process *p, Obj *o) {
+    if (o->kind == OBJ_SHARE) shared_release(((ObjShare *)o)->s);
     obj_release_buffers(p, o);
     free(o);
 }
@@ -335,11 +445,25 @@ void gc_free_list(Obj *list) { /* objects of a fragment heap: never from chunks 
 }
 
 void gc_adopt(Process *p, Obj *list, uint64_t bytes, uint64_t nobjs) {
-    if (!list) return;
-    Obj *tail = list;
-    while (tail->next) tail = tail->next;
-    tail->next = p->heap;
-    p->heap = list;
+    Obj **pp = &list, *tail = NULL;
+    while (*pp) {
+        Obj *o = *pp;
+        if (o->kind != OBJ_SHARE) {
+            tail = o;
+            pp = &o->next;
+            continue;
+        }
+        ObjString *s = ((ObjShare *)o)->s;
+        *pp = o->next;
+        if (!shared_add(p, s)) shared_release(s); /* it held it already: its count is one too many */
+        bytes -= sizeof(ObjShare);
+        nobjs--;
+        free(o);
+    }
+    if (tail) {
+        tail->next = p->heap;
+        p->heap = list;
+    }
     p->objects_allocated += nobjs;
     if (!p->next_gc) p->next_gc = gc_threshold(p, 0), set_alloc_limit(p);
     /* Like gc_account, but never traps: a heap quota is caught at the next allocation. */
@@ -370,7 +494,10 @@ static void mark(Process *p, Obj *o) {
         return;
     }
     uint8_t f = o->flags;
-    if ((f & (OBJF_OLD | OBJF_MARK)) == (OBJF_OLD | p->mark_bit) || (f & OBJF_IMMORTAL)) return;
+    if ((f & (OBJF_OLD | OBJF_MARK)) == (OBJF_OLD | p->mark_bit) || (f & OBJF_IMMORTAL)) {
+        if (f & OBJF_SHARED) shared_mark(p, o);
+        return;
+    }
     o->flags = (uint8_t)((f & ~OBJF_MARK) | OBJF_OLD | p->mark_bit);
     size_t fp = obj_footprint(o);
     p->gc_live++;
@@ -730,7 +857,9 @@ static void gc_minor(Process *p) {
     Obj **pp = &p->heap; /* the objects from malloc since the last collection: the list's head */
     while (*pp && *pp != p->heap_old) {
         Obj *o = *pp;
-        if (o->flags & OBJF_OLD) {
+        if (o->flags & OBJF_SHARED) {
+            *pp = o->next; /* shared since: of no heap now */
+        } else if (o->flags & OBJF_OLD) {
             pp = &o->next;
         } else {
             *pp = o->next;
@@ -763,6 +892,7 @@ static void gc_major(Process *p) {
     p->mark_bit ^= OBJF_MARK;
     for (Chunk *c = p->chunks; c; c = c->next) memset(c->lines, 0, c->nlines);
     p->gc_live = p->gc_live_bytes = p->gc_kept_bytes = 0;
+    p->shared_seen = p->gc_majors + 1;
     mark_roots(p);
     for (size_t i = 0; i < p->fin_old.n; i++) mark(p, p->fin_old.v[i]);
     drain(p);
@@ -783,21 +913,27 @@ static void gc_major(Process *p) {
     Obj **pp = &p->heap;
     while (*pp) {
         Obj *o = *pp;
-        if (marked(p, o)) {
+        if (o->flags & OBJF_SHARED) {
+            *pp = o->next; /* shared since: of no heap now, and maybe released below */
+        } else if (marked(p, o)) {
             pp = &o->next;
         } else {
             *pp = o->next;
             obj_release(p, o);
         }
     }
+    shared_sweep(p);
+    p->shared_seen = 0;
     p->gc_freed_objects += p->old_count + (p->objects_allocated - p->gc_allocated0) - p->gc_live;
     p->old_count = p->gc_live;
     p->gc_allocated0 = p->objects_allocated;
     p->young_plain_bytes = 0;
-    p->heap_bytes = p->old_bytes = p->gc_live_bytes;
+    p->old_bytes = p->gc_live_bytes;
+    p->heap_bytes = p->old_bytes + p->shared_bytes;
     recycle_chunks(p, true);
     uint64_t min = p->vm->gc_min_threshold ? p->vm->gc_min_threshold : GC_MIN_THRESHOLD;
-    p->next_major = p->old_bytes * 2 > 4 * min ? p->old_bytes * 2 : 4 * min;
+    uint64_t held = p->old_bytes + p->shared_bytes; /* (only a major collection lets go of shared strings) */
+    p->next_major = held * 2 > 4 * min ? held * 2 : 4 * min;
     p->gc_majors++;
 }
 /* A minor collection, or a major one when the old objects have doubled since
@@ -806,7 +942,7 @@ static void gc_major(Process *p) {
 void gc_collect(Process *p) {
     uint64_t t0 = plat_now_ns();
     note_peak(p);
-    bool major = p->gc_major_req || p->old_bytes >= p->next_major ||
+    bool major = p->gc_major_req || p->old_bytes + p->shared_bytes >= p->next_major ||
                  (p->vm->gc_stress && p->gc_count % 8 == 7);
     uint64_t q = p->quota[QUOTA_HEAP];
     if (q != UINT64_MAX && p->heap_bytes >= q / 4 * 3) major = true;
@@ -852,8 +988,9 @@ void heap_free_all(Process *p) {
     while (p->heap) {
         Obj *o = p->heap;
         p->heap = o->next;
-        obj_release(NULL, o); /* the buffer chunks go below, all at once */
+        if (!(o->flags & OBJF_SHARED)) obj_release(NULL, o); /* the buffer chunks go below, all at once */
     }
+    shared_free_all(p);
     for (size_t i = 0; i < p->young_owners.n; i++) obj_release_buffers(NULL, p->young_owners.v[i]);
     for (size_t i = 0; i < p->old_owners.n; i++) obj_release_buffers(NULL, p->old_owners.v[i]);
     free_chunks(&p->chunks);

@@ -106,6 +106,7 @@ static Process *frag_new(VM *vm) {
     Process *f = xcalloc(1, sizeof *f);
     f->vm = vm;
     f->state = PROC_DONE; /* never running, so allocation never traps */
+    f->is_frag = true;
     for (int i = 0; i < QUOTA__COUNT; i++) f->quota[i] = UINT64_MAX;
     return f;
 }

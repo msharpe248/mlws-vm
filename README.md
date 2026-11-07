@@ -62,7 +62,8 @@ base:
   Weak references, weak maps (with ephemerons) and finalizers are built in.
 * **Many isolated processes, in parallel**: preemptive scheduling on one worker
   thread per core with work stealing, `spawn`/`send`/`recv` with deep-copied
-  messages, timeouts, Erlang-style `link`/`monitor` supervision, and per-process
+  messages (large strings go by reference, so sending one costs the same at
+  any size), timeouts, Erlang-style `link`/`monitor` supervision, and per-process
   quotas on heap, raw memory, mailbox size and CPU. A waiting process takes
   about 4 KB, and spawning, waking and ending one takes one to two
   microseconds.

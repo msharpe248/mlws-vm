@@ -71,6 +71,9 @@ void heap_free_all(Process *p);
 void gc_free_list(Obj *list);
 void gc_adopt(Process *p, Obj *list, uint64_t bytes, uint64_t nobjs);
 void heap_release_foreign(Process *p); /* finalize every foreign handle now (files, sockets, C resources) */
+/* A string at least this long is sent by reference, not copied (gc_share). */
+#define GC_SHARE_MIN 4096
+bool gc_share(Process *from, Process *to, ObjString *s); /* true: `to` now holds s itself */
 bool gc_slabs_enabled(void); /* the small-object allocator is on (not under ASan) */
 size_t obj_footprint(const Obj *o);
 

@@ -1,0 +1,128 @@
+; A string of 4 KiB or more is sent by reference: the first send makes it an
+; object of no heap, counted by the heaps that hold it, and the last to let go
+; frees it. Each holder's heap counts its bytes (gc.shared_bytes shows them).
+; Here one string goes to two processes, one of which outlives the sender's
+; hold on it; both hash and compare it at once, as a map key; a smaller string
+; is copied as before; and a stream of large strings dropped as they arrive
+; does not pile up, though only collections of the whole heap let go of them.
+; no-opt: an inlined function's registers hold their strings until overwritten
+.include "std/test.inc"
+
+.const SIZE = 100000
+
+; A string of n bytes: "x", then its length in text, then padding.
+.func make(i64 n) -> ref
+    bufnew R0, 0
+    mov I1, 0
+1:  bufpush R0, 120
+    inc I1
+    blt I1, n, 1b
+    tostr R1, n
+    strcat R2, R1, R0
+    substr R3, R2, 0, n
+    ret R3
+.endf
+
+; Waits for a string, reads it, uses it as a key, says how long it is, and stays
+; until told, then reads it again.
+.func holder(i64 parent)
+    recv R0
+    len I1, R0
+    send parent, I1
+    ncall "gc.shared_bytes" () -> (I2)
+    send parent, I2
+    mnew R1
+    mset R1, R0, 7
+    mget I3, R1, R0
+    ASSERT_EQ I3, 7
+    recv I4                            ; told to go on
+    len I5, R0
+    ASSERT_EQ I5, SIZE
+    mov I6, R0[99999]
+    ASSERT_EQ I6, 120
+    send parent, 1
+    ret
+.endf
+
+; Reports a string's length, and what it shares.
+.func reader(i64 parent)
+    recv R0
+    len I1, R0
+    send parent, I1
+    ncall "gc.shared_bytes" () -> (I2)
+    send parent, I2
+    ret
+.endf
+
+; Drops each string it gets; reports the most it ever held.
+.func dropper(i64 parent, i64 n)
+    mov I2, 0
+    mov I3, 0
+1:  recv R0
+    mov R0, null
+    send parent, 0                     ; (one at a time: what waits in a mailbox is held)
+    ncall "gc.shared_bytes" () -> (I4)
+    ble I4, I3, 2f
+    mov I3, I4
+2:  inc I2
+    blt I2, n, 1b
+    send parent, I3
+    ret
+.endf
+
+.func main
+    call make (SIZE) -> (R0)
+    ncall "gc.shared_bytes" () -> (I0)
+    ASSERT_EQ I0, 0
+
+    spawn holder (PID) -> (I1)
+    spawn holder (PID) -> (I2)
+    send I1, R0
+    send I2, R0
+    ncall "gc.shared_bytes" () -> (I0)
+    ASSERT_EQ I0, SIZE                 ; one string, however many sends
+    mov I3, 0
+1:  recv I4                            ; each holder: its length, and what it holds
+    ASSERT_EQ I4, SIZE
+    inc I3
+    blt I3, 4, 1b
+    len I5, R0                         ; the sender's is the same object, as usable
+    ASSERT_EQ I5, SIZE
+
+    ; The sender lets go: the holders still have it.
+    mov R0, null
+    ncall "gc.collect" ()
+    nop
+    ncall "gc.shared_bytes" () -> (I0)
+    ASSERT_EQ I0, 0
+    send I1, 1
+    send I2, 1
+    recv I6
+    recv I6
+
+    ; Below the size, copied as before.
+    call make (4095) -> (R1)
+    spawn reader (PID) -> (I7)
+    send I7, R1
+    ncall "gc.shared_bytes" () -> (I0)
+    ASSERT_EQ I0, 0
+    recv I8
+    ASSERT_EQ I8, 4095
+    recv I8
+    ASSERT_EQ I8, 0
+
+    ; A thousand strings of 64 KiB, 64 MB in all, dropped as they arrive.
+    spawn dropper (PID, 1000) -> (I9)
+    mov I10, 0
+    call make (65536) -> (R2)
+2:  tostr R3, I10
+    strcat R4, R3, R2
+    send I9, R4
+    mov R4, null
+    recv I12
+    inc I10
+    blt I10, 1000, 2b
+    recv I11
+    ASSERT_LT I11, 32000000
+    ret 0
+.endf

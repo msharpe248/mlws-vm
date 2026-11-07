@@ -15,8 +15,8 @@
 const char *obj_kind_name(int kind) {
     static const char *const names[] = {"null", "string", "bytes",  "array",   "struct", "list",
                                         "map",  "closure", "bigint", "decimal", "foreign", "coroutine",
-                                        "weak"};
-    return kind >= 0 && kind <= OBJ_WEAK ? names[kind] : "object";
+                                        "weak", "share"};
+    return kind >= 0 && kind <= OBJ_SHARE ? names[kind] : "object";
 }
 
 static void check_len(Process *p, int64_t n, int64_t max, const char *what) {
@@ -41,9 +41,12 @@ ObjString *str_new(Process *p, const char *s, size_t n) {
     return o;
 }
 
+/* (A shared string's first hash may come from any of its threads: the same
+ * value, whichever writes it.) */
 uint32_t str_hash(ObjString *s) {
-    if (!s->hash) s->hash = hash_string(s->data, s->len);
-    return s->hash;
+    uint32_t h = __atomic_load_n(&s->hash, __ATOMIC_RELAXED);
+    if (!h) __atomic_store_n(&s->hash, h = hash_string(s->data, s->len), __ATOMIC_RELAXED);
+    return h;
 }
 
 ObjBytes *bytes_new(Process *p, int64_t len) {
@@ -237,8 +240,8 @@ static bool key_eq(Word a, uint8_t at, Word b, uint8_t bt) {
         if (x && y && x->kind == y->kind && (x->kind == OBJ_BIG || x->kind == OBJ_DEC)) return num_equal(x, y);
         if (!x || !y || x->kind != OBJ_STRING || y->kind != OBJ_STRING) return false;
         const ObjString *sx = (const ObjString *)x, *sy = (const ObjString *)y;
-        return sx->len == sy->len && (!sx->hash || !sy->hash || sx->hash == sy->hash) &&
-               memcmp(sx->data, sy->data, sx->len) == 0;
+        uint32_t hx = __atomic_load_n(&sx->hash, __ATOMIC_RELAXED), hy = __atomic_load_n(&sy->hash, __ATOMIC_RELAXED);
+        return sx->len == sy->len && (!hx || !hy || hx == hy) && memcmp(sx->data, sy->data, sx->len) == 0;
     }
     default: return a.u == b.u;
     }

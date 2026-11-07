@@ -30,6 +30,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `gc.collect` | - | - | Request a collection of the whole heap; it runs before the next instruction. |
 | `gc.heap_bytes` | - | i64 | Bytes currently allocated on this process's heap (live and not yet collected). |
 | `gc.collections` | - | i64 | Number of garbage collections so far in this process. |
+| `gc.shared_bytes` | - | i64 | Bytes of the large strings this process shares with others: they are sent by reference, and counted in each holder's heap. |
 | `gc.finalize` | r, r | - | Call a closure with an object, once, after a collection finds nothing else holds it; the closure must not hold the object itself. It runs in this process between two instructions, cannot wait, and what it throws is dropped. Strings, BigInts and decimals are values and cannot be finalized. |
 | `weak.ref` | r | r | A weak reference to an object: it does not keep the object alive. Strings, BigInts and decimals are values, and it holds them like any other value. |
 | `weak.get` | r | r | What a weak reference refers to, or null once a collection has found nothing else holds it. |
