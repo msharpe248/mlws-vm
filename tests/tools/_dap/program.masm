@@ -1,0 +1,24 @@
+; The program tests/tools/check_tools.sh debugs through `mlwsvm dap`.
+.include "std/io.inc"
+.struct Pair
+    left: i64
+    right: ref
+.ends
+
+.func add(i64 a, i64 b) -> i64
+    add I2, a, b
+    ret I2
+.endf
+
+.func main
+    mov I0, 40
+    new R0, Pair
+    mov R0->Pair.left, 1
+    lnew R1
+    lpush R1, "item"
+    mov R0->Pair.right, R1
+    call add (I0, 2) -> (I1)
+    PRINTLN_I I1
+    mov I2, 3
+    ret I2
+.endf

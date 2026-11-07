@@ -1,7 +1,7 @@
 #!/bin/sh
 # Smoke test for the tools that cannot be exercised from inside an assembly
 # test: --monitor (HTTP API and dashboard), `mlwsvm top`, --profile, --trace,
-# `mlwsvm opt`, `mlwsvm bundle` and `mlwsvm fuzz`.
+# `mlwsvm opt`, `mlwsvm bundle`, `mlwsvm dap` and `mlwsvm fuzz`.
 # Usage: tests/tools/check_tools.sh [path/to/mlwsvm]      (run by `make check-tools`)
 set -eu
 BIN=${1:-./mlwsvm}
@@ -81,6 +81,79 @@ mv "$BD/app$X" "$BD/plain$X" "$BD/dyn$X" "$BD/dynw$X" "$BD/alone/"
     echo "$OUT" | grep -q E_LOAD_FORMAT || fail "bundle: damaged payload message"
 ) || exit 1
 rm -rf "${BD:?}"
+
+# mlwsvm dap: a session through the Debug Adapter Protocol, each request taken
+# in turn: a breakpoint (one on a line without code moves to the next that has
+# some), the stack, registers and an object's fields, stepping in and out,
+# the program's output and exit status.
+DAPD=$(mktemp -d)
+dap() { # session file -> the adapter's output
+    perl tests/tools/_dap/session.pl "$1" | perl -e 'alarm 30; exec @ARGV' $BIN dap > "$1.out" || fail "dap: did not end"
+}
+cat > "$DAPD/a" <<'EOF'
+initialize {"adapterID":"test"}
+launch {"program":"tests/tools/_dap/program.masm"}
+setBreakpoints {"source":{"path":"tests/tools/_dap/program.masm"},"breakpoints":[{"line":20},{"line":12}]}
+configurationDone
+continue
+threads
+stackTrace {"threadId":1}
+scopes {"frameId":65537}
+variables {"variablesReference":1}
+variables {"variablesReference":3}
+evaluate {"expression":"I0","frameId":65537}
+stepIn
+stackTrace {"threadId":1}
+stepOut
+stackTrace {"threadId":1}
+next
+continue
+disconnect
+EOF
+dap "$DAPD/a"
+grep -q '"verified":true,"line":20' "$DAPD/a.out" || fail "dap: breakpoint"
+grep -q '"verified":true,"line":14' "$DAPD/a.out" || fail "dap: a breakpoint on a line without code"
+grep -q '"reason":"breakpoint"' "$DAPD/a.out" || fail "dap: stopped"
+grep -q '"name":"program.main"' "$DAPD/a.out" || fail "dap: stack"
+grep -q '"name":"R0","value":"Pair' "$DAPD/a.out" || fail "dap: registers"
+grep -q '"name":"left","value":"1"' "$DAPD/a.out" || fail "dap: an object's fields"
+grep -q '"result":"40"' "$DAPD/a.out" || fail "dap: evaluate"
+grep -q '"name":"program.add"' "$DAPD/a.out" || fail "dap: step in"
+grep -q '"output":"42"' "$DAPD/a.out" || fail "dap: the program's output"
+grep -q '"exitCode":3' "$DAPD/a.out" || fail "dap: exit status"
+grep -q '"event":"terminated"' "$DAPD/a.out" || fail "dap: terminated"
+
+# Source lines through .loc, a bad program, and pausing a program that runs on.
+cat > "$DAPD/b" <<'EOF'
+initialize {"adapterID":"test"}
+launch {"program":"tests/asm/loc.masm"}
+setBreakpoints {"source":{"path":"/somewhere/shapes.lua"},"breakpoints":[{"line":12}]}
+configurationDone
+stackTrace {"threadId":1}
+disconnect
+EOF
+dap "$DAPD/b"
+grep -q '"verified":true,"line":12' "$DAPD/b.out" || fail "dap: a breakpoint in a translated file"
+grep -q '"name":"shapes.lua"' "$DAPD/b.out" || fail "dap: a frame in a translated file"
+cat > "$DAPD/c" <<'EOF'
+initialize {"adapterID":"test"}
+launch {"program":"tests/tools/_dap/no_such_program.masm"}
+disconnect
+EOF
+dap "$DAPD/c"
+grep -q '"success":false,"command":"launch"' "$DAPD/c.out" || fail "dap: a program that does not load"
+cat > "$DAPD/d" <<'EOF'
+initialize {"adapterID":"test"}
+launch {"program":"tests/tools/_dap/spin.masm"}
+configurationDone
+pause
+stackTrace {"threadId":1}
+disconnect
+EOF
+dap "$DAPD/d"
+grep -q '"reason":"pause"' "$DAPD/d.out" || fail "dap: pause"
+grep -q '"name":"spin.main"' "$DAPD/d.out" || fail "dap: stack after a pause"
+rm -rf "${DAPD:?}"
 
 # A .mlwso whose global word is tagged as a reference (the assembler never
 # writes one) is refused at load, not used: the word would be a forged pointer.
@@ -478,4 +551,4 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
 fi
-echo "check-tools: profile, .loc, bundle, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"
+echo "check-tools: profile, .loc, bundle, dap, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"

@@ -125,6 +125,15 @@ static char *exe_path_system(void) {
 
 bool plat_make_executable(const char *path) { return chmod(path, 0755) == 0; }
 
+long plat_stdin_read(void *buf, size_t n, uint64_t timeout_ns) {
+    if (timeout_ns != UINT64_MAX) {
+        struct pollfd pf = {0, POLLIN, 0};
+        if (poll(&pf, 1, (int)(timeout_ns / 1000000)) <= 0) return -1;
+    }
+    ssize_t r = read(0, buf, n);
+    return r < 0 ? 0 : (long)r;
+}
+
 /* Elsewhere (OpenBSD) from argv[0], found through $PATH if it has no '/'. main
  * passes it before any thread starts; later calls without it get the same. */
 char *plat_exe_path(const char *argv0) {

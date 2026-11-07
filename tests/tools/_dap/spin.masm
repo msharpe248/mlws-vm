@@ -1,0 +1,6 @@
+; A program that never ends, for `mlwsvm dap` to pause (check_tools.sh).
+.func main
+    mov I0, 0
+1:  inc I0
+    jmp 1b
+.endf

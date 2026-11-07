@@ -20,6 +20,9 @@ void plat_sleep_ns(uint64_t ns);
 /* Absolute path of the running executable (malloc'd), or NULL. */
 char *plat_exe_path(const char *argv0);
 bool plat_make_executable(const char *path); /* a file just written, as a program */
+/* Bytes from stdin, without buffering: up to n, 0 at its end, or, waiting no
+ * more than timeout_ns, -1 if none came (UINT64_MAX: waits as long as it takes). */
+long plat_stdin_read(void *buf, size_t n, uint64_t timeout_ns);
 char *plat_find_in_path(const char *name); /* POSIX: an executable in $PATH, or NULL */
 /* Path list separator for MLWSVM_PATH (':' on POSIX, ';' on Windows). */
 char plat_path_sep(void);

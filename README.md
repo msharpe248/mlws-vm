@@ -95,7 +95,8 @@ base:
 * **Coroutines**: stackful coroutines inside a process (`conew`, `coresume`,
   `coyield`), passing values both ways, for generators and Lua-style
   `coroutine` libraries.
-* **Tooling**: a gdb-style debugger (`mlwsvm debug`), an exact profiler with
+* **Tooling**: a gdb-style debugger (`mlwsvm debug`), a debugger for editors
+  (`mlwsvm dap`, the Debug Adapter Protocol), an exact profiler with
   flame-graph output, an instruction tracer, and a live monitor with a web
   dashboard, JSON API and `mlwsvm top`. A compiler marks which line of its
   source each stretch of code came from (`.loc "fib.lua", 3`), and backtraces,

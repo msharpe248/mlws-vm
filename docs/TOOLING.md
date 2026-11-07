@@ -11,6 +11,7 @@ differential fuzzer and the checks to run before a release.
 | Profiler | `mlwsvm run --profile [--flame FILE] prog.masm` | none |
 | Tracer | `mlwsvm run --trace FILE\|- [--trace-limit N] prog.masm` | none |
 | Debugger | `mlwsvm debug prog.masm` | — |
+| Debugger for editors | `mlwsvm dap` (Debug Adapter Protocol) | — |
 | Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] prog.masm` | none |
 | Terminal view | `mlwsvm top [HOST:PORT] [--once] [--interval MS]` | — |
 | VM options | `mlwsvm run --max-frames N --quota heap=64M ... prog.masm` | — |
@@ -323,6 +324,40 @@ R0 = Point {x: 1.5, y: 0}
 * Not yet available: printing parameters or aliases by name (they are not kept
   in the binary), memory expressions such as `print SP[2]`, watchpoints, and
   attaching to a running VM.
+
+## Debugger for editors: `mlwsvm dap`
+
+`mlwsvm dap` speaks the [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/)
+on stdin and stdout, so VS Code, Neovim, Emacs and others can debug MLWSVM
+programs. It is `mlwsvm debug`'s engine, so a program is interpreted on one
+worker thread, and it works for any language compiled to MLWSVM, in that
+language's own files, wherever its compiler marked the lines with `.loc`.
+
+* **Breakpoints** by file and line, in `.masm` files or files named by `.loc`. On
+  a line without code, one moves to the next line that has some.
+* **Stepping** by lines: step over, step in, step out.
+* **Threads** are processes. All of them stop together, and each has its stack.
+* **Variables** are a frame's registers by bank. Structs, lists, arrays and maps
+  open to show their contents, up to a thousand entries.
+* **Watch and hover**: a register's name (`I3`, `R0`), in the selected frame.
+* **Pause** stops a running program, within 65,536 instructions.
+* **Output** comes as output events. The adapter has stdin, so a program being
+  debugged reads end of input.
+
+The `launch` request takes `program`, `args` (a list) and `stopOnEntry`; there
+is no `attach`. `-L` adds to the library path, as for `run`.
+
+`editors/vscode/` is a small VS Code extension that declares the debugger:
+copy it into `~/.vscode/extensions/`, or run it from there with `code
+--extensionDevelopmentPath`. With `mlwsvm` on your `PATH`, this goes in
+`launch.json`:
+
+```json
+{ "type": "mlwsvm", "request": "launch", "name": "Debug", "program": "${file}" }
+```
+
+For Neovim's nvim-dap, the adapter is `{ type = 'executable', command = 'mlwsvm',
+args = { 'dap' } }`.
 
 ## Monitor: `--monitor`
 

@@ -1,0 +1,35 @@
+{
+  "name": "mlwsvm-debug",
+  "displayName": "MLWSVM Debug",
+  "description": "Debug programs on MLWSVM, in assembly or in any language compiled to it (mlwsvm dap).",
+  "version": "0.1.0",
+  "publisher": "mlwsvm",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Debuggers"],
+  "contributes": {
+    "languages": [{ "id": "masm-mlwsvm", "extensions": [".masm"], "aliases": ["MLWSVM assembly"] }],
+    "breakpoints": [{ "language": "masm-mlwsvm" }],
+    "debuggers": [
+      {
+        "type": "mlwsvm",
+        "label": "MLWSVM",
+        "languages": ["masm-mlwsvm"],
+        "program": "mlwsvm",
+        "args": ["dap"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": { "type": "string", "description": "The program: a .masm or .mlwso file." },
+              "args": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Its arguments." },
+              "stopOnEntry": { "type": "boolean", "default": false, "description": "Stop at the start of main." }
+            }
+          }
+        },
+        "initialConfigurations": [
+          { "type": "mlwsvm", "request": "launch", "name": "Debug", "program": "${file}" }
+        ]
+      }
+    ]
+  }
+}

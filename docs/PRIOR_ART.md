@@ -177,6 +177,7 @@ civil-date conversions.
 | Weak references, weak maps and finalizers in a per-process, generational, non-moving collector: weakness a mode of the ordinary map, so no instruction or compiled form knows of it; a finalizer's record an object of the heap, so it counts against the quota; the closure run as a callback at the safepoint after the collection | Lua's weak tables, ephemerons and `__gc`, with the same order of clearing (weak values before finalizers, weak keys after); Hayes's ephemerons; Java's `WeakReference` and finalization; JavaScript's `WeakMap` and `FinalizationRegistry` | Generations need no barrier of their own: a weak reference is promoted with its target, and a weak map is remembered as any map is. Strings and numbers stay, as in Lua. |
 | One executable: a copy of the runtime with the program's modules after it, found from the file's last bytes | Self-extracting archives and `.zip` files, whose directory is at the end; Deno's `compile`, Bun's `--compile` and Node's single-executable applications; Lua's `srlua` | No extraction and no separate launcher: the same `mlwsvm` is the tool and the runtime, and the loader finds modules in the file before anywhere else. |
 | Reloading a module under running processes, in a VM with a JIT: Erlang's rule for what moves, checked at link time against every user, with machine code left alone | Erlang's two versions of a module and its rule that a qualified call moves while a local call stays; Smalltalk and Lisp images; the JVM's `HotSwap`, which keeps a method's signature | Compiled calls already read their callee's entry, so clearing it sends them to the interpreter's call: there is no code patching or deoptimization. Old versions are kept rather than purged, so nothing has to find or kill the processes in them. |
+| A debugger for editors over the Debug Adapter Protocol, for whatever language compiled to the VM | Microsoft's Debug Adapter Protocol; GDB's and LLDB's adapters; source maps in browsers, whose role `.loc` plays | One adapter serves every language on the VM, in its own source files, since compilers already mark their lines with `.loc`. Processes appear as the protocol's threads. |
 
 ---
 
@@ -280,6 +281,7 @@ of the instructions in call-heavy code.
 | M53 | Lua's weak tables and `__gc`, Hayes's ephemerons, Java's `WeakReference` and finalization, JavaScript's `WeakMap` and `FinalizationRegistry` |
 | M54 | Self-extracting archives; Deno's `compile`, Bun's `--compile`, Node's single-executable applications, Lua's `srlua` |
 | M55 | Erlang's code replacement and its two versions of a module; Smalltalk and Lisp images; the JVM's `HotSwap` |
+| M56 | The Debug Adapter Protocol; source maps |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

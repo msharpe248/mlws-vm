@@ -11,37 +11,6 @@
 #include "tools.h"
 #include "tools_internal.h"
 
-enum { STEP_NONE, STEP_INTO, STEP_OVER, STEP_OUT };
-
-typedef struct {
-    char *spec;
-    Function *fn;
-    uint32_t pc;
-    uint64_t hits;
-    bool live;
-} Breakpoint;
-
-typedef struct Debugger {
-    VM *vm;
-    Process *main;
-    Function *main_fn;
-    LModule *root;
-    VEC(Breakpoint) bps;
-    int step;
-    uint64_t step_pid;
-    uint32_t step_depth;
-    /* After a stop, the stopped instruction must run once before it can stop again. */
-    bool skip;
-    uint64_t skip_pid;
-    Function *skip_fn;
-    uint32_t skip_pc;
-    int hit;            /* breakpoint that caused the stop, or -1 */
-    uint64_t sel;       /* pid of the process being inspected */
-    bool started, ended;
-    OutputFn out;
-    void *out_ctx;
-} Debugger;
-
 static void say(Debugger *d, const char *fmt, ...) MLWS_PRINTF(2, 3);
 static void say(Debugger *d, const char *fmt, ...) {
     StrBuf b = {0};
@@ -62,6 +31,15 @@ static void say_sb(Debugger *d, StrBuf *b) {
 
 bool debugger_hook(Debugger *d, Process *p, uint32_t pc) {
     Function *f = p->frames[p->nframes - 1].fn;
+    if (d->poll && ++d->poll_tick >= DBG_POLL_EVERY) {
+        d->poll_tick = 0;
+        if (d->poll(d->poll_ctx)) { /* asked to stop, wherever it is */
+            d->step = STEP_NONE;
+            d->sel = p->pid;
+            d->paused = true;
+            return true;
+        }
+    }
     if (d->skip) {
         d->skip = false;
         if (p->pid == d->skip_pid && f == d->skip_fn && pc == d->skip_pc) return false;
@@ -92,7 +70,7 @@ bool debugger_hook(Debugger *d, Process *p, uint32_t pc) {
 
 /* ---- helpers ------------------------------------------------------------------- */
 
-static Process *selected(Debugger *d) {
+Process *dbg_selected(Debugger *d) {
     Process *p = vm_process(d->vm, d->sel);
     if (!p && d->sel == d->main->pid && d->started) p = d->main; /* main is kept after it ends */
     return p && p->nframes ? p : NULL;
@@ -111,7 +89,7 @@ static void show_insn(Debugger *d, const Function *f, uint32_t pc, bool mark) {
 }
 
 static void show_stop(Debugger *d) {
-    Process *p = selected(d);
+    Process *p = dbg_selected(d);
     if (!p) return;
     const Frame *fr = &p->frames[p->nframes - 1];
     StrBuf b = {0};
@@ -152,7 +130,7 @@ static bool source_matches(const Function *f, const char *file) {
     return !strcmp(src, file) || !strcmp(path_basename(src), path_basename(file));
 }
 
-static void add_bp(Debugger *d, const char *spec, Function *f, uint32_t pc) {
+void dbg_add_bp(Debugger *d, const char *spec, Function *f, uint32_t pc) {
     if (!f->bp) f->bp = xcalloc(f->ncode, 1);
     f->bp[pc] = 1;
     Breakpoint b = {xstrdup(spec), f, pc, 0, true};
@@ -162,6 +140,58 @@ static void add_bp(Debugger *d, const char *spec, Function *f, uint32_t pc) {
     fmt_location(&s, f, pc);
     sb_putc(&s, '\n');
     say_sb(d, &s);
+}
+
+/* Breakpoints at a line: of the module's own text, or else, in a file the code
+ * was translated from (`.loc`), at the first instruction of each function that
+ * came from that line. With no file: the program's own. False if no code is there. */
+bool dbg_break_line(Debugger *d, const char *spec, const char *file, uint32_t line) {
+    bool found = false;
+    for (size_t m = 0; m < d->vm->mods.n && !found; m++) {
+        LModule *lm = d->vm->mods.v[m];
+        if (!file && lm != d->root) continue;
+        for (uint32_t i = 0; i < lm->m->nfuncs && !found; i++) {
+            Function *f = &lm->funcs[i];
+            if (f->target != f || !f->mf->lines) continue;
+            if (file ? !source_matches(f, file) : f->mf->file != 0) continue; /* a bare line: the program's own file */
+            for (uint32_t pc = 0; pc < f->ncode; pc++) {
+                if (f->mf->lines[pc] == line) {
+                    dbg_add_bp(d, spec, f, pc);
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+    for (size_t m = 0; m < d->vm->mods.n && !found && file; m++) {
+        LModule *lm = d->vm->mods.v[m];
+        for (uint32_t i = 0; i < lm->m->nfuncs; i++) {
+            Function *f = &lm->funcs[i];
+            if (f->target != f) continue;
+            for (uint32_t k = 0; k < f->mf->nlocs; k++) {
+                const MLoc *l = &f->mf->locs[k];
+                if (!l->file || l->line != line) continue;
+                const char *sf = lm->m->srcfiles[l->file - 1];
+                if (strcmp(sf, file) && strcmp(path_basename(sf), path_basename(file))) continue;
+                dbg_add_bp(d, spec, f, l->start);
+                found = true;
+                break;
+            }
+        }
+    }
+    return found;
+}
+
+/* The breakpoints set under a spec go. */
+void dbg_clear_spec(Debugger *d, const char *spec) {
+    for (size_t i = 0; i < d->bps.n; i++) {
+        Breakpoint *b = &d->bps.v[i];
+        if (!b->live || strcmp(b->spec, spec)) continue;
+        b->live = false;
+        b->fn->bp[b->pc] = 0;
+    }
+    for (size_t i = 0; i < d->bps.n; i++) /* (another may be at the same place) */
+        if (d->bps.v[i].live) d->bps.v[i].fn->bp[d->bps.v[i].pc] = 1;
 }
 
 static void cmd_break(Debugger *d, const char *arg) {
@@ -175,47 +205,12 @@ static void cmd_break(Debugger *d, const char *arg) {
     if (!colon && !all_digits) {
         Function *f = find_function(d, arg);
         if (!f) say(d, "No function named '%s'.\n", arg);
-        else add_bp(d, arg, f, 0);
+        else dbg_add_bp(d, arg, f, 0);
         return;
     }
     uint32_t line = (uint32_t)strtoul(colon ? colon + 1 : arg, NULL, 10);
     char *file = colon ? xstrndup(arg, (size_t)(colon - arg)) : NULL;
-    bool found = false;
-    for (size_t m = 0; m < d->vm->mods.n && !found; m++) {
-        LModule *lm = d->vm->mods.v[m];
-        if (!file && lm != d->root) continue;
-        for (uint32_t i = 0; i < lm->m->nfuncs && !found; i++) {
-            Function *f = &lm->funcs[i];
-            if (f->target != f || !f->mf->lines) continue;
-            if (file ? !source_matches(f, file) : f->mf->file != 0) continue; /* a bare line: the program's own file */
-            for (uint32_t pc = 0; pc < f->ncode; pc++) {
-                if (f->mf->lines[pc] == line) {
-                    add_bp(d, arg, f, pc);
-                    found = true;
-                    break;
-                }
-            }
-        }
-    }
-    /* A file the code was translated from (`.loc`): the first instruction of
-     * each function that came from that line. */
-    for (size_t m = 0; m < d->vm->mods.n && !found && file; m++) {
-        LModule *lm = d->vm->mods.v[m];
-        for (uint32_t i = 0; i < lm->m->nfuncs; i++) {
-            Function *f = &lm->funcs[i];
-            if (f->target != f) continue;
-            for (uint32_t k = 0; k < f->mf->nlocs; k++) {
-                const MLoc *l = &f->mf->locs[k];
-                if (!l->file || l->line != line) continue;
-                const char *sf = lm->m->srcfiles[l->file - 1];
-                if (strcmp(sf, file) && strcmp(path_basename(sf), path_basename(file))) continue;
-                add_bp(d, arg, f, l->start);
-                found = true;
-                break;
-            }
-        }
-    }
-    if (!found) say(d, "No code at line %u%s%s.\n", line, file ? " of " : "", file ? file : "");
+    if (!dbg_break_line(d, arg, file, line)) say(d, "No code at line %u%s%s.\n", line, file ? " of " : "", file ? file : "");
     free(file);
 }
 
@@ -278,7 +273,7 @@ static void reg_value(const Process *p, uint8_t reg, Word *w, MlwsType *t) {
 }
 
 static void cmd_print(Debugger *d, const char *arg) {
-    Process *p = selected(d);
+    Process *p = dbg_selected(d);
     uint8_t reg;
     if (!p) {
         say(d, "The program is not stopped in a process.\n");
@@ -307,7 +302,7 @@ static void cmd_print(Debugger *d, const char *arg) {
 }
 
 static void cmd_regs(Debugger *d) {
-    Process *p = selected(d);
+    Process *p = dbg_selected(d);
     if (!p) {
         say(d, "The program is not stopped in a process.\n");
         return;
@@ -337,7 +332,7 @@ static void cmd_regs(Debugger *d) {
 }
 
 static void cmd_stack(Debugger *d, const char *arg) {
-    Process *p = selected(d);
+    Process *p = dbg_selected(d);
     if (!p) {
         say(d, "The program is not stopped in a process.\n");
         return;
@@ -377,7 +372,7 @@ static void cmd_stack(Debugger *d, const char *arg) {
 }
 
 static void cmd_bt(Debugger *d) {
-    Process *p = selected(d);
+    Process *p = dbg_selected(d);
     if (!p) {
         say(d, "The program is not stopped in a process.\n");
         return;
@@ -394,7 +389,7 @@ static void cmd_bt(Debugger *d) {
 }
 
 static void cmd_list(Debugger *d) {
-    Process *p = selected(d);
+    Process *p = dbg_selected(d);
     if (!p) {
         say(d, "The program is not stopped in a process.\n");
         return;
@@ -429,40 +424,43 @@ static void report_end(Debugger *d) {
     }
 }
 
-/* Run (or resume) until the next stop or the end of the program. */
-static void go(Debugger *d, int step) {
+/* Run (or resume) until the next stop (true) or the end of the program. */
+bool dbg_go(Debugger *d, int step) {
     if (d->ended) {
         say(d, "The program has finished.\n");
-        return;
+        return false;
     }
+    bool resuming = d->started;
     if (!d->started) {
         if (step != STEP_NONE) {
             say(d, "The program is not running. Use 'run' first.\n");
-            return;
+            return false;
         }
         d->started = true;
         proc_start(d->main, d->main_fn, NULL, NULL, 0);
     }
-    Process *p = selected(d); /* stepping follows the process being inspected */
+    Process *p = dbg_selected(d); /* stepping follows the process being inspected */
     d->step = step;
     d->step_pid = p ? p->pid : 0;
     d->step_depth = p ? p->nframes : 0;
     /* The process that resumes first is the one that stopped: let the instruction
      * it is stopped at run once before it can stop there again. */
     Process *r = d->vm->stopped ? d->vm->stopped : p;
-    if (r && r->nframes) {
+    if (resuming && r && r->nframes) {
         d->skip = true;
         d->skip_pid = r->pid;
         d->skip_fn = r->frames[r->nframes - 1].fn;
         d->skip_pc = r->frames[r->nframes - 1].pc;
     }
     d->hit = -1;
+    d->paused = false;
     if (sched_run(d->vm, d->main)) {
         if (d->vm->stopped) d->sel = d->vm->stopped->pid; /* hook stops and `break` alike */
         show_stop(d);
-    } else {
-        report_end(d);
+        return true;
     }
+    report_end(d);
+    return false;
 }
 
 static const char *HELP =
@@ -484,23 +482,36 @@ static const char *HELP =
     "  process PID          inspect another process\n"
     "  quit (q)             stop the program and exit\n";
 
-int debugger_run(VM *vm, LModule *root, Function *main_fn, DebugIO *io) {
-    Debugger d;
-    memset(&d, 0, sizeof d);
-    d.vm = vm;
-    d.root = root;
-    d.main_fn = main_fn;
-    d.out = io->out;
-    d.out_ctx = io->out_ctx;
-    d.hit = -1;
+void dbg_init(Debugger *d, VM *vm, LModule *root, Function *main_fn, OutputFn out, void *out_ctx) {
+    memset(d, 0, sizeof *d);
+    d->vm = vm;
+    d->root = root;
+    d->main_fn = main_fn;
+    d->out = out;
+    d->out_ctx = out_ctx;
+    d->hit = -1;
     tools_enable_hook(vm);
     vm_whole_windows(vm); /* `regs` shows registers not yet written as zero */
-    Tools *t = tools_of(vm);
-    t->dbg = &d;
-    d.main = proc_new(vm);
-    vm->main_pid = d.main->pid;
-    vm_program_add(vm, d.main, root->path, &vm->prog_args); /* a run of one program */
-    d.sel = d.main->pid;
+    tools_of(vm)->dbg = d;
+    d->main = proc_new(vm);
+    vm->main_pid = d->main->pid;
+    vm_program_add(vm, d->main, root->path, &vm->prog_args); /* a run of one program */
+    d->sel = d->main->pid;
+}
+
+void dbg_finish(Debugger *d) {
+    VM *vm = d->vm;
+    sched_shutdown(vm, d->main);
+    proc_free(d->main);
+    vm_programs_free(vm);
+    for (size_t i = 0; i < d->bps.n; i++) free(d->bps.v[i].spec);
+    VEC_FREE(d->bps);
+    tools_of(vm)->dbg = NULL;
+}
+
+int debugger_run(VM *vm, LModule *root, Function *main_fn, DebugIO *io) {
+    Debugger d;
+    dbg_init(&d, vm, root, main_fn, io->out, io->out_ctx);
     say(&d, "MLWSVM debugger. Type 'help' for commands.\n");
     char line[1024];
     for (;;) {
@@ -521,12 +532,12 @@ int debugger_run(VM *vm, LModule *root, Function *main_fn, DebugIO *io) {
 #define IS(full, shortest) (strlen(cmd) >= strlen(shortest) && !strncmp(full, cmd, strlen(cmd)))
         if (!*cmd) continue;
         else if (IS("help", "h")) say(&d, "%s", HELP);
-        else if (IS("run", "r")) d.started ? say(&d, "The program is already running; use 'continue'.\n") : go(&d, STEP_NONE);
-        else if (IS("continue", "c")) go(&d, STEP_NONE);
+        else if (IS("run", "r")) d.started ? say(&d, "The program is already running; use 'continue'.\n") : (void)dbg_go(&d, STEP_NONE);
+        else if (IS("continue", "c")) dbg_go(&d, STEP_NONE);
         else if (IS("stack", "st")) cmd_stack(&d, arg);
-        else if (IS("step", "s")) go(&d, STEP_INTO);
-        else if (IS("next", "n")) go(&d, STEP_OVER);
-        else if (IS("finish", "fin")) go(&d, STEP_OUT);
+        else if (IS("step", "s")) dbg_go(&d, STEP_INTO);
+        else if (IS("next", "n")) dbg_go(&d, STEP_OVER);
+        else if (IS("finish", "fin")) dbg_go(&d, STEP_OUT);
         else if (IS("break", "b")) cmd_break(&d, arg);
         else if (IS("delete", "d")) cmd_delete(&d, arg);
         else if (IS("info", "i")) cmd_info_break(&d);
@@ -544,11 +555,6 @@ int debugger_run(VM *vm, LModule *root, Function *main_fn, DebugIO *io) {
 #undef IS
     }
     int rc = d.ended && d.main->state == PROC_DONE ? (int)(d.main->exit_code & 0xFF) : 0;
-    sched_shutdown(vm, d.main);
-    proc_free(d.main);
-    vm_programs_free(vm);
-    for (size_t i = 0; i < d.bps.n; i++) free(d.bps.v[i].spec);
-    VEC_FREE(d.bps);
-    t->dbg = NULL;
+    dbg_finish(&d);
     return rc;
 }

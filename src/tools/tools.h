@@ -18,6 +18,7 @@ int tool_ext(int argc, char **argv, const ToolEnv *env); /* `mlwsvm ext` */
 int tool_lib(int argc, char **argv, const ToolEnv *env); /* `mlwsvm lib` (libtool.c) */
 int tool_opt(int argc, char **argv, const ToolEnv *env); /* `mlwsvm opt` (opttool.c) */
 int tool_bundle(int argc, char **argv, const ToolEnv *env); /* `mlwsvm bundle` (bundle.c) */
+int tool_dap(int argc, char **argv, const ToolEnv *env);    /* `mlwsvm dap` (dap.c) */
 
 int tool_test(int argc, char **argv, const ToolEnv *env);
 int tool_doc(int argc, char **argv);

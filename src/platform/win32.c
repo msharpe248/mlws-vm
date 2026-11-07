@@ -162,6 +162,16 @@ bool plat_list_dir(const char *path, char ***names, size_t *n) {
     return true;
 }
 
+long plat_stdin_read(void *buf, size_t n, uint64_t timeout_ns) {
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    if (timeout_ns != UINT64_MAX) { /* a pipe, as editors give: a file or console simply reads */
+        DWORD avail = 0;
+        if (PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL) && !avail) return -1;
+    }
+    DWORD got = 0;
+    return ReadFile(h, buf, (DWORD)n, &got, NULL) ? (long)got : 0;
+}
+
 bool plat_make_executable(const char *path) {
     (void)path; /* the name says it */
     return true;

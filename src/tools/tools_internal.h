@@ -31,6 +31,53 @@ void tools_free(VM *vm);
 void tools_monitor_close(VM *vm);
 bool debugger_hook(struct Debugger *d, Process *p, uint32_t pc);
 
+/* The debugger's engine, under `mlwsvm debug` (debugger.c) and `mlwsvm dap`
+ * (dap.c). */
+enum { STEP_NONE, STEP_INTO, STEP_OVER, STEP_OUT };
+#define DBG_POLL_EVERY 65536 /* instructions between calls of Debugger.poll */
+
+typedef struct {
+    char *spec;
+    Function *fn;
+    uint32_t pc;
+    uint64_t hits;
+    bool live;
+} Breakpoint;
+
+typedef struct Debugger {
+    VM *vm;
+    Process *main;
+    Function *main_fn;
+    LModule *root;
+    VEC(Breakpoint) bps;
+    int step;
+    uint64_t step_pid;
+    uint32_t step_depth;
+    /* After a stop, the stopped instruction must run once before it can stop again. */
+    bool skip;
+    uint64_t skip_pid;
+    Function *skip_fn;
+    uint32_t skip_pc;
+    int hit;            /* breakpoint that caused the stop, or -1 */
+    uint64_t sel;       /* pid of the process being inspected */
+    bool started, ended;
+    OutputFn out;
+    void *out_ctx;
+    /* Asked now and then while the program runs: true stops it (paused). */
+    bool (*poll)(void *ctx);
+    void *poll_ctx;
+    uint32_t poll_tick;
+    bool paused;
+} Debugger;
+
+void dbg_init(Debugger *d, VM *vm, LModule *root, Function *main_fn, OutputFn out, void *out_ctx);
+void dbg_finish(Debugger *d);
+bool dbg_go(Debugger *d, int step);
+Process *dbg_selected(Debugger *d);
+void dbg_add_bp(Debugger *d, const char *spec, Function *f, uint32_t pc);
+bool dbg_break_line(Debugger *d, const char *spec, const char *file, uint32_t line);
+void dbg_clear_spec(Debugger *d, const char *spec);
+
 /* Formatting shared by the debugger and the monitor. */
 void fmt_location(StrBuf *b, const Function *f, uint32_t pc);
 void fmt_value(StrBuf *b, Word v, MlwsType t, int depth);

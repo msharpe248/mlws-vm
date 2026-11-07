@@ -50,7 +50,8 @@ static void usage(FILE *f) {
           "  ext  list|install|remove|allow-ffi|deny-ffi [--dir D] ...  manage trusted native code\n"
           "  lib  build DIR [-o FILE] | info FILE.mlwsl | list           library archives\n",
           f);
-    fputs("  bundle [-L dir] [-o out] [--with MODULE]... [VM options] file.(masm|mlwso)\n"
+    fputs("  dap  [-L dir]                         a debugger for editors: the Debug Adapter Protocol on stdin and stdout\n"
+          "  bundle [-L dir] [-o out] [--with MODULE]... [VM options] file.(masm|mlwso)\n"
           "                                        one executable: this mlwsvm, the program and all it imports\n"
           "  opt  [-L dir] [-O0|-O1|-O2|-O3] [--passes LIST] [-o out.mlwso] [-S] [--report FILE|-] [-v] file.(masm|mlwso)\n"
           "                                        optimize a module, with a report (--list: the passes)\n"
@@ -487,6 +488,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "ext")) rc = tool_ext(n, args, &g_env);
     else if (!strcmp(cmd, "lib")) rc = tool_lib(n, args, &g_env);
     else if (!strcmp(cmd, "bundle")) rc = tool_bundle(n, args, &g_env);
+    else if (!strcmp(cmd, "dap")) rc = tool_dap(n, args, &g_env);
     else if (!strcmp(cmd, "opt")) rc = tool_opt(n, args, &g_env);
     else if (!strcmp(cmd, "bindgen")) rc = tool_bindgen(n, args);
     else if (!strcmp(cmd, "fuzz")) rc = tool_fuzz(n, args);
