@@ -131,6 +131,21 @@ h:
     ASSERT_EQ I0, 2
     ncall "regex.group" (R1, "day") -> (I0)
     ASSERT_EQ I0, -1
+    ; Every group's name, in order: null for a group without one; (?:...) is no group.
+    ncall "regex.compile" ("(?P<a>x)(y)(?:w)(?<c>z)", "") -> (R5)
+    ncall "regex.names" (R5) -> (R6)
+    len I0, R6
+    ASSERT_EQ I0, 3
+    strcmp I0, R6[0], "a"
+    ASSERT_EQ I0, 0
+    mov R7, R6[1]
+    ASSERT_FALSE R7, r
+    strcmp I0, R6[2], "c"
+    ASSERT_EQ I0, 0
+    ncall "regex.compile" ("abc", "") -> (R5)
+    ncall "regex.names" (R5) -> (R6)
+    len I0, R6
+    ASSERT_EQ I0, 0
     ncall "regex.find" (R1, "on 2026-11 and 2027-01", 0) -> (R2)
     len I0, R2
     ASSERT_EQ I0, 6

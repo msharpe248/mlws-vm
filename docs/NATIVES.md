@@ -149,6 +149,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `regex.split` | r, r | r | A text split at every match, as a list of strings. |
 | `regex.replace` | r, r, r, i64 | r, i64 | A text with up to n matches replaced (negative: all), and how many were: $1, ${1} and ${name} in the replacement are groups, and $$ is a dollar sign. |
 | `regex.group` | r, r | i64 | The number of a named group, or -1. |
+| `regex.names` | r | r | The names of a regex's groups, in order: a list with one entry per group, its name or null. |
 | `text.replace_n` | r, r, r, i64 | r, i64 | Replace the first n occurrences (every one, if n < 0), and how many were: Lua's gsub of a plain pattern, but for n < 0. |
 | `text.starts_with` | r, r | b | Whether a string starts with a prefix. |
 | `text.ends_with` | r, r | b | Whether a string ends with a suffix. |

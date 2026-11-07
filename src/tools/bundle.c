@@ -97,6 +97,12 @@ int tool_bundle(int argc, char **argv, const ToolEnv *env) {
     char *path = out ? xstrdup(out) : default_out(file);
     if (write_file(path, b.b, b.n) && plat_make_executable(path)) {
         printf("%s: %s, %zu module%s, %zu bytes\n", path, root->m->name, vm->mods.n, vm->mods.n == 1 ? "" : "s", b.n);
+        size_t pn = strlen(path);
+        const char *ext = pn >= 4 ? path + pn - 4 : "";
+        if (ext[0] == '.' && (ext[1] | 32) == 'a' && (ext[2] | 32) == 'p' && (ext[3] | 32) == 'p') /* macOS: an app bundle */
+            fprintf(stderr,
+                    "mlwsvm bundle: warning: macOS kills a program whose name ends in .app as it starts (an .app is a "
+                    "directory, an application bundle there): name it otherwise\n");
         rc = 0;
     } else {
         fprintf(stderr, "mlwsvm bundle: cannot write %s\n", path);

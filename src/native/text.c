@@ -577,6 +577,18 @@ static void n_re_group_named(Process *p, Word *a, Word *r) {
     r[0].i = regex_group_named(re, str_arg(p, a[1], &n));
 }
 
+static void n_re_names(Process *p, Word *a, Word *r) {
+    const Regex *re = re_arg(p, a[0]);
+    int n = regex_groups(re);
+    ObjList *l = list_new(p, n);
+    for (int g = 1; g <= n; g++) {
+        const char *name = regex_group_name(re, g);
+        Word w = {.r = name ? &str_new(p, name, strlen(name))->h : NULL};
+        list_push(p, l, w, T_R);
+    }
+    r[0].r = &l->h;
+}
+
 static void n_starts_with(Process *p, Word *a, Word *r) {
     uint32_t n, pn;
     const char *s = str_arg(p, a[0], &n), *pre = str_arg(p, a[1], &pn);
@@ -1255,6 +1267,8 @@ static const NativeDef TEXT_NATIVES[] = {
     N("regex.replace", 4, T(T_R, T_R, T_R, T_I64), 2, T(T_R, T_I64), n_re_replace,
       "A text with up to n matches replaced (negative: all), and how many were: $1, ${1} and ${name} in the replacement are groups, and $$ is a dollar sign."),
     N("regex.group", 2, T(T_R, T_R), 1, T(T_I64), n_re_group_named, "The number of a named group, or -1."),
+    N("regex.names", 1, T(T_R), 1, T(T_R), n_re_names,
+      "The names of a regex's groups, in order: a list with one entry per group, its name or null."),
     N("text.replace_n", 4, T(T_R, T_R, T_R, T_I64), 2, T(T_R, T_I64), n_replace_n,
       "Replace the first n occurrences (every one, if n < 0), and how many were: Lua's gsub of a plain pattern, but for n < 0."),
     N("text.starts_with", 2, T(T_R, T_R), 1, T(T_B), n_starts_with, "Whether a string starts with a prefix."),

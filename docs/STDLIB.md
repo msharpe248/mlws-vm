@@ -243,6 +243,7 @@ handle of the process, and cannot be sent. A bad pattern is `E_REGEX`.
 | `regex.split(re, text)` | the pieces between matches |
 | `regex.replace(re, text, with, n)` | up to n matches replaced (negative: all), and how many |
 | `regex.group(re, name)` | a named group's number, or -1 |
+| `regex.names(re)` | every group's name, in order: a list with one entry per group, null for one without a name |
 
 **Syntax.** `.`, `[abc]`, `[^a-z]`, `*`, `+`, `?`, `{m}`, `{m,}`, `{m,n}` (up to
 1000), lazy forms `*?`, `+?`, `??`, `{m,n}?`, `a|b`, `(...)`, `(?:...)`,

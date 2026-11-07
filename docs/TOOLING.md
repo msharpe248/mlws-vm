@@ -142,7 +142,9 @@ program's (`os.args`).
   `.extern` names. They are looked for as usual.
 * **macOS:** the result runs, but `codesign --verify` reports that it fails
   strict validation, since the program comes after the signed part. A bundle
-  cannot be notarized.
+  cannot be notarized. Do not name it `*.app`: macOS kills any program file so
+  named as it starts (there, an `.app` is an application bundle, a directory),
+  and `mlwsvm bundle` warns of it.
 
 A bundle is for the machine type and system of the `mlwsvm` that wrote it.
 The layout is in [BINARY_FORMAT.md](BINARY_FORMAT.md#bundles).

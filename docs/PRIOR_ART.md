@@ -298,6 +298,7 @@ of the instructions in call-heavy code.
 | M64 | Differential testing against a reference implementation (McKeeman); Csmith; Python's `re` as the oracle |
 | M65 | Erlang's `code:soft_purge` and `check_process_code`, which refuse to purge code a process still runs or a fun still refers to; the JVM's class unloading, once a class loader is unreachable |
 | M66 | GDB's pretty-printers, LLDB's data formatters, Visual Studio's Natvis, Python's `repr` in debuggers; DWARF's composite locations (`DW_OP_piece`) for a variable in several registers |
+| M67 | Python's `Pattern.groupindex`, PCRE's name table, Erlang's `re:inspect(MP, namelist)` |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

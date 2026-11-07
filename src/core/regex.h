@@ -17,6 +17,7 @@ Regex *regex_compile(const char *pattern, size_t n, unsigned flags, char *err, s
 void regex_free(Regex *re);
 int regex_groups(const Regex *re);                 /* the capturing groups, not counting the whole match */
 int regex_group_named(const Regex *re, const char *name); /* its number, or -1 */
+const char *regex_group_name(const Regex *re, int group); /* a group's name (1: the first group), or NULL */
 
 enum { REGEX_NONE = 0, REGEX_MATCH = 1, REGEX_OUT_OF_STEPS = -1 };
 

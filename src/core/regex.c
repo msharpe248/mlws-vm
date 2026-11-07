@@ -548,6 +548,10 @@ Regex *regex_compile(const char *pattern, size_t n, unsigned flags, char *err, s
 
 int regex_groups(const Regex *re) { return re->groups; }
 
+const char *regex_group_name(const Regex *re, int group) {
+    return group >= 1 && (size_t)group <= re->names.n ? re->names.v[group - 1] : NULL;
+}
+
 int regex_group_named(const Regex *re, const char *name) {
     for (size_t i = 0; i < re->names.n; i++)
         if (re->names.v[i] && !strcmp(re->names.v[i], name)) return (int)i + 1;

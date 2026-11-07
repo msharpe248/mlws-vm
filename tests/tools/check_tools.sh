@@ -73,6 +73,9 @@ $BIN bundle -o "$BD/app$X" --max-frames 100 "$BD/app.masm" >/dev/null || fail "b
 $BIN bundle -o "$BD/plain$X" --opt 3 --jit on "$BD/app.masm" >/dev/null || fail "bundle --opt"
 $BIN bundle -o "$BD/dyn$X" "$BD/dyn.masm" >/dev/null || fail "bundle dyn"
 $BIN bundle -o "$BD/dynw$X" --with std.math "$BD/dyn.masm" >/dev/null || fail "bundle --with"
+# a name ending in .app, which macOS kills as it starts, is warned of; others are not
+$BIN bundle -o "$BD/named.app" "$BD/dyn.masm" 2>&1 >/dev/null | grep -q 'warning: macOS kills' || fail "bundle: no warning for .app"
+$BIN bundle -o "$BD/named$X" "$BD/dyn.masm" 2>&1 >/dev/null | grep -q warning && fail "bundle: a warning for a plain name"
 mkdir "$BD/alone"
 mv "$BD/app$X" "$BD/plain$X" "$BD/dyn$X" "$BD/dynw$X" "$BD/alone/"
 (
