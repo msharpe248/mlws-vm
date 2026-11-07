@@ -14,7 +14,7 @@ differential fuzzer and the checks to run before a release.
 | Debugger for editors | `mlwsvm dap` (Debug Adapter Protocol) | — |
 | Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] prog.masm` | none |
 | Terminal view | `mlwsvm top [HOST:PORT] [--once] [--interval MS]` | — |
-| VM options | `mlwsvm run --max-frames N --quota heap=64M ... prog.masm` | — |
+| VM options | `mlwsvm run --max-frames N --quota heap=64M --cap read=/data ... prog.masm` | — |
 | Several programs | `mlwsvm run a.masm args --also b.masm args ...` | — |
 | Native code | `mlwsvm ext list\|install\|remove\|allow-ffi\|deny-ffi` ([EXTENDING.md](EXTENDING.md)) | — |
 | Bindings generator | `mlwsvm bindgen [-l LIB] [-p PREFIX] [-o OUT] header.h` | — |

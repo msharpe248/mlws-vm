@@ -106,6 +106,25 @@ static void fail_os(Process *p, int err, const char *what) {
     native_fail(p, plat_err_code(err), "%s: %s: %s", p->cur_native->name, what, plat_err_text(err));
 }
 
+/* May this process reach it? If not, the native fails with E_PERMISSION. */
+static bool may_path(Process *p, int kind, const char *path) {
+    if (!p->caps || caps_allow_path(p->caps, kind, path)) return true;
+    native_fail(p, "E_PERMISSION", "%s: not allowed to %s %s", p->cur_native->name, kind == CAP_READ ? "read" : "write", path);
+    return false;
+}
+
+static bool may_net(Process *p, int kind, const char *host, int64_t port) {
+    if (!p->caps || caps_allow_net(p->caps, kind, host, port)) return true;
+    native_fail(p, "E_PERMISSION", "%s: not allowed to reach %s:%lld", p->cur_native->name, host, (long long)port);
+    return false;
+}
+
+static bool may_name(Process *p, int kind, const char *name) {
+    if (!p->caps || caps_allow_name(p->caps, kind, name)) return true;
+    native_fail(p, "E_PERMISSION", "%s: %s is not allowed", p->cur_native->name, name);
+    return false;
+}
+
 /* Before blocking work: on a worker thread, move to the I/O pool (returns false). */
 static bool on_pool(Process *p) {
     if (p->on_io_thread) return true;
@@ -226,6 +245,8 @@ static void fs_open(Process *p, Word *a, Word *r) {
         native_fail(p, "E_TYPE", "fs.open: bad mode \"%s\" (use r, w, a, r+, w+, a+; x = must not exist)", m);
         return;
     }
+    if ((m[0] == 'r' || strchr(m, '+')) && !may_path(p, CAP_READ, path)) return;
+    if ((m[0] != 'r' || strchr(m, '+')) && !may_path(p, CAP_WRITE, path)) return;
     int err = 0, fd = plat_file_open(path, mode, &err);
     if (fd < 0) {
         fail_os(p, err, path);
@@ -423,7 +444,7 @@ static void fs_take(Process *p, Word *a, Word *r) {
 
 static void fs_read_file(Process *p, Word *a, Word *r) {
     const char *path = get_str(p, a[0], "the path");
-    if (!path) return;
+    if (!path || !may_path(p, CAP_READ, path)) return;
     int err = 0, fd = plat_file_open(path, PLAT_O_READ, &err);
     if (fd < 0) {
         fail_os(p, err, path);
@@ -449,7 +470,7 @@ static void fs_write_file(Process *p, Word *a, Word *r) {
     const char *path = get_str(p, a[0], "the path");
     const uint8_t *data;
     size_t n;
-    if (!path || !get_data(p, a[1], &data, &n)) return;
+    if (!path || !get_data(p, a[1], &data, &n) || !may_path(p, CAP_WRITE, path)) return;
     int err = 0, fd = plat_file_open(path, PLAT_O_WRITE | PLAT_O_CREATE | PLAT_O_TRUNCATE, &err);
     if (fd < 0) {
         fail_os(p, err, path);
@@ -468,7 +489,7 @@ static void fs_write_file(Process *p, Word *a, Word *r) {
 
 static void fs_stat(Process *p, Word *a, Word *r) {
     const char *path = get_str(p, a[0], "the path");
-    if (!path) return;
+    if (!path || !may_path(p, CAP_READ, path)) return;
     PlatStat st;
     int err = 0;
     if (!plat_stat(path, true, &st, &err)) {
@@ -487,6 +508,7 @@ static void fs_exists(Process *p, Word *a, Word *r) {
     const char *path = get_str(p, a[0], "the path");
     PlatStat st;
     int err = 0;
+    if (path && !may_path(p, CAP_READ, path)) return;
     if (path) r[0].i = plat_stat(path, true, &st, &err);
 }
 
@@ -494,7 +516,7 @@ static int cmp_names(const void *x, const void *y) { return strcmp(*(char *const
 
 static void fs_list(Process *p, Word *a, Word *r) {
     const char *path = get_str(p, a[0], "the path");
-    if (!path) return;
+    if (!path || !may_path(p, CAP_READ, path)) return;
     char **names;
     size_t n;
     if (!plat_list_dir(path, &names, &n)) {
@@ -520,6 +542,7 @@ static void fs_list(Process *p, Word *a, Word *r) {
         (void)r;                                                               \
         const char *path = get_str(p, a[0], "the path");                       \
         int err = 0;                                                           \
+        if (path && !may_path(p, CAP_WRITE, path)) return;                     \
         if (path && !(CALL)) fail_os(p, err, path);                            \
     }
 PATH_OP(fs_mkdir, plat_mkdir_err(path, &err))
@@ -530,6 +553,7 @@ static void fs_rename(Process *p, Word *a, Word *r) {
     (void)r;
     const char *from = get_str(p, a[0], "the old path"), *to = get_str(p, a[1], "the new path");
     int err = 0;
+    if (from && to && (!may_path(p, CAP_WRITE, from) || !may_path(p, CAP_WRITE, to))) return;
     if (from && to && !plat_rename(from, to, &err)) fail_os(p, err, from);
 }
 
@@ -559,7 +583,7 @@ static void os_args(Process *p, Word *a, Word *r) {
 
 static void os_env(Process *p, Word *a, Word *r) {
     const char *name = get_str(p, a[0], "the name");
-    if (!name) return;
+    if (!name || !may_name(p, CAP_ENV, name)) return;
     const char *v = getenv(name);
     r[0].r = v ? str_new(p, v, strlen(v)) : NULL;
 }
@@ -570,6 +594,12 @@ static void os_environ(Process *p, Word *a, Word *r) {
     for (char *const *e = plat_environ(); e && *e; e++) {
         const char *eq = strchr(*e, '=');
         if (!eq || eq == *e) continue;
+        if (p->caps) { /* only what it may see */
+            char *name = xstrndup(*e, (size_t)(eq - *e));
+            bool ok = caps_allow_name(p->caps, CAP_ENV, name);
+            free(name);
+            if (!ok) continue;
+        }
         Word k = {.r = str_new(p, *e, (size_t)(eq - *e))}, v = {.r = str_new(p, eq + 1, strlen(eq + 1))};
         map_set(p, m, k, T_R, v, T_R);
     }
@@ -632,8 +662,18 @@ static ProcH *get_proc(Process *p, Word v) {
 /* os.spawn(argv, pipes) -> (process, stdin, stdout, stderr): pipes is a mask of
  * 1 stdin, 2 stdout, 4 stderr, 8 stderr into stdout; unpiped streams are
  * inherited and come back null. */
+/* The command, if this process may run it. */
+static char **get_command(Process *p, Word v) {
+    char **argv = get_argv(p, v);
+    if (argv && !may_name(p, CAP_RUN, argv[0])) {
+        free(argv);
+        return NULL;
+    }
+    return argv;
+}
+
 static void os_spawn(Process *p, Word *a, Word *r) {
-    char **argv = get_argv(p, a[0]);
+    char **argv = get_command(p, a[0]);
     if (!argv) return;
     PlatChild c;
     int err = 0;
@@ -674,7 +714,7 @@ static void os_kill(Process *p, Word *a, Word *r) {
 /* os.run(argv) -> (exit code, output): run a command to completion, capturing
  * its stdout (stderr is inherited). */
 static void os_run(Process *p, Word *a, Word *r) {
-    char **argv = get_argv(p, a[0]);
+    char **argv = get_command(p, a[0]);
     if (!argv) return;
     PlatChild c;
     int err = 0;
@@ -711,7 +751,7 @@ static FileH *get_kind(Process *p, Word v, int kind, const char *what) {
 
 static void net_listen(Process *p, Word *a, Word *r) {
     const char *host = get_str(p, a[0], "the host");
-    if (!host) return;
+    if (!host || !may_net(p, CAP_LISTEN, host, a[1].i)) return;
     if (!plat_host_numeric(host) && !on_pool(p)) return; /* a name: DNS may block */
     int err = 0, fd = plat_sock_listen(host, (int)a[1].i, &err);
     if (fd < 0) fail_os(p, err, host);
@@ -729,7 +769,7 @@ static void net_accept(Process *p, Word *a, Word *r) {
 
 static void net_connect(Process *p, Word *a, Word *r) {
     const char *host = get_str(p, a[0], "the host");
-    if (!host || !on_pool(p)) return; /* resolving and connecting block */
+    if (!host || !may_net(p, CAP_CONNECT, host, a[1].i) || !on_pool(p)) return; /* resolving and connecting block */
     int err = 0, fd = plat_sock_connect(host, (int)a[1].i, a[2].i, &err);
     if (fd < 0) {
         char what[300];
@@ -791,7 +831,7 @@ static void tls_start_client(Process *p, Word *a, Word *r) {
     (void)r;
     FileH *h = tls_conn(p, a[0]);
     const char *host = get_str(p, a[1], "the host name"), *ca = get_str(p, a[2], "the authorities' file");
-    if (!h || !host || !ca) return;
+    if (!h || !host || !ca || (*ca && !may_path(p, CAP_READ, ca))) return;
     if (!h->tls) {
         char why[256] = "";
         h->tls = tls_client(plat_fd_socket(h->fd), host, ca, why, sizeof why);
@@ -807,7 +847,7 @@ static void tls_start_server(Process *p, Word *a, Word *r) {
     (void)r;
     FileH *h = tls_conn(p, a[0]);
     const char *cert = get_str(p, a[1], "the certificate's file"), *key = get_str(p, a[2], "the key's file");
-    if (!h || !cert || !key) return;
+    if (!h || !cert || !key || !may_path(p, CAP_READ, cert) || !may_path(p, CAP_READ, key)) return;
     if (!h->tls) {
         char why[256] = "";
         h->tls = tls_server(plat_fd_socket(h->fd), cert, key, why, sizeof why);
@@ -832,7 +872,7 @@ static void tls_session_version(Process *p, Word *a, Word *r) {
 
 static void net_resolve(Process *p, Word *a, Word *r) {
     const char *name = get_str(p, a[0], "the host name");
-    if (!name || !on_pool(p)) return;
+    if (!name || !may_net(p, CAP_CONNECT, name, -1) || !on_pool(p)) return;
     char **addrs;
     size_t n;
     int err = 0;
@@ -852,7 +892,7 @@ static void net_resolve(Process *p, Word *a, Word *r) {
 
 static void net_udp(Process *p, Word *a, Word *r) {
     const char *host = get_str(p, a[0], "the host");
-    if (!host) return;
+    if (!host || !may_net(p, CAP_LISTEN, host, a[1].i)) return;
     if (!plat_host_numeric(host) && !on_pool(p)) return;
     int err = 0, fd = plat_udp_open(host, (int)a[1].i, &err);
     if (fd < 0) fail_os(p, err, host);
@@ -865,7 +905,7 @@ static void net_send_to(Process *p, Word *a, Word *r) {
     const char *host = get_str(p, a[1], "the host");
     const uint8_t *data;
     size_t n;
-    if (!h || !host || !get_data(p, a[3], &data, &n) || timed_out(p, h)) return;
+    if (!h || !host || !get_data(p, a[3], &data, &n) || timed_out(p, h) || !may_net(p, CAP_CONNECT, host, a[2].i)) return;
     if (!plat_host_numeric(host) && !on_pool(p)) return;
     int err = 0;
     long s = plat_udp_send(h->fd, host, (int)a[2].i, data, n, &err);

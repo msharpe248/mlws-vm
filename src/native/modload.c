@@ -22,9 +22,16 @@ static LModule *loaded(Process *p, Word a, const char *fn) {
     return lm;
 }
 
+/* Code from a file, or text that may .include one, reaches what a restricted
+ * process could not read. */
+static void no_caps(Process *p, const char *fn) {
+    if (p->caps) vm_trap(p, "E_PERMISSION", "%s: not allowed in a restricted process", fn);
+}
+
 static void n_load(Process *p, Word *a, Word *r) {
     (void)r;
     const char *name = name_arg(p, a[0], "module.load");
+    no_caps(p, "module.load");
     /* Reading code from the file system, and maybe native extensions: an OS call (quota 5). */
     if (p->os_calls >= p->quota[QUOTA_OS])
         vm_trap(p, "E_QUOTA", "OS call quota of %llu exceeded (module.load reads files)",
@@ -45,6 +52,7 @@ static void charge_load(Process *p, const char *fn) {
 static void n_reload(Process *p, Word *a, Word *r) {
     (void)r;
     const char *name = name_arg(p, a[0], "module.reload");
+    no_caps(p, "module.reload");
     charge_load(p, "module.reload");
     MlwsError err = {{0}, {0}};
     if (!vm_reload(p->vm, name, NULL, caller_module(p), &err)) vm_trap(p, err.code, "%s", err.msg);
@@ -55,6 +63,7 @@ static void n_reload_text(Process *p, Word *a, Word *r) {
     (void)r;
     const char *name = name_arg(p, a[0], "module.reload_text");
     const char *text = name_arg(p, a[1], "module.reload_text");
+    no_caps(p, "module.reload_text");
     charge_load(p, "module.reload_text");
     MlwsError err = {{0}, {0}};
     if (!vm_reload(p->vm, name, text, caller_module(p), &err)) vm_trap(p, err.code, "%s", err.msg);

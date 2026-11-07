@@ -54,6 +54,9 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `proc.whereis` | r | i64 | The pid with a name, or 0. |
 | `proc.call` | i64, r, i64 | r | Send Call{from, id, body} and wait for proc.reply's answer, up to a timeout in ms (negative: none; E_TIMEOUT). The answer does not go through the mailbox. |
 | `proc.reply` | r, r | - | Answer a Call. |
+| `cap.restrict` | r | - | From now on this process, and those it spawns, may reach only what a map grants: from read, write, connect, listen, run or env to a list of what each allows. What is not granted is denied, foreign code too, and a process can only narrow what it has. |
+| `cap.allowed` | r, r | b | Whether this process may reach something: a kind, and a path, host:port, command or variable. |
+| `cap.limited` | - | b | Whether this process has been restricted. |
 
 ## Files, the operating system and the network (`fs.*`, `os.*`, `net.*`)
 

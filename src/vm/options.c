@@ -11,14 +11,14 @@
 
 typedef enum {
     OPT_STACK_WORDS, OPT_THREADS, OPT_MAX_FRAMES, OPT_SLICE, OPT_GC_MIN, OPT_QUOTA, OPT_EXT_PATH, OPT_LIB_PATH,
-    OPT_OPT, OPT_OPT_REPORT, OPT_JIT, OPT_JIT_HOT, OPT_JIT_REPORT,
+    OPT_OPT, OPT_OPT_REPORT, OPT_JIT, OPT_JIT_HOT, OPT_JIT_REPORT, OPT_CAP,
     OPT__COUNT
 } OptId;
 
 static const char *const OPT_NAMES[OPT__COUNT] = {"stack-words", "threads", "max-frames", "slice",
                                                   "gc-min",      "quota",   "ext-path", "lib-path",
                                                   "opt",         "opt-report", "jit",      "jit-hot",
-                                                  "jit-report"};
+                                                  "jit-report",  "cap"};
 
 static int opt_find(const char *name) {
     for (int i = 0; i < OPT__COUNT; i++)
@@ -66,6 +66,29 @@ static bool parse_range(const char *name, const char *value, bool bytes, uint64_
         return mlws_err(err, "E_BAD_OPTION", "--%s: %s is out of range (%llu to %llu)", name, value,
                         (unsigned long long)lo, (unsigned long long)hi),
                false;
+    return true;
+}
+
+/* read=/data,read=/etc/hosts,connect=example.org:443 ("none" alone: nothing). */
+static bool parse_cap(VM *vm, const char *value, MlwsError *err) {
+    Caps *c = caps_new();
+    for (const char *s = value; *s && strcmp(value, "none");) {
+        const char *e = strchr(s, ',');
+        size_t n = e ? (size_t)(e - s) : strlen(s);
+        const char *eq = memchr(s, '=', n);
+        int kind = eq ? cap_kind(s, (size_t)(eq - s)) : -1;
+        if (kind < 0) {
+            caps_release(c);
+            return mlws_err(err, "E_BAD_OPTION", "--cap: '%.*s' is not read=, write=, connect=, listen=, run= or env=", (int)n, s), false;
+        }
+        char *entry = xstrndup(eq + 1, n - (size_t)(eq + 1 - s));
+        caps_grant(c, vm->default_caps, kind, entry);
+        free(entry);
+        s = e ? e + 1 : s + n;
+    }
+    caps_release(vm->default_caps);
+    vm->default_caps = c;
+    vm->default_quota[QUOTA_FOREIGN] = 0;
     return true;
 }
 
@@ -125,6 +148,7 @@ bool vm_set_option(VM *vm, const char *name, const char *value, MlwsError *err) 
         vm->gc_min_threshold = n; /* 0: the default (64 KiB) */
         return true;
     case OPT_QUOTA: return parse_quota(vm, value, err);
+    case OPT_CAP: return parse_cap(vm, value, err);
     case OPT_EXT_PATH: { /* trusted extension directories, searched in order; ':'-separated (';' on Windows) */
         char sep = plat_path_sep();
         for (const char *s = value; *s;) {

@@ -253,6 +253,7 @@ typedef struct VM {
     atomic_bool reloading;   /* vm_reload is at work: one at a time */
     const struct LModule *reload_old; /* the version being replaced, as its successor links (under mods_lock) */
     VEC(void *) retired;     /* what reloads replaced and another thread may still read: freed with the VM */
+    struct Caps *default_caps; /* --cap: every process's, as default_quota */
     struct Bundle *bundle;   /* the program this executable carries, or NULL: modules are found there first */
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
     bool gc_verify;          /* after each minor collection's marking, check it against a walk of the whole heap */
@@ -604,6 +605,7 @@ struct Process {
     uint64_t shared_bytes;
     uint64_t shared_seen;  /* the major collection marking now, or 0 */
     bool is_frag;          /* a fragment heap, whose objects go to a process with a message (sched.c) */
+    struct Caps *caps;     /* what it may reach (caps.c), or NULL: anything */
 };
 
 /* vm.c */
@@ -797,6 +799,23 @@ const NativeDef *natives_os_table(size_t *n);
 /* sched.c: std.proc (the registry, request/reply calls) */
 void natives_register_proc(VM *vm);
 const NativeDef *natives_proc_table(size_t *n);
+/* caps.c: capabilities. A set is shared by the processes that inherit it, and
+ * never changes; NULL: not restricted. */
+enum { CAP_READ, CAP_WRITE, CAP_CONNECT, CAP_LISTEN, CAP_RUN, CAP_ENV, CAP__COUNT };
+typedef struct Caps {
+    uint32_t refs;
+    StrVec allow[CAP__COUNT];
+} Caps;
+int cap_kind(const char *name, size_t n);
+Caps *caps_new(void);
+void caps_grant(Caps *c, const Caps *within, int kind, const char *entry);
+void caps_retain(Caps *c);
+void caps_release(Caps *c);
+bool caps_allow_path(const Caps *c, int kind, const char *path);
+bool caps_allow_net(const Caps *c, int kind, const char *host, int64_t port); /* port -1: any */
+bool caps_allow_name(const Caps *c, int kind, const char *name);
+void natives_register_caps(VM *vm);
+const NativeDef *natives_caps_table(size_t *n);
 void natives_register_modules(VM *vm); /* modload.c */
 const NativeDef *natives_modules_table(size_t *n);
 /* text.c: std.text and std.json */

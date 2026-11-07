@@ -1,0 +1,204 @@
+; cap.restrict limits what a process may reach: reading and writing by path,
+; connecting and listening by host and port, running commands, and seeing the
+; environment. What is not granted is denied, foreign code and loading modules
+; too. A path is judged as it resolves, so ".." does not get out of a directory.
+; Children inherit the limit, and a process can only narrow what it has: a
+; grant of what it does not hold is dropped. The process that spawned it is not
+; touched.
+.include "std/test.inc"
+
+; What reading, writing or a call to a checked native raises: "" if nothing.
+.func read_error(ref path) -> ref
+.try h
+    ncall "fs.read_file" (path) -> (R1)
+.endtry
+    ret ""
+h:
+    catch R2
+    mov R3, R2->Error.code
+    ret R3
+.endf
+
+.func write_error(ref path) -> ref
+.try h
+    ncall "fs.write_file" (path, "x")
+.endtry
+    ret ""
+h:
+    catch R2
+    mov R3, R2->Error.code
+    ret R3
+.endf
+
+.func connect_error(ref host, i64 port) -> ref
+.try h
+    ncall "net.connect" (host, port, 2000) -> (R1)
+    ncall "fs.close" (R1)
+.endtry
+    ret ""
+h:
+    catch R2
+    mov R3, R2->Error.code
+    ret R3
+.endf
+
+.func listen_error -> ref
+.try h
+    ncall "net.listen" ("127.0.0.1", 0) -> (R1)
+.endtry
+    ret ""
+h:
+    catch R2
+    mov R3, R2->Error.code
+    ret R3
+.endf
+
+.func run_error(ref command) -> ref
+    lnew R1
+    lpush R1, command
+.try h
+    ncall "os.run" (R1) -> (I0, R2)
+.endtry
+    ret ""
+h:
+    catch R3
+    mov R4, R3->Error.code
+    ret R4
+.endf
+
+.func env_error(ref name) -> ref
+.try h
+    ncall "os.env" (name) -> (R1)
+.endtry
+    ret ""
+h:
+    catch R2
+    mov R3, R2->Error.code
+    ret R3
+.endf
+
+.func load_error -> ref
+.try h
+    ncall "module.load" ("std.math")
+.endtry
+    ret ""
+h:
+    catch R1
+    mov R2, R1->Error.code
+    ret R2
+.endf
+
+.macro DENIED call_
+    call \call_ -> (R20)
+    strcmp I20, R20, "E_PERMISSION"
+    ASSERT_EQ I20, 0
+.endm
+
+.macro ALLOWED call_
+    call \call_ -> (R20)
+    strcmp I20, R20, ""
+    ASSERT_EQ I20, 0
+.endm
+
+; A grandchild: what it inherited still holds.
+.func grandchild(i64 parent)
+    call read_error ("tests/os/_caps/private/b.txt") -> (R0)
+    send parent, R0
+    ret
+.endf
+
+.func sandboxed(i64 parent, i64 port)
+    ; Grants: a directory to read, one to write, one address, one variable.
+    mnew R0
+    lnew R1
+    lpush R1, "tests/os/_caps/public"
+    mset R0, "read", R1
+    lnew R2
+    lpush R2, "build"
+    mset R0, "write", R2
+    lnew R3
+    tostr R4, port
+    strcat R5, "127.0.0.1:", R4
+    lpush R3, R5
+    mset R0, "connect", R3
+    lnew R6
+    lpush R6, "MLWSVM_CAPS_TEST*"
+    mset R0, "env", R6
+    ncall "cap.restrict" (R0)
+    ncall "cap.limited" () -> (I2)
+    ASSERT_TRUE I2
+
+    ; Files.
+    ALLOWED read_error ("tests/os/_caps/public/a.txt")
+    DENIED read_error ("tests/os/_caps/private/b.txt")
+    DENIED read_error ("tests/os/_caps/public/../private/b.txt")
+    DENIED read_error ("tests/os/_caps/public/no/../../private/b.txt")
+    DENIED read_error ("/etc/hosts")
+    DENIED write_error ("tests/os/_caps/public/new.txt")
+    tostr R7, parent
+    strcat R8, "build/caps_test_", R7
+    ALLOWED write_error (R8)
+    ncall "fs.remove" (R8)
+    ncall "cap.allowed" ("read", "tests/os/_caps/public/a.txt") -> (I2)
+    ASSERT_TRUE I2
+    ncall "cap.allowed" ("read", "tests/os/_caps/private/b.txt") -> (I2)
+    ASSERT_FALSE I2
+
+    ; The network: only the address granted.
+    ALLOWED connect_error ("127.0.0.1", port)
+    add I3, port, 1
+    DENIED connect_error ("127.0.0.1", I3)
+    DENIED connect_error ("example.org", 80)
+    DENIED listen_error
+
+    ; Commands, the environment, and code.
+    DENIED run_error ("true")
+    DENIED env_error ("PATH")
+    ALLOWED env_error ("MLWSVM_CAPS_TEST_X")
+    ncall "os.environ" () -> (R9)
+    mhas I4, R9, "PATH"
+    ASSERT_FALSE I4
+    DENIED load_error
+
+    ; Only narrower: a directory it does not hold is dropped.
+    mnew R10
+    lnew R11
+    lpush R11, "tests/os/_caps"        ; wider than what it has
+    lpush R11, "tests/os/_caps/public/a.txt"
+    mset R10, "read", R11
+    ncall "cap.restrict" (R10)
+    ALLOWED read_error ("tests/os/_caps/public/a.txt")
+    ncall "cap.allowed" ("read", "tests/os/_caps/public") -> (I2)
+    ASSERT_FALSE I2
+    DENIED read_error ("tests/os/_caps/private/b.txt")
+    DENIED connect_error ("127.0.0.1", port)  ; not granted this time
+
+    ; Its children inherit it.
+    spawn grandchild (parent)
+    ret
+.endf
+
+.func main
+    ncall "net.listen" ("127.0.0.1", 0) -> (R0)
+    ncall "net.port" (R0) -> (I0)
+    ncall "cap.limited" () -> (I1)
+    ASSERT_FALSE I1
+    spawn sandboxed (PID, I0) -> (I2)
+    monitor I2
+    ncall "net.accept" (R0) -> (R1)    ; the connection it was allowed
+    ncall "fs.close" (R1)
+    mov I3, 0
+1:  recv R2                            ; Down, and the grandchild's word, in either order
+    isa I4, R2, Down
+    bnz I4, 2f
+    strcmp I5, R2, "E_PERMISSION"
+    ASSERT_EQ I5, 0
+    jmp 3f
+2:  ASSERT_FALSE R2->Down.code, r      ; it ended well: every check in it held
+3:  inc I3
+    blt I3, 2, 1b
+
+    ; Unrestricted here.
+    ALLOWED read_error ("tests/os/_caps/private/b.txt")
+    ret 0
+.endf

@@ -72,7 +72,7 @@ base:
   process waiting on a pipe or socket waits in the poller (kqueue/epoll) like it
   waits in `recv`, holding no thread, so 10,000 open connections are 10,000 small
   processes. File I/O runs on a thread pool. Sandboxes can deny OS access with a
-  quota.
+  quota, or grant it by name (`cap.restrict`, `--cap`): these paths, those hosts.
 * **Text and JSON**: a typed, safe `text.format` (`{:>8.2f}`), regular expressions
   in linear time (`regex.*`, Unicode-aware), string utilities,
   UTF-8 iteration, and JSON that maps onto maps and lists with exact integers.

@@ -32,6 +32,7 @@ static void usage(FILE *f) {
           "        --slice N                       time slice, in instructions (2000)\n"
           "        --gc-min BYTES                  young generation to start with (64K)\n"
           "        --quota heap=B,raw=B,mailbox=N,insns=N,foreign=N,os=N   starting limits for every process\n"
+          "        --cap read=DIR,connect=H:P,...  what the program may reach (none: nothing); docs/STDLIB.md\n"
           "        --ext-path DIR[:DIR]            trusted extension directories, before lib/ext\n"
           "        --lib-path DIR[:DIR]            more directories to find imports in (as -L DIR)\n"
           "        --opt LIST                      optimize every module as it loads: a level 0-3, or passes\n"

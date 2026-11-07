@@ -54,6 +54,8 @@ Process *proc_new(VM *vm) {
     for (uint32_t i = 0; i < p->nglobals; i++) global_init(&p->globals[i], vm->mods.v[i]->m);
     plat_unlock(vm->mods_lock);
     memcpy(p->quota, vm->default_quota, sizeof p->quota);
+    p->caps = vm->default_caps;
+    caps_retain(p->caps);
     /* The pid is assigned now; the process joins the table in sched_start. */
     plat_lock(vm->lock);
     p->pid = vm->next_pid++;
@@ -86,6 +88,7 @@ void proc_start(Process *p, Function *fn, Obj *closure, const Word *args, int na
 void proc_free(Process *p) {
     if (!p) return;
     VM *vm = p->vm;
+    caps_release(p->caps);
     proc_write_line_out(p); /* stopped by os.exit, say, in the middle of a line */
     if (p->published) sched_unpublish(p);
     if (p->state != PROC_DONE && p->state != PROC_FAILED) vm->live--;

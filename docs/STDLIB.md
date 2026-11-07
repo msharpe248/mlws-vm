@@ -561,6 +561,52 @@ the environment.
 Children inherit the limit. Kind 4 does the same for native extensions and the
 FFI ([EXTENDING.md](EXTENDING.md)).
 
+For something between all and nothing, a process can be limited by name:
+
+```asm
+    mnew R0
+    lnew R1
+    lpush R1, "/srv/data"
+    mset R0, "read", R1                ; may read under /srv/data
+    lnew R2
+    lpush R2, "api.example.org:443"
+    mset R0, "connect", R2             ; may connect there
+    ncall "cap.restrict" (R0)          ; and reach nothing else
+```
+
+`cap.restrict(grants)` takes a map from kinds to lists of what each allows. **What
+is not granted is denied**, so a kind left out allows nothing. From then on that
+process, and those it spawns, get `E_PERMISSION` for the rest. `--cap
+read=/srv/data,connect=api.example.org:443` does the same for a whole program
+(`--cap none`: nothing at all), and `mlwsvm bundle --cap ...` builds it into an
+executable.
+
+| Kind | What it limits | An entry |
+|---|---|---|
+| `read` | reading files and directories, `fs.stat`, `fs.exists`, TLS certificates | a path: it and what is under it |
+| `write` | creating, changing, renaming and removing | a path, the same |
+| `connect` | `net.connect`, `net.resolve`, `net.send_to` | `host:port`, `host:*`, `*:port`, or `*` |
+| `listen` | `net.listen`, `net.udp` | the same |
+| `run` | `os.run`, `os.spawn` | a command, as given, or a prefix ending in `*` |
+| `env` | `os.env`; `os.environ` shows only these | a name, or a prefix ending in `*` |
+
+* **A process can only narrow what it has.** A grant it does not hold is dropped,
+  so restricting again never widens.
+* **Paths are judged as they resolve:** links are followed and `..` removed before
+  the check, so neither gets out of a directory. A file that does not exist yet is
+  judged by the directory it would go in.
+* **Foreign code is denied** too, since it could reach anything: restricting sets
+  quota 4 to 0. So are `module.load` and `module.reload`, since code from a file
+  can include what the process may not read.
+* **Handles are capabilities already.** A handle given with `fs.give` works in a
+  restricted process whatever its path: that is how a supervisor hands a sandbox
+  exactly one file or connection.
+* `cap.allowed(kind, what)` asks in advance, and `cap.limited()` whether a limit
+  is on.
+* A check happens when a path is used, so a link changed between the check and
+  the call is not caught. This limits a program the VM runs; it is not a
+  boundary against another user on the machine.
+
 ## Platforms
 
 macOS, Linux and the BSDs (kqueue or epoll), and Windows (`WSAPoll`). On
