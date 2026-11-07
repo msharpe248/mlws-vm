@@ -86,7 +86,9 @@
     ret I3
 1:  new R3, Error
     mov R3->Error.code, "E_NODE"
-    mov R3->Error.message, "could not connect to the node"
+    mov R4, R2[1]                      ; why
+    strcat R5, "could not connect to the node: ", R4
+    mov R3->Error.message, R5
     throw R3
 .endf
 
@@ -105,6 +107,8 @@
 failed:
     catch R5
     lpush R3, 0
+    mov R6, R5->Error.message
+    lpush R3, R6
     ncall "proc.reply" (R2, R3)
     ret
 .endf

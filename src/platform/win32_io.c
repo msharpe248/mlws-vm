@@ -134,7 +134,8 @@ int plat_sock_dup(int fd, int *err) {
         *err = WSAGetLastError();
         return -1;
     }
-    int d = wfd_new(WFD_SOCKET, INVALID_HANDLE_VALUE, s);
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+    int d = wfd_new(WFD_SOCKET, NULL, s);
     if (d < 0) {
         closesocket(s);
         *err = ERROR_TOO_MANY_OPEN_FILES;
@@ -531,8 +532,10 @@ int plat_sock_listen(const char *host, int port, int *err) {
             sock_err(err);
             continue;
         }
-        BOOL one = TRUE;
+        BOOL one = TRUE, off = FALSE;
         setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&one, sizeof one);
+        /* "" is every address: IPv6's takes IPv4 too only if told, here. */
+        if (a->ai_family == AF_INET6) setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&off, sizeof off);
         if (bind(s, a->ai_addr, (int)a->ai_addrlen) != 0 || listen(s, SOMAXCONN) != 0) {
             sock_err(err);
             closesocket(s);
