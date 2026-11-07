@@ -75,8 +75,9 @@ mv "$BD/app$X" "$BD/plain$X" "$BD/dyn$X" "$BD/dynw$X" "$BD/alone/"
     MLWSVM_MAX_FRAMES=1000 ./app$X; [ $? = 1 ] || fail "bundle: the environment over a kept option"
     ./dyn$X >/dev/null 2>&1; [ $? != 5 ] || fail "bundle: a module it does not hold"
     ./dynw$X; [ $? = 5 ] || fail "bundle --with"
-    perl -e 'open F, "+<", $ARGV[0] or die; binmode F; seek F, -16, 2; read F, $l, 8; $l = unpack("Q<", $l); seek F, -16 - $l, 2; print F "XXXX"; close F' "plain$X"
-    OUT=$(./plain$X 2>&1); [ $? = 65 ] || fail "bundle: a damaged payload ran"
+    cp "plain$X" "bad$X" # (a file just run can be busy for an instant on Linux)
+    perl -e 'open F, "+<", $ARGV[0] or die; binmode F; seek F, -16, 2; read F, $l, 8; $l = unpack("Q<", $l); seek F, -16 - $l, 2; print F "XXXX"; close F' "bad$X"
+    OUT=$(./bad$X 2>&1); [ $? = 65 ] || fail "bundle: a damaged payload ran"
     echo "$OUT" | grep -q E_LOAD_FORMAT || fail "bundle: damaged payload message"
 ) || exit 1
 rm -rf "${BD:?}"

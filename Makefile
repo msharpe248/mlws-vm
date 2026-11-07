@@ -118,8 +118,8 @@ $(BUILD)/gen/dashboard.o: $(BUILD)/gen/dashboard.c
 	$(CC) $(CFLAGS) -fPIC -c $< -o $@
 
 # The embedding library (include/mlwsvm/embed.h): everything but the command
-# line (main, and the test runner, doc generator, top and ext commands).
-CLI_OBJ := $(addprefix $(BUILD)/src/,main.o tools/testrunner.o tools/doc.o tools/top.o tools/ext.o)
+# line (main, and the test runner, doc generator, top, ext and bundle commands).
+CLI_OBJ := $(addprefix $(BUILD)/src/,main.o tools/testrunner.o tools/doc.o tools/top.o tools/ext.o tools/bundle.o)
 LIB_OBJ := $(filter-out $(CLI_OBJ),$(OBJ))
 LIB_LIBS := -lm $(FFI_LIBS) $(DL_LIBS) -lpthread
 ifeq ($(shell uname -s),Darwin)
