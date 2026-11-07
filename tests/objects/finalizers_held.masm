@@ -1,0 +1,148 @@
+; gc.hold_finalizers(1) makes this process's finalizers wait, once a
+; collection finds their objects dead, until the process calls
+; gc.run_finalizers. A language's runtime halfway through changing a table
+; when a collection comes is then never interrupted by a finalizer that reads
+; the same table: it runs them where its own state is whole. Each waiting
+; object is kept, with all it holds, until its finalizer runs.
+; gc.run_finalizers returns how many ran, and runs none inside a finalizer;
+; what one throws goes nowhere, as ever. gc.hold_finalizers(0) lets them run
+; between instructions again, and runs those waiting at once.
+.include "std/test.inc"
+
+.struct Box
+    n: i64
+.ends
+
+; UP[0]: the log. Records the object's number.
+.func log_item(ref o)
+    lpush UP[0], o->Box.n
+    ret
+.endf
+
+; Asks for the finalizers from inside one, and records how many ran.
+.func nested(ref o)
+    ncall "gc.run_finalizers" () -> (I0)
+    lpush UP[0], I0
+    ret
+.endf
+
+.func down(i64 n)
+    beq n, 0, 1f
+    sub I1, n, 1
+    call down (I1)
+1:  ret
+.endf
+
+; Calls 5000 deep, so the frames and register banks move under the caller.
+.func deep(ref o)
+    call down (5000)
+    lpush UP[0], o->Box.n
+    ret
+.endf
+
+.func thrower(ref o)
+    lpush UP[0], o->Box.n
+    new R0, Error
+    throw R0
+.endf
+
+; A new Box with this number, to be finalized by fn, and held by nothing.
+.func doomed(i64 n, ref fn)
+    new R1, Box
+    mov R1->Box.n, n
+    ncall "gc.finalize" (R1, fn)
+    ret
+.endf
+
+.func main
+    lnew R0                            ; the log
+    closure log_item (R0) -> (R1)
+    ncall "gc.hold_finalizers" (1)
+
+    ; Found dead, and waiting: through more instructions and collections.
+    call doomed (1, R1)
+    call doomed (2, R1)
+    ncall "gc.collect" ()
+    nop
+    nop
+    len I0, R0
+    ASSERT_EQ I0, 0
+    ncall "gc.collect" ()
+    nop
+    len I0, R0
+    ASSERT_EQ I0, 0
+    sleep 1                            ; and across slices
+    len I0, R0
+    ASSERT_EQ I0, 0
+    ncall "gc.run_finalizers" () -> (I1)
+    ASSERT_EQ I1, 2
+    len I0, R0
+    ASSERT_EQ I0, 2
+    mov I2, R0[0]                      ; each object whole for its call
+    mov I3, R0[1]
+    add I2, I2, I3
+    ASSERT_EQ I2, 3
+    ncall "gc.run_finalizers" () -> (I1)
+    ASSERT_EQ I1, 0
+
+    ; One that moves the banks: the caller's registers are as they were.
+    closure deep (R0) -> (R2)
+    mov I5, 42
+    mov F5, 2.5
+    mov R5, "kept"
+    call doomed (3, R2)
+    ncall "gc.collect" ()
+    nop
+    ncall "gc.run_finalizers" () -> (I1)
+    ASSERT_EQ I1, 1
+    ASSERT_EQ I5, 42
+    ASSERT_EQ F5, 2.5
+    len I6, R5
+    ASSERT_EQ I6, 4
+    mov I2, R0[2]
+    ASSERT_EQ I2, 3
+
+    ; Inside a finalizer, none: the other still runs, in the same call.
+    closure nested (R0) -> (R3)
+    call doomed (4, R3)
+    call doomed (5, R1)
+    ncall "gc.collect" ()
+    nop
+    ncall "gc.run_finalizers" () -> (I1)
+    ASSERT_EQ I1, 2
+    len I0, R0
+    ASSERT_EQ I0, 5
+    mov I2, R0[3]                      ; 0 (from nested) and 5, in either order
+    mov I3, R0[4]
+    add I4, I2, I3
+    ASSERT_EQ I4, 5
+    mul I4, I2, I3
+    ASSERT_EQ I4, 0
+
+    ; What one throws goes nowhere; it counts as run.
+    closure thrower (R0) -> (R4)
+    call doomed (6, R4)
+    ncall "gc.collect" ()
+    nop
+    ncall "gc.run_finalizers" () -> (I1)
+    ASSERT_EQ I1, 1
+    len I0, R0
+    ASSERT_EQ I0, 6
+
+    ; Let go: those waiting run at once, and later ones between instructions.
+    call doomed (7, R1)
+    ncall "gc.collect" ()
+    nop
+    len I0, R0
+    ASSERT_EQ I0, 6
+    ncall "gc.hold_finalizers" (0)
+    len I0, R0
+    ASSERT_EQ I0, 7
+    mov I2, R0[6]
+    ASSERT_EQ I2, 7
+    call doomed (8, R1)
+    ncall "gc.collect" ()
+    len I0, R0
+    ASSERT_EQ I0, 8
+    ret 0
+.endf

@@ -1461,6 +1461,13 @@ callbacks are already allowed for (the banks may move), or before a slice.
 The exception in `Process.exception` is kept across the call, since a
 handler may be about to take it.
 
+With `gc.hold_finalizers(1)` (`Process.fin_held`) neither safepoint runs
+them: the records wait in `fin_ready`, which is a root, until
+`gc.run_finalizers` calls `proc_run_finalizers` from the native. A native
+that runs code sets `Process.reentered` afterwards, as `list.sort` does for
+its comparator, so the instruction that called it reloads the frames and
+banks the finalizers may have moved.
+
 Strings, BigInts and decimals have no identity to lose, so they are held
 strongly: otherwise an entry whose key is a string could vanish while an equal
 string lives.

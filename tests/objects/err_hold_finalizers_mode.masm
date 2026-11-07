@@ -1,0 +1,6 @@
+; Finalizers are held (1) or not (0): there is no other way.
+; expect-error: E_RANGE
+.func main
+    ncall "gc.hold_finalizers" (2)
+    ret 0
+.endf

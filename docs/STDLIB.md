@@ -416,6 +416,19 @@ during the call, with everything it holds; if two such objects hold each other,
 both are finalized. `f` may keep `o` (then `o` lives on) or register it again.
 When a process ends, the finalizers not yet called are not called.
 
+`gc.hold_finalizers(1)` makes the process's finalizers wait, once their
+objects are found dead, until it calls `gc.run_finalizers`, which runs those
+waiting (and any that their own collections find) and returns how many ran.
+A language's runtime uses it so that a finalizer written in that language
+never interrupts the runtime halfway through changing a table: it runs them
+where its own state is whole, as at a call or a loop's back edge. A waiting
+object is kept, with all it holds, so a process that holds its finalizers
+and never runs them keeps those objects to its end. Inside a finalizer,
+`gc.run_finalizers` runs none and returns 0. `gc.hold_finalizers(0)` lets them
+run between instructions again, and runs those waiting before it returns. A
+process starts with them not held, and the setting is its own: a process it
+spawns does not inherit it.
+
 An object is found dead by the next collection that looks at it: a minor
 collection looks only at the young objects, so to be sure, call `gc.collect`.
 A register keeps its object until it is written, whether or not the program

@@ -193,6 +193,26 @@ static void n_gc_finalize(Process *p, Word *a, Word *r) {
     VEC_PUSH(p->fin_young, &w->h);
 }
 
+/* A native may run code (as list.sort's comparator does): when one ran, the
+ * instruction that called it reloads the frames and register banks. */
+static void run_held(Process *p, Word *r) {
+    uint32_t n = proc_run_finalizers(p);
+    if (n) p->reentered = true;
+    if (r) r[0].i = n;
+}
+
+static void n_gc_hold_finalizers(Process *p, Word *a, Word *r) {
+    (void)r;
+    if (a[0].i != 0 && a[0].i != 1) vm_trap(p, "E_RANGE", "gc.hold_finalizers: %lld is not 0 or 1", (long long)a[0].i);
+    p->fin_held = a[0].i == 1;
+    if (!p->fin_held) run_held(p, NULL); /* those that waited: now */
+}
+
+static void n_gc_run_finalizers(Process *p, Word *a, Word *r) {
+    (void)a;
+    run_held(p, r);
+}
+
 static void n_foreign_release(Process *p, Word *a, Word *r) {
     (void)r;
     Obj *o = a[0].r;
@@ -266,7 +286,9 @@ static const NativeDef BUILTINS[] = {
     {"gc.heap_bytes", 0, {0}, 1, {T_I64}, n_gc_heap_bytes, "Bytes currently allocated on this process's heap (live and not yet collected)."},
     {"gc.collections", 0, {0}, 1, {T_I64}, n_gc_collections, "Number of garbage collections so far in this process."},
     {"gc.shared_bytes", 0, {0}, 1, {T_I64}, n_gc_shared_bytes, "Bytes of the large strings this process shares with others: they are sent by reference, and counted in each holder's heap."},
-    {"gc.finalize", 2, {T_R, T_R}, 0, {0}, n_gc_finalize, "Call a closure with an object, once, after a collection finds nothing else holds it; the closure must not hold the object itself. It runs in this process between two instructions, cannot wait, and what it throws is dropped. Strings, BigInts and decimals are values and cannot be finalized."},
+    {"gc.finalize", 2, {T_R, T_R}, 0, {0}, n_gc_finalize, "Call a closure with an object, once, after a collection finds nothing else holds it; the closure must not hold the object itself. It runs in this process between two instructions (or when it calls gc.run_finalizers, if it holds them), cannot wait, and what it throws is dropped. Strings, BigInts and decimals are values and cannot be finalized."},
+    {"gc.hold_finalizers", 1, {T_I64}, 0, {0}, n_gc_hold_finalizers, "1: this process's finalizers wait, once their objects are found dead, until it calls gc.run_finalizers, so they never interrupt it. 0: they run between instructions again, and those waiting run now."},
+    {"gc.run_finalizers", 0, {0}, 1, {T_I64}, n_gc_run_finalizers, "Call the finalizers waiting to run, and those their own collections find, now; returns how many ran (0 inside a finalizer)."},
     {"weak.ref", 1, {T_R}, 1, {T_R}, n_weak_ref, "A weak reference to an object: it does not keep the object alive. Strings, BigInts and decimals are values, and it holds them like any other value."},
     {"weak.get", 1, {T_R}, 1, {T_R}, n_weak_get, "What a weak reference refers to, or null once a collection has found nothing else holds it."},
     {"weak.map", 2, {T_R, T_I64}, 0, {0}, n_weak_map, "Make a map weak: 1 weak keys (a value is held only while its key lives, even if the value refers to the key), 2 weak values, 3 both, 0 neither. An entry goes when a collection finds a weak key or value dead. Strings, BigInts, decimals and non-references are held as in any map."},

@@ -234,7 +234,7 @@ The heap object types map directly onto scripting-language values
 | Regular expressions | `regex.compile`, `regex.find`, `regex.replace`, ... (linear time, Unicode: [STDLIB.md](STDLIB.md#regular-expressions)) |
 | Sorting and searching a list | `ncall "list.sort" (R0, cmp)` with a comparator closure (or `null` for natural order); `list.bsearch` |
 | Set operations | maps as sets: `map.union`, `map.intersect`, `map.difference` |
-| Weak references, weak tables, finalizers (`__gc`, `__mode`, `WeakMap`) | `weak.ref`, `weak.get`, `weak.map`, `gc.finalize` ([STDLIB.md](STDLIB.md#weak-references-and-finalizers)) |
+| Weak references, weak tables, finalizers (`__gc`, `__mode`, `WeakMap`) | `weak.ref`, `weak.get`, `weak.map`, `gc.finalize`; `gc.hold_finalizers` and `gc.run_finalizers` to run them only where the runtime's own state is whole ([STDLIB.md](STDLIB.md#weak-references-and-finalizers)) |
 | A string builder | `bufnew`, `bufcat`, `bufpush`, then `strcat R0, buf` |
 | A lambda / nested function | `closure f (captured...) -> (R0)`; the body reads `UP[n]` |
 | Calling a function value | `calli R0 (args) -> (results)` (`tcalli` in tail position) |

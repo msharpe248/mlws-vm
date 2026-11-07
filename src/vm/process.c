@@ -336,7 +336,7 @@ int proc_run_slice(Process *p, uint32_t budget) {
         return SLICE_FAILED;
     }
     if (p->gc_pending && !p->kill_pending) gc_collect(p);
-    if (p->fin_ready.n) {
+    if (p->fin_ready.n && !p->fin_held) {
         proc_run_finalizers(p);
         if (p->insns >= p->quota[QUOTA_INSNS]) {
             p->jb = NULL;
@@ -428,8 +428,9 @@ bool proc_callback(Process *p, ObjClosure *cl, const Word *args) {
  * instructions, and what it throws goes nowhere: the code it interrupted has
  * nothing to do with it. Those a finalizer's own collections find dead wait
  * for it to end. */
-void proc_run_finalizers(Process *p) {
-    if (p->fin_running) return;
+uint32_t proc_run_finalizers(Process *p) {
+    if (p->fin_running) return 0;
+    uint32_t ran = 0;
     p->fin_running = true;
     bool reentered = p->reentered;
     size_t pins = p->pins.n;
@@ -440,11 +441,13 @@ void proc_run_finalizers(Process *p) {
         Word arg;
         arg.r = w->target;
         if (!proc_callback(p, (ObjClosure *)w->fn, &arg)) p->cb_exception = NULL;
+        ran++;
     }
     p->exception = exception;
     p->pins.n = pins;
     p->reentered = reentered;
     p->fin_running = false;
+    return ran;
 }
 
 /* ---- memory ------------------------------------------------------------------ */

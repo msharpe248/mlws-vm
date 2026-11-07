@@ -605,6 +605,7 @@ struct Process {
     VEC(Obj *) fin_young, fin_old;   /* gc.finalize records: since the last collection, and before */
     VEC(Obj *) fin_ready;            /* records whose targets were found dead: waiting to run (GC roots) */
     bool fin_running;
+    bool fin_held;                   /* gc.hold_finalizers: they wait for gc.run_finalizers */
     /* large strings this heap holds (gc.c): a set, by address */
     struct SharedHold *shared;
     uint32_t shared_cap, shared_n;
@@ -711,8 +712,8 @@ int proc_run_slice(Process *p, uint32_t budget);
  * what it threw, if anything); otherwise its results are in p->results. */
 bool proc_callback(Process *p, ObjClosure *cl, const Word *args);
 /* Call the finalizers whose objects a collection found dead (gc.finalize), at
- * a safepoint where a callback may run. */
-void proc_run_finalizers(Process *p);
+ * a safepoint where a callback may run, and say how many ran. */
+uint32_t proc_run_finalizers(Process *p);
 /* Push the entry frame of a new process (running `closure`, or NULL), bind
  * its arguments, and hand it to the scheduler. */
 void proc_start(Process *p, Function *fn, Obj *closure, const Word *args, int nargs);

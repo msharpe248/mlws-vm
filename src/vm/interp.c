@@ -2157,7 +2157,7 @@ static QCC QNOSP int h_generic(QPARAMS) {
             return SLICE_FAILED;
         }
         gc_collect(p);
-        if (p->fin_ready.n) {
+        if (p->fin_ready.n && !p->fin_held) {
             proc_run_finalizers(p);
             ctx_load(c); /* a finalizer's calls may have moved the frames and the register banks */
         }
@@ -2369,7 +2369,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
                 return SLICE_FAILED;
             }
             gc_collect(p);
-            if (p->fin_ready.n) {
+            if (p->fin_ready.n && !p->fin_held) {
                 proc_run_finalizers(p);
                 ctx_load(&c); /* a finalizer's calls may have moved the frames and the register banks */
             }
