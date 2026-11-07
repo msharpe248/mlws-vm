@@ -304,7 +304,7 @@ with `.loc`:
 ```
 
 Processes are isolated: they share no memory and talk only by messages, which
-are deep-copied. They run in parallel on several threads, so a new process may
+are deep-copied (a string of 4 KiB or more goes by reference). They run in parallel on several threads, so a new process may
 finish before `spawn` returns: use `spawnm` (spawn and monitor) or `spawnl`
 (spawn and link) rather than `spawn` followed by `monitor` or `link`. Scheduling, links, monitors, timeouts and quotas are described in
 [ABI.md §1](ABI.md#1-processes), and the instructions in the "Processes" section of

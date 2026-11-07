@@ -400,7 +400,8 @@ deliberate, checked act:
    symbols.
 5. **Sandboxes.** Quota kind 4 counts a process's foreign calls. `quota 4, 0`
    (or `--quota foreign=0`) shuts native code out completely, and children
-   inherit the limit, like the other quotas.
+   inherit the limit, like the other quotas. Limiting a process by name
+   (`cap.restrict`, [STDLIB.md](STDLIB.md#sandboxing)) does this too.
 6. **Development.** `--unsafe-native` (or `MLWSVM_UNSAFE_NATIVE=1`) skips
    checks 1–4, with a warning. Do not use it to run code you don't trust.
 

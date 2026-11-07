@@ -593,7 +593,10 @@ design is in [ABI.md](ABI.md) §1.1 and at the top of `src/vm/sched.c`. In short
   18; with a signal for every ready process it took 6.5 s on 18.
 * **Heaps are never shared.** A sender copies a message into a detached block of
   objects; the receiver links the block into its own heap on its own thread. The
-  collector needs no locks.
+  collector needs no locks. A string of 4 KiB or more is the exception: it leaves
+  every heap and goes by reference, so sending one costs the same at any size, with
+  a count touched only as a heap gains or loses it: about 80 ns a send on the M5,
+  whether the string is 5 KB, 1 MB or 20 MB.
 * **Cheap slices.** A time slice is 2,000 instructions, or fewer if the process
   blocks. The scheduler reads the clock once per slice, and the short critical
   sections use `os_unfair_lock` on macOS rather than `pthread_mutex`. Both

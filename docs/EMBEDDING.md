@@ -109,7 +109,8 @@ and starting fail with `E_BUSY` (as does `mlws_wait` with nothing running).
 * Each run uses the VM's worker threads (one per core by default:
   `mlws_set_option(vm, "threads", "4")`). All the VM options of
   [TOOLING.md](TOOLING.md#vm-options) work, including quotas
-  (`"quota", "heap=64M,os=0,foreign=0"`) to sandbox untrusted scripts.
+  (`"quota", "heap=64M,os=0,foreign=0"`) to sandbox untrusted scripts, and
+  capabilities (`"cap", "read=/srv/data"`) to grant them just what they need.
 * With `mlws_set_option(vm, "jit", "on")` hot functions run as machine code
   ([JIT.md](JIT.md)). Each VM has its own code memory, freed by `mlws_free`.
   On macOS, a host built with the hardened runtime needs the

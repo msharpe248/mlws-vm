@@ -103,13 +103,13 @@ struct field load is the type check and one load (`Q_LDF_*` in
 definition the operand named):
 
 ```c
-#define STRUCT_OF(reg) ((ObjStruct *)QR[reg])
+#define STRUCT_OF(reg) ((ObjStruct *)QR[reg].r)
 #define IS_STRUCT(o) ((o) && (o)->h.kind == OBJ_STRUCT && (o)->def == in->k.p)
 ...
         QCASE(Q_LDF_##B) {                                                    \
             ObjStruct *so = STRUCT_OF(in->r[1]);                              \
             if (!IS_STRUCT(so)) GENERIC();                                 \
-            QB(bank)[in->r[0]] = so->fields[in->target].w;                      \
+            QREG(bank, in->r[0]) = so->fields[in->target].w;                      \
             NEXT;                                                             \
         }                                                                     \
 ```

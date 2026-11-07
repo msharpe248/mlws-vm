@@ -47,7 +47,7 @@ static inline void ctx_set(Ctx *c, Frame *fr, const Function *fn, uint64_t *w) {
     c->fr = fr;
     c->I = (int64_t *)w; /* roff[BANK_I] is 0 */
     c->F = (double *)(w + fn->roff[BANK_F]);
-    c->R = (Obj **)(w + fn->roff[BANK_R]);
+    c->R = (Word *)(w + fn->roff[BANK_R]);
     c->P = w + fn->roff[BANK_P];
 }
 ```

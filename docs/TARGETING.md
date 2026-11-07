@@ -322,7 +322,7 @@ directly:
 | Source construct | MLWSVM |
 |---|---|
 | `spawn f(x)` / `go f(x)` / a new actor | `spawn f (x) -> (pid)` (runs in parallel) |
-| actor `send` / channel write to a known receiver | `send pid, value` (deep copy) |
+| actor `send` / channel write to a known receiver | `send pid, value` (deep copy; a string of 4 KiB or more goes by reference, so it costs the same at any size) |
 | actor `receive` / channel read | `recv dst`, or `recvt dst, ms, Ltimeout` |
 | `await task` | `spawnm f (x) -> (pid)`, then `recv` the result message, then the `Down` |
 | a supervisor | `std.supervisor` (restart strategies and limits), or by hand: `spawnm` / `monitor` (to observe), `spawnl` / `link` (to fail together) |
@@ -479,6 +479,11 @@ the line of your source program as well as the assembly line
 Every error has a stable code ([ERRORS.md](ERRORS.md)), so compiler tests can assert
 on them.
 
+Editors can debug your language in its own files: `mlwsvm dap`
+([TOOLING.md](TOOLING.md#debugger-for-editors-mlwsvm-dap)) needs nothing from a
+compiler but `.loc` lines. The more of the generated code they cover, the better
+stepping behaves, since a step runs until the source line changes.
+
 ## 12. What runs fastest
 
 **Leave the clean-up to the optimizer.** `--opt 2` ([OPTIMIZER.md](OPTIMIZER.md))
@@ -620,3 +625,8 @@ Ship `.masm`: the VM assembles it once and keeps the result in its module cache
 assembler only on its first run, even when it is written to a new temporary
 file each time. Or assemble `.mlwso` files with the VM that will run them: the
 loader accepts only its own format version ([BINARY_FORMAT.md](BINARY_FORMAT.md)).
+
+A compiled program can ship as one file: `mlwsvm bundle -o app --opt 2 --jit on
+app.masm` holds the VM, the program and all it imports, including a language's
+runtime library ([TOOLING.md](TOOLING.md#one-executable-mlwsvm-bundle)).
+

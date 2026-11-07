@@ -1,9 +1,10 @@
 # MLWSVM Tooling
 
 Tools for seeing what a program is doing: resource statistics, a profiler, an
-instruction tracer, an interactive debugger, and a live monitor with a web
-dashboard and a `top`-style terminal view. And, for the VM itself, a
-differential fuzzer and the checks to run before a release.
+instruction tracer, an interactive debugger with an adapter for editors, and a live
+monitor with a web dashboard and a `top`-style terminal view. For shipping one, a
+single executable. And, for the VM itself, a differential fuzzer and the checks to
+run before a release.
 
 | Tool | Command | Overhead when off |
 |---|---|---|
@@ -575,5 +576,6 @@ failed. It takes about an hour. Run it on every platform a release supports.
 * `make test` runs the debugger tests in `tests/tools/*.masm`, which use
   `debug-script`.
 * `make check-tools` smoke-tests what an in-process test can't reach: the profiler
-  and flame output, the tracer, and the monitor, by querying a live VM with
-  `mlwsvm top --once` and, if available, `curl`.
+  and flame output, the tracer, bundles run from an empty directory, whole sessions
+  of `mlwsvm dap`, two VMs talking through `std.node`, and the monitor, by querying
+  a live VM with `mlwsvm top --once` and, if available, `curl`.

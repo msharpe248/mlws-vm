@@ -171,7 +171,7 @@ this way too. MLWSVM's version (the tail-call section of
 [src/vm/interp.c](../../src/vm/interp.c)):
 
 ```c
-#define QPARAMS Ctx *c, const Insn *in, uint32_t left, int64_t *I, double *F, Obj **R, Frame *qfr, const Insn *qcode
+#define QPARAMS Ctx *c, const Insn *in, uint32_t left, int64_t *I, double *F, Word *R, Frame *qfr, const Insn *qcode
 ...
 #define NEXT                                                                   \
     do {                                                                       \

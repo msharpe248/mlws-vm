@@ -226,7 +226,10 @@ static void mark(Process *p, Obj *o) {
     if (!o) return;
     ...
     uint8_t f = o->flags;
-    if ((f & (OBJF_OLD | OBJF_MARK)) == (OBJF_OLD | p->mark_bit) || (f & OBJF_IMMORTAL)) return;
+    if ((f & (OBJF_OLD | OBJF_MARK)) == (OBJF_OLD | p->mark_bit) || (f & OBJF_IMMORTAL)) {
+        if (f & OBJF_SHARED) shared_mark(p, o);
+        return;
+    }
     o->flags = (uint8_t)((f & ~OBJF_MARK) | OBJF_OLD | p->mark_bit);
     size_t fp = obj_footprint(o);
     p->gc_live++;
@@ -251,8 +254,8 @@ the register windows, is `mark_frames`:
 static void mark_frames(Process *p, uint64_t *regs, const Frame *frames, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) {
         const Frame *f = &frames[i];
-        Obj *const *r = (Obj *const *)frame_reg(regs, f, BANK_R, 0);
-        for (uint32_t k = 0; k < f->fn->mf->nregs[BANK_R]; k++) mark(p, r[k]);
+        const Word *r = (const Word *)frame_reg(regs, f, BANK_R, 0);
+        for (uint32_t k = 0; k < f->fn->mf->nregs[BANK_R]; k++) mark(p, r[k].r);
         mark(p, f->closure);
     }
 }
@@ -405,7 +408,8 @@ rows of each table:
 
 Each MLWSVM process (chapter 7) has its own heap, collected only on its own
 thread, between its own instructions. No heap is ever touched by two
-threads. Messages between processes are copied into the receiver's heap,
+threads. Messages between processes are copied into the receiver's heap (a
+large string goes by reference: [DESIGN.md §11.10](../DESIGN.md#1110-shared-strings)),
 and the only objects processes share are immortal constants, which are
 never written, not even by marking. So the collector needs no locks, never
 stops another thread, and a process with a small heap has small, fast

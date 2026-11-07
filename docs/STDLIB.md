@@ -11,9 +11,12 @@ restricts them.
 | `io`, `str`, `gc`, `test` | printing, string bytes, the collector, test failures |
 | `fs` | files, standard streams, directories, metadata |
 | `os` | arguments, the environment, exit, running commands |
-| `net` | TCP, UDP, DNS |
-| `text`, `json` | formatting, string utilities, UTF-8, JSON |
+| `net`, `tls` | TCP, UDP, DNS, TLS |
+| `text`, `json`, `regex` | formatting, string utilities, UTF-8, JSON, regular expressions |
 | `proc`, `std.supervisor` | the process count, a name registry, request/reply calls, supervisors |
+| `std.node` | processes on other VMs |
+| `weak` | weak references and weak maps (and `gc.finalize`) |
+| `cap` | limiting what a process may reach |
 | `module` | loading modules while the program runs ([ABI.md §9](ABI.md#9-loading-modules-at-run-time)) |
 | `time` | clocks, dates and ISO 8601 |
 | `hash`, `random` | CRC-32, SHA-256, SipHash; random numbers |
@@ -101,6 +104,10 @@ Handles belong to their process and cannot be sent to another (`E_TYPE`).
   and a buffer, never a thread. `bench/connections.masm` holds 10,000 open at
   once (20,000 descriptors, since both ends are in the same VM). At startup
   MLWSVM raises its descriptor limit as far as the system allows.
+* `net.split(conn)` gives a second handle on a connection, so that one process
+  can read it while another writes. `net.read_frame(conn)` reads a message of a
+  32-bit little-endian length and that many bytes, up to 64 MiB, for protocols
+  framed that way.
 * Writing to a connection the other end has closed raises `E_RESET`. The VM
   ignores `SIGPIPE`, so this never kills the program.
 

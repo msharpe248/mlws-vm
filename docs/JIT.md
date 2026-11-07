@@ -193,6 +193,16 @@ load of all of them.
 **Tools.** The debugger, profiler and tracer see every instruction, so a run
 under them compiles nothing.
 
+### Reloading
+
+A reload (`module.reload`) changes what a call means, and machine code is never
+patched. Compiled calls read the callee's `jit_entry` before each call, so
+clearing it (`interp_jit_forget`) makes them stop for the interpreter's call, whose
+operand then names the new version. A function with call sites that moved goes back
+to its quickened forms and counts towards compiling again, for what it calls now;
+its old machine code stays in memory, since the process that asked may be in it.
+The old version's exported functions stay interpreted.
+
 ## Memory
 
 Each VM has its own code memory (64 MB of address space, reserved when it

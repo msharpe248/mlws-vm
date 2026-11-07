@@ -278,7 +278,7 @@ static void n_self(Process *p, Word *a, Word *r) {
 
 static void n_global(Process *p, Word *a, Word *r) {
     uint32_t self = __atomic_load_n(&p->vm->node_self, __ATOMIC_ACQUIRE);
-    if (!self) vm_trap(p, "E_STATE", "node.global: this VM is no node yet (std.node's start)");
+    if (!self) vm_trap(p, "E_NODE", "node.global: this VM is no node yet (std.node's start)");
     r[0].u = a[0].u >> NODE_SHIFT ? a[0].u : a[0].u | (uint64_t)self << NODE_SHIFT;
 }
 

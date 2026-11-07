@@ -264,7 +264,7 @@ OP(CATCH,  0x00E1, "catch",  "Exceptions", "X", 0, 0,
 OP(SPAWN,  0x0100, "spawn",  "Processes", "FC", 0, OPF_CALL,
    "Start a new process running a function: `spawn worker (a, b) -> (I0)` puts the new process id in I0. Arguments are copied into the new process; references are deep-copied, and pointers cannot be passed. The new process inherits this process's quotas and may start running at once, on another thread. To watch or link to it, use spawnm or spawnl: with `spawn` followed by `monitor`, a quick child can finish first.")
 OP(SEND,   0x0101, "send",   "Processes", "QV", TS_ANY, OPF_PERVAL,
-   "`send pid, value`: append a copy of value to the mailbox of process pid. References are deep-copied, preserving sharing and cycles. Sending to a finished process does nothing. Traps E_QUOTA if the receiver's mailbox is full and E_TYPE for a pointer.")
+   "`send pid, value`: append a copy of value to the mailbox of process pid. References are deep-copied, preserving sharing and cycles; a string of 4 KiB or more goes by reference. A pid naming another node goes through std.node. Sending to a finished process does nothing. Traps E_QUOTA if the receiver's mailbox is full and E_TYPE for a pointer.")
 OP(RECV,   0x0102, "recv",   "Processes", "W", TS_ANY, OPF_PERVAL,
    "Take the oldest message from this process's mailbox, waiting until one arrives. The message keeps its type (as list elements do). Traps E_DEADLOCK if every process is waiting and none can ever send.")
 OP(RECVT,  0x0103, "recvt",  "Processes", "WQL", TS_ANY, OPF_PERVAL,

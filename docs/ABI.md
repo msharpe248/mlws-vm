@@ -18,8 +18,9 @@ A program runs as a **process**. Each process owns:
 * its own **garbage-collected heap** (§6) and handle table
 * a **mailbox** of messages, and its **quotas** and statistics
 
-Processes share nothing mutable. Loaded code and constant-pool strings are
-immutable and shared. Everything else belongs to exactly one process.
+Processes share nothing mutable. Loaded code, constant-pool strings and large
+strings that have been sent are immutable and shared. Everything else belongs to
+exactly one process.
 
 ### 1.1 Scheduling
 
@@ -89,8 +90,13 @@ immutable and shared. Everything else belongs to exactly one process.
   traps with `E_TYPE` and leaves the message in the mailbox.
 * References are **deep-copied** into the receiver's heap, preserving sharing and
   cycles, so the sender and receiver never share a mutable object. Constant
-  strings are shared, since they are immutable. Raw pointers are process-local and
-  cannot be sent (`E_TYPE`). `spawn` arguments are copied the same way.
+  strings are shared, since they are immutable, and so is a string of 4 KiB or
+  more, which goes by reference. Raw pointers are process-local and cannot be sent
+  (`E_TYPE`), nor can weak references. `spawn` arguments are copied the same way.
+* A pid whose top 16 bits are not zero names a process on another node. `send`
+  takes it through `std.node`, and drops the message if that node is not connected
+  ([STDLIB.md](STDLIB.md#other-vms-stdnode)). `PID` is always the plain local pid, and
+  `link`, `monitor` and `kill` work only on those.
 * Sending to a finished or unknown process silently does nothing.
 * The sender copies a message into a separate block of objects, and the receiver
   links that block into its own heap when it next runs (or at `recv`). So a heap

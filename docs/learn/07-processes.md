@@ -30,8 +30,9 @@ consistent.
 The second model is **isolated processes with messages**, from Erlang. A
 process is a small unit of execution with its own heap. Nothing mutable is
 shared; the only way to affect another process is to send it a message,
-which is copied into the receiver's heap. Copying costs time, and data
-that is large and read-mostly has to be copied or held elsewhere. In
+which is copied into the receiver's heap. Copying costs time, so MLWSVM
+makes one exception: an immutable string of 4 KiB or more goes by
+reference, since nothing can change it. In
 return there are no data races, a failing process cannot corrupt another,
 and each heap can be collected on its own, without stopping anyone else.
 
@@ -776,3 +777,10 @@ slice before it reads the table
 | Reference | [DESIGN.md §13](../DESIGN.md#13-processes-and-the-scheduler), [§14](../DESIGN.md#14-messages) and [§15](../DESIGN.md#15-input-and-output); [ABI.md §1](../ABI.md#1-processes); [PERFORMANCE.md](../PERFORMANCE.md#the-multi-threaded-scheduler); [TARGETING.md §9](../TARGETING.md#9-concurrency) |
 
 Previous: [6. Calls, frames and exceptions](06-calls-frames-exceptions.md) · Next: [8. JIT 1: what a JIT is](08-jit-what.md)
+
+The same `send` reaches further than one machine. A pid can name a node,
+another VM connected over TCP, and a message to it goes through a pair of
+ordinary processes in `lib/std/node.masm`, which carry it across and hand it to
+the process there. Nothing about a process changes when its messages cross a
+network, which is one more thing sharing nothing buys:
+[STDLIB.md](../STDLIB.md#other-vms-stdnode).

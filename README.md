@@ -3,7 +3,9 @@
 A portable virtual machine in the spirit of the JVM, but a **register machine**
 rather than a stack machine. It has variable-arity instructions (0–32 operands),
 25 addressing modes, an assembler with macros, a module loader with
-libraries, and checked memory safety. It is written in plain C11 with no
+libraries, and checked memory safety. Processes share nothing, can reach other
+machines, can have their code replaced while they run, and can be limited to what
+they are granted. It is written in plain C11 with no
 required dependencies (libffi, if present, enables the FFI), so it builds
 anywhere a C compiler exists.
 
@@ -279,13 +281,13 @@ passes its tests.
 | [docs/BINARY_FORMAT.md](docs/BINARY_FORMAT.md) | The `.mlwso` file and instruction encoding |
 | [docs/OPTIMIZER.md](docs/OPTIMIZER.md) | The optimizer: its levels and passes, what it keeps the same, its report, and what it gains |
 | [docs/JIT.md](docs/JIT.md) | The JIT: when functions are compiled, what it compiles, how it runs with the interpreter, its memory, platforms, report, tests and gains |
-| [docs/TOOLING.md](docs/TOOLING.md) | Debugger, profiler, tracer, monitor, dashboard, `top`, several programs in one VM, library archives (`mlwsvm lib`), the module cache, VM options, and the bindings generator |
-| [docs/STDLIB.md](docs/STDLIB.md) | The standard library: files, commands, networking, text and JSON, time, hashes, random numbers, encodings, sorting, and how I/O waits |
+| [docs/TOOLING.md](docs/TOOLING.md) | Debugger (and one for editors), profiler, tracer, monitor, dashboard, `top`, one-file executables, several programs in one VM, library archives (`mlwsvm lib`), the module cache, VM options, and the bindings generator |
+| [docs/STDLIB.md](docs/STDLIB.md) | The standard library: files, commands, networking, TLS, other VMs, text, regular expressions and JSON, time, hashes, random numbers, encodings, sorting, and how I/O waits |
 | [docs/EMBEDDING.md](docs/EMBEDDING.md) | Running MLWSVM inside a C or C++ program (`libmlwsvm`) |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks and results, how the interpreter and scheduler are made fast, and what is left alone (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M52 and what remains: the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M61 and what remains: the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
@@ -298,15 +300,16 @@ src/loader/     .mlwso module, .mlwsl library archive and bundle reader/writer
 src/vm/         loader/linker, verifier, module cache, processes and memory, coroutines, scheduler, interpreter, JIT (jit.inc, with jit_a64.inc and jit_x64.inc), extensions, VM options, run helper
 src/heap/       garbage collector, heap objects (strings, bytes, arrays, structs, lists, maps), BigInt and decimal, message copying
 src/opt/        the optimizer: its working form of a function, the passes, the report
-src/native/     built-in and standard-library natives (text, files, the OS and network, module.*), the extension API and the FFI
+src/native/     built-in and standard-library natives (text, files, the OS and network, TLS, capabilities, nodes, module.*), the extension API and the FFI
 src/embed/      the embedding API (libmlwsvm)
-src/tools/      test runner, doc generator, debugger, profiler/tracer, monitor, top, ext, lib, opt, bindgen, fuzz
+src/tools/      test runner, doc generator, debugger, the DAP server, bundle, profiler/tracer, monitor, top, ext, lib, opt, bindgen, fuzz
 src/platform/   the only OS-specific code (POSIX and Windows)
 include/mlwsvm/ public C headers: the extension API (mlwsvm.h) and the embedding API (embed.h)
 web/            the monitor's dashboard (compiled into the binary)
+editors/        a VS Code extension that declares `mlwsvm dap`
 build-tools/    build helpers: the dashboard compiled into C, the Unicode tables generated from the UCD
 extensions/     an example native extension (also a test fixture)
-lib/std/        standard library and macro files, written in MLWSVM assembly
+lib/std/        standard library and macro files, written in MLWSVM assembly (std.node: distribution)
 tests/          the test suite, in MLWSVM assembly
 bench/          benchmarks (make bench); bench/compare: fib and loop in Lua, Java, WebAssembly and Python
 examples/       runnable, self-checking example programs (examples/embed: a C host program)

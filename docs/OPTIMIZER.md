@@ -176,6 +176,11 @@ With `tailcall`:
   lack it;
 - a recursion through tail calls no longer reaches the call depth limit.
 
+When a collection finds an object dead is not among the things kept the same. An
+inlined function's registers belong to its caller's frame, and hold what they held
+until written, so a weak reference may stay set, or a finalizer wait, longer than
+without the optimizer. Programs cannot rely on when either happens.
+
 ## The report
 
 ```

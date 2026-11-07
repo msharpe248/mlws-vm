@@ -190,6 +190,11 @@ Capabilities: M60.
   tested in the Platforms workflow. Not done: MSVC builds, and a
   completion-port poller ([DESIGN.md](DESIGN.md) §23).
 
+Not done in distribution (M61): encryption between nodes, which needs a connection
+that two processes can share with TLS on it; `link` and `proc.call` across nodes;
+and a value's cycles, which do not cross. Not done in hot reloading (M55): freeing
+old versions, and data carried between them.
+
 ## 4. Performance (when measurements call for it)
 
 Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).

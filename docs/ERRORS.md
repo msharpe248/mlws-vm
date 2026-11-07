@@ -97,7 +97,7 @@ status 70.
 | `E_NODE` | `std.node`: a node could not be reached, or does not know the cookie |
 | `E_REGEX` | A bad regular expression or replacement: malformed, too large, or asking for backreferences or lookaround |
 | `E_TLS` | TLS on a connection failed: no TLS library, a certificate that does not match or that no authority given vouches for, a peer that does not speak TLS, or a file that cannot be loaded |
-| `E_NOT_FOUND`, `E_EXISTS`, `E_PERMISSION`, `E_IS_DIR`, `E_NOT_DIR`, `E_CLOSED`, `E_TIMEOUT`, `E_RESET`, `E_REFUSED`, `E_ADDR_IN_USE`, `E_RESOURCES`, `E_IO` | Files, commands, sockets and other OS calls ([STDLIB.md](STDLIB.md#errors)). Also `E_EXISTS` for `proc.register` of a name a live process holds, and `E_TIMEOUT` for a `proc.call` with no reply in time |
+| `E_NOT_FOUND`, `E_EXISTS`, `E_PERMISSION`, `E_IS_DIR`, `E_NOT_DIR`, `E_CLOSED`, `E_TIMEOUT`, `E_RESET`, `E_REFUSED`, `E_ADDR_IN_USE`, `E_RESOURCES`, `E_IO` | Files, commands, sockets and other OS calls ([STDLIB.md](STDLIB.md#errors)). `E_PERMISSION` is also what a capability denies ([STDLIB.md](STDLIB.md#sandboxing)). Also `E_EXISTS` for `proc.register` of a name a live process holds, and `E_TIMEOUT` for a `proc.call` with no reply in time |
 | `E_RESTARTS` | A supervisor (`std.supervisor`) gave up: more failures than its restart limit within its period |
 | `E_JSON` | `json.parse` of malformed JSON (the message gives line and column) or of a document that is not an object or array, or `json.stringify` of a value with no JSON form |
 | `E_NATIVE` | An extension reported an error without giving a code (extensions normally use their own codes, such as `E_DEMO`) |

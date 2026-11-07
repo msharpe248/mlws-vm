@@ -125,17 +125,17 @@ what lets the interpreter and the collector run without locks.
 
 | Directory | What |
 |---|---|
-| `src/core/` | Types, the opcode table, the instruction codec, the per-instruction checker, register effects, shared arithmetic, the disassembler, Unicode, versions, SHA-256 |
+| `src/core/` | Types, the opcode table, the instruction codec, the per-instruction checker, register effects, regular expressions, shared arithmetic, the disassembler, Unicode, versions, SHA-256 |
 | `src/asm/` | Lexer, constant expressions, preprocessor, assembler |
-| `src/loader/` | The `.mlwso` and `.mlwsl` readers and writers |
+| `src/loader/` | The `.mlwso`, `.mlwsl` and bundle readers and writers |
 | `src/vm/` | Loader and linker, verifier, module cache, processes, coroutines, scheduler, interpreter, the JIT, extensions, options, the run helper |
 | `src/heap/` | Heap objects, the collector, BigInt and decimal, message copying |
 | `src/opt/` | The optimizer |
-| `src/native/` | Built-in and standard-library natives, the extension API, the FFI |
+| `src/native/` | Built-in and standard-library natives, TLS, capabilities, the C of distribution, the extension API, the FFI |
 | `src/embed/` | The embedding API |
-| `src/tools/` | Debugger, profiler and tracer, monitor, `top`, test runner, doc generator, `lib`, `ext`, `opt`, `bindgen` |
+| `src/tools/` | Debugger, its adapter for editors (`dap`), profiler and tracer, monitor, `top`, test runner, doc generator, `lib`, `ext`, `opt`, `bindgen`, `bundle` |
 | `src/platform/` | The only OS-specific code |
-| `lib/std/` | The parts of the standard library written in MLWSVM assembly |
+| `lib/std/` | The parts of the standard library written in MLWSVM assembly, among them distribution (`std.node`) |
 
 ## 3. The instruction set
 
@@ -576,6 +576,17 @@ quickened forms, since the signature is the same, with a new `QPlan` swapped in
 by one store, because a callback on an I/O thread can be running while the world
 is stopped. Old versions are never freed, so frames and closures need no
 tracking: what points at old code stays valid.
+
+### 6.7 One executable
+
+`mlwsvm bundle` (`tools/bundle.c`) loads a program, then writes a copy of the
+running executable followed by every loaded module's image, the root's name and
+the VM options to keep, and a 16-byte trailer (`loader/bundle_io.c`). At each start
+`main` reads its own last 16 bytes. With a trailer, `VM.bundle` is set, the whole
+command line goes to the program, and `require` looks in the bundle before anything
+else. A module's `.requires` are not stated again: they were met when it was
+bundled. The bundle finds modules by name alone, so two of the same name from
+different directories are refused when bundling.
 
 ## 7. The verifier
 
@@ -1346,6 +1357,14 @@ sorted tables searched by binary search. Normalization decomposes, orders
 combining marks and recomposes, per UAX #15; grapheme and word boundaries
 are state machines over the break classes, per UAX #29.
 
+Regular expressions (`core/regex.c`) use the same tables. A pattern is parsed to a
+tree and compiled to a small program, which `regex_search` runs as a Pike VM: a list
+of threads in priority order, each with its captures, one per program state, moved
+forward together one character at a time. A state enters a list once per position,
+which is what makes the work linear whatever the pattern. A loop whose body can match
+nothing compiles as `(x+)?`, so that a pass matching nothing leaves it as in a
+backtracking matcher. A search takes a budget of steps, which the natives draw from
+the instruction quota, since a native cannot be preempted.
 
 ### 11.10 Shared strings
 
@@ -1626,6 +1645,10 @@ its loop or in `idle`, and counts itself parked; the requester waits until
 all have, serves the request, and lets them go (`sched_start_world`). The
 debugger, tracer and profiler instead run the program on one worker.
 
+A worker in a native can stop the world too, as a reload does, while the monitor
+may be doing so from another: `sched_stop_world` parks a second caller until the
+first has finished, counting it among those stopped, so neither waits on the other.
+
 ## 14. Messages
 
 ```
@@ -1669,6 +1692,35 @@ debugger, tracer and profiler instead run the program on one worker.
   extensions and asynchronous callbacks) are built in `host_frag`, under
   `host_lock`, from any thread, and delivered the same way.
 
+### 14.1 Between VMs
+
+A pid's top 16 bits name its node, and 0 means this VM, so nothing changes for a
+program that has no nodes. `sched_send` looks at those bits first: this node's
+number is stripped, and any other goes to `VM.node_route[number]`, the process
+carrying that connection, wrapped as `[pid, value]`, with an ordinary send.
+
+That process and the rest of the protocol are MLWSVM code, in `lib/std/node.masm`.
+A connection is a reader, blocked in `net.read_frame`, and a writer, blocked in
+`recv`, on two descriptors of one socket (`net.split`), since a process waits for
+one thing at a time. C provides only what must be C: the routing above, `node.frame`
+and `node.decode`, and the challenge. The handshake sends each side's number and a
+random nonce, then an HMAC-SHA-256 of the peer's nonce, keyed by the cookie and
+marked with the prover's role, so that a proof cannot be reflected back at its
+maker. `node.proof_ok` compares in constant time.
+
+`node.decode` reads bytes from the network. Every length is checked against what
+is left, before anything is allocated, recursion is bounded, type codes and kinds
+are checked, and a struct is looked up by module and name and must have the same
+fields. Bytes that are not a value raise `E_PARSE`. `tests/native/node_values`
+feeds it random, mutated and truncated frames.
+
+A pid does not change when it crosses: `node.global` adds the sender's number, and
+it means the same process everywhere, which is why numbers are given, not assigned
+per connection. Requests to a node go through a process of their own, answering
+with `proc.call`, so that a caller's mailbox holds only what it was sent. A monitor
+across nodes is a small process on the far side that uses the local `monitor`; the
+writer on the near side remembers the watchers, to tell them if the connection goes.
+
 ## 15. Input and output
 
 A native that may wait is a *checked* native (`NF_CHECKED`). Instead of
@@ -1704,6 +1756,22 @@ ncall ─► native returns with native_req =
   keeps a wait for I/O from being taken for a deadlock (§13.6).
 * **Descriptors move between processes** with `fs.give` (which closes the
   handle and records `{random ticket, fd}`) and `fs.take`.
+
+### 15.1 TLS
+
+TLS rides on a stream handle: `FileH.tls` is set, and `fill` and `fs.write` call
+`tls_read` and `tls_write` instead of the socket's read and write. So `fs.read_line`
+and the rest are unchanged, and TLS can start after plain traffic. The socket stays
+non-blocking, and OpenSSL says what it needs: `SSL_ERROR_WANT_READ` or
+`SSL_ERROR_WANT_WRITE` becomes `native_wait_fd` on the descriptor, and the native
+runs again after the wait, as any checked native does. Handshakes wait the same
+way, so TLS takes no thread. `SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER` lets a write
+resume after one.
+
+`native/tls.c` declares the few functions it uses and finds them with `plat_dlopen`
+when first asked, trying each library name for the system. So neither building nor
+running `mlwsvm` needs OpenSSL, and there are no headers to match. The functions
+and control numbers are the stable ones of OpenSSL 1.1 and later and of LibreSSL.
 
 ## 16. Coroutines
 
@@ -1857,6 +1925,22 @@ act ([EXTENDING.md](EXTENDING.md#security), `vm/extensions.c`):
   and what it writes a list of their own (the user, SYSTEM and
   Administrators may write, other users read).
 * Quota 4 shuts native code out of a sandbox entirely.
+
+### 17.5 Capabilities
+
+Quotas say how much; capabilities say what. `Process.caps` is `NULL` until the
+process is restricted, and the checks in `osio.c` are one test of it, so an
+unrestricted process pays nothing. A `Caps` is immutable and reference-counted,
+shared by a process and its children. `cap.restrict` builds a new one, keeping only
+entries within what the process holds, so a set can only shrink.
+
+Paths are compared after resolving them (`canonical` in `native/caps.c`): the longest
+part that exists through `plat_realpath`, then the rest as written, refusing a `..` in
+that rest, since nothing says where it would lead. So links and `..` do not get
+out of a granted directory. Restricting also sets the foreign quota to 0 and forbids
+`module.load`, because either could reach anything. Handles are not checked when
+used: a handle given to a process carries its own authority, which is how a
+supervisor can hand a sandbox one file.
 
 ## 18. Embedding
 
@@ -2134,6 +2218,16 @@ timeout. **`mlwsvm doc`** generates `docs/ISA.md` from the opcode table and
 for a header's syntax tree as JSON and writes `.extern`, `.cstruct`,
 `.callback` and `.const` lines from it, with a comment for anything it
 cannot express.
+
+`mlwsvm dap` (`tools/dap.c`) is the debugger's engine behind another front end.
+`debugger.c` exposes it as `dbg_*`: running to the next stop, breakpoints by line,
+and the selected process. The adapter adds the protocol, a small JSON reader, stepping
+by lines (instructions, until the source position changes), and views of frames,
+registers and objects, whose references last until the program next runs. A request
+can arrive while the program runs, so `Debugger.poll` is called every 65,536
+instructions from the hook: it reads what has come, acts on a pause, and queues the
+rest in order. Because compilers mark their source lines with `.loc`, one adapter
+serves every language on the VM.
 
 ## 21. The platform layer
 
