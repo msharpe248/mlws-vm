@@ -50,8 +50,8 @@ tsan() {
 check_tsan() {
     make CC="$CC" BUILD=build-tsan BIN=mlwsvm-tsan CFLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" \
         LDFLAGS="-fsanitize=thread" &&
-    TSAN_OPTIONS=halt_on_error=1:suppressions=tests/tsan.supp MLWSVM_THREADS=4 tsan ./mlwsvm-tsan test tests examples &&
-    TSAN_OPTIONS=halt_on_error=1:suppressions=tests/tsan.supp MLWSVM_THREADS=8 tsan ./mlwsvm-tsan test tests/processes tests/threads \
+    TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=4 tsan ./mlwsvm-tsan test tests examples &&
+    TSAN_OPTIONS=halt_on_error=1 MLWSVM_THREADS=8 tsan ./mlwsvm-tsan test tests/processes tests/threads \
         tests/native tests/os tests/net tests/libs
 }
 

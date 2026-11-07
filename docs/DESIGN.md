@@ -1773,6 +1773,11 @@ when first asked, trying each library name for the system. So neither building n
 running `mlwsvm` needs OpenSSL, and there are no headers to match. The functions
 and control numbers are the stable ones of OpenSSL 1.1 and later and of LibreSSL.
 
+Sessions are set up one at a time, under a lock. ThreadSanitizer reported two threads
+in `SSL_CTX_new` touching the same memory in `libcrypto`, about one run in 40. That
+library is not built with it, so the report could not be told from OpenSSL's own
+synchronization, and setup is rare and slow enough not to run at once anyway.
+
 ## 16. Coroutines
 
 A coroutine has its own register stack, frames and data stack, and shares

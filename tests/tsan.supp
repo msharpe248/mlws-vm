@@ -1,7 +1,0 @@
-# ThreadSanitizer suppressions (make check-tsan, tests/release-check.sh).
-# OpenSSL is loaded at run time and is not built with TSan, so TSan sees its
-# memcpy and memcmp but not its atomics, and reports its lock-free lookups as
-# races between two threads setting up TLS at once. This stops TSan watching
-# calls made inside those libraries, and nothing else.
-called_from_lib:libcrypto.so
-called_from_lib:libssl.so

@@ -119,6 +119,20 @@ bool tls_available(void) {
     return ok;
 }
 
+/* Sessions are set up one at a time. ThreadSanitizer reported two threads in
+ * SSL_CTX_new touching the same memory, inside libcrypto, where it cannot see how
+ * that is synchronized. Whether or not that is a race, setting up a session is
+ * rare and slow, so here it does not happen at once. */
+static PlatMutex *setup_lock(void) {
+    static PlatMutex *lock;
+    PlatMutex *m = __atomic_load_n(&lock, __ATOMIC_ACQUIRE);
+    if (m) return m;
+    PlatMutex *mine = plat_mutex_new();
+    if (__atomic_compare_exchange_n(&lock, &m, mine, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return mine;
+    plat_mutex_free(mine);
+    return m;
+}
+
 static void say_error(char *err, size_t errlen, const char *what) {
     unsigned long e = p_ERR_get_error();
     char text[160] = "";
@@ -133,10 +147,6 @@ void tls_free(Tls *t) {
 }
 
 static Tls *tls_new(bool server, char *err, size_t errlen) {
-    if (!tls_available()) {
-        snprintf(err, errlen, "no TLS library (OpenSSL or LibreSSL) was found");
-        return NULL;
-    }
     p_ERR_clear_error();
     Tls *t = xcalloc(1, sizeof *t);
     t->ctx = p_SSL_CTX_new(server ? p_TLS_server_method() : p_TLS_client_method());
@@ -159,7 +169,7 @@ static bool tls_attach(Tls *t, int sock, char *err, size_t errlen) {
     return true;
 }
 
-Tls *tls_client(int sock, const char *host, const char *ca_file, char *err, size_t errlen) {
+static Tls *client_setup(int sock, const char *host, const char *ca_file, char *err, size_t errlen) {
     Tls *t = tls_new(false, err, errlen);
     if (!t) return NULL;
     p_SSL_CTX_set_verify(t->ctx, SSL_VERIFY_PEER, NULL);
@@ -183,7 +193,18 @@ Tls *tls_client(int sock, const char *host, const char *ca_file, char *err, size
     return t;
 }
 
-Tls *tls_server(int sock, const char *cert_file, const char *key_file, char *err, size_t errlen) {
+Tls *tls_client(int sock, const char *host, const char *ca_file, char *err, size_t errlen) {
+    if (!tls_available()) {
+        snprintf(err, errlen, "no TLS library (OpenSSL or LibreSSL) was found");
+        return NULL;
+    }
+    plat_mutex_lock(setup_lock());
+    Tls *t = client_setup(sock, host, ca_file, err, errlen);
+    plat_mutex_unlock(setup_lock());
+    return t;
+}
+
+static Tls *server_setup(int sock, const char *cert_file, const char *key_file, char *err, size_t errlen) {
     Tls *t = tls_new(true, err, errlen);
     if (!t) return NULL;
     p_SSL_CTX_set_verify(t->ctx, SSL_VERIFY_NONE, NULL);
@@ -198,6 +219,17 @@ Tls *tls_server(int sock, const char *cert_file, const char *key_file, char *err
         return NULL;
     }
     p_SSL_set_accept_state(t->ssl);
+    return t;
+}
+
+Tls *tls_server(int sock, const char *cert_file, const char *key_file, char *err, size_t errlen) {
+    if (!tls_available()) {
+        snprintf(err, errlen, "no TLS library (OpenSSL or LibreSSL) was found");
+        return NULL;
+    }
+    plat_mutex_lock(setup_lock());
+    Tls *t = server_setup(sock, cert_file, key_file, err, errlen);
+    plat_mutex_unlock(setup_lock());
     return t;
 }
 
