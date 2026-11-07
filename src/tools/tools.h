@@ -8,6 +8,7 @@
  * the lib/ directory next to the executable. */
 typedef struct {
     VEC(char *) libpaths;
+    char *exe;     /* this executable, or NULL */
     char *ext_dir; /* the default trusted extension directory (lib/ext next to mlwsvm) */
 } ToolEnv;
 
@@ -16,6 +17,7 @@ void tool_env_libpaths(const ToolEnv *env, VM *vm);
 int tool_ext(int argc, char **argv, const ToolEnv *env); /* `mlwsvm ext` */
 int tool_lib(int argc, char **argv, const ToolEnv *env); /* `mlwsvm lib` (libtool.c) */
 int tool_opt(int argc, char **argv, const ToolEnv *env); /* `mlwsvm opt` (opttool.c) */
+int tool_bundle(int argc, char **argv, const ToolEnv *env); /* `mlwsvm bundle` (bundle.c) */
 
 int tool_test(int argc, char **argv, const ToolEnv *env);
 int tool_doc(int argc, char **argv);

@@ -19,6 +19,7 @@ int64_t plat_local_offset_s(int64_t secs);   /* the local time zone's offset fro
 void plat_sleep_ns(uint64_t ns);
 /* Absolute path of the running executable (malloc'd), or NULL. */
 char *plat_exe_path(const char *argv0);
+bool plat_make_executable(const char *path); /* a file just written, as a program */
 char *plat_find_in_path(const char *name); /* POSIX: an executable in $PATH, or NULL */
 /* Path list separator for MLWSVM_PATH (':' on POSIX, ';' on Windows). */
 char plat_path_sep(void);

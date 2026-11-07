@@ -225,3 +225,25 @@ modules      uleb n, then n × {
 The loader reads an archive's manifest and module table when it scans the
 library path, and decodes a module only when it is imported.
 
+## Bundles
+
+`mlwsvm bundle` ([TOOLING.md](TOOLING.md#one-executable-mlwsvm-bundle)) writes
+a copy of the `mlwsvm` executable, unchanged, followed by this payload; the
+reader is `src/loader/bundle_io.c`.
+
+```
+magic        4 bytes  "MLWB"
+version      u16      1
+flags        u16      0
+root         str                         the module to run
+options      uleb n, then n × str        VM options: name, value, name, value, ...
+modules      uleb n, then n × {
+               name  str
+               image uleb len, then len bytes   its module image
+             }
+length       u64                         of all the above
+trailer      8 bytes  "MLWSBNDL"         the file's last bytes
+```
+
+`mlwsvm` reads its own last 16 bytes at every start. Without the trailer it is
+the plain command; with it, the file's command line goes to the program.

@@ -249,6 +249,7 @@ typedef struct VM {
     uint32_t stack_words;
     uint32_t max_frames;
     uint64_t next_pid;           /* under `lock` */
+    struct Bundle *bundle;   /* the program this executable carries, or NULL: modules are found there first */
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
     bool gc_verify;          /* after each minor collection's marking, check it against a walk of the whole heap */
     bool slabs;              /* processes use the small-object allocator (gc.c); MLWSVM_NO_SLABS=1: malloc */

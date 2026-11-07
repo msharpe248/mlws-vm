@@ -123,6 +123,8 @@ static char *exe_path_system(void) {
     return NULL;
 }
 
+bool plat_make_executable(const char *path) { return chmod(path, 0755) == 0; }
+
 /* Elsewhere (OpenBSD) from argv[0], found through $PATH if it has no '/'. main
  * passes it before any thread starts; later calls without it get the same. */
 char *plat_exe_path(const char *argv0) {

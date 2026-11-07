@@ -1,7 +1,7 @@
 #!/bin/sh
 # Smoke test for the tools that cannot be exercised from inside an assembly
 # test: --monitor (HTTP API and dashboard), `mlwsvm top`, --profile, --trace,
-# `mlwsvm opt` and `mlwsvm fuzz`.
+# `mlwsvm opt`, `mlwsvm bundle` and `mlwsvm fuzz`.
 # Usage: tests/tools/check_tools.sh [path/to/mlwsvm]      (run by `make check-tools`)
 set -eu
 BIN=${1:-./mlwsvm}
@@ -30,6 +30,56 @@ TMPD=$(mktemp -d)
 $BIN asm tests/asm/loc.masm -o "$TMPD/loc.mlwso" >/dev/null 2>&1 || fail "asm loc.masm"
 $BIN dis "$TMPD/loc.mlwso" | grep -q '\.loc "shapes.lua", 12' || fail "dis: .loc"
 rm -f "$TMPD/loc.mlwso"
+
+# mlwsvm bundle: one executable that runs with no lib/ beside it, whose command
+# line is the program's. It keeps VM options (the environment still overrides
+# them), takes modules only module.load asks for with --with, and a damaged
+# payload is refused.
+case $BIN in *.exe) X=.exe ;; *) X= ;; esac
+BD=$(mktemp -d)
+cat > "$BD/app.masm" <<'EOF'
+.import std.math
+.func down(i64 n) -> i64
+    bz n, 1f
+    dec n
+    call down (n) -> (n)
+1:  ret n
+.endf
+.func main
+    ncall "os.args" () -> (R0)
+    len I0, R0
+    call std.math.ipow (2, I0) -> (I1)
+    call down (500) -> (I2)
+    ret I1
+.endf
+EOF
+cat > "$BD/dyn.masm" <<'EOF'
+.func main
+    ncall "module.load" ("std.math")
+    ret 5
+.endf
+EOF
+$BIN bundle -o "$BD/app$X" --max-frames 100 "$BD/app.masm" >/dev/null || fail "bundle"
+$BIN bundle -o "$BD/plain$X" --opt 3 --jit on "$BD/app.masm" >/dev/null || fail "bundle --opt"
+$BIN bundle -o "$BD/dyn$X" "$BD/dyn.masm" >/dev/null || fail "bundle dyn"
+$BIN bundle -o "$BD/dynw$X" --with std.math "$BD/dyn.masm" >/dev/null || fail "bundle --with"
+mkdir "$BD/alone"
+mv "$BD/app$X" "$BD/plain$X" "$BD/dyn$X" "$BD/dynw$X" "$BD/alone/"
+(
+    cd "$BD/alone" || exit 1
+    rm -f ../app.masm ../dyn.masm
+    unset MLWSVM_PATH MLWSVM_JIT MLWSVM_OPT MLWSVM_GC_STRESS MLWSVM_MAX_FRAMES
+    set +e
+    ./plain$X a --also b; [ $? = 8 ] || fail "bundle: arguments, the import or the status"
+    ./app$X >/dev/null 2>&1; [ $? = 70 ] || fail "bundle: kept option (--max-frames)"
+    MLWSVM_MAX_FRAMES=1000 ./app$X; [ $? = 1 ] || fail "bundle: the environment over a kept option"
+    ./dyn$X >/dev/null 2>&1; [ $? != 5 ] || fail "bundle: a module it does not hold"
+    ./dynw$X; [ $? = 5 ] || fail "bundle --with"
+    perl -e 'open F, "+<", $ARGV[0] or die; binmode F; seek F, -16, 2; read F, $l, 8; $l = unpack("Q<", $l); seek F, -16 - $l, 2; print F "XXXX"; close F' "plain$X"
+    OUT=$(./plain$X 2>&1); [ $? = 65 ] || fail "bundle: a damaged payload ran"
+    echo "$OUT" | grep -q E_LOAD_FORMAT || fail "bundle: damaged payload message"
+) || exit 1
+rm -rf "${BD:?}"
 
 # A .mlwso whose global word is tagged as a reference (the assembler never
 # writes one) is refused at load, not used: the word would be a forged pointer.
@@ -427,4 +477,4 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
 fi
-echo "check-tools: profile, .loc, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"
+echo "check-tools: profile, .loc, bundle, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"

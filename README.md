@@ -46,6 +46,7 @@ base:
   `.rept`/`.irp`, conditional assembly, includes, and register aliases.
 * **A loader with libraries**: `.import std.math as math`, a library search path,
   `.masm` or binary `.mlwso`, cycle detection, and a load-time verifier.
+  A program ships as one executable (`mlwsvm bundle`).
   Libraries ship as one versioned archive (`mlwsvm lib build`), state which
   versions of each other they need (`.requires json5, "^1.2"`), and keep
   their internal modules private. A running program can load more modules by
@@ -189,6 +190,7 @@ make release-check           # all of the above, longer fuzzing, and the compile
 ./mlwsvm run -L ~/mlws-libs prog.masm   # find imports there too (or --lib-path, $MLWSVM_PATH)
 ./mlwsvm lib build json5/                # a versioned library archive, json5-1.2.0.mlwsl
 ./mlwsvm lib list -L ~/mlws-libs         # the archives on the library path
+./mlwsvm bundle -o app --jit on app.masm # one executable: the VM, the program and all it imports
 ./mlwsvm run examples/http_server.masm 8080     # a supervised HTTP server: a process per connection
 ./mlwsvm run --max-frames 1000000 --quota heap=256M prog.masm   # VM options (docs/TOOLING.md)
 ./mlwsvm run --opt 2 prog.masm         # optimize every module as it loads (docs/OPTIMIZER.md)
@@ -285,7 +287,7 @@ passes its tests.
 src/main.c      the mlwsvm command line
 src/core/       types, opcode table (opcodes.def), instruction codec, shared checker, disassembler, arithmetic semantics, Unicode, version constraints
 src/asm/        lexer, constant expressions, preprocessor (macros etc.), assembler
-src/loader/     .mlwso module and .mlwsl library archive reader/writer
+src/loader/     .mlwso module, .mlwsl library archive and bundle reader/writer
 src/vm/         loader/linker, verifier, module cache, processes and memory, coroutines, scheduler, interpreter, JIT (jit.inc, with jit_a64.inc and jit_x64.inc), extensions, VM options, run helper
 src/heap/       garbage collector, heap objects (strings, bytes, arrays, structs, lists, maps), BigInt and decimal, message copying
 src/opt/        the optimizer: its working form of a function, the passes, the report

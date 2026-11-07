@@ -162,6 +162,11 @@ bool plat_list_dir(const char *path, char ***names, size_t *n) {
     return true;
 }
 
+bool plat_make_executable(const char *path) {
+    (void)path; /* the name says it */
+    return true;
+}
+
 char *plat_exe_path(const char *argv0) {
     wchar_t buf[32768];
     DWORD n = GetModuleFileNameW(NULL, buf, 32768);

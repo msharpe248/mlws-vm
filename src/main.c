@@ -3,9 +3,12 @@
 #include "asm/asm.h"
 #include "core/disasm.h"
 #include "core/version.h"
+#include "loader/bundle.h"
 #include "platform/platform.h"
 #include "tools/tools.h"
 #include "vm/run.h"
+
+static Bundle *g_bundle; /* the program in this executable, or NULL */
 
 static void usage(FILE *f) {
     fputs("usage: mlwsvm <command> [options]\n"
@@ -45,7 +48,10 @@ static void usage(FILE *f) {
           "  test [-L dir] [-v] [VM options] [paths...]                  run assembly tests (default: tests/)\n"
           "  doc  isa|natives [-o file]                                  generate reference docs\n"
           "  ext  list|install|remove|allow-ffi|deny-ffi [--dir D] ...  manage trusted native code\n"
-          "  lib  build DIR [-o FILE] | info FILE.mlwsl | list           library archives\n"
+          "  lib  build DIR [-o FILE] | info FILE.mlwsl | list           library archives\n",
+          f);
+    fputs("  bundle [-L dir] [-o out] [--with MODULE]... [VM options] file.(masm|mlwso)\n"
+          "                                        one executable: this mlwsvm, the program and all it imports\n"
           "  opt  [-L dir] [-O0|-O1|-O2|-O3] [--passes LIST] [-o out.mlwso] [-S] [--report FILE|-] [-v] file.(masm|mlwso)\n"
           "                                        optimize a module, with a report (--list: the passes)\n"
           "  bindgen [-l LIB] [-p PREFIX] [-o OUT] [--all] header.h       FFI declarations from a C header (clang)\n"
@@ -83,6 +89,7 @@ static void env_init(const char *argv0) {
         }
     }
     char *exe = plat_exe_path(argv0);
+    g_env.exe = exe;
     if (exe) {
         char *dir = path_dirname(exe);
         char *lib = path_join(dir, "lib");
@@ -99,7 +106,6 @@ static void env_init(const char *argv0) {
             free(lib);
         }
         free(dir);
-        free(exe);
     }
 }
 
@@ -191,12 +197,24 @@ static int cmd_run(int argc, char **argv) {
         }
     }
     VEC_FREE(opts);
+    if (g_bundle) {
+        vm->bundle = g_bundle;
+        for (uint32_t i = 0; i + 1 < g_bundle->nopts; i += 2) {
+            MlwsError err;
+            if (!vm_set_option(vm, g_bundle->opts[i], g_bundle->opts[i + 1], &err)) {
+                fprintf(stderr, "%s: %s\n", g_bundle->path, err.msg);
+                vm_free(vm);
+                return 2;
+            }
+        }
+        vm_options_from_env(vm); /* the environment still has the last word */
+    }
     /* `--also b.masm args...` starts another program in the same run (vm_run_files). */
     VEC(ProgSpec) progs = {0};
     ProgSpec first = {file, 0, prog_argv};
     VEC_PUSH(progs, first);
     for (int i = 0; i < prog_argc; i++) {
-        if (strcmp(prog_argv[i], "--also")) {
+        if (g_bundle || strcmp(prog_argv[i], "--also")) {
             progs.v[progs.n - 1].argc++;
             continue;
         }
@@ -427,13 +445,33 @@ static int cmd_dis(int argc, char **argv) {
     return rc;
 }
 
+/* A program bundled into this executable: its command line is all the
+ * program's, as if given to `run` after the file. */
+static int run_bundle(int argc, char **argv) {
+    char **args = xcalloc((size_t)argc + 1, sizeof *args);
+    args[0] = g_bundle->root;
+    for (int i = 1; i < argc; i++) args[i] = argv[i];
+    int rc = cmd_run(argc, args);
+    free(args);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     plat_stdio_init();
+    env_init(argv[0]);
+    if (g_env.exe) {
+        MlwsError err;
+        g_bundle = bundle_read(g_env.exe, &err);
+        if (!g_bundle && err.code[0]) {
+            fprintf(stderr, "error[%s]: %s\n", err.code, err.msg);
+            return 65;
+        }
+        if (g_bundle) return run_bundle(argc, argv);
+    }
     if (argc < 2) {
         usage(stderr);
         return 2;
     }
-    env_init(argv[0]);
     const char *cmd = argv[1];
     int n = take_lib_opts(argc - 2, argv + 2, !strcmp(cmd, "run"));
     if (strcmp(cmd, "run")) finish_libpaths();
@@ -448,6 +486,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "doc")) rc = tool_doc(n, args);
     else if (!strcmp(cmd, "ext")) rc = tool_ext(n, args, &g_env);
     else if (!strcmp(cmd, "lib")) rc = tool_lib(n, args, &g_env);
+    else if (!strcmp(cmd, "bundle")) rc = tool_bundle(n, args, &g_env);
     else if (!strcmp(cmd, "opt")) rc = tool_opt(n, args, &g_env);
     else if (!strcmp(cmd, "bindgen")) rc = tool_bindgen(n, args);
     else if (!strcmp(cmd, "fuzz")) rc = tool_fuzz(n, args);

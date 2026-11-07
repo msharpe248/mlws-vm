@@ -12,7 +12,7 @@
 #include "../platform/platform.h"
 #include "../heap/numeric.h"
 #include "../core/version.h"
-#include "../loader/library.h"
+#include "../loader/bundle.h"
 #include "vm.h"
 
 static char *module_rel_path(const char *name) {
@@ -588,6 +588,17 @@ static LModule *require(VM *vm, const char *name, const Home *home, MlwsError *e
     void *v;
     char *path = NULL;
     const Home *searched = home;
+    int in_bundle = vm->bundle ? bundle_find(vm->bundle, name) : -1;
+    if (in_bundle >= 0) { /* its requirements were met when it was bundled */
+        if (smap_get(&vm->modmap, name, &v) && v) return loaded_or_cycle(vm, v, err);
+        Module *m = bundle_module(vm->bundle, (uint32_t)in_bundle, err);
+        if (!m) return NULL;
+        StrBuf p = {0};
+        sb_printf(&p, "%s(%s)", vm->bundle->path, name);
+        LModule *lm = register_module(vm, m, p.s, NULL, NULL, true, err);
+        sb_free(&p);
+        return lm;
+    }
     if (home) {
         char *key = module_key(home, name);
         bool had = smap_get(&vm->modmap, key, &v) && v;
@@ -718,6 +729,14 @@ bool vm_load_roots(VM *vm, const char *const *paths, int n, LModule **out, MlwsE
     const Home **homes = xcalloc((size_t)n + 1, sizeof *homes);
     bool ok = true;
     for (int i = 0; i < n; i++) out[i] = NULL;
+    if (vm->bundle) { /* paths[0] is the root module's name (main.c) */
+        plat_lock(vm->mods_lock);
+        out[0] = require(vm, paths[0], NULL, &errs[0]);
+        plat_unlock(vm->mods_lock);
+        free(ms);
+        free(homes);
+        return out[0] != NULL;
+    }
     for (int i = 0; i < n && ok; i++) {
         if (!file_exists(paths[i])) {
             mlws_err(&errs[i], "E_LOAD_NOT_FOUND", "cannot open '%s'", paths[i]);

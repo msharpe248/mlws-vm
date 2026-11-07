@@ -18,6 +18,7 @@ differential fuzzer and the checks to run before a release.
 | Native code | `mlwsvm ext list\|install\|remove\|allow-ffi\|deny-ffi` ([EXTENDING.md](EXTENDING.md)) | — |
 | Bindings generator | `mlwsvm bindgen [-l LIB] [-p PREFIX] [-o OUT] header.h` | — |
 | Libraries | `mlwsvm lib build DIR \| info FILE \| list` | — |
+| One executable | `mlwsvm bundle [-o out] [--with MODULE] [VM options] prog.masm` | — |
 | Optimizer | `mlwsvm opt -O2 prog.masm`, or `mlwsvm run --opt 2 prog.masm` ([OPTIMIZER.md](OPTIMIZER.md)) | none |
 | JIT | `mlwsvm run --jit on [--jit-report -] prog.masm` ([JIT.md](JIT.md)) | none |
 | Differential fuzzer | `mlwsvm fuzz [-n N \| --time S]`, `--reduce FILE` | — |
@@ -112,6 +113,37 @@ module must exist, and the archive goes to `name-version.mlwsl` unless `-o`
 says otherwise. To use it, put it in a directory of the library path (`-L`,
 `--lib-path`, `$MLWSVM_PATH`, or `lib/` next to `mlwsvm`) or in the
 program's directory; several versions can sit side by side. A damaged archive on the path is reported and ignored.
+
+## One executable: `mlwsvm bundle`
+
+```
+$ mlwsvm bundle -o wc --opt 2 --jit on examples/wordcount.masm
+wc: wordcount, 1 module, 1288493 bytes
+$ ./wc
+```
+
+`bundle` loads a program as `run` would, with all it imports from the program's
+directory, the library path and library archives, and writes one executable:
+a copy of `mlwsvm` with the modules after it. It needs nothing beside it: not
+`lib/`, the assembler or the module cache. Its whole command line is the
+program's (`os.args`).
+
+* **VM options** given to `bundle` are kept and used at every start, with
+  `MLWSVM_<NAME>` still overriding them. `--opt` is the exception: the
+  optimizer runs when bundling, on the modules that go into the file.
+* **`--with MODULE`** adds a module that the program only asks for with
+  `module.load`. A `module.load` of a module that is not in the bundle looks on
+  the library path, as usual.
+* **Modules are found by name**, so two modules of the same name from
+  different directories cannot be in one bundle.
+* **Not bundled:** native extensions (`lib/ext`) and the C libraries an
+  `.extern` names. They are looked for as usual.
+* **macOS:** the result runs, but `codesign --verify` reports that it fails
+  strict validation, since the program comes after the signed part. A bundle
+  cannot be notarized.
+
+A bundle is for the machine type and system of the `mlwsvm` that wrote it.
+The layout is in [BINARY_FORMAT.md](BINARY_FORMAT.md#bundles).
 
 ## VM options
 
