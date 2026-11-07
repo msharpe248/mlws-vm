@@ -67,6 +67,8 @@ base:
   quotas on heap, raw memory, mailbox size and CPU. A waiting process takes
   about 4 KB, and spawning, waking and ending one takes one to two
   microseconds.
+* **Processes across machines** (`std.node`): VMs connect as nodes, `send` works on
+  a pid on another node, and processes can be spawned, found and watched there.
 * **Files, commands, the OS and the network** (`std.fs`, `std.os`, `std.net`,
   and TLS through the system's OpenSSL, loaded when asked for): a
   process waiting on a pipe or socket waits in the poller (kqueue/epoll) like it

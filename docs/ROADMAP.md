@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M60
+## Milestones M11–M61
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -82,6 +82,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M58 TLS** (done) | `tls.connect` and `tls.accept` put TLS on a connection, which is then read and written as any other, its process waiting in the poller. A client always checks the certificate against the host name and the authorities given; no call turns that off. The system's OpenSSL or LibreSSL is loaded when first asked, by name, with no headers, so `mlwsvm` needs it neither to build nor to run | `tests/net/tls`: lines, a megabyte each way, certificates for another name and from another authority refused, and a peer that speaks no TLS, between processes in one VM |
 | **M59 Regular expressions** (done) | `regex.*`: a Pike VM of its own, so a pattern's cost is linear in the text whatever it is, and untrusted patterns are safe; it needs no native code, so sandboxes have it. Unicode classes, leftmost-first matching as in Perl, groups and names, replacing and splitting. Its work counts against the instruction quota | `tests/text/regex`: syntax, flags, Unicode, groups, replacing, invalid UTF-8, each refusal, the classic blow-ups on 100,000 characters, and a quota ending a match. Compared against Python's `re` on 18,000 random patterns and texts: the same whole match in all of them |
 | **M60 Capabilities** (done) | `cap.restrict`, and `--cap` for a whole program: what a process may read, write, connect to, listen on, run and see of the environment, by name, inherited by its children, which can only narrow it. What is not granted is denied, foreign code and loading modules too. Paths are judged as they resolve | `tests/os/caps`: each kind allowed and denied, `..` and a path through a missing directory, narrowing, a wider grant dropped, inheritance, and the spawner untouched |
+| **M61 Distribution** (done) | `std.node`: VMs connected as nodes, with `send` working on pids that name a node, remote spawn, a name lookup and monitors, and a watcher told if a connection goes. A pid's top 16 bits are its node. The connections are MLWSVM processes, in `lib/std/node.masm`; C does the routing in `send`, the encoding of values, and the HMAC challenge that admits a peer. Traffic is not encrypted | `tests/native/node_values`: every kind of value through the encoding, what cannot be sent, and random, mutated and truncated bytes giving only `E_PARSE`. `make check-tools`: two VMs, with a wrong cookie refused, a lookup, a message there and back, a spawn, a monitor, a function that does not exist, and a node going away |
 
 ## 1. Calling existing libraries (M10: done)
 

@@ -1,0 +1,30 @@
+; Node 2 of the pair check_tools.sh starts: a registered process that doubles
+; numbers, and one that ends this VM when told. It prints the port it took.
+.import std.node as node
+.import worker
+.func doubler
+    ncall "proc.register" ("doubler", PID)
+1:  recv R0
+    mov I1, R0[0]
+    mov I2, R0[1]
+    mul I3, I2, 2
+    send I1, I3
+    jmp 1b
+.endf
+.func stopper
+    ncall "proc.register" ("stopper", PID)
+    recv I0
+    ncall "os.exit" (0)
+    ret
+.endf
+.func main
+    call node.start (2, "the cookie", 0) -> (I1)
+    spawn doubler
+    spawn stopper
+    sleep 100                          ; (both registered by now)
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+1:  sleep 1000
+    jmp 1b
+.endf

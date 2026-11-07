@@ -230,6 +230,7 @@ The heap object types map directly onto scripting-language values
 | A fixed-size typed array | `anew.f64 R0, n`; `R0[I1]` |
 | A dynamic list / array | `lnew`, `lpush`, `lpop`, `lins`, `ldel`, `R0[I1]`, `len` |
 | A dictionary / object literal | `mnew`, `mset`, `mget` (with a default), `mhas`, `mdel`, `mkeys` |
+| Processes on other machines (Erlang's nodes) | `std.node`: `connect`, `spawn`, `whereis`, `monitor`, and `send` on the pids they give ([STDLIB.md](STDLIB.md#other-vms-stdnode)) |
 | Regular expressions | `regex.compile`, `regex.find`, `regex.replace`, ... (linear time, Unicode: [STDLIB.md](STDLIB.md#regular-expressions)) |
 | Sorting and searching a list | `ncall "list.sort" (R0, cmp)` with a comparator closure (or `null` for natural order); `list.bsearch` |
 | Set operations | maps as sets: `map.union`, `map.intersect`, `map.difference` |

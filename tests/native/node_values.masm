@@ -1,0 +1,191 @@
+; What crosses between nodes: every kind of value keeps its type and contents
+; through node.frame and node.decode, and what cannot cross raises E_TYPE. What
+; arrives from the network is not trusted, so bytes that are random, or a good
+; frame with bytes changed or cut short, must give E_PARSE or a value, and never
+; anything worse: a length is checked against what is left, and depth is bounded.
+.include "std/test.inc"
+
+.struct Pair
+    left: i64
+    right: ref
+.ends
+
+; A frame's value after a trip: the frame without its 4-byte length.
+.func body(ref frame) -> ref
+    len I1, frame
+    sub I2, I1, 4
+    bufnew R2, I2
+    mov I3, 0
+1:  bge I3, I2, 2f
+    add I4, I3, 4
+    mov I5, frame[I4]
+    mov R2[I3], I5
+    inc I3
+    jmp 1b
+2:  ret R2
+.endf
+
+.func trip(ref v) -> ref
+    ncall "node.frame" (v) -> (R1)
+    call body (R1) -> (R2)
+    ncall "node.decode" (R2) -> (R3)
+    ret R3
+.endf
+
+; A decode that may fail: 1 if it gave a value, 0 if E_PARSE or E_TYPE.
+.func try_decode(ref bytes) -> i64
+.try h
+    ncall "node.decode" (bytes) -> (R1)
+.endtry
+    ret 1
+h:
+    catch R2
+    strcmp I1, R2->Error.code, "E_PARSE"
+    bz I1, 1f
+    strcmp I1, R2->Error.code, "E_TYPE"
+    ASSERT_EQ I1, 0
+1:  ret 0
+.endf
+
+; What sending this raises, or null.
+.func send_error(ref v) -> ref
+.try h
+    ncall "node.frame" (v) -> (R1)
+.endtry
+    ret null
+h:
+    catch R2
+    mov R3, R2->Error.code
+    ret R3
+.endf
+
+.func f
+    ret
+.endf
+
+.func main
+    ; Every kind, inside a list so that each keeps its tag.
+    lnew R0
+    lpush R0, 42
+    lpush R0, -1
+    lpush R0, 2.5
+    lpush R0, "text"
+    mov R20, null
+    lpush R0, R20
+    lpush R0, 12345678901234567890n
+    lpush R0, 19.99d
+    bufnew R1, 2
+    mov R1[0], 200
+    lpush R0, R1
+    anew.f64 R2, 2
+    mov R2[1], 1.5
+    lpush R0, R2
+    new R3, Pair
+    mov R3->Pair.left, 7
+    mov R3->Pair.right, "right"
+    lpush R0, R3
+    mnew R4
+    mset R4, "k", 1
+    mset R4, 5, "v"
+    lpush R0, R4
+    lnew R5
+    lpush R5, R0
+    call trip (R5) -> (R6)
+    mov R7, R6[0]
+    len I0, R7
+    ASSERT_EQ I0, 11
+    mov I1, R7[0]
+    ASSERT_EQ I1, 42
+    mov I1, R7[1]
+    ASSERT_EQ I1, -1
+    mov F0, R7[2]
+    ASSERT_EQ F0, 2.5
+    mov R8, R7[3]
+    strcmp I1, R8, "text"
+    ASSERT_EQ I1, 0
+    mov R8, R7[4]
+    ASSERT_FALSE R8, r
+    mov R8, R7[5]
+    typeof I1, R8
+    ASSERT_EQ I1, 8
+    tostr R9, R8
+    strcmp I1, R9, "12345678901234567890"
+    ASSERT_EQ I1, 0
+    mov R8, R7[6]
+    tostr R9, R8
+    strcmp I1, R9, "19.99"
+    ASSERT_EQ I1, 0
+    mov R8, R7[7]
+    mov I1, R8[0]
+    ASSERT_EQ I1, 200
+    mov R8, R7[8]
+    mov F0, R8[1]
+    ASSERT_EQ F0, 1.5
+    mov R8, R7[9]
+    mov I1, R8->Pair.left
+    ASSERT_EQ I1, 7
+    mov R9, R8->Pair.right
+    strcmp I1, R9, "right"
+    ASSERT_EQ I1, 0
+    mov R8, R7[10]
+    mget I1, R8, "k"
+    ASSERT_EQ I1, 1
+    mget R9, R8, 5
+    strcmp I1, R9, "v"
+    ASSERT_EQ I1, 0
+
+    ; What is of this VM alone stays.
+    closure f -> (R10)
+    lnew R11
+    lpush R11, R10
+    call send_error (R11) -> (R12)
+    strcmp I1, R12, "E_TYPE"
+    ASSERT_EQ I1, 0
+    lnew R13                           ; a list that holds itself
+    lpush R13, R13
+    call send_error (R13) -> (R12)
+    strcmp I1, R12, "E_TYPE"
+    ASSERT_EQ I1, 0
+
+    ; Random bytes.
+    mov I2, 0
+1:  ncall "random.int" (0, 40) -> (I3)
+    ncall "random.bytes" (I3) -> (R14)
+    call try_decode (R14) -> (I4)
+    inc I2
+    blt I2, 3000, 1b
+
+    ; A good frame, with a byte changed, again and again.
+    ncall "node.frame" (R5) -> (R15)
+    call body (R15) -> (R16)
+    len I5, R16
+    mov I2, 0
+2:  bufnew R17, I5
+    bufcat R17, R16
+    ncall "random.int" (0, I5) -> (I6)
+    sub I7, I5, 1
+    ble I6, I7, 3f
+    mov I6, I7
+3:  ncall "random.int" (0, 255) -> (I8)
+    add I9, I6, I5
+    mov R17[I9], I8
+    call try_decode (R17) -> (I4)
+    inc I2
+    blt I2, 3000, 2b
+
+    ; Cut short, at every length.
+    mov I2, 0
+4:  bge I2, I5, 6f
+    bufnew R18, I2
+    mov I3, 0
+5:  bge I3, I2, 7f
+    mov I6, R16[I3]
+    mov R18[I3], I6
+    inc I3
+    jmp 5b
+7:  call try_decode (R18) -> (I4)
+    ASSERT_EQ I4, 0
+    inc I2
+    jmp 4b
+6:  ret 0
+.endf

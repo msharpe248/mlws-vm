@@ -454,6 +454,49 @@ answer to a later call. A call to a process that does not exist raises
 `E_DEADLOCK`, as `recv` does, and so does a process calling itself. Requests and replies are references (wrap
 numbers in a list or struct), deep-copied like any message.
 
+### Other VMs (`std.node`)
+
+```asm
+.import std.node as node
+    call node.start (1, "cookie", 4370) -> (I0)             ; this VM is node 1
+    call node.connect ("db.local", 4370, "cookie") -> (I1)  ; returns its number
+    call node.whereis (I1, "logger") -> (I2)                ; a registered process there
+    send I2, "hello"                                        ; send, as to any process
+    call node.spawn (I1, "worker", "serve", R0) -> (I3)     ; serve(R0), over there
+    call node.monitor (I3)                                  ; told when it ends
+```
+
+A pid may name a node: its top 16 bits are the node's number, and `send` to it
+goes there. Messages between two processes keep their order, as on one VM. A
+plain pid (`PID`) means this VM, so give others `node.self(PID)`, the same pid with
+this node's number in it. `node.of(pid)` says which node a pid names.
+
+| Function | Does |
+|---|---|
+| `start(number, cookie, port)` | number this VM (1 to 65535, unique in the cluster) and accept connections on a port (0: any); returns it |
+| `connect(host, port, cookie)` | connect to a node, and return its number; `E_NODE` if the connection or the cookie fails |
+| `connected(number)` | whether a node is connected |
+| `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
+| `spawn(number, module, function, arg)` | run an exported function of one reference there; its pid, or 0 |
+| `monitor(pid)` | `["down", pid, code]` comes when it ends: code null for a normal end, `"E_NODE_DOWN"` if the connection goes first |
+| `self(pid)` | a pid as other nodes can use it |
+
+* **What crosses** is what a message can be: numbers, strings, byte buffers,
+  arrays, lists, maps, BigInts, decimals and structs, whose module must be loaded
+  at the other end. Closures, handles, coroutines and pointers cannot (`E_TYPE`), nor
+  a value with a cycle.
+* **A message to a node that is not connected is dropped,** as one to a finished
+  process is. So is one that does not arrive because the connection fails. Use
+  `monitor`, and replies, for what must be known.
+* **Security.** Two nodes connect once each proves it knows the cookie, with an
+  HMAC over the other's random nonce, marked with which end it is. After that, a
+  node may message any process and run any exported function: the cookie is the
+  whole of the boundary, as in Erlang. **Traffic is not encrypted**, so a cluster
+  belongs on a network you trust, or inside a VPN. A restricted process
+  (`cap.restrict`) can take no part in routing, though it can still `send`.
+* `link`, `monitor` and `proc.call` work on this VM's pids; use `node.monitor` and
+  messages between nodes.
+
 ### Supervisors (`std.supervisor`)
 
 ```asm

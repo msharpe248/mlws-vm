@@ -1,0 +1,370 @@
+; std.node - processes on other VMs: send to them, spawn on them, watch them.
+;
+;     .import std.node as node
+;     call node.start (1, "secret", 4370) -> (I0)     ; this VM is node 1, listening
+;     call node.connect ("db.local", 4370, "secret") -> (I1)   ; its number
+;     call node.spawn (I1, "worker", "serve", R0) -> (I2)      ; a pid over there
+;     send I2, "hello"                                ; send works on it as on any pid
+;     call node.whereis (I1, "logger") -> (I3)
+;     call node.monitor (I2)                          ; ["down", pid, code] when it ends
+;     call node.self (PID) -> (I4)                    ; a pid others can use
+;
+; A pid with a node's number in its top 16 bits works with send anywhere in the
+; cluster; a plain pid means this VM. A VM has one number, from 1 to 65535,
+; unique in its cluster. Two nodes are connected by one TCP connection, once
+; each has proved it knows the cookie: each sends a nonce and answers the other's
+; with an HMAC of it, marked with which end it is. Traffic after that is not
+; encrypted, so a cluster belongs on a network you trust. A connected node may
+; message any process and spawn any exported function, as in Erlang: the cookie
+; is the whole of the boundary.
+;
+; A connection is two processes. The reader takes frames from the socket and
+; acts on them. The writer takes what the VM routes to this node, as [pid,
+; value], and what this module asks for, and writes frames. Frames are lists:
+;     [0, pid, value]                      a message
+;     [1, reply_to, module, function, args]  spawn function(args), args one value
+;     [2, reply_to, name]                  the pid registered as name, or 0
+;     [3, watcher, pid]                    say when pid ends
+; A watcher gets ["down", pid, code], code being null for a normal end, or
+; "E_NODE_DOWN" if the connection goes first.
+
+.module std.node
+.export start, connect, spawn, whereis, monitor, self, node_of, connected
+
+.const CONNECT_TIMEOUT = 5000
+
+; ---- this VM as a node ----
+
+; Number this VM, and accept connections on a port (0: any free one). Returns
+; the port.
+.func start(i64 number, ref cookie, i64 port) -> i64
+    ncall "node.set_self" (number)
+    spawn acceptor (cookie, port, PID)
+    recv I3
+    ret I3
+.endf
+
+.func acceptor(ref cookie, i64 port, i64 parent)
+    ncall "net.listen" ("", port) -> (R1)
+    ncall "net.port" (R1) -> (I2)
+    send parent, I2
+1:  ncall "net.accept" (R1) -> (R2)
+    ncall "fs.give" (R2) -> (I3)
+    spawn answer (I3, cookie)
+    jmp 1b
+.endf
+
+; A pid as other nodes can use it.
+.func self(i64 pid) -> i64
+    ncall "node.global" (pid) -> (I1)
+    ret I1
+.endf
+
+; The node a pid names (0: this one).
+.func node_of(i64 pid) -> i64
+    ncall "node.of" (pid) -> (I1)
+    ret I1
+.endf
+
+; Whether a node is connected.
+.func connected(i64 number) -> i64
+    ncall "node.route" (number) -> (I1)
+    bz I1, 1f
+    ret 1
+1:  ret 0
+.endf
+
+; ---- connecting ----
+
+; Connect to a node. Returns its number; E_NODE if it could not be done. The
+; connection's processes do the asking, so nothing comes to this one's mailbox.
+.func connect(ref host, i64 port, ref cookie) -> i64
+    spawn dial (host, port, cookie) -> (I2)
+    ncall "proc.call" (I2, "connect", 15000) -> (R2)
+    mov I3, R2[0]
+    bz I3, 1f
+    ret I3
+1:  new R3, Error
+    mov R3->Error.code, "E_NODE"
+    mov R3->Error.message, "could not connect to the node"
+    throw R3
+.endf
+
+.func dial(ref host, i64 port, ref cookie)
+    recv R2                            ; the Call
+    lnew R3
+.try failed
+    ncall "net.connect" (host, port, CONNECT_TIMEOUT) -> (R4)
+    call handshake (R4, cookie, "client", "server") -> (I2)
+    call carry (R4, I2)
+.endtry
+    lpush R3, I2
+    ncall "proc.reply" (R2, R3)
+    call read_frames (R4, I2)
+    ret
+failed:
+    catch R5
+    lpush R3, 0
+    ncall "proc.reply" (R2, R3)
+    ret
+.endf
+
+.func answer(i64 ticket, ref cookie)
+    ncall "fs.take" (ticket) -> (R1)
+    call handshake (R1, cookie, "server", "client") -> (I2)
+    call carry (R1, I2)
+    call read_frames (R1, I2)
+    ret
+.endf
+
+; Each end sends [number, nonce], then proves the cookie against the other's
+; nonce in its own role. Returns the peer's number.
+.func handshake(ref conn, ref cookie, ref me, ref them) -> i64
+    ncall "random.bytes" (32) -> (R4)
+    ncall "node.self" () -> (I0)
+    lnew R5
+    lpush R5, I0
+    lpush R5, R4
+    ncall "node.frame" (R5) -> (R6)
+    ncall "fs.write" (conn, R6)
+    ncall "net.read_frame" (conn) -> (R7)
+    bz R7, gone
+    ncall "node.decode" (R7) -> (R8)
+    mov I1, R8[0]
+    mov R9, R8[1]
+    ncall "node.proof" (cookie, me, R9) -> (R10)
+    lnew R11
+    lpush R11, R10
+    ncall "node.frame" (R11) -> (R12)
+    ncall "fs.write" (conn, R12)
+    ncall "net.read_frame" (conn) -> (R13)
+    bz R13, gone
+    ncall "node.decode" (R13) -> (R14)
+    mov R15, R14[0]
+    ncall "node.proof_ok" (cookie, them, R4, R15) -> (I2)
+    bz I2, refused
+    ret I1
+gone:
+    new R16, Error
+    mov R16->Error.code, "E_NODE"
+    mov R16->Error.message, "the peer went away"
+    throw R16
+refused:
+    new R16, Error
+    mov R16->Error.code, "E_NODE"
+    mov R16->Error.message, "the peer does not know the cookie"
+    throw R16
+.endf
+
+; The writer, on its own handle of the connection, and the route to it.
+.func carry(ref conn, i64 peer)
+    ncall "net.split" (conn) -> (R2)
+    ncall "fs.give" (R2) -> (I2)
+    spawn writer (I2, PID) -> (I3)
+    ncall "node.attach" (peer, I3)
+    ret
+.endf
+
+; What the VM routes here, as [pid, value], and what this module asks for, as a
+; whole frame [kind, ...] with a null at its head. Ends with the reader, telling
+; the watchers it has.
+.func writer(i64 ticket, i64 reader)
+    ncall "fs.take" (ticket) -> (R0)
+    monitor reader
+    lnew R1                            ; [watcher, pid, ...]: who to tell
+1:  recv R2
+    isa I2, R2, Down
+    bnz I2, ended
+    len I3, R2
+    beq I3, 2, message
+    mov I4, R2[1]                      ; a request: [null, kind, ...]
+    bne I4, 3, send_request
+    mov I5, R2[2]                      ; (a monitor: remember it)
+    mov I6, R2[3]
+    lpush R1, I5
+    lpush R1, I6
+send_request:
+    ldel R2, 0
+    ncall "node.frame" (R2) -> (R3)
+    ncall "fs.write" (R0, R3)
+    jmp 1b
+message:
+    mov I4, R2[0]
+    lnew R4
+    lpush R4, 0
+    lpush R4, I4
+    ncall "node.frame_value" (R4, R2) -> (R3)
+    ncall "fs.write" (R0, R3)
+    jmp 1b
+ended:
+    len I3, R1
+    mov I4, 0
+2:  bge I4, I3, 3f
+    mov I5, R1[I4]
+    add I6, I4, 1
+    mov I7, R1[I6]
+    lnew R5
+    lpush R5, "down"
+    lpush R5, I7
+    lpush R5, "E_NODE_DOWN"
+    send I5, R5
+    add I4, I4, 2
+    jmp 2b
+3:  ncall "fs.close" (R0)
+    ret
+.endf
+
+.func read_frames(ref conn, i64 peer)
+.try lost
+1:  ncall "net.read_frame" (conn) -> (R2)
+    bz R2, closed
+    ncall "node.decode" (R2) -> (R3)
+    mov I2, R3[0]
+    bnz I2, 2f
+    ldel R3, 0                         ; [pid, value]
+    ncall "node.deliver" (R3)
+    jmp 1b
+2:  beq I2, 1, 3f
+    beq I2, 2, 4f
+    beq I2, 3, 5f
+    jmp 1b
+3:  spawn do_spawn (R3)
+    jmp 1b
+4:  mov I3, R3[1]
+    mov R4, R3[2]
+    ncall "proc.whereis" (R4) -> (I4)
+    bz I4, 6f
+    ncall "node.global" (I4) -> (I4)
+6:  lnew R5
+    lpush R5, I4
+    send I3, R5
+    jmp 1b
+5:  mov I3, R3[1]
+    mov I4, R3[2]
+    spawn watch (I3, I4)
+    jmp 1b
+.endtry
+closed:
+    ncall "node.attach" (peer, 0)
+    ret
+lost:
+    catch R5
+    ncall "node.attach" (peer, 0)
+    ret
+.endf
+
+; [1, reply_to, module, function, args]: spawned here, its pid sent back.
+.func do_spawn(ref frame)
+    mov I1, frame[1]
+    mov R1, frame[2]
+    mov R2, frame[3]
+    mov R3, frame[4]
+.try failed
+    ncall "node.function" (R1, R2) -> (R4)
+    spawni R4 (R3) -> (I2)
+.endtry
+    ncall "node.global" (I2) -> (I2)
+    lnew R5
+    lpush R5, I2
+    send I1, R5
+    ret
+failed:
+    catch R6
+    lnew R5
+    lpush R5, 0
+    send I1, R5
+    ret
+.endf
+
+; Says when a process here ends, to a watcher on another node.
+.func watch(i64 watcher, i64 pid)
+    and I2, pid, 0xFFFFFFFFFFFF        ; (its plain pid: monitor works here)
+    monitor I2
+    recv R0
+    ncall "node.global" (I2) -> (I2)
+    lnew R1
+    lpush R1, "down"
+    lpush R1, I2
+    mov R2, R0->Down.code
+    lpush R1, R2
+    send watcher, R1
+    ret
+.endf
+
+; ---- asking another node ----
+
+; A request gets an answer through a process of its own, so that what the caller
+; has in its mailbox stays there.
+.func ask(i64 peer, ref frame) -> ref
+    spawn asker (peer, frame) -> (I2)
+    ncall "proc.call" (I2, "ask", 10000) -> (R3)
+    ret R3
+.endf
+
+.func asker(i64 peer, ref frame)
+    recv R1                            ; the Call
+    ncall "node.route" (peer) -> (I2)
+    bz I2, none
+    ncall "node.global" (PID) -> (I3)
+    mov R2, frame
+    mov R2[2], I3                      ; [null, kind, reply_to, ...]
+    send I2, R2
+    recv R3
+    ncall "proc.reply" (R1, R3)
+    ret
+none:
+    lnew R3
+    lpush R3, 0
+    ncall "proc.reply" (R1, R3)
+    ret
+.endf
+
+; Run a module's exported function, with one reference, on a node. Returns its
+; pid there, or 0 if that could not be done.
+.func spawn(i64 peer, ref module, ref function, ref arg) -> i64
+    lnew R4
+    lpush R4, null
+    lpush R4, 1
+    lpush R4, 0
+    lpush R4, module
+    lpush R4, function
+    lpush R4, arg
+    call ask (peer, R4) -> (R5)
+    mov I6, R5[0]
+    ret I6
+.endf
+
+; The pid registered under a name on a node, or 0.
+.func whereis(i64 peer, ref name) -> i64
+    lnew R2
+    lpush R2, null
+    lpush R2, 2
+    lpush R2, 0
+    lpush R2, name
+    call ask (peer, R2) -> (R3)
+    mov I4, R3[0]
+    ret I4
+.endf
+
+; Ask to be told when a process on another node ends: ["down", pid, code]
+; comes to this process, code null for a normal end, or "E_NODE_DOWN" if the
+; connection goes first.
+.func monitor(i64 pid)
+    ncall "node.of" (pid) -> (I1)
+    ncall "node.route" (I1) -> (I2)
+    ncall "node.global" (PID) -> (I3)
+    lnew R0
+    lpush R0, null
+    lpush R0, 3
+    lpush R0, I3
+    lpush R0, pid
+    bz I2, 1f
+    send I2, R0
+    ret
+1:  lnew R1
+    lpush R1, "down"
+    lpush R1, pid
+    lpush R1, "E_NODE_DOWN"
+    send PID, R1
+    ret
+.endf

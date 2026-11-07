@@ -1,0 +1,9 @@
+; Spawned on another node by tests/tools/_node/one.masm: answers once.
+.export serve
+.func serve(ref who)
+    mov I0, who[0]
+    recv R1
+    strcat R2, "got ", R1
+    send I0, R2
+    ret
+.endf

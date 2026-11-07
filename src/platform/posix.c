@@ -127,6 +127,12 @@ bool plat_make_executable(const char *path) { return chmod(path, 0755) == 0; }
 
 int plat_fd_socket(int fd) { return fd; }
 
+int plat_sock_dup(int fd, int *err) {
+    int d = dup(fd);
+    if (d < 0) *err = errno;
+    return d;
+}
+
 long plat_stdin_read(void *buf, size_t n, uint64_t timeout_ns) {
     if (timeout_ns != UINT64_MAX) {
         struct pollfd pf = {0, POLLIN, 0};

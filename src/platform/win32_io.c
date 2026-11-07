@@ -118,6 +118,30 @@ int plat_file_open(const char *path, int mode, int *err) {
  * pipe's free space can ever be: write at most this much at once. */
 #define PIPE_WRITE_MAX 16384
 
+int plat_sock_dup(int fd, int *err) {
+    WFd *e = wfd_get(fd);
+    if (!e || e->kind != WFD_SOCKET) {
+        *err = ERROR_INVALID_HANDLE;
+        return -1;
+    }
+    WSAPROTOCOL_INFOW info;
+    if (WSADuplicateSocketW(e->s, GetCurrentProcessId(), &info)) {
+        *err = WSAGetLastError();
+        return -1;
+    }
+    SOCKET s = WSASocketW(FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, &info, 0, WSA_FLAG_OVERLAPPED);
+    if (s == INVALID_SOCKET) {
+        *err = WSAGetLastError();
+        return -1;
+    }
+    int d = wfd_new(WFD_SOCKET, INVALID_HANDLE_VALUE, s);
+    if (d < 0) {
+        closesocket(s);
+        *err = ERROR_TOO_MANY_OPEN_FILES;
+    }
+    return d;
+}
+
 int plat_fd_socket(int fd) {
     WFd *e = wfd_get(fd);
     return e ? (int)e->s : -1;

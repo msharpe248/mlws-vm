@@ -1,7 +1,7 @@
 #!/bin/sh
 # Smoke test for the tools that cannot be exercised from inside an assembly
 # test: --monitor (HTTP API and dashboard), `mlwsvm top`, --profile, --trace,
-# `mlwsvm opt`, `mlwsvm bundle`, `mlwsvm dap` and `mlwsvm fuzz`.
+# `mlwsvm opt`, `mlwsvm bundle`, `mlwsvm dap`, std.node and `mlwsvm fuzz`.
 # Usage: tests/tools/check_tools.sh [path/to/mlwsvm]      (run by `make check-tools`)
 set -eu
 BIN=${1:-./mlwsvm}
@@ -154,6 +154,20 @@ dap "$DAPD/d"
 grep -q '"reason":"pause"' "$DAPD/d.out" || fail "dap: pause"
 grep -q '"name":"spin.main"' "$DAPD/d.out" || fail "dap: stack after a pause"
 rm -rf "${DAPD:?}"
+
+# std.node: two VMs on this machine. Node 1 checks all of it against node 2, and
+# ends it.
+NODED=$(mktemp -d)
+$BIN run tests/tools/_node/two.masm > "$NODED/port" 2>/dev/null &
+TWO=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -s "$NODED/port" ] && break
+    perl -e 'select(undef, undef, undef, 0.25)'
+done
+[ -s "$NODED/port" ] || { kill $TWO; fail "node: the second VM did not start"; }
+perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_node/one.masm "$(tr -d '\r\n' < "$NODED/port")" >/dev/null 2>"$NODED/err" || { kill $TWO 2>/dev/null || true; cat "$NODED/err" >&2; fail "node"; }
+wait $TWO
+rm -rf "${NODED:?}"
 
 # A .mlwso whose global word is tagged as a reference (the assembler never
 # writes one) is refused at load, not used: the word would be a forged pointer.
@@ -551,4 +565,4 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
 fi
-echo "check-tools: profile, .loc, bundle, dap, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"
+echo "check-tools: profile, .loc, bundle, dap, node, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"

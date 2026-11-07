@@ -805,6 +805,51 @@ static void net_close_write(Process *p, Word *a, Word *r) {
     if (h && !plat_sock_shutdown_write(h->fd)) fail_os(p, plat_last_error(), "close_write");
 }
 
+/* Another handle on a connection, its own descriptor of the same socket: so
+ * that one process can read it while another writes. */
+static void net_split(Process *p, Word *a, Word *r) {
+    FileH *h = get_kind(p, a[0], H_STREAM, "a connection");
+    if (!h) return;
+    if (h->tls) {
+        native_fail(p, "E_TLS", "net.split: a connection with TLS cannot be split");
+        return;
+    }
+    int err = 0, fd = plat_sock_dup(h->fd, &err);
+    if (fd < 0) fail_os(p, err, "split");
+    else r[0].r = new_file(p, fd, H_STREAM, true);
+}
+
+#define MAX_FRAME (64u << 20)
+
+/* net.read_frame(conn): the bytes of a frame, a 32-bit little-endian length and
+ * then that many, or null at the end of input. */
+static void net_read_frame(Process *p, Word *a, Word *r) {
+    FileH *h = reader(p, a[0]);
+    if (!h) return;
+    for (;;) {
+        size_t have = h->rlen - h->rpos;
+        if (have >= 4) {
+            const uint8_t *s = unread(h);
+            uint32_t n = (uint32_t)s[0] | (uint32_t)s[1] << 8 | (uint32_t)s[2] << 16 | (uint32_t)s[3] << 24;
+            if (n > MAX_FRAME) {
+                native_fail(p, "E_PARSE", "net.read_frame: a frame of %u bytes", n);
+                return;
+            }
+            if (have >= 4 + (size_t)n) {
+                r[0].r = bytes_of(p, s + 4, n);
+                h->rpos += 4 + (size_t)n;
+                return;
+            }
+        }
+        int got = fill(p, h);
+        if (got < 0) return;
+        if (got == 0) {
+            r[0].r = NULL;
+            return;
+        }
+    }
+}
+
 /* ---- std.tls -------------------------------------------------------------------------- */
 
 static void tls_is_available(Process *p, Word *a, Word *r) {
@@ -998,6 +1043,9 @@ static const NativeDef OS_NATIVES[] = {
     N("net.peer", 1, T(T_R), 2, T(T_R, T_I64), net_peer, F, "The address and port of a connection's other end."),
     N("net.close_write", 1, T(T_R), 0, T(0), net_close_write, F,
       "Finish sending on a connection (the other end reads end of input) but keep reading."),
+    N("net.split", 1, T(T_R), 1, T(T_R), net_split, F, "A second handle on a connection, so that one process can read it while another writes."),
+    N("net.read_frame", 1, T(T_R), 1, T(T_R), net_read_frame, F,
+      "The bytes of the next frame, a 32-bit little-endian length and that many bytes (up to 64 MiB), or null at the end of input."),
     N("net.resolve", 1, T(T_R), 1, T(T_R), net_resolve, F, "A host name's addresses, as a list of strings."),
     N("tls.available", 0, T(0), 1, T(T_B), tls_is_available, F, "True if a TLS library (OpenSSL or LibreSSL) can be loaded."),
     N("tls.connect", 3, T(T_R, T_R, T_R), 0, T(0), tls_start_client, F,

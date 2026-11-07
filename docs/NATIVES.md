@@ -57,6 +57,19 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `cap.restrict` | r | - | From now on this process, and those it spawns, may reach only what a map grants: from read, write, connect, listen, run or env to a list of what each allows. What is not granted is denied, foreign code too, and a process can only narrow what it has. |
 | `cap.allowed` | r, r | b | Whether this process may reach something: a kind, and a path, host:port, command or variable. |
 | `cap.limited` | - | b | Whether this process has been restricted. |
+| `node.set_self` | i64 | - | Give this VM its node number, 1 to 65535: once, and unique in its cluster. |
+| `node.self` | - | i64 | This VM's node number, or 0. |
+| `node.global` | i64 | i64 | A pid as other nodes can use it, naming this node. |
+| `node.of` | i64 | i64 | The node a pid names, or 0 for a plain local one. |
+| `node.attach` | i64, i64 | - | Messages for a node go to this process, as [pid, value] (0: nowhere). For std.node. |
+| `node.route` | i64 | i64 | The process messages for a node go to, or 0. For std.node. |
+| `node.function` | r, r | r | A closure for a module's exported function, as a peer names it. For std.node. |
+| `node.frame` | r | r | A value as bytes for a connection, with its length. For std.node. |
+| `node.frame_value` | r, r | r | A frame of a list with the second item of [pid, value] added. For std.node. |
+| `node.decode` | r | r | A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node. |
+| `node.deliver` | r | - | Send [pid, value] to its process here. For std.node. |
+| `node.proof` | r, r, r | r | HMAC-SHA-256 of a role and a nonce, keyed by a cookie. For std.node. |
+| `node.proof_ok` | r, r, r, r | b | Whether a proof is right, in constant time. For std.node. |
 
 ## Files, the operating system and the network (`fs.*`, `os.*`, `net.*`)
 
@@ -103,6 +116,8 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `net.port` | r | i64 | A socket's local port (the one chosen for net.listen port 0). |
 | `net.peer` | r | r, i64 | The address and port of a connection's other end. |
 | `net.close_write` | r | - | Finish sending on a connection (the other end reads end of input) but keep reading. |
+| `net.split` | r | r | A second handle on a connection, so that one process can read it while another writes. |
+| `net.read_frame` | r | r | The bytes of the next frame, a 32-bit little-endian length and that many bytes (up to 64 MiB), or null at the end of input. |
 | `net.resolve` | r | r | A host name's addresses, as a list of strings. |
 | `tls.available` | - | b | True if a TLS library (OpenSSL or LibreSSL) can be loaded. |
 | `tls.connect` | r, r, r | - | Start TLS on a connection as a client: the server's certificate must match the host name and come from an authority in the file named ("": the system's). Then read and write the connection as usual. |

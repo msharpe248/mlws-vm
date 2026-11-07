@@ -63,6 +63,7 @@ VM *vm_new(void) {
     op_init();
     natives_register_builtin(vm);
     natives_register_caps(vm);
+    natives_register_node(vm);
     return vm;
 }
 
@@ -141,6 +142,7 @@ void vm_free(VM *vm) {
     smap_free(&vm->libsel);
     VEC_FREE(vm->chosen);
     caps_release(vm->default_caps);
+    free(vm->node_route);
     for (size_t i = 0; i < vm->retired.n; i++) free(vm->retired.v[i]);
     VEC_FREE(vm->retired);
     for (size_t i = 0; i < vm->const_objs.n; i++) free(vm->const_objs.v[i]);

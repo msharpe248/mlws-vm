@@ -425,6 +425,22 @@ static void deliver(Sched *s, uint64_t pid, InMsg *m) {
 
 void sched_send(Process *p, uint64_t pid, Word v, uint8_t tag) {
     Sched *s = p->vm->sched;
+    uint64_t node = pid >> NODE_SHIFT;
+    if (node) { /* a pid that names a node */
+        VM *vm = p->vm;
+        if (node == __atomic_load_n(&vm->node_self, __ATOMIC_ACQUIRE)) {
+            pid &= ((uint64_t)1 << NODE_SHIFT) - 1;
+        } else {
+            uint64_t carrier = vm->node_route && node <= 65535 ? __atomic_load_n(&vm->node_route[node], __ATOMIC_ACQUIRE) : 0;
+            if (!carrier) return; /* no such node, as no such process: dropped */
+            ObjList *l = list_new(p, 2);
+            list_push(p, l, (Word){.u = pid}, T_I64);
+            list_push(p, l, v, tag);
+            pid = carrier;
+            v.r = &l->h;
+            tag = T_R;
+        }
+    }
     InMsg m = {v, tag, NULL, 0, 0};
     Process *to = pin(s, pid);
     if (to && accepts(to) && to->mcount < to->quota[QUOTA_MAILBOX] && type_is_ref(tag) && v.r) {

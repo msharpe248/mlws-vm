@@ -254,6 +254,8 @@ typedef struct VM {
     const struct LModule *reload_old; /* the version being replaced, as its successor links (under mods_lock) */
     VEC(void *) retired;     /* what reloads replaced and another thread may still read: freed with the VM */
     struct Caps *default_caps; /* --cap: every process's, as default_quota */
+    uint32_t node_self;      /* this VM's number among nodes, or 0 (dist.c) */
+    uint64_t *node_route;    /* per node: the process that carries its messages, or 0 */
     struct Bundle *bundle;   /* the program this executable carries, or NULL: modules are found there first */
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
     bool gc_verify;          /* after each minor collection's marking, check it against a walk of the whole heap */
@@ -815,6 +817,10 @@ bool caps_allow_path(const Caps *c, int kind, const char *path);
 bool caps_allow_net(const Caps *c, int kind, const char *host, int64_t port); /* port -1: any */
 bool caps_allow_name(const Caps *c, int kind, const char *name);
 void natives_register_caps(VM *vm);
+/* dist.c: a pid's top 16 bits name its node (0: this one, by a plain pid). */
+#define NODE_SHIFT 48
+void natives_register_node(VM *vm);
+const NativeDef *natives_node_table(size_t *n);
 const NativeDef *natives_caps_table(size_t *n);
 void natives_register_modules(VM *vm); /* modload.c */
 const NativeDef *natives_modules_table(size_t *n);
