@@ -1,0 +1,33 @@
+; link, monitor and proc.call take a pid of another node (std.node), as one of
+; this VM. To a node this VM is not connected to (here it is no node at all):
+; monitor gives a Down at once, E_NODE_DOWN, as it gives E_NOPROC for a process
+; that is not here; proc.call and link raise E_NODE_DOWN. The rest, across two
+; VMs, is in tests/tools/_node/one.masm (make check-tools).
+.include "std/test.inc"
+.func main
+    mov I0, 99
+    shl I0, I0, 48
+    or I0, I0, 5                       ; process 5 of node 99
+    monitor I0
+    recv R0
+    mov I1, R0->Down.pid
+    ASSERT_EQ I1, I0
+    mov R1, R0->Down.code
+    strcmp I2, R1, "E_NODE_DOWN"
+    ASSERT_EQ I2, 0
+.try h1
+    ncall "proc.call" (I0, null, 1000) -> (R2)
+.endtry
+    FAIL "proc.call to a node that is not connected"
+h1: catch R3
+    strcmp I2, R3->Error.code, "E_NODE_DOWN"
+    ASSERT_EQ I2, 0
+.try h2
+    link I0
+.endtry
+    FAIL "link to a node that is not connected"
+h2: catch R3
+    strcmp I2, R3->Error.code, "E_NODE_DOWN"
+    ASSERT_EQ I2, 0
+    ret 0
+.endf

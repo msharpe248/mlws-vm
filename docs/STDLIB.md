@@ -498,7 +498,8 @@ numbers in a list or struct), deep-copied like any message.
     call node.whereis (I1, "logger") -> (I2)                ; a registered process there
     send I2, "hello"                                        ; send, as to any process
     call node.spawn (I1, "worker", "serve", R0) -> (I3)     ; serve(R0), over there
-    call node.monitor (I3)                                  ; told when it ends
+    monitor I3                                              ; a Down when it ends
+    ncall "proc.call" (I2, R1, 1000) -> (R2)                ; request and reply, there too
 ```
 
 A pid may name a node: its top 16 bits are the node's number, and `send` to it
@@ -515,7 +516,6 @@ this node's number in it. `node.of(pid)` says which node a pid names.
 | `connected(number)` | whether a node is connected |
 | `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
 | `spawn(number, module, function, arg)` | run an exported function of one reference there; its pid, or 0 |
-| `monitor(pid)` | `["down", pid, code]` comes when it ends: code null for a normal end, `"E_NODE_DOWN"` if the connection goes first |
 | `self(pid)` | a pid as other nodes can use it |
 
 * **What crosses** is what a message can be: numbers, strings, byte buffers,
@@ -534,8 +534,20 @@ this node's number in it. `node.of(pid)` says which node a pid names.
   certificate, and the cookie is proved over the encrypted link. A TLS node takes
   no plain connections. A restricted process
   (`cap.restrict`) can take no part in routing, though it can still `send`.
-* `link`, `monitor` and `proc.call` work on this VM's pids; use `node.monitor` and
-  messages between nodes.
+* **`link`, `monitor` and `proc.call` take a pid of another node** as one of
+  this VM. A failure on either side of a link fails the other with `E_LINKED`,
+  and a normal end only unlinks. A `Down` comes as on one VM. A `Call` goes to
+  the process there, and its `proc.reply` comes back to the caller's reply slot.
+  For a process that is not there, `monitor` gives a `Down` with `E_NOPROC`, a
+  linked process fails with `E_LINKED`, and `proc.call` raises `E_NOPROC`, all
+  as soon as that node says so.
+* **When a connection goes,** this VM acts as if every process over there had
+  failed with `E_NODE_DOWN`: each monitor of one gets a `Down` with that code,
+  each process linked to one fails with `E_LINKED`, and each `proc.call`
+  waiting for an answer from there raises `E_NODE_DOWN`. To a node that is not
+  connected, `monitor` gives that `Down` at once, and `link` and `proc.call`
+  raise `E_NODE_DOWN`.
+* `kill` and `alive` work on this VM's pids only.
 
 ### Supervisors (`std.supervisor`)
 

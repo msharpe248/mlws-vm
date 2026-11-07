@@ -70,6 +70,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `node.frame_value` | r, r | r | A frame of a list with the second item of [pid, value] added. For std.node. |
 | `node.decode` | r | r | A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node. |
 | `node.deliver` | r | - | Send [pid, value] to its process here. For std.node. |
+| `node.control` | r | - | Act on a control frame from a node: link, unlink, exit, monitor, down, reply or noproc. For std.node. |
 | `node.proof` | r, r, r | r | HMAC-SHA-256 of a role and a nonce, keyed by a cookie. For std.node. |
 | `node.proof_ok` | r, r, r, r | b | Whether a proof is right, in constant time. For std.node. |
 

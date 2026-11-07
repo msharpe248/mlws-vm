@@ -83,39 +83,219 @@ plain_refused:
     recv I9
     ASSERT_EQ I9, 42
 
-    ; A spawn there, with what a message can carry; and being told it ended.
+    ; A spawn there, with what a message can carry; and a Down when it ends.
     lnew R4
     lpush R4, I7
     call node.spawn (2, "worker", "serve", R4) -> (I10)
     ASSERT_NE I10, 0
-    call node.monitor (I10)
-    bufnew R5, 0
+    monitor I10
     strcat R6, "over ", "the wire"
     send I10, R6
     recv R7
     strcmp I11, R7, "got over the wire"
     ASSERT_EQ I11, 0
     recv R8
-    mov R9, R8[0]
-    strcmp I11, R9, "down"
-    ASSERT_EQ I11, 0
-    mov I12, R8[1]
+    mov I12, R8->Down.pid
     ASSERT_EQ I12, I10
-    mov R10, R8[2]
-    ASSERT_FALSE R10, r
+    mov R10, R8->Down.code
+    ASSERT_FALSE R10, r                ; a normal end
 
     ; A function that does not exist there: no pid.
     call node.spawn (2, "worker", "nothing", R4) -> (I13)
     ASSERT_EQ I13, 0
 
-    ; The node goes: a watcher hears, and a send goes nowhere.
-    call node.monitor (I5)
-    call node.whereis (2, "stopper") -> (I14)
-    send I14, 1
-    recv R11
-    mov R12, R11[2]
-    strcmp I15, R12, "E_NODE_DOWN"
-    ASSERT_EQ I15, 0
+    ; proc.call there: an answer, no such process, no answer in time, and a
+    ; node that is not connected.
+    call node.whereis (2, "tripler") -> (I14)
+    lnew R11
+    lpush R11, 7
+    ncall "proc.call" (I14, R11, 5000) -> (R12)
+    mov I15, R12[0]
+    ASSERT_EQ I15, 21
+    or I16, I14, 0xFFFFF               ; (a pid nobody has there)
+    call call_code (PID, I16, 5000)
+    recv R13
+    call expect (R13, "E_NOPROC")
+    call node.spawn (2, "worker", "ignore", R4) -> (I17)
+    call call_code (PID, I17, 200)
+    recv R13
+    call expect (R13, "E_TIMEOUT")
+    mov I18, 99
+    shl I18, I18, 48
+    or I18, I18, 5                     ; process 5 of node 99, which is not connected
+    call call_code (PID, I18, 5000)
+    recv R13
+    call expect (R13, "E_NODE_DOWN")
+
+    ; monitor: no such process there, and a node that is not connected.
+    monitor I16
+    recv R14
+    mov R15, R14->Down.code
+    call expect (R15, "E_NOPROC")
+    monitor I18
+    recv R14
+    mov R15, R14->Down.code
+    call expect (R15, "E_NODE_DOWN")
+
+    ; link, one way: a process there fails, and the one here linked to it goes too.
+    call node.spawn (2, "worker", "fail_on_msg", R4) -> (I20)
+    spawnm link_wait (PID, I20) -> (I21)
+    recv I22                           ; linked
+    send I20, "go"
+    call down_code (I21) -> (R16)
+    call expect (R16, "E_LINKED")
+    ; the other way: one here fails, and the one there goes too.
+    call node.spawn (2, "worker", "ignore", R4) -> (I23)
+    monitor I23
+    spawn link_fail (I23)
+    call down_code (I23) -> (R16)
+    call expect (R16, "E_LINKED")
+    ; a normal end only unlinks, either way.
+    call node.spawn (2, "worker", "wait_one", R4) -> (I24)
+    monitor I24
+    spawnm link_end (PID, I24) -> (I25)
+    recv I22
+    call down_code (I25) -> (R16)
+    ASSERT_FALSE R16, r
+    sleep 100                          ; (the unlink there before the message)
+    send I24, "go"                        ; still alive: it ends normally
+    call down_code (I24) -> (R16)
+    ASSERT_FALSE R16, r
+    call node.spawn (2, "worker", "wait_one", R4) -> (I26)
+    monitor I26
+    spawnm link_wait (PID, I26) -> (I27)
+    recv I22
+    send I26, "go"
+    call down_code (I26) -> (R16)
+    ASSERT_FALSE R16, r
+    sleep 100
+    send I27, "go"                        ; still alive too
+    call down_code (I27) -> (R16)
+    ASSERT_FALSE R16, r
+    ; a link to no such process there, or to a node that is not connected.
+    spawnm link_hold (I16) -> (I28)
+    call down_code (I28) -> (R16)
+    call expect (R16, "E_LINKED")
+.try not_connected
+    link I18
+.endtry
+    FAIL "linked to a node that is not connected"
+not_connected:
+    catch R17
+    mov R18, R17->Error.code
+    call expect (R18, "E_NODE_DOWN")
+
+    ; The node goes: a watcher hears, a linked process goes, a call waiting
+    ; for an answer fails, and a send goes nowhere.
+    monitor I5
+    call node.spawn (2, "worker", "ignore", R4) -> (I30)
+    monitor I30
+    spawnm link_wait (PID, I30) -> (I31)
+    recv I22
+    spawn call_code (PID, I30, 20000)
+    sleep 100                          ; (the call there)
+    call node.whereis (2, "stopper") -> (I19)
+    send I19, 1
+    mov I1, 0                          ; what has come: 1 Down of I5, 2 of I30, 4 of I31, 8 the call
+1:  recv R19
+    isa I2, R19, Down
+    bz I2, 3f
+    mov I3, R19->Down.pid
+    mov R20, R19->Down.code
+    beq I3, I31, 2f
+    call expect (R20, "E_NODE_DOWN")
+    mov I4, 1
+    beq I3, I5, 4f
+    ASSERT_EQ I3, I30
+    mov I4, 2
+    jmp 4f
+2:  call expect (R20, "E_LINKED")
+    mov I4, 4
+    jmp 4f
+3:  call expect (R19, "E_NODE_DOWN")
+    mov I4, 8
+4:  and I6, I1, I4
+    ASSERT_EQ I6, 0                   ; (each once)
+    or I1, I1, I4
+    bne I1, 15, 1b
     send I5, R3
     ret 0
+.endf
+
+; Fail if a value is not this error code: a code, or a list [_, code].
+.func expect(ref got, ref code)
+    typeof I0, got
+    bne I0, 5, 1f                      ; (5: a list)
+    mov R0, got[1]
+    jmp 2f
+1:  mov R0, got
+2:  bz R0, 3f
+    strcmp I1, R0, code
+    bnz I1, 3f
+    ret
+3:  FAIL "not the error expected"
+    ret
+.endf
+
+; The code of a Down of pid (null for a normal end), waiting for it.
+.func down_code(i64 pid) -> ref
+    recv R0
+    isa I2, R0, Down
+    ASSERT_TRUE I2
+    mov I1, R0->Down.pid
+    ASSERT_EQ I1, pid
+    mov R1, R0->Down.code
+    ret R1
+.endf
+
+; proc.call pid, and send parent what came: ["answer", reply] or ["error", code].
+.func call_code(i64 parent, i64 pid, i64 ms)
+    lnew R0
+    lpush R0, 1
+.try h
+    ncall "proc.call" (pid, R0, ms) -> (R1)
+.endtry
+    lnew R2
+    lpush R2, "answer"
+    lpush R2, R1
+    send parent, R2
+    ret
+h:  catch R3
+    mov R4, R3->Error.code
+    lnew R2
+    lpush R2, "error"
+    lpush R2, R4
+    send parent, R2
+    ret
+.endf
+
+; Link to pid, say so, then end normally at the first message.
+.func link_wait(i64 parent, i64 pid)
+    link pid
+    send parent, 1
+    recv R0
+    ret
+.endf
+
+; Link to pid, and wait.
+.func link_hold(i64 pid)
+    link pid
+    recv R0
+    ret
+.endf
+
+; Link to pid, say so, and end normally.
+.func link_end(i64 parent, i64 pid)
+    link pid
+    send parent, 1
+    ret
+.endf
+
+; Link to pid, then fail.
+.func link_fail(i64 pid)
+    link pid
+    new R0, Error
+    mov R0->Error.code, "E_TOLD"
+    mov R0->Error.message, "told to fail"
+    throw R0
 .endf

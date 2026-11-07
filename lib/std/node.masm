@@ -7,11 +7,11 @@
 ;     call node.spawn (I1, "worker", "serve", R0) -> (I2)      ; a pid over there
 ;     send I2, "hello"                                ; send works on it as on any pid
 ;     call node.whereis (I1, "logger") -> (I3)
-;     call node.monitor (I2)                          ; ["down", pid, code] when it ends
+;     monitor I2                                      ; a Down when it ends
 ;     call node.self (PID) -> (I4)                    ; a pid others can use
 ;
-; A pid with a node's number in its top 16 bits works with send anywhere in the
-; cluster; a plain pid means this VM. A VM has one number, from 1 to 65535,
+; A pid with a node's number in its top 16 bits works with send, link, monitor
+; and proc.call anywhere in the cluster; a plain pid means this VM. A VM has one number, from 1 to 65535,
 ; unique in its cluster. Two nodes are connected by one TCP connection, once
 ; each has proved it knows the cookie: each sends a nonce and answers the other's
 ; with an HMAC of it, marked with which end it is. Plain connections are not
@@ -22,18 +22,22 @@
 ; message any process and spawn any exported function, as in Erlang: the cookie
 ; is the whole of the boundary.
 ;
-; A connection is two processes, sharing its TLS session if it has one. The reader takes frames from the socket and
-; acts on them. The writer takes what the VM routes to this node, as [pid,
-; value], and what this module asks for, and writes frames. Frames are lists:
+; A connection is two processes, sharing its TLS session if it has one. The
+; reader takes frames from the socket and acts on them. The writer takes what
+; the VM routes to this node, as [pid, value], and what this module and the VM
+; ask for, as [null, kind, ...], and writes frames. Frames are lists:
 ;     [0, pid, value]                      a message
 ;     [1, reply_to, module, function, args]  spawn function(args), args one value
 ;     [2, reply_to, name]                  the pid registered as name, or 0
-;     [3, watcher, pid]                    say when pid ends
-; A watcher gets ["down", pid, code], code being null for a normal end, or
-; "E_NODE_DOWN" if the connection goes first.
+;     [3 to 9, pid, ...]                   link, unlink, exit, monitor, down,
+;                                          reply and noproc: the VM's, for link,
+;                                          monitor and proc.call across nodes
+;                                          (node.control)
+; When the connection goes, the reader clears its route (node.attach), and the
+; VM acts as if every process over there had failed with E_NODE_DOWN.
 
 .module std.node
-.export start, start_tls, connect, connect_tls, spawn, whereis, monitor, self, node_of, connected
+.export start, start_tls, connect, connect_tls, spawn, whereis, self, node_of, connected
 
 .const CONNECT_TIMEOUT = 5000
 
@@ -190,26 +194,17 @@ refused:
     ret
 .endf
 
-; What the VM routes here, as [pid, value], and what this module asks for, as a
-; whole frame [kind, ...] with a null at its head. Ends with the reader, telling
-; the watchers it has.
+; What the VM routes here, as [pid, value], and what this module and the VM ask
+; for, as a whole frame [kind, ...] with a null at its head. Ends with the reader.
 .func writer(i64 ticket, i64 reader)
     ncall "fs.take" (ticket) -> (R0)
     monitor reader
-    lnew R1                            ; [watcher, pid, ...]: who to tell
 1:  recv R2
     isa I2, R2, Down
     bnz I2, ended
     len I3, R2
     beq I3, 2, message
-    mov I4, R2[1]                      ; a request: [null, kind, ...]
-    bne I4, 3, send_request
-    mov I5, R2[2]                      ; (a monitor: remember it)
-    mov I6, R2[3]
-    lpush R1, I5
-    lpush R1, I6
-send_request:
-    ldel R2, 0
+    ldel R2, 0                         ; a request: [null, kind, ...]
     ncall "node.frame" (R2) -> (R3)
     ncall "fs.write" (R0, R3)
     jmp 1b
@@ -222,20 +217,7 @@ message:
     ncall "fs.write" (R0, R3)
     jmp 1b
 ended:
-    len I3, R1
-    mov I4, 0
-2:  bge I4, I3, 3f
-    mov I5, R1[I4]
-    add I6, I4, 1
-    mov I7, R1[I6]
-    lnew R5
-    lpush R5, "down"
-    lpush R5, I7
-    lpush R5, "E_NODE_DOWN"
-    send I5, R5
-    add I4, I4, 2
-    jmp 2b
-3:  ncall "fs.close" (R0)
+    ncall "fs.close" (R0)
     ret
 .endf
 
@@ -251,7 +233,7 @@ ended:
     jmp 1b
 2:  beq I2, 1, 3f
     beq I2, 2, 4f
-    beq I2, 3, 5f
+    ncall "node.control" (R3)          ; 3 to 9
     jmp 1b
 3:  spawn do_spawn (R3)
     jmp 1b
@@ -263,11 +245,6 @@ ended:
 6:  lnew R5
     lpush R5, I4
     send I3, R5
-    jmp 1b
-5:  mov I3, R3[1]
-    mov I4, R3[2]
-    spawn watch (I3, I4, PID)
-    recv I5                            ; in place before the next frame: it may end the process
     jmp 1b
 .endtry
 closed:
@@ -299,22 +276,6 @@ failed:
     lnew R5
     lpush R5, 0
     send I1, R5
-    ret
-.endf
-
-; Says when a process here ends, to a watcher on another node.
-.func watch(i64 watcher, i64 pid, i64 reader)
-    and I3, pid, 0xFFFFFFFFFFFF        ; (its plain pid: monitor works here)
-    monitor I3
-    send reader, 1
-    recv R0
-    ncall "node.global" (I3) -> (I3)
-    lnew R1
-    lpush R1, "down"
-    lpush R1, I3
-    mov R2, R0->Down.code
-    lpush R1, R2
-    send watcher, R1
     ret
 .endf
 
@@ -371,27 +332,4 @@ none:
     call ask (peer, R2) -> (R3)
     mov I4, R3[0]
     ret I4
-.endf
-
-; Ask to be told when a process on another node ends: ["down", pid, code]
-; comes to this process, code null for a normal end, or "E_NODE_DOWN" if the
-; connection goes first.
-.func monitor(i64 pid)
-    ncall "node.of" (pid) -> (I1)
-    ncall "node.route" (I1) -> (I2)
-    ncall "node.global" (PID) -> (I3)
-    lnew R0
-    lpush R0, null
-    lpush R0, 3
-    lpush R0, I3
-    lpush R0, pid
-    bz I2, 1f
-    send I2, R0
-    ret
-1:  lnew R1
-    lpush R1, "down"
-    lpush R1, pid
-    lpush R1, "E_NODE_DOWN"
-    send PID, R1
-    ret
 .endf

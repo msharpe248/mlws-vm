@@ -95,6 +95,7 @@ status 70.
 | `E_DEADLOCK` | `recv` (or `proc.call`) in `main` while every process is waiting, so no message can ever arrive; or `proc.call` of the calling process itself |
 | `E_QUOTA` | A heap, raw-memory, mailbox, foreign-call or OS-call quota was exceeded (catchable), or the instruction quota (the process is stopped); also `quota` with an unknown kind or a negative limit |
 | `E_NODE` | `std.node`: a node could not be reached, or does not know the cookie |
+| `E_NODE_DOWN` | `proc.call` or `link` to a process on a node that is not connected, or whose connection goes while a call waits for its answer; the code of a `Down` for the same |
 | `E_REGEX` | A bad regular expression or replacement: malformed, too large, or asking for backreferences or lookaround |
 | `E_TLS` | TLS on a connection failed: no TLS library, a certificate that does not match or that no authority given vouches for, a peer that does not speak TLS, or a file that cannot be loaded |
 | `E_NOT_FOUND`, `E_EXISTS`, `E_PERMISSION`, `E_IS_DIR`, `E_NOT_DIR`, `E_CLOSED`, `E_TIMEOUT`, `E_RESET`, `E_REFUSED`, `E_ADDR_IN_USE`, `E_RESOURCES`, `E_IO` | Files, commands, sockets and other OS calls ([STDLIB.md](STDLIB.md#errors)). `E_PERMISSION` is also what a capability denies ([STDLIB.md](STDLIB.md#sandboxing)). Also `E_EXISTS` for `proc.register` of a name a live process holds, and `E_TIMEOUT` for a `proc.call` with no reply in time |

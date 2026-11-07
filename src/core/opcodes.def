@@ -276,9 +276,9 @@ OP(SLEEP,  0x0105, "sleep",  "Processes", "Q", 0, 0,
 OP(KILL,   0x0106, "kill",   "Processes", "Q", 0, 0,
    "Terminate a process with error E_KILLED (as a failure, so links and monitors are notified). Killing a finished or unknown process does nothing; killing yourself ends this process.")
 OP(LINK,   0x0107, "link",   "Processes", "Q", 0, 0,
-   "Link this process and another. If either fails (an uncaught exception, kill or quota), the other is killed with E_LINKED. Normal exits do not propagate.")
+   "Link this process and another. If either fails (an uncaught exception, kill or quota), the other is killed with E_LINKED. Normal exits do not propagate. A pid of another node (std.node) works too; then losing the connection fails this process with E_LINKED, and linking to a node not connected raises E_NODE_DOWN.")
 OP(MONITOR,0x0108, "monitor","Processes", "Q", 0, 0,
-   "Watch a process. When it ends, this process receives a Down struct message with fields pid, exit (exit code), and code/message (null for a normal exit). Monitoring a finished or unknown process delivers a Down message immediately, with code E_NOPROC.")
+   "Watch a process. When it ends, this process receives a Down struct message with fields pid, exit (exit code), and code/message (null for a normal exit). Monitoring a finished or unknown process delivers a Down message immediately, with code E_NOPROC. A pid of another node (std.node) works too; then the Down's code is E_NODE_DOWN if the connection goes first.")
 OP(ALIVE,  0x0109, "alive",  "Processes", "BQ", 0, 0,
    "dst = true if the process exists and has not finished.")
 OP(QUOTA,  0x010A, "quota",  "Processes", "IQ", 0, 0,

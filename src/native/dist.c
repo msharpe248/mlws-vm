@@ -295,7 +295,8 @@ static void n_attach(Process *p, Word *a, Word *r) {
     plat_lock(vm->lock);
     if (!vm->node_route) vm->node_route = xcalloc(MAX_NODE + 1, sizeof *vm->node_route);
     plat_unlock(vm->lock);
-    __atomic_store_n(&vm->node_route[a[0].i], a[1].u, __ATOMIC_RELEASE);
+    uint64_t old = __atomic_exchange_n(&vm->node_route[a[0].i], a[1].u, __ATOMIC_ACQ_REL);
+    if (old && !a[1].u) sched_node_down(vm, (uint32_t)a[0].i); /* the connection has gone */
 }
 
 static void n_route(Process *p, Word *a, Word *r) {
@@ -356,8 +357,15 @@ static void n_deliver(Process *p, Word *a, Word *r) {
     const ObjList *l = a[0].r;
     if (!l || l->h.kind != OBJ_LIST || l->len != 2 || !type_is_int((MlwsType)l->tags[0]))
         vm_trap(p, "E_PARSE", "node.deliver: expected [pid, value]");
-    uint64_t pid = l->items[0].u & (((uint64_t)1 << NODE_SHIFT) - 1);
-    sched_send(p, pid, l->items[1], l->tags[1]);
+    sched_node_deliver(p, l->items[0].u, l->items[1], l->tags[1]);
+}
+
+/* A control frame from a node, for link, monitor and proc.call across nodes:
+ * [kind, pid, ...] (sched.c, "across nodes"). */
+static void n_control(Process *p, Word *a, Word *r) {
+    (void)r;
+    no_caps(p, "node.control");
+    sched_node_control(p, a[0].r);
 }
 
 /* HMAC-SHA-256 of a role and a nonce: the proof that the prover knows the
@@ -418,6 +426,8 @@ static const NativeDef NODE_NATIVES[] = {
     N("node.frame_value", 2, T(T_R, T_R), 1, T(T_R), n_frame_value, "A frame of a list with the second item of [pid, value] added. For std.node."),
     N("node.decode", 1, T(T_R), 1, T(T_R), n_decode, "A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node."),
     N("node.deliver", 1, T(T_R), 0, T(0), n_deliver, "Send [pid, value] to its process here. For std.node."),
+    N("node.control", 1, T(T_R), 0, T(0), n_control,
+      "Act on a control frame from a node: link, unlink, exit, monitor, down, reply or noproc. For std.node."),
     N("node.proof", 3, T(T_R, T_R, T_R), 1, T(T_R), n_proof, "HMAC-SHA-256 of a role and a nonce, keyed by a cookie. For std.node."),
     N("node.proof_ok", 4, T(T_R, T_R, T_R, T_R), 1, T(T_B), n_proof_ok, "Whether a proof is right, in constant time. For std.node."),
 };

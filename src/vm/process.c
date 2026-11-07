@@ -104,6 +104,9 @@ void proc_free(Process *p) {
     plat_lock_free(p->lock);
     VEC_FREE(p->links);
     VEC_FREE(p->monitors);
+    VEC_FREE(p->rlinks);
+    VEC_FREE(p->rmonitors);
+    VEC_FREE(p->rwatch);
     VEC_FREE(p->pins);
     VEC_FREE(p->fin_deferred);
     heap_free_all(p);

@@ -1,5 +1,6 @@
-; Node 2 of the pair check_tools.sh starts: a registered process that doubles
-; numbers, and one that ends this VM when told. It prints the port it took.
+; Node 2 of the pair check_tools.sh starts: registered processes that double
+; numbers (by message) and triple them (by proc.call), and one that ends this
+; VM when told. It prints the port it took.
 ; With the argument "tls", it takes only TLS.
 .import std.node as node
 .import worker
@@ -10,6 +11,17 @@
     mov I2, R0[1]
     mul I3, I2, 2
     send I1, I3
+    jmp 1b
+.endf
+.func tripler
+    ncall "proc.register" ("tripler", PID)
+1:  recv R0                            ; a Call{from, id, body}, from another node
+    mov R1, R0->Call.body
+    mov I1, R1[0]
+    mul I1, I1, 3
+    lnew R2
+    lpush R2, I1
+    ncall "proc.reply" (R0, R2)
     jmp 1b
 .endf
 .func stopper
@@ -27,8 +39,9 @@
 2:  call node.start (2, "the cookie", 0) -> (I1)
 3:
     spawn doubler
+    spawn tripler
     spawn stopper
-    sleep 100                          ; (both registered by now)
+    sleep 100                          ; (all registered by now)
     ncall "io.print_i" (I1)
     ncall "io.nl" ()
     ncall "io.flush" ()

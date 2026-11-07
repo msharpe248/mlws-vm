@@ -556,7 +556,8 @@ deliberate ([DESIGN.md §13.5](../DESIGN.md#135-ending-links-and-monitors)):
     heap_release_foreign(p);
     if (p->names.n) unregister_all(vm, p); /* before the Downs: a restarted service can take its name again */
     for (size_t i = 0; i < mons.n; i++) send_down(s, mons.v[i], p, failed);
-    bool observed = mons.n > 0 || links.n > 0;
+    ...
+    bool observed = mons.n > 0 || links.n > 0 || rmons.n > 0 || rlinks.n > 0;
     /* Linked processes die with a failing one; a normal exit just unlinks. */
     for (size_t i = 0; i < links.n; i++) {
         ...
@@ -571,8 +572,10 @@ deliberate ([DESIGN.md §13.5](../DESIGN.md#135-ending-links-and-monitors)):
     if (failed && !observed && !is_main) report_unobserved(vm, p);
 ```
 
-The dead process's files and sockets are closed, and its registered names
-released, *before* anyone hears of it, so a supervisor that restarts it can
+The `...` after the Downs tells watchers and linked processes on other nodes
+(std.node), as control frames through each node's connection: `rmons` and
+`rlinks` are this process's ties there. The dead process's files and sockets
+are closed, and its registered names released, *before* anyone hears of it, so a supervisor that restarts it can
 open the same port at once. A failure nobody watches is printed, as in the
 `lost.masm` run above. With `spawnm` instead of `spawn`, the same failure
 arrives as a message. `watched.masm` is the same child with this `main`

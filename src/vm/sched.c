@@ -560,6 +560,88 @@ static void record_exit(VM *vm, Process *p, bool failed) {
     }
 }
 
+static bool has_pid(const PidVec *v, uint64_t pid) {
+    for (size_t i = 0; i < v->n; i++)
+        if (v->v[i] == pid) return true;
+    return false;
+}
+
+/* ---- across nodes ------------------------------------------------------------------ *
+ * link, monitor and proc.call take a pid of another node (std.node) as one of
+ * this VM. Each side keeps the other's pids as they are named on the wire, with
+ * their node's number: Process.rlinks, rmonitors and rwatch. What one side must
+ * tell the other goes as a control frame, [null, kind, ...], to the process
+ * that carries that node's connection (VM.node_route), which writes it; at the
+ * far end the reader gives it to sched_node_control. When a connection goes,
+ * sched_node_down treats every process over there as failed with E_NODE_DOWN. */
+
+enum { NC_LINK = 3, NC_UNLINK, NC_EXIT, NC_MONITOR, NC_DOWN, NC_REPLY, NC_NOPROC };
+
+static uint32_t self_node(VM *vm) { return __atomic_load_n(&vm->node_self, __ATOMIC_ACQUIRE); }
+
+/* The node a pid names, if not this VM: 0 for this one (whose number, if the
+ * pid has it, is taken off). */
+static uint32_t far_node(VM *vm, uint64_t *pid) {
+    uint32_t n = (uint32_t)(*pid >> NODE_SHIFT);
+    if (n && n == self_node(vm)) *pid &= PID_LOCAL, n = 0;
+    return n;
+}
+
+static uint64_t carrier_of(VM *vm, uint32_t node) {
+    return vm->node_route && node <= 65535 ? __atomic_load_n(&vm->node_route[node], __ATOMIC_ACQUIRE) : 0;
+}
+
+/* A pid of this VM as other nodes name it. */
+static uint64_t global_pid(VM *vm, uint64_t pid) { return pid | (uint64_t)self_node(vm) << NODE_SHIFT; }
+
+/* Send [null, kind, w...] to a node's carrier, built in f (this thread's scratch
+ * process, holding whatever w refers to). Dropped if the node is not connected,
+ * as a message to it is. */
+static void ctl_send(VM *vm, Process *f, uint32_t node, int kind, int n, const Word *w, const uint8_t *t) {
+    uint64_t carrier = carrier_of(vm, node);
+    if (!carrier) return; /* (f is reset by its next user) */
+    ObjList *l = list_new(f, n + 2);
+    list_push(f, l, (Word){.r = NULL}, T_R);
+    list_push(f, l, (Word){.i = kind}, T_I64);
+    for (int i = 0; i < n; i++) list_push(f, l, w[i], t[i]);
+    InMsg m = frag_take(f, (Word){.r = &l->h}, T_R);
+    deliver(vm->sched, carrier, &m);
+}
+
+/* [kind, to, a]: link, unlink and monitor (a: the asker), noproc (a: the call's id) */
+static void ctl_pair(VM *vm, int kind, uint64_t to, uint64_t a) {
+    Process *f = my_frag(vm->sched);
+    frag_reset(f);
+    Word w[2] = {{.u = to}, {.u = a}};
+    uint8_t t[2] = {T_I64, T_I64};
+    ctl_send(vm, f, (uint32_t)(to >> NODE_SHIFT), kind, 2, w, t);
+}
+
+/* [kind, to, from, exit, code, message]: exit (from failed) and down (from
+ * ended; code and message null for a normal end). */
+static void ctl_end(VM *vm, int kind, uint64_t to, uint64_t from, int64_t exit, const char *code, const char *msg) {
+    Process *f = my_frag(vm->sched);
+    frag_reset(f);
+    Word w[5] = {{.u = to}, {.u = from}, {.i = exit},
+                 {.r = code ? str_new(f, code, strlen(code)) : NULL}, {.r = msg ? str_new(f, msg, strlen(msg)) : NULL}};
+    uint8_t t[5] = {T_I64, T_I64, T_I64, T_R, T_R};
+    ctl_send(vm, f, (uint32_t)(to >> NODE_SHIFT), kind, 5, w, t);
+}
+
+/* A Down for a process here, about a pid it watches on another node. */
+static void down_far(Sched *s, uint64_t watcher, uint64_t pid, int64_t exit, const char *code, size_t cn,
+                     const char *msg, size_t mn) {
+    Process *f = my_frag(s);
+    frag_reset(f);
+    ObjStruct *d = struct_new(f, &VM_DOWN_DEF);
+    d->fields[DOWNF_PID].u = pid;
+    d->fields[DOWNF_EXIT].i = exit;
+    if (code) d->fields[DOWNF_CODE].r = str_new(f, code, cn);
+    if (msg) d->fields[DOWNF_MESSAGE].r = str_new(f, msg, mn);
+    InMsg m = frag_take(f, (Word){.r = d}, T_R);
+    deliver(s, watcher, &m);
+}
+
 static void unregister_all(VM *vm, Process *p); /* std.proc, below */
 
 static void finish(Sched *s, Process *p, bool failed);
@@ -586,9 +668,11 @@ static void finish(Sched *s, Process *p, bool failed) {
     proc_write_line_out(p); /* (it is not running: this thread may) */
     plat_lock(p->lock);
     p->state = failed ? PROC_FAILED : PROC_DONE;
-    PidVec links = p->links, mons = p->monitors;
+    PidVec links = p->links, mons = p->monitors, rlinks = p->rlinks, rmons = p->rmonitors;
     memset(&p->links, 0, sizeof p->links);
     memset(&p->monitors, 0, sizeof p->monitors);
+    memset(&p->rlinks, 0, sizeof p->rlinks);
+    memset(&p->rmonitors, 0, sizeof p->rmonitors);
     plat_unlock(p->lock);
     plat_lock(vm->lock);
     vm->live--;
@@ -599,7 +683,16 @@ static void finish(Sched *s, Process *p, bool failed) {
     heap_release_foreign(p);
     if (p->names.n) unregister_all(vm, p); /* before the Downs: a restarted service can take its name again */
     for (size_t i = 0; i < mons.n; i++) send_down(s, mons.v[i], p, failed);
-    bool observed = mons.n > 0 || links.n > 0;
+    /* On other nodes: a Down for each watcher; linked processes are told to
+     * fail with this one, or that the link is gone. */
+    uint64_t me = rlinks.n || rmons.n ? global_pid(vm, p->pid) : 0;
+    for (size_t i = 0; i < rmons.n; i++)
+        ctl_end(vm, NC_DOWN, rmons.v[i], me, p->exit_code, failed ? p->err.code : NULL, failed ? p->err.msg : NULL);
+    for (size_t i = 0; i < rlinks.n; i++) {
+        if (failed) ctl_end(vm, NC_EXIT, rlinks.v[i], me, p->exit_code, p->err.code, p->err.msg);
+        else ctl_pair(vm, NC_UNLINK, rlinks.v[i], me);
+    }
+    bool observed = mons.n > 0 || links.n > 0 || rmons.n > 0 || rlinks.n > 0;
     /* Linked processes die with a failing one; a normal exit just unlinks. */
     for (size_t i = 0; i < links.n; i++) {
         Process *l = pin(s, links.v[i]);
@@ -616,6 +709,8 @@ static void finish(Sched *s, Process *p, bool failed) {
     }
     VEC_FREE(links);
     VEC_FREE(mons);
+    VEC_FREE(rlinks);
+    VEC_FREE(rmons);
     bool is_main = p->prog && p->prog->main == p;
     if (failed && !observed && !is_main) report_unobserved(vm, p);
     if (!is_main) {
@@ -649,14 +744,37 @@ bool sched_alive(VM *vm, uint64_t pid) {
     return r;
 }
 
-static bool has_pid(const PidVec *v, uint64_t pid) {
-    for (size_t i = 0; i < v->n; i++)
-        if (v->v[i] == pid) return true;
-    return false;
+/* link to a process on another node: both sides keep the other's pid, and a
+ * failure on either side is sent across (NC_EXIT). */
+static void link_far(Process *p, uint32_t node, uint64_t pid) {
+    VM *vm = p->vm;
+    if (!self_node(vm) || !carrier_of(vm, node))
+        vm_trap(p, "E_NODE_DOWN", "link to process %llu on node %u, which is not connected",
+                (unsigned long long)(pid & PID_LOCAL), node);
+    plat_lock(p->lock);
+    bool had = has_pid(&p->rlinks, pid);
+    if (!had) VEC_PUSH(p->rlinks, pid);
+    plat_unlock(p->lock);
+    if (had) return;
+    /* Look again: a connection that went before the link was kept was not
+     * there to see it (sched_node_down clears the route, then looks). */
+    if (!carrier_of(vm, node)) {
+        plat_lock(p->lock);
+        unlink_pid(&p->rlinks, pid);
+        plat_unlock(p->lock);
+        vm_trap(p, "E_NODE_DOWN", "link to process %llu on node %u, which is not connected",
+                (unsigned long long)(pid & PID_LOCAL), node);
+    }
+    ctl_pair(vm, NC_LINK, pid, global_pid(vm, p->pid));
 }
 
 void sched_link(Process *p, uint64_t pid) {
     Sched *s = p->vm->sched;
+    uint32_t node = far_node(p->vm, &pid);
+    if (node) {
+        link_far(p, node, pid);
+        return;
+    }
     Process *t = pin(s, pid);
     if (!t || !is_live(t) || t->kill_req) {
         if (t) plat_unlock(t->lock);
@@ -679,8 +797,63 @@ void sched_add_link(Process *p, uint64_t pid) {
     plat_unlock(p->lock);
 }
 
+/* Take the pids of one node out of v: how many went. */
+static size_t drop_node(PidVec *v, uint32_t node) {
+    size_t k = 0;
+    for (size_t i = 0; i < v->n; i++)
+        if ((uint32_t)(v->v[i] >> NODE_SHIFT) == node) v->v[i--] = v->v[--v->n], k++;
+    return k;
+}
+
+static bool drop_one(PidVec *v, uint64_t pid) {
+    for (size_t i = 0; i < v->n; i++)
+        if (v->v[i] == pid) {
+            v->v[i] = v->v[--v->n];
+            return true;
+        }
+    return false;
+}
+
+/* A Down at once, for a process that cannot be watched. */
+static void down_now(Process *p, uint64_t pid, const char *code, const char *msg) {
+    sched_take_inbox(p); /* the Down goes after messages already delivered */
+    ObjStruct *d = struct_new(p, &VM_DOWN_DEF);
+    d->fields[DOWNF_PID].u = pid;
+    d->fields[DOWNF_CODE].r = str_new(p, code, strlen(code));
+    d->fields[DOWNF_MESSAGE].r = str_new(p, msg, strlen(msg));
+    Message m = {{.r = d}, T_R};
+    VEC_PUSH(p->mbox, m);
+    p->mcount++;
+}
+
 void sched_monitor(Process *p, uint64_t pid) {
     Sched *s = p->vm->sched;
+    VM *vm = p->vm;
+    uint32_t node = far_node(vm, &pid);
+    if (node) { /* the far side keeps the watcher (NC_MONITOR), and this one what it watches */
+        if (!self_node(vm) || !carrier_of(vm, node)) {
+            char msg[64];
+            snprintf(msg, sizeof msg, "node %u is not connected", node);
+            down_now(p, pid, "E_NODE_DOWN", msg);
+            return;
+        }
+        plat_lock(p->lock);
+        VEC_PUSH(p->rwatch, pid);
+        plat_unlock(p->lock);
+        if (!carrier_of(vm, node)) { /* it went meanwhile (as for link_far) */
+            plat_lock(p->lock);
+            bool mine = drop_one(&p->rwatch, pid);
+            plat_unlock(p->lock);
+            if (mine) { /* (else sched_node_down took it, and sends the Down) */
+                char msg[64];
+                snprintf(msg, sizeof msg, "node %u is not connected", node);
+                down_now(p, pid, "E_NODE_DOWN", msg);
+            }
+            return;
+        }
+        ctl_pair(vm, NC_MONITOR, pid, global_pid(vm, p->pid));
+        return;
+    }
     Process *t = pin(s, pid);
     if (t && is_live(t) && !t->kill_req) {
         VEC_PUSH(t->monitors, p->pid);
@@ -688,14 +861,158 @@ void sched_monitor(Process *p, uint64_t pid) {
         return;
     }
     if (t) plat_unlock(t->lock);
-    sched_take_inbox(p); /* the Down goes after messages already delivered */
-    ObjStruct *d = struct_new(p, &VM_DOWN_DEF);
-    d->fields[DOWNF_PID].i = (int64_t)pid;
-    d->fields[DOWNF_CODE].r = str_new(p, "E_NOPROC", 8);
-    d->fields[DOWNF_MESSAGE].r = str_new(p, "no such process", 15);
-    Message m = {{.r = d}, T_R};
-    VEC_PUSH(p->mbox, m);
-    p->mcount++;
+    down_now(p, pid, "E_NOPROC", "no such process");
+}
+
+void sched_node_down(VM *vm, uint32_t node) {
+    Sched *s = vm->sched;
+    uint64_t end = vm_pid_end(vm);
+    char why[96];
+    snprintf(why, sizeof why, "node %u went down", node);
+    for (uint64_t pid = 1; pid < end; pid++) {
+        Process *t = pin(s, pid);
+        if (!t) continue;
+        if (!is_live(t)) {
+            plat_unlock(t->lock);
+            continue;
+        }
+        drop_node(&t->rmonitors, node);
+        bool linked = drop_node(&t->rlinks, node) > 0;
+        PidVec gone = {0}; /* what it watched there */
+        for (size_t i = 0; i < t->rwatch.n; i++)
+            if ((uint32_t)(t->rwatch.v[i] >> NODE_SHIFT) == node) VEC_PUSH(gone, t->rwatch.v[i]);
+        drop_node(&t->rwatch, node);
+        if (t->call_id && t->call_node == node && !t->reply_ready) { /* its proc.call there */
+            t->reply = (InMsg){0};
+            t->reply_err = "E_NODE_DOWN";
+            t->reply_ready = true;
+            if (t->state == PROC_WAITING) ready_locked(s, t);
+        }
+        bool claimed = false;
+        if (linked && !t->kill_req) {
+            char msg[160];
+            snprintf(msg, sizeof msg, "a linked process was on node %u, which went down", node);
+            claimed = kill_locked(t, "E_LINKED", msg);
+        }
+        plat_unlock(t->lock);
+        for (size_t i = 0; i < gone.n; i++) down_far(s, pid, gone.v[i], 0, "E_NODE_DOWN", 11, why, strlen(why));
+        VEC_FREE(gone);
+        if (claimed) finish(s, t, true);
+    }
+}
+
+/* A string field of a control frame, or NULL. */
+static const ObjString *frame_str(const ObjList *l, uint32_t i) {
+    const Obj *o = l->items[i].r;
+    return l->tags[i] == T_R && o && o->kind == OBJ_STRING ? (const ObjString *)o : NULL;
+}
+
+void sched_node_control(Process *p, const ObjList *l) {
+    VM *vm = p->vm;
+    Sched *s = vm->sched;
+    static const uint32_t LEN[] = {[NC_LINK] = 3, [NC_UNLINK] = 3, [NC_EXIT] = 6, [NC_MONITOR] = 3,
+                                   [NC_DOWN] = 6, [NC_REPLY] = 4, [NC_NOPROC] = 3};
+    if (!l || l->h.kind != OBJ_LIST || l->len < 3 || !type_is_int((MlwsType)l->tags[0]) ||
+        !type_is_int((MlwsType)l->tags[1]) || !type_is_int((MlwsType)l->tags[2]))
+        vm_trap(p, "E_PARSE", "node.control: expected [kind, pid, pid or id, ...]");
+    int64_t kind = l->items[0].i;
+    if (kind < NC_LINK || kind > NC_NOPROC || l->len != LEN[kind] ||
+        ((kind == NC_EXIT || kind == NC_DOWN) && !type_is_int((MlwsType)l->tags[3])))
+        vm_trap(p, "E_PARSE", "node.control: a frame of kind %lld that is not one", (long long)kind);
+    uint64_t to = l->items[1].u, a = l->items[2].u;
+    if (far_node(vm, &to)) return; /* not for this node */
+    to &= PID_LOCAL;
+    Process *t = pin(s, to);
+    switch (kind) {
+    case NC_LINK: { /* a, on another node, links to `to` */
+        bool ok = t && accepts(t);
+        if (ok && !has_pid(&t->rlinks, a)) VEC_PUSH(t->rlinks, a);
+        if (t) plat_unlock(t->lock);
+        if (!ok) ctl_end(vm, NC_EXIT, a, global_pid(vm, to), 0, "E_NOPROC", "no such process");
+        return;
+    }
+    case NC_UNLINK:
+        if (t) unlink_pid(&t->rlinks, a), plat_unlock(t->lock);
+        return;
+    case NC_EXIT: { /* a, linked with `to`, failed */
+        bool claimed = false;
+        if (t && drop_one(&t->rlinks, a) && is_live(t) && !t->kill_req) {
+            const ObjString *code = frame_str(l, 4);
+            char msg[256];
+            snprintf(msg, sizeof msg, "linked process %llu on node %u failed: %.*s", (unsigned long long)(a & PID_LOCAL),
+                     (unsigned)(a >> NODE_SHIFT), code ? (int)code->len : 1, code ? code->data : "?");
+            claimed = kill_locked(t, "E_LINKED", msg);
+        }
+        if (t) plat_unlock(t->lock);
+        if (claimed) finish(s, t, true);
+        return;
+    }
+    case NC_MONITOR: { /* a, on another node, watches `to` */
+        bool ok = t && accepts(t);
+        if (ok) VEC_PUSH(t->rmonitors, a);
+        if (t) plat_unlock(t->lock);
+        if (!ok) ctl_end(vm, NC_DOWN, a, global_pid(vm, to), 0, "E_NOPROC", "no such process");
+        return;
+    }
+    case NC_DOWN: { /* a, which `to` watches, ended */
+        bool told = t && drop_one(&t->rwatch, a) && accepts(t);
+        if (t) plat_unlock(t->lock);
+        const ObjString *code = frame_str(l, 4), *msg = frame_str(l, 5);
+        if (told)
+            down_far(s, to, a, l->items[3].i, code ? code->data : NULL, code ? code->len : 0, msg ? msg->data : NULL,
+                     msg ? msg->len : 0);
+        return;
+    }
+    case NC_REPLY: { /* the answer to call a of `to` */
+        if (t) plat_unlock(t->lock); /* (copy outside the lock: it can trap) */
+        Process *f = my_frag(s);
+        frag_reset(f);
+        Word v = type_is_ref(l->tags[3]) && l->items[3].r ? msg_copy(p, f, l->items[3], l->tags[3]) : l->items[3];
+        InMsg m = frag_take(f, v, l->tags[3]);
+        t = pin(s, to);
+        if (t && accepts(t) && t->call_id == a && t->call_node && !t->reply_ready) {
+            t->reply = m;
+            t->reply_err = NULL;
+            t->reply_ready = true;
+            if (t->state == PROC_WAITING) ready_locked(s, t);
+            plat_unlock(t->lock);
+            return;
+        }
+        if (t) plat_unlock(t->lock);
+        gc_free_list(m.objs);
+        return;
+    }
+    case NC_NOPROC: /* call a of `to` went to a process that is not there */
+        if (t && accepts(t) && t->call_id == a && t->call_node && !t->reply_ready) {
+            t->reply = (InMsg){0};
+            t->reply_err = "E_NOPROC";
+            t->reply_ready = true;
+            if (t->state == PROC_WAITING) ready_locked(s, t);
+        }
+        if (t) plat_unlock(t->lock);
+        return;
+    }
+    if (t) plat_unlock(t->lock);
+}
+
+/* A message from another node for a process here. A Call for one that is not
+ * here is answered at once (NC_NOPROC), so that its caller need not wait out
+ * its timeout. */
+void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag) {
+    VM *vm = p->vm;
+    pid &= PID_LOCAL;
+    const ObjStruct *c = v.r;
+    if (type_is_ref(tag) && c && c->h.kind == OBJ_STRUCT && c->def == &VM_BUILTIN_DEFS[BUILTIN_CALL]) {
+        Process *t = pin(vm->sched, pid);
+        bool here = t && accepts(t);
+        if (t) plat_unlock(t->lock);
+        uint64_t from = c->fields[CALLF_FROM].u;
+        if (!here) {
+            if (far_node(vm, &from)) ctl_pair(vm, NC_NOPROC, from, c->fields[CALLF_ID].u);
+            return;
+        }
+    }
+    sched_send(p, pid, v, tag);
 }
 
 void sched_set_quota(Process *p, int kind, uint64_t limit) {
@@ -779,23 +1096,54 @@ static void unregister_all(VM *vm, Process *p) {
 static void n_call(Process *p, Word *a, Word *r) {
     Sched *s = p->vm->sched;
     if (!p->resumed) {
+        VM *vm = p->vm;
         uint64_t pid = a[0].u;
-        if (pid == p->pid) {
+        uint32_t node = far_node(vm, &pid); /* another node's: the Call goes to its carrier as [pid, Call] */
+        if (pid == p->pid && !node) {
             native_fail(p, "E_DEADLOCK", "proc.call: a process cannot call itself");
+            return;
+        }
+        uint64_t carrier = node ? carrier_of(vm, node) : 0;
+        if (node && (!self_node(vm) || !carrier)) {
+            native_fail(p, "E_NODE_DOWN", "proc.call: node %u is not connected", node);
             return;
         }
         Process *f = my_frag(s);
         frag_reset(f);
         Word body = a[1].r ? msg_copy(p, f, a[1], T_R) : a[1]; /* traps (E_TYPE) for unsendable values */
         ObjStruct *c = struct_new(f, &VM_BUILTIN_DEFS[BUILTIN_CALL]);
-        c->fields[CALLF_FROM].u = p->pid;
+        c->fields[CALLF_FROM].u = node ? global_pid(vm, p->pid) : p->pid;
         c->fields[CALLF_ID].u = ++p->call_seq;
         c->fields[CALLF_BODY] = body;
-        InMsg m = frag_take(f, (Word){.r = c}, T_R);
+        Word root = {.r = c};
+        if (node) {
+            ObjList *l = list_new(f, 2);
+            list_push(f, l, (Word){.u = pid}, T_I64);
+            list_push(f, l, root, T_R);
+            root.r = &l->h;
+        }
+        InMsg m = frag_take(f, root, T_R);
         plat_lock(p->lock);
         p->call_id = p->call_seq;
+        p->call_node = node;
+        p->reply_err = NULL;
         p->reply_ready = false;
         plat_unlock(p->lock);
+        if (node) {
+            p->call_deadline = a[2].i >= 0 ? plat_now_ns() + (uint64_t)a[2].i * 1000000u : 0;
+            if (!carrier_of(vm, node)) { /* it went meanwhile (as for link_far) */
+                gc_free_list(m.objs);
+                plat_lock(p->lock);
+                if (!p->reply_ready) { /* (else sched_node_down has ended the call) */
+                    p->reply_err = "E_NODE_DOWN";
+                    p->reply_ready = true;
+                }
+                plat_unlock(p->lock);
+            } else {
+                deliver(s, carrier, &m);
+            }
+            goto wait;
+        }
         Process *to = pin(s, pid);
         if (!to || !accepts(to)) {
             if (to) plat_unlock(to->lock);
@@ -810,12 +1158,29 @@ static void n_call(Process *p, Word *a, Word *r) {
         plat_unlock(to->lock);
         p->call_deadline = a[2].i >= 0 ? plat_now_ns() + (uint64_t)a[2].i * 1000000u : 0;
     }
+wait:
     plat_lock(p->lock);
+    if (p->reply_ready && p->reply_err) { /* (another node's) no answer will come */
+        const char *why = p->reply_err;
+        uint32_t node = p->call_node;
+        p->reply_ready = false;
+        p->reply_err = NULL;
+        p->call_id = 0;
+        p->call_node = 0;
+        plat_unlock(p->lock);
+        p->deadline_set = false;
+        if (!strcmp(why, "E_NOPROC"))
+            native_fail(p, "E_NOPROC", "proc.call: process %llu on node %u does not exist or has finished",
+                        (unsigned long long)(a[0].u & PID_LOCAL), node);
+        else native_fail(p, "E_NODE_DOWN", "proc.call: node %u went down", node);
+        return;
+    }
     if (p->reply_ready) { /* the answer */
         gc_adopt(p, p->reply.objs, p->reply.bytes, p->reply.nobjs);
         r[0] = p->reply.v;
         p->reply_ready = false;
         p->call_id = 0;
+        p->call_node = 0;
         plat_unlock(p->lock);
         p->deadline_set = false;
         return;
@@ -823,7 +1188,7 @@ static void n_call(Process *p, Word *a, Word *r) {
     bool deadlock = p->deadlock;
     p->deadlock = false;
     bool late = p->call_deadline && plat_now_ns() >= p->call_deadline;
-    if (deadlock || late) p->call_id = 0; /* a reply from now on is dropped */
+    if (deadlock || late) p->call_id = 0, p->call_node = 0; /* a reply from now on is dropped */
     plat_unlock(p->lock);
     if (deadlock || late) {
         p->deadline_set = false;
@@ -846,8 +1211,16 @@ static void n_reply(Process *p, Word *a, Word *r) {
     Process *f = my_frag(s);
     frag_reset(f);
     Word v = a[1].r ? msg_copy(p, f, a[1], T_R) : a[1];
+    uint64_t from = c->fields[CALLF_FROM].u;
+    uint32_t node = far_node(p->vm, &from);
+    if (node) { /* to its node's carrier: [reply, caller, id, value] */
+        Word w[3] = {{.u = from}, c->fields[CALLF_ID], v};
+        uint8_t t[3] = {T_I64, T_I64, T_R};
+        ctl_send(p->vm, f, node, NC_REPLY, 3, w, t);
+        return;
+    }
     InMsg m = frag_take(f, v, T_R);
-    Process *to = pin(s, c->fields[CALLF_FROM].u);
+    Process *to = pin(s, from);
     if (to && accepts(to) && to->call_id == c->fields[CALLF_ID].u && !to->reply_ready) {
         to->reply = m;
         to->reply_ready = true;

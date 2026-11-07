@@ -1,9 +1,32 @@
-; Spawned on another node by tests/tools/_node/one.masm: answers once.
-.export serve
+; Spawned on another node by tests/tools/_node/one.masm.
+.export serve, wait_one, ignore, fail_on_msg
+
+; Answers once.
 .func serve(ref who)
     mov I0, who[0]
     recv R1
     strcat R2, "got ", R1
     send I0, R2
     ret
+.endf
+
+; Ends normally at its first message.
+.func wait_one(ref who)
+    recv R1
+    ret
+.endf
+
+; Never answers, never ends.
+.func ignore(ref who)
+1:  recv R1
+    jmp 1b
+.endf
+
+; Fails at its first message.
+.func fail_on_msg(ref who)
+    recv R1
+    new R2, Error
+    mov R2->Error.code, "E_TOLD"
+    mov R2->Error.message, "told to fail"
+    throw R2
 .endf

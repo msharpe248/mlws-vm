@@ -541,6 +541,11 @@ struct Process {
     char kill_msg[256];
     PidVec links;                /* [L] */
     PidVec monitors;             /* [L] pids watching this process */
+    /* Across nodes (sched.c, "Across nodes"): pids on other nodes, as they name
+     * themselves there (with their node's number). */
+    PidVec rlinks;               /* [L] linked with this process */
+    PidVec rmonitors;            /* [L] watching this process */
+    PidVec rwatch;               /* [L] watched by this process: told if their node goes */
     struct Process *pending_spawn; /* child being set up by spawn (freed if that traps) */
     uint64_t quota[QUOTA__COUNT]; /* the mailbox quota is [L] */
     /* native calls (extapi.c) */
@@ -560,6 +565,8 @@ struct Process {
     /* proc.call: waiting for a reply, which goes to `reply`, never the mailbox */
     uint64_t call_seq, call_deadline;
     uint64_t call_id;            /* [L] the call being waited for, or 0 */
+    uint32_t call_node;          /* [L] the node called, or 0 for this one */
+    const char *reply_err;       /* [L] with reply_ready: no answer comes, for this reason (E_NOPROC, E_NODE_DOWN) */
     bool reply_ready;            /* [L] */
     InMsg reply;                 /* [L] detached until taken */
     uint64_t cpu_ns, msgs_sent, msgs_received;
@@ -777,6 +784,11 @@ void sched_kill(Process *p, uint64_t pid, const char *code, const char *msg);
 void sched_link(Process *p, uint64_t pid);
 void sched_add_link(Process *p, uint64_t pid); /* p's side of a link only */
 void sched_monitor(Process *p, uint64_t pid);
+/* Across nodes (std.node, dist.c): a control frame from another node, a message
+ * for a process here, and a node's connection gone. */
+void sched_node_control(Process *p, const ObjList *frame);
+void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag);
+void sched_node_down(VM *vm, uint32_t node);
 void sched_set_quota(Process *p, int kind, uint64_t limit);
 bool sched_alive(VM *vm, uint64_t pid);
 void sched_shutdown(VM *vm, Process *keep); /* free every process except `keep` */
@@ -834,6 +846,7 @@ bool caps_allow_name(const Caps *c, int kind, const char *name);
 void natives_register_caps(VM *vm);
 /* dist.c: a pid's top 16 bits name its node (0: this one, by a plain pid). */
 #define NODE_SHIFT 48
+#define PID_LOCAL ((((uint64_t)1) << NODE_SHIFT) - 1) /* a pid's part that names its process on its node */
 void natives_register_node(VM *vm);
 const NativeDef *natives_node_table(size_t *n);
 const NativeDef *natives_caps_table(size_t *n);

@@ -1,0 +1,84 @@
+; node.control takes what another node sends for link, monitor and proc.call
+; across nodes ([kind, pid, pid or id, ...], from std.node's reader): bytes off
+; the network, so a frame that is not one raises E_PARSE, never worse, and one
+; about a process that is not here, or not linked, does nothing.
+.include "std/test.inc"
+
+; The error code node.control raises for a frame, or null.
+.func code_of(ref frame) -> ref
+.try h
+    ncall "node.control" (frame)
+.endtry
+    ret null
+h:  catch R1
+    mov R2, R1->Error.code
+    ret R2
+.endf
+
+.macro PARSE_ERROR frame
+    call code_of (\frame) -> (R10)
+    strcmp I10, R10, "E_PARSE"
+    ASSERT_EQ I10, 0
+.endm
+
+.func main
+    lnew R0                            ; []
+    PARSE_ERROR R0
+    lnew R0                            ; [42, 1, 2]: no such kind
+    lpush R0, 42
+    lpush R0, 1
+    lpush R0, 2
+    PARSE_ERROR R0
+    lnew R0                            ; ["x", 1, 2]
+    lpush R0, "x"
+    lpush R0, 1
+    lpush R0, 2
+    PARSE_ERROR R0
+    lnew R0                            ; [5, 1, 2]: an exit is six long
+    lpush R0, 5
+    lpush R0, 1
+    lpush R0, 2
+    PARSE_ERROR R0
+    lnew R0                            ; [3, 1, 2, 3]: a link is three
+    lpush R0, 3
+    lpush R0, 1
+    lpush R0, 2
+    lpush R0, 3
+    PARSE_ERROR R0
+    lnew R0                            ; [7, 1, 2, "x", null, null]: down's exit is a number
+    lpush R0, 7
+    lpush R0, 1
+    lpush R0, 2
+    lpush R0, "x"
+    lpush R0, null
+    lpush R0, null
+    PARSE_ERROR R0
+    ; An exit from a process this one is not linked with does nothing; nor
+    ; does a reply to a call it is not making, or an unlink.
+    mov I0, 7
+    shl I0, I0, 48
+    or I0, I0, 3                       ; process 3 of node 7
+    lnew R0
+    lpush R0, 5
+    lpush R0, PID
+    lpush R0, I0
+    lpush R0, 0
+    lpush R0, "E_TOLD"
+    lpush R0, "told to fail"
+    call code_of (R0) -> (R10)
+    ASSERT_FALSE R10, r
+    lnew R0
+    lpush R0, 8
+    lpush R0, PID
+    lpush R0, 1
+    lpush R0, "an answer nobody asked for"
+    call code_of (R0) -> (R10)
+    ASSERT_FALSE R10, r
+    lnew R0
+    lpush R0, 4
+    lpush R0, PID
+    lpush R0, I0
+    call code_of (R0) -> (R10)
+    ASSERT_FALSE R10, r
+    ret 0
+.endf
