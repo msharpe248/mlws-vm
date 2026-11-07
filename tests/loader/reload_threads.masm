@@ -1,0 +1,41 @@
+; Processes on every worker thread call a module in a loop while main replaces
+; it twenty times. Each sees its versions in order and none other, with calls
+; hot enough to be compiled, and all reach the last one.
+.include "std/test.inc"
+.import _reload.count as c
+
+.const LAST = 20
+
+.func caller(i64 parent)
+    mov I1, 0                          ; the last version seen
+    mov I2, 0                          ; calls
+1:  call c.version -> (I3)
+    ASSERT_GE I3, I1
+    ASSERT_LE I3, LAST
+    mov I1, I3
+    inc I2
+    blt I3, LAST, 1b
+    send parent, I2
+    ret
+.endf
+
+.func main
+    mov I0, 0
+1:  spawn caller (PID)
+    inc I0
+    blt I0, 8, 1b
+    mov I1, 2                          ; the next version
+2:  tostr R0, I1
+    strcat R1, ".export version\n.func version -> i64\n    ret ", R0, "\n.endf\n"
+    ncall "module.reload_text" ("_reload.count", R1)
+    call c.version -> (I2)
+    ASSERT_EQ I2, I1
+    inc I1
+    ble I1, LAST, 2b
+    mov I0, 0
+3:  recv I3
+    ASSERT_GT I3, 0
+    inc I0
+    blt I0, 8, 3b
+    ret 0
+.endf

@@ -41,6 +41,7 @@ the message also names the macro and where it was expanded.
 | `E_LINK_EXT` | A native extension is not installed, cannot be loaded, or failed to initialise ([EXTENDING.md](EXTENDING.md)) |
 | `E_LINK_UNTRUSTED` | Native code failed a trust check: not installed, changed since installation, unsafe permissions, or an FFI library not allowed |
 | `E_LINK_FFI` | `.extern`, `.ffi_free`, `.cstruct` or `.callback`: library or symbol not found, a missing or conflicting `.cstruct`, `.callback` or free function, a call libffi cannot make, or built without libffi. Also raised at run time when libffi cannot make a callback closure (`ffi.async_callback`) |
+| `E_LINK_RELOAD` | A new version of a module (`module.reload`) changes the signature of a function or a struct another module uses, or that module uses its exported data |
 | `E_LINK_NO_MAIN` | The program has no `main`, or `main` takes parameters |
 | `E_VERIFY` | Bytecode verification failed: an operand shape, a register outside the window, a branch target, call or native arity or argument kinds, `ret` versus declared results, or code that runs off the end. Reported with source file, line and function |
 
@@ -58,7 +59,7 @@ of the wrong type: `E_TYPE`), and one of its own:
 
 | Code | Meaning |
 |---|---|
-| `E_BUSY` | A background run (`mlws_start`) is in progress, so the VM cannot load or run anything else until `mlws_wait`; or `mlws_wait` with nothing running in the background |
+| `E_BUSY` | A module is being reloaded (`module.reload`); a background run (`mlws_start`) is in progress, so the VM cannot load or run anything else until `mlws_wait`; or `mlws_wait` with nothing running in the background |
 
 ## Runtime traps
 

@@ -175,6 +175,7 @@ typedef struct LModule {
     const Home *home;
     char *key;
     atomic_bool shared_name;
+    bool replaced;            /* a newer version took its name (vm_reload) */
     struct LModule **deps;    /* m->nimports: the module each import resolved to */
     int index;
     int state;
@@ -249,6 +250,9 @@ typedef struct VM {
     uint32_t stack_words;
     uint32_t max_frames;
     uint64_t next_pid;           /* under `lock` */
+    atomic_bool reloading;   /* vm_reload is at work: one at a time */
+    const struct LModule *reload_old; /* the version being replaced, as its successor links (under mods_lock) */
+    VEC(void *) retired;     /* what reloads replaced and another thread may still read: freed with the VM */
     struct Bundle *bundle;   /* the program this executable carries, or NULL: modules are found there first */
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
     bool gc_verify;          /* after each minor collection's marking, check it against a walk of the whole heap */
@@ -632,6 +636,12 @@ LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err
  * library path only), under mods_lock. A load that fails leaves the modules
  * it had not linked unusable and their names free. */
 LModule *vm_load_dynamic(VM *vm, const char *name, const LModule *from, MlwsError *err);
+/* A new version of a loaded module, from its file (text NULL) or from text:
+ * calls to it from other modules go to the new version from now on. Code
+ * already running, and the old version's calls to itself, stay on the old
+ * one. Fails, changing nothing, if a module using it would not link to the
+ * new one (docs/ABI.md, "Reloading a module"). */
+LModule *vm_reload(VM *vm, const char *name, const char *text, const LModule *from, MlwsError *err);
 /* The loaded, linked module that `name` means to `from` (as its import
  * would), or NULL. With from NULL: the library-path module of that name, or
  * else the only program-local one. */
@@ -720,6 +730,9 @@ void interp_quicken_function(Function *f);
 enum { JIT_MODE_OFF, JIT_MODE_ON, JIT_MODE_ALL };
 #define JIT_HOT_DEFAULT 1000
 void interp_jit_function(VM *vm, Function *f); /* after quickening: compile it, or count towards it */
+void interp_jit_forget(VM *vm, Function *f);
+void interp_jit_again(VM *vm, Function *f);
+void interp_retarget(VM *vm, Insn *in, int k, Function *to); /* operand k, a function, is to now */
 void interp_jit_free(VM *vm);
 void interp_jit_report(VM *vm, FILE *out);
 bool interp_jit_available(void); /* in this build, on this machine */

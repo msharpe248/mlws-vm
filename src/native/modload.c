@@ -35,6 +35,32 @@ static void n_load(Process *p, Word *a, Word *r) {
     proc_grow_globals(p);
 }
 
+/* Charged as module.load is. */
+static void charge_load(Process *p, const char *fn) {
+    if (p->os_calls >= p->quota[QUOTA_OS])
+        vm_trap(p, "E_QUOTA", "OS call quota of %llu exceeded (%s reads files)", (unsigned long long)p->quota[QUOTA_OS], fn);
+    p->os_calls++;
+}
+
+static void n_reload(Process *p, Word *a, Word *r) {
+    (void)r;
+    const char *name = name_arg(p, a[0], "module.reload");
+    charge_load(p, "module.reload");
+    MlwsError err = {{0}, {0}};
+    if (!vm_reload(p->vm, name, NULL, caller_module(p), &err)) vm_trap(p, err.code, "%s", err.msg);
+    proc_grow_globals(p);
+}
+
+static void n_reload_text(Process *p, Word *a, Word *r) {
+    (void)r;
+    const char *name = name_arg(p, a[0], "module.reload_text");
+    const char *text = name_arg(p, a[1], "module.reload_text");
+    charge_load(p, "module.reload_text");
+    MlwsError err = {{0}, {0}};
+    if (!vm_reload(p->vm, name, text, caller_module(p), &err)) vm_trap(p, err.code, "%s", err.msg);
+    proc_grow_globals(p);
+}
+
 static void n_loaded(Process *p, Word *a, Word *r) {
     r[0].i = vm_module_named(p->vm, name_arg(p, a[0], "module.loaded"), caller_module(p)) != NULL;
 }
@@ -67,6 +93,10 @@ static const NativeDef MODULE_NATIVES[] = {
       "Load a module (and what it imports) while the program runs: as if the calling module imported it, so "
       "found in the program's directory first if the caller is one of the program's own modules, with the same "
       "library versions, privacy and verification. Loading a loaded module does nothing."),
+    N("module.reload", 1, T(T_R), 0, T(0), n_reload,
+      "Load a new version of a loaded module from its file: calls from other modules go to it from now on, while code already running, closures made from the old version and the old version's calls to itself stay on the old one. Fails with nothing changed if a module using it would not link to the new version (E_LINK_RELOAD, E_LINK_UNDEF)."),
+    N("module.reload_text", 2, T(T_R, T_R), 0, T(0), n_reload_text,
+      "The same, with the new version's assembly text: a program's own compiler or deployment can supply it."),
     N("module.loaded", 1, T(T_R), 1, T(T_B), n_loaded,
       "Whether a module is loaded: the module that name means to the caller, as for module.load."),
     N("module.function", 2, T(T_R, T_R), 1, T(T_R), n_function,

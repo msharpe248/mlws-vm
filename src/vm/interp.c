@@ -1208,6 +1208,28 @@ static void quicken_plan(Insn *in) {
     in->k.p = pl;
 }
 
+/* A reload (vm_reload) points a call site at the new version of its callee,
+ * of the same signature, so the form stays. A call's plan names the callee and
+ * its parameters' slots, so it gets a new one, in one store: a callback on an
+ * I/O thread may be reading the old. */
+void interp_retarget(VM *vm, Insn *in, int k, Function *to) {
+    __atomic_store_n(&in->ops[k].rv.ptr, to, __ATOMIC_RELEASE);
+    if (in->xop != Q_CALL_R && in->xop != Q_CALL_RK) return;
+    const QPlan *pl = in->k.p;
+    int argc = pl->argc, cnt[NBANKS] = {0};
+    size_t size = sizeof(QPlan) + (size_t)(2 * argc + pl->nres);
+    QPlan *np = xmalloc(size);
+    memcpy(np, pl, size);
+    np->fn = to;
+    for (int a = 0; a < argc; a++) {
+        int b = (int)type_bank((MlwsType)to->mf->params[a]);
+        np->slot[argc + a] = (uint8_t)(to->roff[b] + cnt[b]++);
+        in->ops[2 + a].ireg = np->slot[argc + a];
+    }
+    VEC_PUSH(vm->retired, np);
+    __atomic_store_n(&in->k.p, (void *)np, __ATOMIC_RELEASE);
+}
+
 void interp_quicken_function(Function *f) {
     quicken_fn = f->mf;
     /* Every register operand's slot in f's register window (Function.roff), in
@@ -2375,6 +2397,8 @@ int interp_run(Process *p, uint32_t budget) {
 
 #ifndef MLWS_JIT /* the JIT needs arm64 or x86-64, and the tail-call build (jit.inc) */
 void interp_jit_function(VM *vm, Function *f) { (void)vm, (void)f; }
+void interp_jit_forget(VM *vm, Function *f) { (void)vm, (void)f; }
+void interp_jit_again(VM *vm, Function *f) { (void)vm, (void)f; }
 void interp_jit_free(VM *vm) { (void)vm; }
 void interp_jit_report(VM *vm, FILE *out) {
     (void)vm;

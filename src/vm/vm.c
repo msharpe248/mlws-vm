@@ -139,6 +139,8 @@ void vm_free(VM *vm) {
     VEC_FREE(vm->archives);
     smap_free(&vm->libsel);
     VEC_FREE(vm->chosen);
+    for (size_t i = 0; i < vm->retired.n; i++) free(vm->retired.v[i]);
+    VEC_FREE(vm->retired);
     for (size_t i = 0; i < vm->const_objs.n; i++) free(vm->const_objs.v[i]);
     VEC_FREE(vm->const_objs);
     smap_free(&vm->const_pool);

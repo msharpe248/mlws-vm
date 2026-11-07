@@ -50,7 +50,8 @@ base:
   Libraries ship as one versioned archive (`mlwsvm lib build`), state which
   versions of each other they need (`.requires json5, "^1.2"`), and keep
   their internal modules private. A running program can load more modules by
-  name (`module.load`) and call them through closures. Each program's own
+  name (`module.load`), call them through closures, and replace a module
+  under running processes (`module.reload`), Erlang-style. Each program's own
   modules come from its own directory, so programs run together in one VM may
   both have a `main` or a `util`.
 * **Rich heap types with a garbage collector**: strings, byte buffers, typed

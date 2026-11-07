@@ -1,0 +1,7 @@
+; Uses shared's data, which ties shared to its version.
+.import _reload.shared as sh
+.export read_total
+.func read_total -> i64
+    mov I0, @sh.total
+    ret I0
+.endf

@@ -560,6 +560,23 @@ the constraints it stated (`VM.wants`, each with its owner), except those of
 what stays loaded. Modules are never
 unloaded, so a closure never outlives its code.
 
+`module.reload` (`vm_reload`, `vm/loader.c`) adds a second version of a module
+beside the first. It works in two steps, so that a failure changes nothing and
+the world is stopped only for what cannot race. First, under `mods_lock`, the
+new version loads and links as any module does, with its name freed for the
+moment, and every other module is checked against it (`still_links`); struct
+types the same in both versions are shared as it links (`reload_same_struct`).
+Then the other workers stop at their time slices' ends, and `retarget_users`
+points every call site, `spawn` and `closure` in other modules at the new
+`Function`. Machine code is never patched. A compiled call reads its callee's
+`jit_entry` before each call, so with that cleared (`interp_jit_forget`) it stops
+for the interpreter's call, whose operand now names the new version. Functions
+with retargeted sites are compiled again when hot. Call sites keep their
+quickened forms, since the signature is the same, with a new `QPlan` swapped in
+by one store, because a callback on an I/O thread can be running while the world
+is stopped. Old versions are never freed, so frames and closures need no
+tracking: what points at old code stays valid.
+
 ## 7. The verifier
 
 `vm/verify.c` establishes, once, everything the interpreter relies on

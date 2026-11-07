@@ -207,6 +207,8 @@ wrappers in `lib/std/*.masm` instead of directly.
 | Name | Parameters | Results | Description |
 |---|---|---|---|
 | `module.load` | r | - | Load a module (and what it imports) while the program runs: as if the calling module imported it, so found in the program's directory first if the caller is one of the program's own modules, with the same library versions, privacy and verification. Loading a loaded module does nothing. |
+| `module.reload` | r | - | Load a new version of a loaded module from its file: calls from other modules go to it from now on, while code already running, closures made from the old version and the old version's calls to itself stay on the old one. Fails with nothing changed if a module using it would not link to the new version (E_LINK_RELOAD, E_LINK_UNDEF). |
+| `module.reload_text` | r, r | - | The same, with the new version's assembly text: a program's own compiler or deployment can supply it. |
 | `module.loaded` | r | b | Whether a module is loaded: the module that name means to the caller, as for module.load. |
 | `module.function` | r, r | r | A closure for a function a loaded module exports, to call with calli (its signature is checked then). |
 | `module.exports` | r | r | The names of the functions a loaded module exports. |

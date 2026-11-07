@@ -564,3 +564,38 @@ A running program can load a module it did not import, and call it:
 * Processes on any worker thread may load modules at the same time; loads
   are serialized, and spawning waits only while a module is being added.
 
+### Reloading a module
+
+`module.reload` loads a new version of a loaded module from its file, and
+`module.reload_text` from assembly text, which suits a language's own
+compiler or a deployment that sends code over a socket:
+
+```asm
+    ncall "module.reload" ("plugins.csv")
+```
+
+* **Calls from other modules, and `spawn` and `closure` of the module's functions
+  in them, go to the new version** from then on, as does `module.function`.
+  Compiled code goes back to the interpreter and is compiled again when hot.
+* **What is running stays on the old version:** frames already in it, closures
+  made from it, and the old version's calls to its own functions. So a process
+  in a loop moves to the new code when the loop calls through a closure from
+  `module.function`, or returns to a caller in another module. This is
+  Erlang's rule, in which a local call stays and a qualified call moves.
+* **Data is the new version's own.** Its globals start as the file says, and the
+  old version's stay with the old code. Move what must survive through a
+  function of the old version, or keep it in a process.
+* **A struct type with the same name, fields and types in both versions is one
+  type,** so objects pass between old and new code. A struct type that changes
+  is a new type, and an old object used with the new code is `E_TYPE`, as for
+  any other struct.
+* **It fails with nothing changed** if a module using the old version would not
+  link to the new one: an export it uses has gone (`E_LINK_UNDEF`), or its
+  signature or struct has changed, or it uses the old version's exported data
+  (`E_LINK_RELOAD`). The loader's own errors are raised as for `module.load`.
+  A second reload while one is at work is `E_BUSY`.
+* A reload stops the other worker threads for an instant, at the end of their
+  time slices. Old versions stay in memory until the VM ends. It counts as an OS
+  call, as `module.load` does.
+
+

@@ -2699,6 +2699,32 @@ void interp_jit_function(VM *vm, Function *f) {
     }
 }
 
+/* With the world stopped (vm_reload): f goes back to the interpreter, with no
+ * machine code and none to come. Calls compiled for it find no entry and stop
+ * for the interpreter's call, whose operand then decides. Its machine code
+ * stays in place: the process that asked may be running it. */
+void interp_jit_forget(VM *vm, Function *f) {
+    if (!f->jit_xop) return;
+    for (uint32_t pc = 0; pc < f->ncode; pc++) {
+        uint16_t x = f->jit_xop[pc];
+        __atomic_store_n(&f->code[pc].xop, x, __ATOMIC_RELEASE);
+        if (x == Q_CALL_R || x == Q_CALL_RK || x == Q_CALLI_R || x == Q_CALLI_RK) /* no continuation: a ret goes back through the interpreter */
+            __atomic_store_n(&f->code[pc].target, 0, __ATOMIC_RELEASE);
+    }
+    VEC_PUSH(vm->retired, f->jit_xop); /* (a callback on an I/O thread may still look) */
+    VEC_PUSH(vm->retired, f->jit_entry);
+    __atomic_store_n(&f->jit_entry, NULL, __ATOMIC_RELEASE);
+    f->jit_xop = NULL;
+    f->jit_count = 0;
+    f->jit_state = JIT_NONE;
+}
+
+/* After interp_jit_forget: f may be compiled again, for what it calls now. */
+void interp_jit_again(VM *vm, Function *f) {
+    f->jit_state = 0;
+    interp_jit_function(vm, f);
+}
+
 bool interp_jit_available(void) { return true; }
 const char *interp_jit_arch(void) { return JIT_ARCH; }
 
@@ -2732,6 +2758,7 @@ static QCC int h_Q_JIT(QPARAMS) {
     if (c->hooked) MUSTTAIL return qhandlers[fn->jit_xop[pc]](QARGS); /* a tool sees each instruction */
     Jit *jt = c->vm->jit;
     void **ent = __atomic_load_n(&fn->jit_entry, __ATOMIC_ACQUIRE);
+    if (!ent) MUSTTAIL return qhandlers[in->xop](QARGS); /* forgotten since (interp_jit_forget): its own form is back */
     JitExit r = jt->enter(c, left + 1, ent[pc]);
     if (jt->stats && r.in) {
         __atomic_fetch_add(&jt->entries, 1, __ATOMIC_RELAXED);

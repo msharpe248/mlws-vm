@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M54
+## Milestones M11–M55
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -76,6 +76,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M52 Cheaper calls** (done) | Measured first, after 0.14.0. Compiled Erlang's `sorting` was 382M instructions, 64% of them in the compiler's map tree, written in Erlang, and 23% in `lists:merge2`; the VM ran them at under 1 ns each, so the gap to BEAM was the compiled code (the compilers took it to 218M). Compiled Erlang's `binarytrees` was calls: a call was 64 x86-64 instructions and a return 25–27, together about half its machine code's instructions (counted with Valgrind's callgrind against `MLWSVM_JIT_MAP`). Now a compiled return leaves its first four results in machine registers instead of `Ctx.retv`, since only a compiled return goes to a continuation. The frame's pc and flags are one store, and the callee's window is cleared two words at a time. A direct call to a function without machine code is the interpreter's, checked before the frame is pushed, so the continuation falls into the next instruction's code. With the JIT, against 0.14.0, on the M5, i7 and Ryzen: `bench/fib` −7–15%, Erlang's `fib` −11–19%, Lox's `fib` −9–18%, Lua's `fib` −3–15%, Erlang's `binarytrees` −4–13%, Lox's `trees` −1–14%, `binary_trees` −5–8%, `invocation` −4–9%, Lua's `binarytrees` −3–9% and `methods` −3–6%, and nothing slower. Folding the peak frame depth (`--stats`) into the frame check was weighed and not done: a coroutine's frame limit can be below the process's peak | `tests/jit/results.masm` (one to seven results of every bank, constants among them, from direct calls, a closure call and a tail call; a window cleared after a call left values in it, near its start and past where a pair store reaches; a hot caller calling a function that has no machine code; deliberately wrong JITs fail it) |
 | **M53 Weak references and finalizers** (done) | What a compiler cannot build for itself, since only the collector knows what is alive: `weak.ref` and `weak.get`; `weak.map`, a mode on an ordinary map (weak keys, which are ephemerons, weak values, or both), so that no instruction or JIT form changes; and `gc.finalize`, a closure called with a dead object, kept for the call, at the safepoint after the collection. A process's own collector does it all, in both minor and major collections. Strings, BigInts and decimals are values and stay | `tests/objects/`: `weak_refs`, `weak_maps` (ephemeron chains, old maps with young entries), `finalizers` (in minor and major collections, cycles, the order against weak references and keys, keeping an object, registering it again, finalizers that collect, throw, or run in a coroutine or just before a handler), and the errors; `make check-gc` runs them with a collection at every allocation and with each minor collection verified |
 | **M54 One executable** (done) | `mlwsvm bundle`: a program and all it imports, from its directory, the library path and archives, in a copy of `mlwsvm`, which at every start reads its own last 16 bytes to see whether it carries a program. VM options are kept in the file, and the environment overrides them; `--opt` runs when bundling; `--with` adds what only `module.load` asks for | `make check-tools`: a bundle run from an empty directory, with its arguments and exit status, a kept option and the environment over it, `--opt`, `--with`, a module it does not hold, and a damaged payload |
+| **M55 Hot code reloading** (done) | `module.reload` and `module.reload_text` put a new version of a loaded module in place while the program runs, with Erlang's rule: calls from other modules go to the new version, and what is running, closures made from the old version, and its calls to itself stay. Failure changes nothing: the new version links first, and every module using the old one is checked against it. Same struct types are shared, so objects pass between versions. Machine code is not patched: compiled calls find their old callee's entry cleared and stop for the interpreter's call, and are compiled again when hot | `tests/loader/`: `reload` (a function of the old version running across its own replacement, closures, `spawn`, fresh data, shared structs, each refusal with nothing changed, and from its file) and `reload_threads` (eight processes calling a module in a compiled loop while it is replaced twenty times, each seeing its versions in order), in every mode |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -144,10 +145,7 @@ supported. It would have to block that thread until the process replied.
   released with `foreign.release`.
 * **Windows** (M47: done): `plat_path_trusted` checks the owner and the
   access control list, as POSIX's checks the owner and the permission bits.
-* **Hot code reloading**: loading a new version of a module beside the old
-  one while it runs, Erlang-style, with callers moving over and the old
-  version purged later. M39 loads modules at run time but never unloads or
-  replaces one.
+* ~~Hot code reloading~~ (M55: done).
 
 ## 2. Standard library (M12–M15 and M19: done)
 

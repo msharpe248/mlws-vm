@@ -602,6 +602,8 @@ smaller decoded form. These need no changes to
 generated code, but which forms get specialised should follow what compilers
 actually emit, so the compilers' output will decide them.
 
+Reloading code in a running program (Erlang's code replacement, a REPL's
+redefinition) maps onto `module.reload_text` ([ABI.md](ABI.md#reloading-a-module)).
 A language's `require`, `import()` or plugin loading maps onto `module.load`
 and `module.function`, which load a module by name while the program runs and
 give closures for its functions ([ABI.md §9](ABI.md#9-loading-modules-at-run-time)).

@@ -206,6 +206,22 @@ static bool decode_function(LModule *lm, Function *f, MlwsError *err) {
     return true;
 }
 
+/* The struct type of the version being replaced that st is the same as: its
+ * name, fields and types. */
+static const StructDef *reload_same_struct(const VM *vm, const Module *m, const MStruct *st) {
+    const LModule *old = vm->reload_old;
+    if (!old || strcmp(old->m->name, m->name)) return NULL;
+    for (uint32_t i = 0; i < old->m->nstructs; i++) {
+        const StructDef *d = old->structs[i];
+        if (old->m->structs[i].flags & (MSF_IMPORT | MSF_BUILTIN) || strcmp(d->name, st->name)) continue;
+        if (d->nfields != st->nfields || memcmp(d->types, st->types, st->nfields)) return NULL;
+        for (uint32_t k = 0; k < st->nfields; k++)
+            if (strcmp(d->fields[k], st->fields[k])) return NULL;
+        return d;
+    }
+    return NULL;
+}
+
 static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
     Module *m = lm->m;
     lm->consts = xcalloc(m->nconsts + 1, sizeof(Obj *));
@@ -265,6 +281,11 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
             continue;
         }
         if (!(st->flags & MSF_IMPORT)) {
+            const StructDef *same = reload_same_struct(vm, m, st);
+            if (same) { /* objects of the old version are objects of this one */
+                lm->structs[i] = same;
+                continue;
+            }
             StructDef *d = &lm->sdefs[i];
             d->name = st->name;
             d->module = m->name;
@@ -540,7 +561,7 @@ static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive 
     lm->deps = xcalloc(m->nimports + 1, sizeof *lm->deps);
     for (size_t i = 0; i < vm->mods.n; i++) { /* another program's util, or the library path's */
         LModule *o = vm->mods.v[i];
-        if (o->state != LM_FAILED && !strcmp(o->m->name, m->name)) {
+        if (o->state != LM_FAILED && o != vm->reload_old && !o->replaced && !strcmp(o->m->name, m->name)) {
             atomic_store(&o->shared_name, true);
             atomic_store(&lm->shared_name, true);
         }
@@ -695,6 +716,139 @@ LModule *vm_load_dynamic(VM *vm, const char *name, const LModule *from, MlwsErro
     }
     plat_unlock(vm->mods_lock);
     return lm;
+}
+
+/* ---- reloading ------------------------------------------------------------------------- */
+
+static bool same_signature(const MFunc *a, const MFunc *b) {
+    return a->nparams == b->nparams && a->nrets == b->nrets && !memcmp(a->params, b->params, a->nparams) &&
+           !memcmp(a->rets, b->rets, a->nrets) && (a->flags & MF_RETS_DECLARED) == (b->flags & MF_RETS_DECLARED);
+}
+
+/* Whether module x, which may use old, links to its new version as it is:
+ * its compiled operands stay, but for the functions. */
+static bool still_links(const LModule *x, const LModule *old, const LModule *nw, MlwsError *err) {
+    const Module *m = x->m;
+    for (uint32_t i = 0; i < m->nfuncs; i++) {
+        const Function *f = &x->funcs[i];
+        if (!(f->mf->flags & MF_IMPORT) || f->target->mod != old) continue;
+        int fi = module_find_export_func(nw->m, f->name);
+        if (fi < 0 || (nw->m->funcs[fi].flags & MF_IMPORT))
+            return mlws_err(err, "E_LINK_UNDEF", "the new %s does not export function '%s' (called from %s)", old->m->name,
+                            f->name, m->name);
+        if (!same_signature(f->target->mf, &nw->m->funcs[fi]))
+            return mlws_err(err, "E_LINK_RELOAD", "the new %s changes the signature of '%s' (called from %s)", old->m->name,
+                            f->name, m->name);
+    }
+    for (uint32_t i = 0; i < m->ngrefs; i++)
+        if (m->grefs[i].kind != GREF_LOCAL && x->deps[m->grefs[i].import_idx] == old)
+            return mlws_err(err, "E_LINK_RELOAD", "%s uses data symbol '%s' of %s: its data cannot be replaced", m->name,
+                            m->grefs[i].sym, old->m->name);
+    for (uint32_t i = 0; i < m->nstructs; i++) {
+        const MStruct *st = &m->structs[i];
+        if (!(st->flags & MSF_IMPORT) || (st->flags & MSF_BUILTIN) || x->deps[st->import_idx] != old) continue;
+        int si = module_find_export_struct(nw->m, st->name);
+        if (si < 0 || nw->structs[si] != x->structs[i])
+            return mlws_err(err, "E_LINK_RELOAD", "the new %s changes struct '%s' (used by %s)", old->m->name, st->name, m->name);
+    }
+    return true;
+}
+
+/* With the world stopped: every use of old's functions in other modules, of
+ * every version, is a use of the new ones. */
+static void retarget_users(VM *vm, const LModule *old, const LModule *nw) {
+    for (size_t i = 0; i < vm->mods.n; i++) {
+        LModule *x = vm->mods.v[i];
+        if (x == old || x == nw || x->state != LM_READY) continue;
+        for (uint32_t d = 0; d < x->m->nimports; d++)
+            if (x->deps[d] == old) x->deps[d] = (LModule *)nw;
+        for (uint32_t k = 0; k < x->m->nfuncs; k++) {
+            Function *f = &x->funcs[k];
+            if (f->target != f) {
+                if (f->target->mod == old)
+                    f->target = &nw->funcs[module_find_export_func(nw->m, f->name)];
+                continue;
+            }
+            bool used = false;
+            for (uint32_t pc = 0; pc < f->ncode && !used; pc++)
+                for (int o = 0; o < f->code[pc].nops && !used; o++)
+                    used = f->code[pc].ops[o].mode == OM_FUNC && ((const Function *)f->code[pc].ops[o].rv.ptr)->mod == old;
+            if (!used) continue;
+            interp_jit_forget(vm, f);
+            for (uint32_t pc = 0; pc < f->ncode; pc++)
+                for (int o = 0; o < f->code[pc].nops; o++) {
+                    Operand *op = &f->code[pc].ops[o];
+                    if (op->mode != OM_FUNC) continue;
+                    const Function *t = op->rv.ptr;
+                    if (t->mod == old) interp_retarget(vm, &f->code[pc], o, &nw->funcs[module_find_export_func(nw->m, t->name)]);
+                }
+            interp_jit_again(vm, f);
+        }
+    }
+    for (uint32_t k = 0; k < old->m->nfuncs; k++) /* what compiled code calls must stop at the interpreter's call */
+        if (old->funcs[k].target == &old->funcs[k] && (old->funcs[k].mf->flags & MF_EXPORT)) interp_jit_forget(vm, &old->funcs[k]);
+}
+
+static LModule *reload_locked(VM *vm, LModule *old, const char *name, const char *text, MlwsError *err) {
+    size_t start = vm->mods.n, chain = vm->loading.n, chosen = vm->chosen.n, wants = vm->wants.n;
+    smap_put(&vm->modmap, old->key, NULL); /* for its name to load again */
+    vm->reload_old = old;
+    LModule *nw = NULL;
+    if (text) {
+        Module *m = assemble_text(name, text, name, (const char *const *)vm->libpaths.v, vm->libpaths.n, err);
+        if (m && strcmp(m->name, old->m->name)) {
+            mlws_err(err, "E_LOAD_NAME", "the text declares module '%s' but replaces '%s'", m->name, old->m->name);
+            module_free(m);
+            m = NULL;
+        }
+        if (m) nw = register_module(vm, m, old->path, NULL, old->home, false, err);
+    } else {
+        nw = require(vm, old->m->name, old->home, err);
+    }
+    vm->reload_old = NULL;
+    bool ok = nw != NULL;
+    for (size_t i = 0; i < start && ok; i++) {
+        const LModule *x = vm->mods.v[i];
+        if (x != old && x->state == LM_READY) ok = still_links(x, old, nw, err);
+    }
+    if (!ok) { /* what it registered goes, and its name is the old version's again */
+        for (size_t i = start; i < vm->mods.n; i++) {
+            LModule *x = vm->mods.v[i];
+            if (x->state == LM_READY && x != nw) continue;
+            x->state = LM_FAILED;
+            smap_put(&vm->modmap, x->key, NULL);
+        }
+        smap_put(&vm->modmap, old->key, old);
+        vm->loading.n = chain;
+        take_back_libraries(vm, chosen, wants);
+        return NULL;
+    }
+    old->replaced = true;
+    return nw;
+}
+
+LModule *vm_reload(VM *vm, const char *name, const char *text, const LModule *from, MlwsError *err) {
+    LModule *old = vm_module_named(vm, name, from);
+    if (!old) {
+        mlws_err(err, "E_LOAD_NOT_FOUND", "module %s is not loaded", name);
+        return NULL;
+    }
+    if (atomic_exchange(&vm->reloading, true)) {
+        mlws_err(err, "E_BUSY", "a module is being reloaded");
+        return NULL;
+    }
+    plat_lock(vm->mods_lock);
+    LModule *nw = reload_locked(vm, old, name, text, err);
+    plat_unlock(vm->mods_lock);
+    if (nw) {
+        sched_stop_world(vm);
+        plat_lock(vm->mods_lock);
+        retarget_users(vm, old, nw);
+        plat_unlock(vm->mods_lock);
+        sched_start_world(vm);
+    }
+    atomic_store(&vm->reloading, false);
+    return nw;
 }
 
 LModule *vm_module_named(VM *vm, const char *name, const LModule *from) {

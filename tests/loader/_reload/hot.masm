@@ -1,0 +1,31 @@
+; The first version of the module reload.masm replaces.
+.export version, around, make, read, count
+.export Point
+.struct Point
+    x: i64
+.ends
+n:  .i64 0
+.func version -> i64
+    ret 1
+.endf
+; Calls f, then this module's version: it stays with the version it runs in.
+.func around(ref f) -> i64
+    calli f ()
+    call version -> (I0)
+    ret I0
+.endf
+.func make(i64 v) -> ref
+    new R0, Point
+    mov R0->Point.x, v
+    ret R0
+.endf
+.func read(ref p) -> i64
+    mov I0, p->Point.x
+    ret I0
+.endf
+; How many times this version was asked.
+.func count -> i64
+    inc @n
+    mov I0, @n
+    ret I0
+.endf

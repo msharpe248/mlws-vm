@@ -1,0 +1,5 @@
+; A small module reload_threads.masm replaces again and again.
+.export version
+.func version -> i64
+    ret 1
+.endf

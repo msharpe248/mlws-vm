@@ -1,0 +1,6 @@
+; A module with data another module uses: reload.masm cannot replace it.
+.export total
+total:  .i64 4
+.func main_unused
+    ret
+.endf

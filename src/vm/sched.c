@@ -878,6 +878,7 @@ void sched_stop_world(VM *vm) {
     Sched *s = vm->sched;
     if (!s || !s->running || s->nrun <= 1) return;
     plat_mutex_lock(s->lock);
+    while (s->stw && !s->done && s->stw_owner != tls_worker) park_locked(s, s->resume_cv, 0); /* another's turn */
     s->stw = true;
     s->stw_owner = tls_worker;
     while (!s->done && s->nparked + s->nexited < s->nrun - 1) plat_cond_wait(s->stw_cv, s->lock, 0);

@@ -1,0 +1,111 @@
+; module.reload and module.reload_text put a new version of a loaded module in
+; place while the program runs. Calls from other modules, and spawns, go to the
+; new version from then on. Code already running stays on the old one, and so
+; does a closure made from it, and the old version's calls to itself. A new
+; version starts with fresh data. A struct type the same in both versions is one
+; type, so objects pass between them. A reload that would leave a module using
+; it unlinked fails with nothing changed: a missing export, a changed signature,
+; a changed struct, or data others use.
+.include "std/test.inc"
+.import _reload.hot as hot
+.import _reload.user as user
+
+; Replaces hot while a function of it is running, below on the stack.
+.func swap
+    ncall "module.reload_text" ("_reload.hot", ".export version, around, make, read, count\n.export Point\n.struct Point\n    x: i64\n.ends\nn:  .i64 100\n.func version -> i64\n    ret 2\n.endf\n.func around(ref f) -> i64\n    ret 0\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    add I1, v, 1\n    mov R0->Point.x, I1\n    ret R0\n.endf\n.func read(ref p) -> i64\n    mov I0, p->Point.x\n    neg I0, I0\n    ret I0\n.endf\n.func count -> i64\n    inc @n\n    mov I0, @n\n    ret I0\n.endf\n")
+    ret
+.endf
+
+.func version_of_new -> i64
+    call hot.version -> (I0)
+    ret I0
+.endf
+
+.func spawned(i64 parent)
+    call hot.version -> (I1)
+    send parent, I1
+    ret
+.endf
+
+; A reload that must fail: returns the code it failed with.
+.func refused(ref module, ref text) -> ref
+.try h
+    ncall "module.reload_text" (module, text)
+.endtry
+    ret null
+h:
+    catch R2
+    mov R3, R2->Error.code
+    ret R3
+.endf
+
+.func main
+    call hot.version -> (I0)
+    ASSERT_EQ I0, 1
+    call hot.count -> (I0)
+    ASSERT_EQ I0, 1
+    ncall "module.function" ("_reload.hot", "version") -> (R0)
+    call hot.make (7) -> (R1)
+
+    ; The old version is running, and goes on: `around` calls swap, which
+    ; replaces it, and then asks its own module's version.
+    closure swap -> (R2)
+    call hot.around (R2) -> (I0)
+    ASSERT_EQ I0, 1
+
+    ; Everything else is on the new one.
+    call hot.version -> (I0)
+    ASSERT_EQ I0, 2
+    call version_of_new -> (I0)
+    ASSERT_EQ I0, 2
+    spawn spawned (PID)
+    recv I0
+    ASSERT_EQ I0, 2
+    ncall "module.function" ("_reload.hot", "version") -> (R3)
+    calli R3 () -> (I0)
+    ASSERT_EQ I0, 2
+
+    ; A closure from the old version stays with it.
+    calli R0 () -> (I0)
+    ASSERT_EQ I0, 1
+
+    ; Fresh data: the new version's own.
+    call hot.count -> (I0)
+    ASSERT_EQ I0, 101
+
+    ; One struct type: an old object is read by the new code, and the reverse.
+    call hot.read (R1) -> (I0)
+    ASSERT_EQ I0, -7
+    call hot.make (7) -> (R4)
+    mov I0, R4->hot.Point.x
+    ASSERT_EQ I0, 8
+
+    ; Refused: nothing changes.
+    call refused ("_reload.hot", ".export version\n.func version -> i64\n    ret 3\n.endf\n") -> (R5)
+    strcmp I0, R5, "E_LINK_UNDEF"
+    ASSERT_EQ I0, 0
+    call refused ("_reload.hot", ".export version, around, make, read, count\n.export Point\n.struct Point\n    x: i64\n.ends\n.func version -> f64\n    ret 3.0\n.endf\n.func around(ref f) -> i64\n    ret 0\n.endf\n.func make(i64 v) -> ref\n    ret null\n.endf\n.func read(ref p) -> i64\n    ret 0\n.endf\n.func count -> i64\n    ret 0\n.endf\n") -> (R5)
+    strcmp I0, R5, "E_LINK_RELOAD"
+    ASSERT_EQ I0, 0
+    call refused ("_reload.hot", ".export version, around, make, read, count\n.export Point\n.struct Point\n    y: i64\n.ends\n.func version -> i64\n    ret 3\n.endf\n.func around(ref f) -> i64\n    ret 0\n.endf\n.func make(i64 v) -> ref\n    ret null\n.endf\n.func read(ref p) -> i64\n    ret 0\n.endf\n.func count -> i64\n    ret 0\n.endf\n") -> (R5)
+    strcmp I0, R5, "E_LINK_RELOAD"
+    ASSERT_EQ I0, 0
+    call refused ("_reload.shared", ".export total\ntotal:  .i64 5\n") -> (R5)
+    strcmp I0, R5, "E_LINK_RELOAD"
+    ASSERT_EQ I0, 0
+    call refused ("_reload.hot", "this is not assembly\n") -> (R5)
+    ASSERT_TRUE R5, r
+    call refused ("nothing.loaded", ".func f\n    ret\n.endf\n") -> (R5)
+    strcmp I0, R5, "E_LOAD_NOT_FOUND"
+    ASSERT_EQ I0, 0
+    call hot.version -> (I0)
+    ASSERT_EQ I0, 2
+    call user.read_total -> (I0)
+    ASSERT_EQ I0, 4
+
+    ; From its file: the first version's code again.
+    ncall "module.reload" ("_reload.hot")
+    call hot.version -> (I0)
+    ASSERT_EQ I0, 1
+    ret 0
+.endf
