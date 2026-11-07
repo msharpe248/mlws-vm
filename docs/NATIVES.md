@@ -30,6 +30,10 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `gc.collect` | - | - | Request a collection of the whole heap; it runs before the next instruction. |
 | `gc.heap_bytes` | - | i64 | Bytes currently allocated on this process's heap (live and not yet collected). |
 | `gc.collections` | - | i64 | Number of garbage collections so far in this process. |
+| `gc.finalize` | r, r | - | Call a closure with an object, once, after a collection finds nothing else holds it; the closure must not hold the object itself. It runs in this process between two instructions, cannot wait, and what it throws is dropped. Strings, BigInts and decimals are values and cannot be finalized. |
+| `weak.ref` | r | r | A weak reference to an object: it does not keep the object alive. Strings, BigInts and decimals are values, and it holds them like any other value. |
+| `weak.get` | r | r | What a weak reference refers to, or null once a collection has found nothing else holds it. |
+| `weak.map` | r, i64 | - | Make a map weak: 1 weak keys (a value is held only while its key lives, even if the value refers to the key), 2 weak values, 3 both, 0 neither. An entry goes when a collection finds a weak key or value dead. Strings, BigInts, decimals and non-references are held as in any map. |
 | `proc.count` | - | i64 | Number of processes currently alive in the VM (including this one). |
 | `math.sin` | f64 | f64 | Sine (radians). |
 | `math.cos` | f64 | f64 | Cosine (radians). |

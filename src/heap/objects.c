@@ -14,8 +14,9 @@
 
 const char *obj_kind_name(int kind) {
     static const char *const names[] = {"null", "string", "bytes",  "array",   "struct", "list",
-                                        "map",  "closure", "bigint", "decimal", "foreign", "coroutine"};
-    return kind >= 0 && kind <= OBJ_CORO ? names[kind] : "object";
+                                        "map",  "closure", "bigint", "decimal", "foreign", "coroutine",
+                                        "weak"};
+    return kind >= 0 && kind <= OBJ_WEAK ? names[kind] : "object";
 }
 
 static void check_len(Process *p, int64_t n, int64_t max, const char *what) {
@@ -321,16 +322,25 @@ void map_set(Process *p, ObjMap *m, Word key, uint8_t ktag, Word val, uint8_t vt
     m->index[j] = (int32_t)idx;
 }
 
-bool map_delete(ObjMap *m, Word key, uint8_t ktag) {
-    int64_t slot = find_slot(m, key, ktag, key_hash(key, ktag));
-    if (slot < 0) return false;
-    MapEntry *e = &m->entries[m->index[slot]];
+static void delete_at(ObjMap *m, MapEntry *e, uint32_t slot) {
     e->live = 0;
     e->key.u = e->val.u = 0;
     e->ktag = e->vtag = T_NONE;
     m->index[slot] = -2;
     m->count--;
+}
+
+bool map_delete(ObjMap *m, Word key, uint8_t ktag) {
+    int64_t slot = find_slot(m, key, ktag, key_hash(key, ktag));
+    if (slot < 0) return false;
+    delete_at(m, &m->entries[m->index[slot]], (uint32_t)slot);
     return true;
+}
+
+void map_delete_entry(ObjMap *m, MapEntry *e) {
+    uint32_t mask = m->index_cap - 1, i = e->hash & mask;
+    while (m->index[i] != (int32_t)(e - m->entries)) i = (i + 1) & mask;
+    delete_at(m, e, i);
 }
 
 ObjList *map_keys(Process *p, ObjMap *m) {
@@ -412,6 +422,7 @@ ObjString *value_to_string(Process *p, Word v, MlwsType t) {
             snprintf(buf, sizeof buf, "<coroutine %.40s %s>", co->fn->fn->name, st[co->status]);
             break;
         }
+        case OBJ_WEAK: snprintf(buf, sizeof buf, "<weak%s>", ((const ObjWeak *)o)->target ? "" : " (cleared)"); break;
         default: snprintf(buf, sizeof buf, "<object>"); break;
         }
         break;

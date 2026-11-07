@@ -1,0 +1,244 @@
+; gc.finalize asks for a closure to be called with an object after a
+; collection finds nothing else holds it. The call comes in the process,
+; before the instruction after the collection. The object is kept for the
+; call, with all it holds: two objects that hold each other are both
+; finalized, and a weak reference to the object is cleared first, while its
+; entry under a weak key stays until the collection after. Each registration
+; runs once. A finalizer may allocate and collect, may keep the object (then
+; it lives on, and may be registered again), and what it throws goes nowhere,
+; so it cannot disturb the handler the program was about to enter.
+.include "std/test.inc"
+
+.struct Box
+    item: ref
+    n: i64
+.ends
+
+; UP[0]: the log. Records the object's number.
+.func log_item(ref o)
+    lpush UP[0], o->Box.n
+    ret
+.endf
+
+; Records the object.
+.func log_object(ref o)
+    lpush UP[0], o
+    ret
+.endf
+
+; The same, and keeps the object in UP[1], a list.
+.func keep(ref o)
+    lpush UP[0], o->Box.n
+    lpush UP[1], o
+    ret
+.endf
+
+.func thrower(ref o)
+    lpush UP[0], o->Box.n
+    new R0, Error
+    throw R0
+.endf
+
+.func busy(ref o)
+    mov I0, 0
+1:  lnew R1
+    tostr R2, I0
+    lpush R1, R2
+    inc I0
+    blt I0, 2000, 1b
+    ncall "gc.collect" ()
+    nop
+    lpush UP[0], o->Box.n
+    ret
+.endf
+
+.func churn(i64 n)
+    ncall "gc.collections" () -> (I1)
+    add I1, I1, n
+1:  lnew R0
+    tostr R1, I1
+    lpush R0, R1
+    ncall "gc.collections" () -> (I2)
+    blt I2, I1, 1b
+    ret
+.endf
+
+; A new Box with this number, to be finalized by fn, and held by nothing.
+.func doomed(i64 n, ref fn)
+    new R1, Box
+    mov R1->Box.n, n
+    ncall "gc.finalize" (R1, fn)
+    ret
+.endf
+
+; It runs in a coroutine as well as anywhere.
+.func in_coroutine(ref fn)
+    call doomed (40, fn)
+    ncall "gc.collect" ()
+    nop
+    coyield (1)
+    ret 2
+.endf
+
+.func throwing(ref log, ref fn)
+    new R2, Box
+    mov R2->Box.n, 60
+    ncall "gc.finalize" (R2, fn)
+    mov R2, null
+    ncall "gc.collect" ()              ; pending for the instant after the throw
+    new R3, Error
+    mov R3->Error.code, "E_MINE"
+    throw R3
+.endf
+
+.func main
+    lnew R0                            ; the log
+    closure log_item (R0) -> (R1)
+
+    ; Once, on the next instruction after the collection that finds it dead.
+    call doomed (1, R1)
+    ncall "gc.collect" ()
+    len I0, R0
+    ASSERT_EQ I0, 1
+    mov I1, R0[0]
+    ASSERT_EQ I1, 1
+    ncall "gc.collect" ()
+    nop
+    len I0, R0
+    ASSERT_EQ I0, 1
+
+    ; Held: not called. In a minor collection, young: called.
+    new R2, Box
+    mov R2->Box.n, 2
+    ncall "gc.finalize" (R2, R1)
+    ncall "gc.collect" ()
+    nop
+    len I0, R0
+    ASSERT_EQ I0, 1
+    call doomed (3, R1)
+    call churn (9)                     ; (with GC stress it is old by then: every 8th is whole)
+    len I0, R0
+    ASSERT_EQ I0, 2
+    mov I1, R0[1]
+    ASSERT_EQ I1, 3
+    mov R2, null                       ; old: a collection of the whole heap
+    ncall "gc.collect" ()
+    nop
+    len I0, R0
+    ASSERT_EQ I0, 3
+    mov I1, R0[2]
+    ASSERT_EQ I1, 2
+
+    ; Two that hold each other: both, each seeing the other whole.
+    new R3, Box
+    new R4, Box
+    mov R3->Box.item, R4
+    mov R4->Box.item, R3
+    lnew R5
+    closure log_object (R5) -> (R6)
+    ncall "gc.finalize" (R3, R6)
+    ncall "gc.finalize" (R4, R6)
+    mov R3, null
+    mov R4, null
+    ncall "gc.collect" ()
+    nop
+    len I0, R5
+    ASSERT_EQ I0, 2
+    mov R7, R5[0]
+    mov R8, R7->Box.item
+    mov R9, R5[1]
+    ASSERT_EQ R8, R9, r
+    mov R5, null                       ; (the log held them)
+    mov R6, null
+    mov R7, null
+    mov R8, null
+    mov R9, null
+
+    ; A weak reference is cleared first; its entry under a weak key stays for
+    ; the finalizer, and goes with the collection after.
+    lnew R10                           ; what keep keeps
+    lnew R11
+    closure keep (R11, R10) -> (R12)
+    mnew R13
+    ncall "weak.map" (R13, 1)
+    mnew R14
+    ncall "weak.map" (R14, 2)
+    new R15, Box
+    mov R15->Box.n, 5
+    ncall "gc.finalize" (R15, R12)
+    ncall "weak.ref" (R15) -> (R16)
+    mset R13, R15, 50
+    mset R14, "v", R15
+    mov R15, null
+    ncall "gc.collect" ()
+    nop
+    ncall "weak.get" (R16) -> (R17)
+    ASSERT_FALSE R17, r
+    len I0, R14
+    ASSERT_EQ I0, 0
+    len I0, R13
+    ASSERT_EQ I0, 1
+
+    ; It was kept: the object is whole, and may be registered again.
+    mov R15, R10[0]
+    mov I1, R15->Box.n
+    ASSERT_EQ I1, 5
+    mget I1, R13, R15
+    ASSERT_EQ I1, 50
+    ncall "gc.finalize" (R15, R1)
+    mov R15, null
+    ldel R10, 0
+    ncall "gc.collect" ()
+    nop
+    len I0, R0
+    ASSERT_EQ I0, 4
+    mov I1, R0[3]
+    ASSERT_EQ I1, 5
+    len I0, R13                        ; finalized again, so kept once more
+    ASSERT_EQ I0, 1
+    ncall "gc.collect" ()
+    nop
+    len I0, R13
+    ASSERT_EQ I0, 0
+
+    ; A finalizer that allocates and collects; one in a coroutine.
+    closure busy (R0) -> (R18)
+    call doomed (30, R18)
+    ncall "gc.collect" ()
+    nop
+    len I0, R0
+    ASSERT_EQ I0, 5
+    mov I1, R0[4]
+    ASSERT_EQ I1, 30
+    closure in_coroutine -> (R19)
+    conew R20, R19
+    coresume R20 (R1) -> (I2)
+    ASSERT_EQ I2, 1
+    len I0, R0
+    ASSERT_EQ I0, 6
+    mov I1, R0[5]
+    ASSERT_EQ I1, 40
+
+    ; What a finalizer throws goes nowhere...
+    closure thrower (R0) -> (R21)
+    call doomed (50, R21)
+    ncall "gc.collect" ()
+    nop
+    len I0, R0
+    ASSERT_EQ I0, 7
+
+    ; ...even as the program is about to take its own exception.
+.try h
+    call throwing (R0, R21)
+.endtry
+    FAIL "not reached"
+h:
+    catch R22
+    strcmp I3, R22->Error.code, "E_MINE"
+    ASSERT_EQ I3, 0
+    len I0, R0
+    ASSERT_EQ I0, 8
+    mov I1, R0[7]
+    ASSERT_EQ I1, 60
+    ret 0
+.endf

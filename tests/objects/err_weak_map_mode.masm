@@ -1,0 +1,7 @@
+; A weak map's mode is 0 to 3.
+; expect-error: E_RANGE
+.func main
+    mnew R0
+    ncall "weak.map" (R0, 4)
+    ret 0
+.endf

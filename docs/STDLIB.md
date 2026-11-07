@@ -310,6 +310,40 @@ Malformed input is `E_PARSE`, with the offset of the problem.
   a's entries whose keys b has, and difference keeps those it does not have.
   Keys keep their order.
 
+## Weak references and finalizers
+
+`weak.ref(o)` makes a reference that does not keep `o` alive, and
+`weak.get(w)` gives `o`, or null once a collection has found that nothing else
+holds it.
+
+`weak.map(m, mode)` makes a map weak: 1 for weak keys, 2 for weak values, 3 for
+both, 0 for neither. It stays an ordinary map to every instruction, and a
+collection removes an entry when a weak key or value is dead. Weak keys are
+*ephemerons*: a value is held only while its key lives, so a cache from
+objects to data that refers back to them does not keep them. A weak map sent
+to another process is copied, and is weak there too.
+
+`gc.finalize(o, f)` calls the closure `f` with `o`, once, after a collection
+finds nothing else holds `o`. `f` runs in the same process, before the
+process's next instruction, as a callback does: it cannot wait, and what it
+throws is dropped. `f` must not hold `o`, or `o` never dies. `o` is whole
+during the call, with everything it holds; if two such objects hold each other,
+both are finalized. `f` may keep `o` (then `o` lives on) or register it again.
+When a process ends, the finalizers not yet called are not called.
+
+An object is found dead by the next collection that looks at it: a minor
+collection looks only at the young objects, so to be sure, call `gc.collect`.
+A register keeps its object until it is written, whether or not the program
+reads it again.
+
+Strings, BigInts and decimals are values: they cannot be told from a copy, so
+weak references and weak maps hold them like any other value, and
+`gc.finalize` raises `E_TYPE`. So do weak references sent to another process.
+
+For a dead object, the order is: weak references and weak values are cleared,
+its finalizer runs, and its entry under a weak key goes at the collection
+after that, so a finalizer can still look the object up in a weak-keyed map.
+
 ## Integer maths
 
 `math.powmod(b, e, m)` computes b^e mod m without overflow, and the result is in

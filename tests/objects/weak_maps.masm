@@ -1,0 +1,167 @@
+; weak.map makes a map weak: 1 weak keys, 2 weak values, 3 both. Every map
+; instruction works on it as on any map; a collection removes an entry when a
+; weak key or value is found dead. Weak keys are ephemerons: a value is held
+; only while its key lives, so a value that refers to its own key, or to
+; another entry's key, does not keep the entry. Strings and numbers are values
+; and stay. An old map given young keys and values (a minor collection, with
+; the write barrier remembering the map) behaves the same.
+.include "std/test.inc"
+
+.struct Box
+    item: ref
+.ends
+
+.func churn(i64 n)
+    ncall "gc.collections" () -> (I1)
+    add I1, I1, n
+1:  lnew R0
+    tostr R1, I1
+    lpush R0, R1
+    ncall "gc.collections" () -> (I2)
+    blt I2, I1, 1b
+    ret
+.endf
+
+.func main
+    ; Weak keys.
+    mnew R0
+    ncall "weak.map" (R0, 1)
+    new R1, Box                        ; a key that stays
+    new R2, Box                        ; a key that goes
+    new R3, Box                        ; a value only its key's entry holds
+    ncall "weak.ref" (R3) -> (R4)
+    mset R0, R1, 10
+    mset R0, R2, R3
+    mov R3, null
+    strcat R5, "st", "ring"
+    mset R0, R5, 20                    ; a string key stays
+    mset R0, 7, 30                     ; a number key stays
+    len I0, R0
+    ASSERT_EQ I0, 4
+    mov R2, null
+    mov R5, null
+    ncall "gc.collect" ()
+    nop
+    len I0, R0
+    ASSERT_EQ I0, 3
+    mget I1, R0, R1
+    ASSERT_EQ I1, 10
+    mget I1, R0, "string"
+    ASSERT_EQ I1, 20
+    mget I1, R0, 7
+    ASSERT_EQ I1, 30
+    ncall "weak.get" (R4) -> (R6)      ; its value went with it
+    ASSERT_FALSE R6, r
+
+    ; Ephemerons: a value that holds its own key does not keep the entry...
+    mnew R7
+    ncall "weak.map" (R7, 1)
+    new R8, Box
+    new R9, Box
+    mov R9->Box.item, R8
+    mset R7, R8, R9
+    ; ...and a chain, each entry's value holding the next entry's key, lives
+    ; while its first key does, whatever order the entries are in.
+    new R10, Box                       ; the first key: kept
+    new R11, Box
+    new R12, Box
+    new R13, Box
+    mov R13->Box.item, R12             ; value of R11 holds R12
+    mset R7, R12, 2                    ; (the last key, first in the map)
+    mset R7, R11, R13
+    new R14, Box
+    mov R14->Box.item, R11             ; value of R10 holds R11
+    mset R7, R10, R14
+    mov R8, null
+    mov R9, null
+    mov R11, null
+    mov R12, null
+    mov R13, null
+    mov R14, null
+    ncall "gc.collect" ()
+    nop
+    len I0, R7
+    ASSERT_EQ I0, 3
+    mov R10, null                      ; now the chain goes, all at once
+    ncall "gc.collect" ()
+    nop
+    len I0, R7
+    ASSERT_EQ I0, 0
+
+    ; Weak values, under any kind of key.
+    mnew R15
+    ncall "weak.map" (R15, 2)
+    new R16, Box
+    new R17, Box
+    mset R15, "kept", R16
+    mset R15, "gone", R17
+    mset R15, "number", 5
+    strcat R18, "str", "ing"
+    mset R15, "string", R18
+    mov R17, null
+    mov R18, null
+    ncall "gc.collect" ()
+    nop
+    len I0, R15
+    ASSERT_EQ I0, 3
+    mhas I1, R15, "gone"
+    ASSERT_FALSE I1
+    mget R19, R15, "kept"
+    ASSERT_EQ R19, R16, r
+    mget R19, R15, "string"
+    strcmp I1, R19, "string"
+    ASSERT_EQ I1, 0
+    mov R19, null
+
+    ; Both: either end's death removes the entry.
+    mnew R20
+    ncall "weak.map" (R20, 3)
+    new R21, Box
+    new R22, Box
+    new R23, Box
+    new R24, Box
+    mset R20, R21, R22                 ; the key goes
+    mset R20, R23, R24                 ; the value goes
+    mov R21, null
+    mov R24, null
+    ncall "gc.collect" ()
+    nop
+    len I0, R20
+    ASSERT_EQ I0, 0
+
+    ; Old maps and young entries, in minor collections.
+    mnew R25
+    ncall "weak.map" (R25, 1)
+    mnew R26
+    ncall "weak.map" (R26, 2)
+    ncall "gc.collect" ()              ; they are old now
+    nop
+    new R27, Box
+    new R28, Box
+    new R29, Box
+    mset R25, R27, R28                 ; held while R27 lives
+    mset R26, "a", R29
+    new R30, Box
+    mset R26, "b", R30
+    mov R28, null
+    mov R30, null
+    call churn (9)                     ; (with GC stress they are old by then: every 8th is whole)
+    len I0, R25
+    ASSERT_EQ I0, 1
+    mget R28, R25, R27
+    ASSERT_TRUE R28, r
+    mov R28, null
+    len I0, R26
+    ASSERT_EQ I0, 1
+    mhas I1, R26, "a"
+    ASSERT_TRUE I1
+
+    ; Mode 0: it holds everything again.
+    ncall "weak.map" (R26, 0)
+    mov R29, null
+    ncall "gc.collect" ()
+    nop
+    len I0, R26
+    ASSERT_EQ I0, 1
+    ret 0
+.endf

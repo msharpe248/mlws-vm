@@ -366,7 +366,8 @@ exception is constant-pool strings, which are immutable and immortal.
   process has allocated its young generation's size (from 64 KiB, *option*
   `--gc-min`, growing to 16 MiB while much of it survives); one of the whole
   heap when what has survived has doubled, or as a heap quota approaches.
-  `gc.collect` requests one of the whole heap.
+  `gc.collect` requests one of the whole heap. Weak references, weak maps and
+  finalizers: [STDLIB.md](STDLIB.md#weak-references-and-finalizers).
 * **Allocation.** Objects of up to 256 bytes are bump-allocated from the
   process's own chunks, into the lines no surviving object is on; larger
   ones use `malloc`. A list keeps its values and their type tags in one block: inside

@@ -330,6 +330,15 @@ int proc_run_slice(Process *p, uint32_t budget) {
         describe_uncaught(p);
         return SLICE_FAILED;
     }
+    if (p->gc_pending && !p->kill_pending) gc_collect(p);
+    if (p->fin_ready.n) {
+        proc_run_finalizers(p);
+        if (p->insns >= p->quota[QUOTA_INSNS]) {
+            p->jb = NULL;
+            return SLICE_YIELD;
+        }
+        if (p->quota[QUOTA_INSNS] - p->insns < slice) slice = (uint32_t)(p->quota[QUOTA_INSNS] - p->insns);
+    }
     int r = interp_run(p, slice);
     p->jb = NULL;
     return r;
@@ -408,6 +417,29 @@ bool proc_callback(Process *p, ObjClosure *cl, const Word *args) {
     memcpy(p->foreign_msg, fmsg, sizeof fmsg);
     p->fdwait.deadline = deadline;
     return ok;
+}
+
+/* A finalizer runs as a callback does, in the process, between two of its
+ * instructions, and what it throws goes nowhere: the code it interrupted has
+ * nothing to do with it. Those a finalizer's own collections find dead wait
+ * for it to end. */
+void proc_run_finalizers(Process *p) {
+    if (p->fin_running) return;
+    p->fin_running = true;
+    bool reentered = p->reentered;
+    size_t pins = p->pins.n;
+    VEC_PUSH(p->pins, p->exception); /* a handler may be about to take it */
+    Obj *exception = p->exception;
+    while (p->fin_ready.n && !p->kill_pending) {
+        ObjWeak *w = (ObjWeak *)p->fin_ready.v[--p->fin_ready.n];
+        Word arg;
+        arg.r = w->target;
+        if (!proc_callback(p, (ObjClosure *)w->fn, &arg)) p->cb_exception = NULL;
+    }
+    p->exception = exception;
+    p->pins.n = pins;
+    p->reentered = reentered;
+    p->fin_running = false;
 }
 
 /* ---- memory ------------------------------------------------------------------ */

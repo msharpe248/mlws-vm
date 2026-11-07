@@ -366,6 +366,7 @@ no longer reachable ([ABI.md §6](ABI.md#6-the-garbage-collected-heap)).
 | decimal (9) | `19.99d`, `cvt.dec.f64`, `parse.dec` | `add.dec`, `div.dec`, ... | Immutable; exact except inexact division |
 | foreign handle (10) | a `ptr` result of an `.extern`, or a native from an extension | passed back to `ncall` | An opaque C pointer ([EXTENDING.md](EXTENDING.md)) |
 | coroutine (11) | `conew R0, R1` (from a closure) | `coresume`, `coyield`, `costatus`, `cocur`, `coclose` | Its own frames, registers and data stack in this process ([ABI.md §8](ABI.md#8-coroutines)) |
+| weak reference (12) | `ncall "weak.ref" (R0) -> (R1)` | `ncall "weak.get" (R1) -> (R2)` | Does not keep its object alive ([STDLIB.md](STDLIB.md#weak-references-and-finalizers)) |
 
 ```asm
 .struct Point                 ; a struct type, usable as `Point` in this module

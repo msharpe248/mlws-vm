@@ -232,6 +232,7 @@ The heap object types map directly onto scripting-language values
 | A dictionary / object literal | `mnew`, `mset`, `mget` (with a default), `mhas`, `mdel`, `mkeys` |
 | Sorting and searching a list | `ncall "list.sort" (R0, cmp)` with a comparator closure (or `null` for natural order); `list.bsearch` |
 | Set operations | maps as sets: `map.union`, `map.intersect`, `map.difference` |
+| Weak references, weak tables, finalizers (`__gc`, `__mode`, `WeakMap`) | `weak.ref`, `weak.get`, `weak.map`, `gc.finalize` ([STDLIB.md](STDLIB.md#weak-references-and-finalizers)) |
 | A string builder | `bufnew`, `bufcat`, `bufpush`, then `strcat R0, buf` |
 | A lambda / nested function | `closure f (captured...) -> (R0)`; the body reads `UP[n]` |
 | Calling a function value | `calli R0 (args) -> (results)` (`tcalli` in tail position) |

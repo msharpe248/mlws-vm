@@ -588,6 +588,11 @@ struct Process {
     /* coroutines (coro.c) */
     struct ObjCoro *co;          /* the running coroutine (a GC root), or NULL */
     uint16_t stack_gen;          /* the generation given to the last coroutine stack */
+    /* weak references and finalizers (gc.c) */
+    VEC(Obj *) weak_refs, weak_maps; /* those a collection has reached, until it ends */
+    VEC(Obj *) fin_young, fin_old;   /* gc.finalize records: since the last collection, and before */
+    VEC(Obj *) fin_ready;            /* records whose targets were found dead: waiting to run (GC roots) */
+    bool fin_running;
 };
 
 /* vm.c */
@@ -672,6 +677,9 @@ int proc_run_slice(Process *p, uint32_t budget);
  * frame. Returns false and fills p->err if it failed (and p->cb_exception with
  * what it threw, if anything); otherwise its results are in p->results. */
 bool proc_callback(Process *p, ObjClosure *cl, const Word *args);
+/* Call the finalizers whose objects a collection found dead (gc.finalize), at
+ * a safepoint where a callback may run. */
+void proc_run_finalizers(Process *p);
 /* Push the entry frame of a new process (running `closure`, or NULL), bind
  * its arguments, and hand it to the scheduler. */
 void proc_start(Process *p, Function *fn, Obj *closure, const Word *args, int nargs);

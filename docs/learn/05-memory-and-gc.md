@@ -341,9 +341,13 @@ static void gc_minor(Process *p) {
     }
     p->remset.n = 0;
     drain(p);
+    weak_finish(p, false);
     if (p->vm->gc_verify) gc_verify(p);
     ...
 ```
+
+(`weak_finish` decides what weak references and finalizers leave alive:
+[DESIGN.md §11.10](../DESIGN.md#1110-weak-references-and-finalizers).)
 
 A barrier that is missing anywhere is a bug that frees live memory, so the
 sites are worth listing. They are:

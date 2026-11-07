@@ -1,0 +1,7 @@
+; weak.get takes a weak reference.
+; expect-error: E_TYPE
+.func main
+    lnew R0
+    ncall "weak.get" (R0) -> (R1)
+    ret 0
+.endf

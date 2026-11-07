@@ -1,0 +1,26 @@
+; A weak map sent to another process is copied, weak as it was: in the copy,
+; a value nothing else there holds is gone at the first collection, while
+; the sender's map is untouched.
+.include "std/test.inc"
+.func child(i64 parent)
+    recv R0
+    ncall "gc.collect" ()
+    nop
+    len I1, R0
+    ASSERT_EQ I1, 0
+    send parent, 1
+    ret
+.endf
+.func main
+    mnew R0
+    ncall "weak.map" (R0, 2)
+    lnew R1
+    mset R0, "k", R1
+    spawn child (PID) -> (I1)
+    send I1, R0
+    recv I2
+    ASSERT_EQ I2, 1
+    len I3, R0
+    ASSERT_EQ I3, 1
+    ret 0
+.endf

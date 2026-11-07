@@ -148,6 +148,46 @@ static void n_gc_collections(Process *p, Word *a, Word *r) {
     r[0].i = (int64_t)p->gc_count;
 }
 
+static void n_weak_ref(Process *p, Word *a, Word *r) {
+    if (!a[0].r) vm_trap(p, "E_NULL", "weak.ref of null");
+    ObjWeak *w = (ObjWeak *)gc_alloc(p, OBJ_WEAK, sizeof(ObjWeak));
+    w->target = a[0].r;
+    r[0].r = &w->h;
+}
+
+static void n_weak_get(Process *p, Word *a, Word *r) {
+    Obj *o = a[0].r;
+    if (!o) vm_trap(p, "E_NULL", "weak.get of null");
+    if (o->kind != OBJ_WEAK) vm_trap(p, "E_TYPE", "weak.get needs a weak reference, not a %s", obj_kind_name(o->kind));
+    r[0].r = ((ObjWeak *)o)->target;
+}
+
+static void n_weak_map(Process *p, Word *a, Word *r) {
+    (void)r;
+    Obj *o = a[0].r;
+    if (!o) vm_trap(p, "E_NULL", "weak.map of null");
+    if (o->kind != OBJ_MAP) vm_trap(p, "E_TYPE", "weak.map needs a map, not a %s", obj_kind_name(o->kind));
+    if (a[1].i < 0 || a[1].i > (MAP_WEAK_KEYS | MAP_WEAK_VALUES))
+        vm_trap(p, "E_RANGE", "weak.map: mode %lld is not 0 to 3", (long long)a[1].i);
+    ((ObjMap *)o)->weak = (uint8_t)a[1].i;
+}
+
+static void n_gc_finalize(Process *p, Word *a, Word *r) {
+    (void)r;
+    Obj *o = a[0].r, *fn = a[1].r;
+    if (!o || !fn) vm_trap(p, "E_NULL", "gc.finalize of null");
+    if (o->kind == OBJ_STRING || o->kind == OBJ_BIG || o->kind == OBJ_DEC)
+        vm_trap(p, "E_TYPE", "gc.finalize: a %s is a value, and has no end to wait for", obj_kind_name(o->kind));
+    if (fn->kind != OBJ_CLOSURE) vm_trap(p, "E_TYPE", "gc.finalize: expected a closure");
+    const MFunc *mf = ((ObjClosure *)fn)->fn->mf;
+    if (mf->nparams != 1 || !type_is_ref((MlwsType)mf->params[0]))
+        vm_trap(p, "E_TYPE", "gc.finalize: the closure must take the object, one reference");
+    ObjWeak *w = (ObjWeak *)gc_alloc(p, OBJ_WEAK, sizeof(ObjWeak));
+    w->target = o;
+    w->fn = fn;
+    VEC_PUSH(p->fin_young, &w->h);
+}
+
 static void n_foreign_release(Process *p, Word *a, Word *r) {
     (void)r;
     Obj *o = a[0].r;
@@ -220,6 +260,10 @@ static const NativeDef BUILTINS[] = {
     {"gc.collect", 0, {0}, 0, {0}, n_gc_collect, "Request a collection of the whole heap; it runs before the next instruction."},
     {"gc.heap_bytes", 0, {0}, 1, {T_I64}, n_gc_heap_bytes, "Bytes currently allocated on this process's heap (live and not yet collected)."},
     {"gc.collections", 0, {0}, 1, {T_I64}, n_gc_collections, "Number of garbage collections so far in this process."},
+    {"gc.finalize", 2, {T_R, T_R}, 0, {0}, n_gc_finalize, "Call a closure with an object, once, after a collection finds nothing else holds it; the closure must not hold the object itself. It runs in this process between two instructions, cannot wait, and what it throws is dropped. Strings, BigInts and decimals are values and cannot be finalized."},
+    {"weak.ref", 1, {T_R}, 1, {T_R}, n_weak_ref, "A weak reference to an object: it does not keep the object alive. Strings, BigInts and decimals are values, and it holds them like any other value."},
+    {"weak.get", 1, {T_R}, 1, {T_R}, n_weak_get, "What a weak reference refers to, or null once a collection has found nothing else holds it."},
+    {"weak.map", 2, {T_R, T_I64}, 0, {0}, n_weak_map, "Make a map weak: 1 weak keys (a value is held only while its key lives, even if the value refers to the key), 2 weak values, 3 both, 0 neither. An entry goes when a collection finds a weak key or value dead. Strings, BigInts, decimals and non-references are held as in any map."},
     {"proc.count", 0, {0}, 1, {T_I64}, n_proc_count, "Number of processes currently alive in the VM (including this one)."},
     {"math.sin", F1, n_sin, "Sine (radians)."},
     {"math.cos", F1, n_cos, "Cosine (radians)."},

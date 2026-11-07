@@ -1107,6 +1107,7 @@ typedef struct Obj {
 | decimal | `sign`, `exp`, `n`, limbs | value = sign × coefficient × 10^exp; immutable |
 | foreign | `type`, `ptr`, `lib` | A C resource; finalized when collected |
 | coroutine | status, body, resumer chain, a whole execution context | §16 |
+| weak | `target`, `fn` | A weak reference, or a `gc.finalize` record (§11.10) |
 
 **Lists.** A list's storage is `cap` words followed by `cap` tag bytes. A
 list made with a capacity of up to 24 has its storage inside its own
@@ -1327,6 +1328,50 @@ case deltas). Full case mappings, decompositions and compositions are
 sorted tables searched by binary search. Normalization decomposes, orders
 combining marks and recomposes, per UAX #15; grapheme and word boundaries
 are state machines over the break classes, per UAX #29.
+
+
+### 11.10 Weak references and finalizers
+
+Weakness is decided after marking, in `weak_finish`. Marking goes through
+everything but an `ObjWeak`'s target, a weak map's weak keys and values, and a
+`gc.finalize` record's target, and notes each weak reference and weak map it
+meets. Then:
+
+1. The values of live weak keys are marked, until that finds no more: a weak
+   key is an ephemeron, so a value referring to its own key does not keep the
+   entry.
+2. Weak references and weak values to what stayed unmarked are cleared.
+3. Records whose targets are unmarked go to `fin_ready`, a root, all of them
+   before any is marked, since one may hold another. Then the targets are
+   marked, with all they hold, and steps 1 and 2 are repeated for what that
+   reached.
+4. The entries of weak keys still unmarked go. A key being finalized is marked
+   by then, so it keeps its entry until the collection after.
+
+A map's weakness is a field of the ordinary map, so the instructions, their
+quickened forms and the JIT do not know of it. An entry is removed by its
+stored hash and number, without comparing keys. The walk of
+`MLWSVM_GC_VERIFY` comes after `weak_finish`, and holds everything that is
+left strongly, so it checks weak maps' barriers too.
+
+Generations need nothing new. A minor collection treats old objects as
+live, so only young targets can die in one. An `ObjWeak` is made after its
+target, so they are promoted together and an old one never holds a young
+one. A store into an old weak map remembers it, as with any map, and scanning
+a remembered map is what brings it to `weak_finish`. Records live in
+`fin_young` until their first collection, and then in `fin_old`, which only
+major collections look at.
+
+A record is an object of the heap rather than a C structure, so registrations
+count against the heap quota. The closures run from `proc_run_finalizers`:
+through `proc_callback`, at the safepoint after a generic instruction, where
+callbacks are already allowed for (the banks may move), or before a slice.
+The exception in `Process.exception` is kept across the call, since a
+handler may be about to take it.
+
+Strings, BigInts and decimals have no identity to lose, so they are held
+strongly: otherwise an entry whose key is a string could vanish while an equal
+string lives.
 
 ## 12. Exceptions and traps
 

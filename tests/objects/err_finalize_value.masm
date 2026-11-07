@@ -1,0 +1,10 @@
+; A string has no end to wait for: a value cannot be told from a copy.
+; expect-error: E_TYPE
+.func f(ref o)
+    ret
+.endf
+.func main
+    closure f -> (R0)
+    ncall "gc.finalize" ("text", R0)
+    ret 0
+.endf

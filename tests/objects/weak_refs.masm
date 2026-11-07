@@ -1,0 +1,99 @@
+; weak.ref makes a reference that does not keep its object alive: weak.get
+; gives the object, or null once a collection has found nothing else holds
+; it. Here the object goes in a collection of the whole heap and in a minor
+; one (the object and the weak reference both young, and both old), it holds
+; what it holds as usual while it lives, and strings, which are values, stay.
+; no-opt: an inlined function's registers hold their objects until overwritten
+.include "std/test.inc"
+
+.struct Box
+    item: ref
+.ends
+
+; Enough garbage for minor collections: at least n more of them.
+.func churn(i64 n)
+    ncall "gc.collections" () -> (I1)
+    add I1, I1, n
+1:  lnew R0
+    tostr R1, I1
+    lpush R0, R1
+    ncall "gc.collections" () -> (I2)
+    blt I2, I1, 1b
+    ret
+.endf
+
+; A weak reference to a new Box, which nothing else holds after this.
+.func orphan -> ref
+    new R0, Box
+    ncall "weak.ref" (R0) -> (R1)
+    ret R1
+.endf
+
+.func main
+    new R0, Box
+    strcat R1, "in", "side"            ; made at run time: not a constant
+    mov R0->Box.item, R1
+    ncall "weak.ref" (R0) -> (R2)
+    typeof I0, R2
+    ASSERT_EQ I0, 12
+    tostr R3, R2
+    strcmp I1, R3, "<weak>"
+    ASSERT_EQ I1, 0
+
+    ; Held: it stays, through both kinds of collection.
+    ncall "gc.collect" ()
+    nop
+    call churn (2)
+    ncall "weak.get" (R2) -> (R3)
+    ASSERT_EQ R3, R0, r
+    mov R4, R3->Box.item
+    strcmp I1, R4, "inside"
+    ASSERT_EQ I1, 0
+
+    ; Old, then let go: only a collection of the whole heap can tell.
+    mov R0, null
+    mov R1, null
+    mov R3, null
+    mov R4, null
+    ncall "gc.collect" ()
+    nop
+    ncall "weak.get" (R2) -> (R3)
+    ASSERT_FALSE R3, r
+    tostr R3, R2
+    strcmp I1, R3, "<weak (cleared)>"
+    ASSERT_EQ I1, 0
+
+    ; Young, and never held: a minor collection clears it.
+    call orphan -> (R5)
+    call churn (9)                     ; (with GC stress it is old by then: every 8th is whole)
+    ncall "weak.get" (R5) -> (R6)
+    ASSERT_FALSE R6, r
+
+    ; Weak references to the same object, one kept in a young list.
+    new R7, Box
+    ncall "weak.ref" (R7) -> (R8)
+    lnew R9
+    ncall "weak.ref" (R7) -> (R10)
+    lpush R9, R10
+    mov R10, null
+    mov R7, null
+    ncall "gc.collect" ()
+    nop
+    ncall "weak.get" (R8) -> (R11)
+    ASSERT_FALSE R11, r
+    mov R12, R9[0]
+    ncall "weak.get" (R12) -> (R11)
+    ASSERT_FALSE R11, r
+
+    ; A string is a value: it cannot be told from a copy, so it stays.
+    strcat R13, "a ", "value"
+    ncall "weak.ref" (R13) -> (R14)
+    mov R13, null
+    ncall "gc.collect" ()
+    nop
+    call churn (1)
+    ncall "weak.get" (R14) -> (R15)
+    strcmp I1, R15, "a value"
+    ASSERT_EQ I1, 0
+    ret 0
+.endf

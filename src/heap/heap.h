@@ -103,6 +103,7 @@ ObjMap *map_new(Process *p);
 MapEntry *map_find(ObjMap *m, Word key, uint8_t ktag);
 void map_set(Process *p, ObjMap *m, Word key, uint8_t ktag, Word val, uint8_t vtag);
 bool map_delete(ObjMap *m, Word key, uint8_t ktag);
+void map_delete_entry(ObjMap *m, MapEntry *e); /* without comparing keys: a collection, whose dead keys may be anything */
 ObjList *map_keys(Process *p, ObjMap *m);
 ObjClosure *closure_new(Process *p, struct Function *fn, uint32_t nup);
 

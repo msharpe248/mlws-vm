@@ -1,0 +1,11 @@
+; A finalizer is called with the object: it must take one reference.
+; expect-error: E_TYPE
+.func f(i64 x)
+    ret
+.endf
+.func main
+    closure f -> (R0)
+    lnew R1
+    ncall "gc.finalize" (R1, R0)
+    ret 0
+.endf

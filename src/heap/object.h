@@ -22,6 +22,7 @@ enum {
     OBJ_DEC = 9,
     OBJ_FOREIGN = 10, /* a C resource owned by native code (docs/EXTENDING.md) */
     OBJ_CORO = 11,    /* a coroutine (ObjCoro, in vm/vm.h) */
+    OBJ_WEAK = 12,    /* a weak reference, or a gc.finalize record (ObjWeak) */
 };
 
 #define OBJF_IMMORTAL 0x01
@@ -110,7 +111,11 @@ typedef struct {
     MapEntry *entries;
     int32_t *index;      /* -1 empty, -2 deleted, else entry number */
     uint32_t index_cap;  /* power of two */
+    uint8_t weak;        /* MAP_WEAK_*: what does not keep its entry alive (gc.c) */
 } ObjMap;
+
+#define MAP_WEAK_KEYS 1
+#define MAP_WEAK_VALUES 2
 
 struct Function;
 
@@ -124,6 +129,15 @@ typedef struct {
 } ObjClosure;
 
 const char *obj_kind_name(int kind);
+
+/* A reference that does not keep its target alive: the collector sets target
+ * to NULL when nothing else does (gc.c). With fn, a gc.finalize record: when
+ * the target is found dead, it is kept for one more call, of fn. */
+typedef struct {
+    Obj h;
+    Obj *target;
+    Obj *fn;
+} ObjWeak;
 
 /* A foreign handle: an opaque C pointer with a typed finalizer. MLWSVM code
  * can hold one as a reference but cannot see or forge the pointer, and it

@@ -27,6 +27,7 @@ size_t obj_footprint(const Obj *o) {
     case OBJ_BIG: case OBJ_DEC: return num_footprint(o);
     case OBJ_FOREIGN: return sizeof(ObjForeign);
     case OBJ_CORO: return sizeof(ObjCoro) + (size_t)((const ObjCoro *)o)->words * 9; /* the stack and its tags */
+    case OBJ_WEAK: return sizeof(ObjWeak);
     default: return sizeof(Obj);
     }
 }
@@ -392,6 +393,7 @@ void gc_remember(Process *p, Obj *o) {
 }
 
 static void mark_segment(Process *p, const Segment *s, uint32_t from_word);
+static void drain(Process *p);
 
 /* The R registers of every frame's window, and the closures being run. */
 static void mark_frames(Process *p, uint64_t *regs, const Frame *frames, uint32_t n) {
@@ -407,6 +409,114 @@ static void mark_frames(Process *p, uint64_t *regs, const Frame *frames, uint32_
 static void mark_ctx(Process *p, const ExecCtx *x) {
     mark_frames(p, x->regs, x->frames, x->nframes);
     mark_segment(p, &x->stack, x->stack_ref_lo);
+}
+
+/* An object this collection has marked (for an old object in a minor one:
+ * every old object, which it treats as live). */
+static bool marked(const Process *p, const Obj *o) {
+    return (o->flags & (OBJF_OLD | OBJF_MARK)) == (OBJF_OLD | p->mark_bit);
+}
+
+/* ---- weak references ----
+ * A collection marks through everything but these, then decides:
+ *   an ObjWeak's target, a weak map's weak keys and values, and a
+ *   gc.finalize record's target are not marked by what holds them;
+ *   the value of a weak key is marked once its key is (an ephemeron: a value
+ *   that refers to its own key does not keep the entry);
+ *   references to what stayed unmarked are cleared, then finalizable objects
+ *   found dead are marked again, with all they hold, for one more call;
+ *   the entries of weak keys that are still dead go last, so a key being
+ *   finalized keeps its entry until the collection after.
+ * Only what can be told from a copy can die: strings, BigInts and decimals
+ * are values, and held like any other value.
+ * Between minor collections, weak references need no barrier of their own:
+ * an ObjWeak's target is older than it, so they become old together, and a
+ * store into an old weak map remembers it, like any other. */
+static bool has_identity(const Obj *o) {
+    return !(o->flags & OBJF_IMMORTAL) && o->kind != OBJ_STRING && o->kind != OBJ_BIG && o->kind != OBJ_DEC;
+}
+
+static bool dead(const Process *p, const Obj *o) { return o && has_identity(o) && !marked(p, o); }
+
+static bool weakly_held(const ObjMap *m, Word w, uint8_t tag, uint8_t mode) {
+    return (m->weak & mode) && tag == T_R && w.r && has_identity(w.r);
+}
+
+static void scan_weak_map(Process *p, ObjMap *m) {
+    VEC_PUSH(p->weak_maps, &m->h);
+    for (uint32_t i = 0; i < m->nentries; i++) {
+        MapEntry *e = &m->entries[i];
+        if (!e->live) continue;
+        bool wk = weakly_held(m, e->key, e->ktag, MAP_WEAK_KEYS);
+        if (e->ktag == T_R && !wk) mark(p, e->key.r);
+        if (e->vtag == T_R && !wk && !weakly_held(m, e->val, e->vtag, MAP_WEAK_VALUES)) mark(p, e->val.r);
+    }
+}
+
+/* Mark the values of live weak keys, until that finds no more. */
+static void mark_ephemerons(Process *p) {
+    bool again;
+    do {
+        again = false;
+        for (size_t i = 0; i < p->weak_maps.n; i++) {
+            ObjMap *m = (ObjMap *)p->weak_maps.v[i];
+            if (!(m->weak & MAP_WEAK_KEYS)) continue;
+            for (uint32_t k = 0; k < m->nentries; k++) {
+                MapEntry *e = &m->entries[k];
+                if (!e->live || e->vtag != T_R || !weakly_held(m, e->key, e->ktag, MAP_WEAK_KEYS)) continue;
+                if (!dead(p, e->key.r) && !weakly_held(m, e->val, e->vtag, MAP_WEAK_VALUES)) mark(p, e->val.r);
+            }
+            if (p->markstack.n) drain(p), again = true;
+        }
+    } while (again);
+}
+
+static void clear_dead(Process *p, uint8_t mode) {
+    for (size_t i = 0; i < p->weak_maps.n; i++) {
+        ObjMap *m = (ObjMap *)p->weak_maps.v[i];
+        for (uint32_t k = 0; k < m->nentries; k++) {
+            MapEntry *e = &m->entries[k];
+            if (!e->live) continue;
+            if ((mode & MAP_WEAK_KEYS && weakly_held(m, e->key, e->ktag, MAP_WEAK_KEYS) && dead(p, e->key.r)) ||
+                (mode & MAP_WEAK_VALUES && weakly_held(m, e->val, e->vtag, MAP_WEAK_VALUES) && dead(p, e->val.r)))
+                map_delete_entry(m, e);
+        }
+    }
+    for (size_t i = 0; i < p->weak_refs.n; i++) {
+        ObjWeak *w = (ObjWeak *)p->weak_refs.v[i];
+        if (dead(p, w->target)) w->target = NULL;
+    }
+}
+
+/* What marking left: the weak references, then the finalizers. A major
+ * collection looks at every finalizable object, a minor one at those
+ * registered since the last: the others are old, so live to it. */
+static void weak_finish(Process *p, bool major) {
+    mark_ephemerons(p);
+    clear_dead(p, MAP_WEAK_VALUES);
+    size_t ready0 = p->fin_ready.n, k = 0;
+    if (major) {
+        for (size_t i = 0; i < p->fin_old.n; i++) {
+            Obj *o = p->fin_old.v[i];
+            if (dead(p, ((ObjWeak *)o)->target)) VEC_PUSH(p->fin_ready, o);
+            else p->fin_old.v[k++] = o;
+        }
+        p->fin_old.n = k;
+    }
+    for (size_t i = 0; i < p->fin_young.n; i++) {
+        Obj *o = p->fin_young.v[i];
+        if (dead(p, ((ObjWeak *)o)->target)) VEC_PUSH(p->fin_ready, o);
+        else VEC_PUSH(p->fin_old, o);
+    }
+    p->fin_young.n = 0;
+    if (p->fin_ready.n > ready0) { /* all found first: one may hold another */
+        for (size_t i = ready0; i < p->fin_ready.n; i++) mark(p, ((ObjWeak *)p->fin_ready.v[i])->target);
+        drain(p);
+        mark_ephemerons(p);
+        clear_dead(p, MAP_WEAK_VALUES);
+    }
+    clear_dead(p, MAP_WEAK_KEYS);
+    p->weak_maps.n = p->weak_refs.n = 0;
 }
 
 static void scan(Process *p, Obj *o) {
@@ -437,6 +547,10 @@ static void scan(Process *p, Obj *o) {
     }
     case OBJ_MAP: {
         ObjMap *m = (ObjMap *)o;
+        if (m->weak && !p->gc_verifying) { /* the walk that checks comes after, and all that is left is live */
+            scan_weak_map(p, m);
+            break;
+        }
         for (uint32_t i = 0; i < m->nentries; i++) {
             MapEntry *e = &m->entries[i];
             if (!e->live) continue;
@@ -450,6 +564,13 @@ static void scan(Process *p, Obj *o) {
         mark(p, &co->fn->h);
         if (co->prev) mark(p, &co->prev->h);
         if (co->status != CO_DEAD) mark_ctx(p, &co->ctx);
+        break;
+    }
+    case OBJ_WEAK: {
+        ObjWeak *w = (ObjWeak *)o;
+        if (w->fn) mark(p, w->fn);
+        else if (w->target && (p->gc_verifying || !has_identity(w->target))) mark(p, w->target);
+        else if (w->target) VEC_PUSH(p->weak_refs, o);
         break;
     }
     default: break;
@@ -531,6 +652,11 @@ static void mark_roots(Process *p) {
     }
     for (size_t i = p->mbox_head; i < p->mbox.n; i++)
         if (p->mbox.v[i].tag == T_R) mark(p, p->mbox.v[i].v.r);
+    for (size_t i = 0; i < p->fin_young.n; i++) mark(p, p->fin_young.v[i]);
+    for (size_t i = 0; i < p->fin_ready.n; i++) {
+        mark(p, p->fin_ready.v[i]);
+        mark(p, ((ObjWeak *)p->fin_ready.v[i])->target);
+    }
 }
 
 static void drain(Process *p) {
@@ -573,11 +699,6 @@ static void gc_verify(Process *p) {
     p->gc_verifying = false;
 }
 
-/* An object a major collection marked (an owner, or one from malloc). */
-static bool owner_live(const Process *p, const Obj *o) {
-    return (o->flags & (OBJF_OLD | OBJF_MARK)) == (OBJF_OLD | p->mark_bit);
-}
-
 /* A minor collection: the young objects reached from the roots and from
  * the remembered old objects become old, and the others are free. Neither the
  * old objects nor the dead young ones are touched, but for the owners. */
@@ -594,6 +715,7 @@ static void gc_minor(Process *p) {
     }
     p->remset.n = 0;
     drain(p);
+    weak_finish(p, false);
     if (p->vm->gc_verify) gc_verify(p);
     for (size_t i = 0; i < p->young_owners.n; i++) {
         Obj *o = p->young_owners.v[i];
@@ -642,24 +764,26 @@ static void gc_major(Process *p) {
     for (Chunk *c = p->chunks; c; c = c->next) memset(c->lines, 0, c->nlines);
     p->gc_live = p->gc_live_bytes = p->gc_kept_bytes = 0;
     mark_roots(p);
+    for (size_t i = 0; i < p->fin_old.n; i++) mark(p, p->fin_old.v[i]);
     drain(p);
+    weak_finish(p, true);
     size_t k = 0;
     for (size_t i = 0; i < p->old_owners.n; i++) {
         Obj *o = p->old_owners.v[i];
-        if (owner_live(p, o)) p->old_owners.v[k++] = o;
+        if (marked(p, o)) p->old_owners.v[k++] = o;
         else obj_release_buffers(p, o);
     }
     p->old_owners.n = k;
     for (size_t i = 0; i < p->young_owners.n; i++) {
         Obj *o = p->young_owners.v[i];
-        if (owner_live(p, o)) VEC_PUSH(p->old_owners, o);
+        if (marked(p, o)) VEC_PUSH(p->old_owners, o);
         else obj_release_buffers(p, o);
     }
     p->young_owners.n = 0;
     Obj **pp = &p->heap;
     while (*pp) {
         Obj *o = *pp;
-        if (owner_live(p, o)) {
+        if (marked(p, o)) {
             pp = &o->next;
         } else {
             *pp = o->next;
@@ -749,6 +873,11 @@ void heap_free_all(Process *p) {
     VEC_FREE(p->handle_free);
     VEC_FREE(p->markstack);
     VEC_FREE(p->remset);
+    VEC_FREE(p->weak_refs);
+    VEC_FREE(p->weak_maps);
+    VEC_FREE(p->fin_young);
+    VEC_FREE(p->fin_old);
+    VEC_FREE(p->fin_ready);
     p->heap_old = NULL;
 }
 /* ---- handles ------------------------------------------------------------- */

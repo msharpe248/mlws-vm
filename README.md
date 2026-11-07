@@ -57,6 +57,7 @@ base:
   insertion-ordered maps, closures, BigInts (`123n`) and exact decimals (`19.99d`).
   The collector is precise and generational, one per process, and allocates
   by bumping a pointer through the free lines of its chunks (mark-region).
+  Weak references, weak maps (with ephemerons) and finalizers are built in.
 * **Many isolated processes, in parallel**: preemptive scheduling on one worker
   thread per core with work stealing, `spawn`/`send`/`recv` with deep-copied
   messages, timeouts, Erlang-style `link`/`monitor` supervision, and per-process

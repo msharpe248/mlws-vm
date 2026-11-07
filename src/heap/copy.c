@@ -107,7 +107,12 @@ static Obj *shallow(Process *from, Process *to, struct CopyState *cs, Obj *o) {
         c = &nl->h;
         break;
     }
-    case OBJ_MAP: c = &map_new(to)->h; break; /* entries are added from the worklist */
+    case OBJ_MAP: { /* entries are added from the worklist */
+        ObjMap *nm = map_new(to);
+        nm->weak = ((ObjMap *)o)->weak;
+        c = &nm->h;
+        break;
+    }
     case OBJ_CLOSURE: {
         ObjClosure *cl = (ObjClosure *)o, *nc = closure_new(to, cl->fn, cl->nup);
         for (uint32_t i = 0; i < cl->nup; i++) {
@@ -129,6 +134,8 @@ static Obj *shallow(Process *from, Process *to, struct CopyState *cs, Obj *o) {
         vm_trap(from, "E_TYPE", "foreign handles cannot be sent to another process (they are process-local)");
     case OBJ_CORO:
         vm_trap(from, "E_TYPE", "coroutines cannot be sent to another process (they are process-local)");
+    case OBJ_WEAK:
+        vm_trap(from, "E_TYPE", "weak references cannot be sent to another process (they are process-local)");
     default: vm_trap(from, "E_INTERNAL", "cannot copy object kind %d", o->kind);
     }
     map_insert(cs, o, c);

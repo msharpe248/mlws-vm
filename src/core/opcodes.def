@@ -194,7 +194,7 @@ OP(ANEW,   0x00A1, "anew",   "Objects", "XQ", TS_ANY, 0,
 OP(LEN,    0x00A2, "len",    "Objects", "JO", 0, 0,
    "Length: bytes of a string or byte buffer, elements of an array or list, entries of a map. Traps E_TYPE for a struct and E_NULL for null.")
 OP(TYPEOF, 0x00A3, "typeof", "Objects", "JO", 0, 0,
-   "Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map, 7 closure, 8 BigInt, 9 decimal, 10 foreign handle, 11 coroutine.")
+   "Kind of a reference: 0 null, 1 string, 2 bytes, 3 array, 4 struct, 5 list, 6 map, 7 closure, 8 BigInt, 9 decimal, 10 foreign handle, 11 coroutine, 12 weak reference.")
 OP(ISA,    0x00A4, "isa",    "Objects", "BOT", 0, 0,
    "dst = true if the reference is a struct of the given type: `isa I0, R1, Point`.")
 OP(RESIZE, 0x00A5, "resize", "Objects", "OQ", 0, 0,

@@ -1,0 +1,13 @@
+; A weak reference is process-local: what it refers to is on this heap.
+; expect-error: E_TYPE
+.func child
+    recv R0
+    ret
+.endf
+.func main
+    spawn child -> (I0)
+    lnew R0
+    ncall "weak.ref" (R0) -> (R1)
+    send I0, R1
+    ret 0
+.endf
