@@ -135,6 +135,12 @@ bool pass_compact(OFunc *f) {
     MFunc *mf = f->mf;
     uint32_t used[NBANKS], need[NBANKS];
     ofn_used_regs(f, used);
+    /* A variable's registers stay in the window. Renaming registers loses
+     * the names (the code may not show it, when no instruction uses one of
+     * a variable's registers): then the window is made without them. */
+    for (uint32_t i = 0; i < mf->nvars; i++)
+        for (int j = 0; j < mf->vars[i].nregs; j++)
+            used[REG_BANK(mf->vars[i].regs[j])] |= 1u << REG_IDX(mf->vars[i].regs[j]);
     read_first(f, need);
     int params[NBANKS] = {0};
     for (int k = 0; k < mf->nparams; k++) params[type_bank((MlwsType)mf->params[k])]++;
@@ -162,6 +168,13 @@ bool pass_compact(OFunc *f) {
     bool smaller = false;
     for (int b = 0; b < NBANKS; b++) smaller |= want[b] < mf->nregs[b];
     if (!smaller && run_after >= run_before) return false;
+    if (moved && mf->nvars) {
+        for (uint32_t i = 0; i < mf->nvars; i++) free(mf->vars[i].name);
+        free(mf->vars);
+        mf->vars = NULL;
+        mf->nvars = 0;
+        return pass_compact(f);
+    }
     if (moved)
         for (size_t i = 0; i < f->code.n; i++) {
             Insn *in = &f->code.v[i].in;

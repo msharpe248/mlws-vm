@@ -192,8 +192,9 @@ how arguments are bound, and [ABI.md §8](ABI.md#8-coroutines) for coroutines.
 * A declared result list (`-> ...`) is checked by the verifier: every `ret` must
   return exactly those types. Without one, `ret` returns its operands with their
   natural types.
-* The assembler computes how many registers of each bank the function uses, and
-  `.regs I=8, F=2` can raise those numbers. A call allocates exactly that window.
+* The assembler computes how many registers of each bank the function uses
+  (counting those a `.local` names, §5.4), and `.regs I=8, F=2` can raise
+  those numbers. A call allocates exactly that window.
 * The last instruction must be `ret`, `jmp`, `tcall`, `tcalli`, `throw` or `halt`.
   Execution cannot run off the end.
 * Instructions are only allowed inside a function.
@@ -308,7 +309,10 @@ function it changes loses its names: debug code that is not optimized.
 
 A value that a compiler splits across banks is one variable of several
 registers, at most one of each bank: `.local x, I3, F3, R3`. A new `.local`
-that gives the name, or any of the registers, ends it. How such a value reads
+that gives the name, or any of the registers, ends it. The registers a
+`.local` names are in the function's window whether or not an instruction
+uses them, so a Lua integer, which never writes its F register, is still
+shown (with that register 0). How such a value reads
 is the language's own, so the module says how to show it with
 `.debug_format`, naming a function of the module, or one it imports, that takes
 the registers' values and returns what to show:

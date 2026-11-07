@@ -39,6 +39,48 @@ for f in show_triple show_pair show_thrown show_forever show_sending show_spawni
     grep -q "^\.debug_format $f\$" "$TMPD/fmt2.masm" || fail "opt: formatter $f lost"
 done
 rm -f "$TMPD/fmt.mlwso" "$TMPD/fmt2.mlwso" "$TMPD/fmt2.masm"
+# A .local's registers are in the window though no instruction uses them (a
+# Lua integer never touches its F register): the variable is kept
+cat > "$TMPD/unused.masm" <<'EOF'
+.func main
+    mov R3, 1n
+    .local a, I3, F3, R3
+    .local b, I4, F4, R4
+    mov I0, 0
+    ret 0
+.endf
+EOF
+$BIN asm "$TMPD/unused.masm" -o "$TMPD/unused.mlwso" >/dev/null 2>&1 || fail "asm unused.masm"
+$BIN dis "$TMPD/unused.mlwso" > "$TMPD/unused.dis"
+grep -q '^    \.local a, I3, F3, R3$' "$TMPD/unused.dis" || fail "dis: .local of registers no instruction uses"
+grep -q '^    \.local b, I4, F4, R4$' "$TMPD/unused.dis" || fail "dis: .local of registers no instruction uses"
+grep -q '^    \.regs I=5, F=5, R=5, P=0$' "$TMPD/unused.dis" || fail "dis: a .local's registers in the window"
+# ...and through the optimizer: kept while the registers keep their numbers,
+# gone with them when compacting renames one (then the module still loads)
+for reg in F1 F2; do
+    cat > "$TMPD/unused.masm" <<EOF
+.func f(i64 x, f64 y) -> i64
+    .local a, I0, $reg
+    ret I0
+.endf
+.func main
+    ncall "os.args" () -> (R0)
+    len I0, R0
+    closure f -> (R1)
+    calli R1 (I0, 0.0) -> (I1)
+    ret 0
+.endf
+EOF
+    $BIN opt -q --passes all -o "$TMPD/unused.mlwso" "$TMPD/unused.masm" || fail "opt unused.masm ($reg)"
+    $BIN run "$TMPD/unused.mlwso" || fail "run optimized unused.masm ($reg)"
+    $BIN dis "$TMPD/unused.mlwso" > "$TMPD/unused.dis"
+    if [ $reg = F1 ]; then
+        grep -q '^    \.local a, I0, F1$' "$TMPD/unused.dis" || fail "opt: a .local of an unused register lost"
+    else
+        ! grep -q '\.local a' "$TMPD/unused.dis" || fail "opt: a .local kept after its registers were renamed"
+    fi
+done
+rm -f "$TMPD/unused.masm" "$TMPD/unused.mlwso" "$TMPD/unused.dis"
 rm -f "$TMPD/loc.mlwso"
 
 # mlwsvm bundle: one executable that runs with no lib/ beside it, whose command

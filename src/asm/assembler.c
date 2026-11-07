@@ -67,6 +67,7 @@ typedef struct AsmFunc {
     StrMap aliases; /* name -> reg+1 */
     VEC(AsmInsn) insns;
     int regs_min[NBANKS];
+    int local_min[NBANKS]; /* what .local names: the window holds it, used or not */
     int nparam_bank[NBANKS];
     VEC(AsmHandler) handlers;
     VEC(MVar) vars; /* end UINT32_MAX: still open */
@@ -950,6 +951,7 @@ static bool dir_local(Asm *A, Cur *c) {
         }
         banks |= 1u << REG_BANK(reg);
         regs[n++] = (uint8_t)reg;
+        if (REG_IDX(reg) + 1 > A->cur->local_min[REG_BANK(reg)]) A->cur->local_min[REG_BANK(reg)] = REG_IDX(reg) + 1;
         c->pos++;
     }
     var_from_here(A->cur, name, regs, n);
@@ -1047,10 +1049,12 @@ static bool dir_endf(Asm *A, Cur *c) {
         int n = maxr[b];
         if (f->nparam_bank[b] > n) n = f->nparam_bank[b];
         if (f->regs_min[b] > n) n = f->regs_min[b];
+        if (f->local_min[b] > n) n = f->local_min[b];
         f->mf.nregs[b] = (uint16_t)n;
     }
     /* The names that last to the end, without those of no instruction, and of
-     * registers the function does not have (an alias of one never used). */
+     * registers the function does not have (an alias of one never used: a
+     * .local's registers are in the window, whether used or not). */
     size_t k = 0;
     for (size_t i = 0; i < f->vars.n; i++) {
         MVar v = f->vars.v[i];
