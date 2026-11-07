@@ -62,6 +62,8 @@ void pass_deadfuncs(OModule *om) {
         free(mf->name);
         free(mf->lines);
         free(mf->locs);
+        for (uint32_t k = 0; k < mf->nvars; k++) free(mf->vars[k].name);
+        free(mf->vars);
         free(mf->handlers);
     }
     j = 0;
