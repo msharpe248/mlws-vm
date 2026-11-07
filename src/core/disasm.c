@@ -239,6 +239,10 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
         sb_printf(b, ".requires %s, \"%s\"\n", m->requires[i].lib, m->requires[i].constraint);
     if (m->lib_name) sb_printf(b, ".library %s, \"%s\"\n", m->lib_name, m->lib_version ? m->lib_version : "0.0.0");
     for (uint32_t i = 0; i < m->npublics; i++) sb_printf(b, ".public %s\n", m->publics[i]);
+    for (uint32_t i = 0; i < m->nformats; i++) {
+        char fb[300];
+        sb_printf(b, ".debug_format %s\n", func_ref_name(m, m->formats[i], fb, sizeof fb));
+    }
     for (uint32_t i = 0; i < m->nffrees; i++) {
         sb_printf(b, ".ffi_free %s, ", m->ffrees[i].tag);
         sb_put_quoted(b, m->ffrees[i].lib, strlen(m->ffrees[i].lib));
@@ -355,14 +359,21 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
             for (uint32_t v = 0; v < f->nvars; v++) { /* names that end here, then those that start */
                 const MVar *mv = &f->vars[v];
                 bool again = false;
-                for (uint32_t w = 0; w < f->nvars && !again; w++)
-                    again = w != v && f->vars[w].start == i && (!strcmp(f->vars[w].name, mv->name) || f->vars[w].reg == mv->reg);
+                for (uint32_t w = 0; w < f->nvars && !again; w++) {
+                    const MVar *mw = &f->vars[w];
+                    if (w == v || mw->start != i) continue;
+                    again = !strcmp(mw->name, mv->name);
+                    for (int j = 0; j < mw->nregs && !again; j++)
+                        for (int k = 0; k < mv->nregs && !again; k++) again = mw->regs[j] == mv->regs[k];
+                }
                 if (mv->end == i && !again) sb_printf(b, "    .local %s\n", mv->name);
             }
             for (uint32_t v = 0; v < f->nvars; v++)
                 if (f->vars[v].start == i) {
                     char rb[8];
-                    sb_printf(b, "    .local %s, %s\n", f->vars[v].name, reg_name(f->vars[v].reg, rb));
+                    sb_printf(b, "    .local %s", f->vars[v].name);
+                    for (int j = 0; j < f->vars[v].nregs; j++) sb_printf(b, ", %s", reg_name(f->vars[v].regs[j], rb));
+                    sb_putc(b, '\n');
                 }
             if (nloc < f->nlocs && f->locs[nloc].start == i) { /* where the program's code came from */
                 const MLoc *l = &f->locs[nloc++];

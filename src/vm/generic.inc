@@ -731,6 +731,7 @@
                 if (mf->params[k] == T_P) vm_trap(p, "E_TYPE", "pointer parameters cannot cross processes");
                 args[k] = rd_param(CX, &ops[2 + k], (MlwsType)mf->params[k]);
             }
+            proc_reach(p, "spawn");
             Process *child = proc_new(vm);
             child->prog = p->prog; /* the same program */
             memcpy(child->quota, p->quota, sizeof child->quota);
@@ -766,6 +767,7 @@
             int argc = (int)ops[1].imm;
             Word args[MAX_OPERANDS];
             for (int k = 0; k < argc; k++) args[k] = rd(CX, &ops[2 + k], (MlwsType)fn->mf->params[k]);
+            proc_reach(p, "spawn");
             Process *child = proc_new(vm);
             child->prog = p->prog; /* the same program */
             memcpy(child->quota, p->quota, sizeof child->quota);
@@ -846,6 +848,7 @@
             return SLICE_SLEEP;
         }
         case OP_KILL: {
+            proc_reach(p, "kill");
             int64_t pid = rd(CX, &ops[0], T_I64).i;
             char msg[96];
             snprintf(msg, sizeof msg, "killed by process %llu", (unsigned long long)p->pid);
@@ -853,10 +856,12 @@
             break; /* killing ourselves (or a linked chain back to us) stops at the next instruction */
         }
         case OP_LINK: {
+            proc_reach(p, "link");
             sched_link(p, (uint64_t)rd(CX, &ops[0], T_I64).i);
             break;
         }
         case OP_MONITOR: {
+            proc_reach(p, "monitor");
             sched_monitor(p, (uint64_t)rd(CX, &ops[0], T_I64).i);
             break;
         }

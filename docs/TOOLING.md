@@ -294,8 +294,8 @@ here (outside the debugger it does nothing).
 | `break SPEC` | `b` | breakpoint at `FUNCTION`, `module.FUNCTION`, `LINE` (main file) or `FILE:LINE`; the file may be one `.loc` names (the first instruction of each function from that line) |
 | `delete [N]` | `d` | delete breakpoint N, or all |
 | `info break` | `i` | list breakpoints with hit counts |
-| `print REG` or `print NAME` | `p` | a register (`I3`, `F0`, `R1`, `P2`, `SP`, `FP`, `PID`), or a variable by name; objects are shown with their contents |
-| `locals` | `lo` | the current frame's named variables: `.local` names, parameters and aliases ([ASSEMBLY.md §5.4](ASSEMBLY.md#54-source-positions-of-a-translated-program)) |
+| `print REG` or `print NAME` | `p` | a register (`I3`, `F0`, `R1`, `P2`, `SP`, `FP`, `PID`), or a variable by name; objects are shown with their contents, and a variable with a formatter as it shows it |
+| `locals` | `lo` | the current frame's named variables: `.local` names, parameters and aliases, each with its registers, shown by the program's formatter for them (`.debug_format`) where it has one ([ASSEMBLY.md §5.4](ASSEMBLY.md#54-source-positions-of-a-translated-program)) |
 | `regs` | | every register in the current frame's window |
 | `stack [N]` | `st` | the top N data-stack words, with their type tags |
 | `bt` | `where` | backtrace |
@@ -342,6 +342,8 @@ language's own files, wherever its compiler marked the lines with `.loc`.
 * **Threads** are processes. All of them stop together, and each has its stack.
 * **Variables:** a frame's **Locals**, the program's own names for its registers
   (`.local`, parameters, aliases) where it has any, then its registers by bank.
+  A variable of several registers shows what the program's formatter
+  (`.debug_format`) makes of them, and opens to show the registers.
   Structs, lists, arrays and maps
   open to show their contents, up to a thousand entries.
 * **Watch and hover**: a variable's name, or a register's (`I3`, `R0`), in the selected frame.

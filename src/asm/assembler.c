@@ -114,6 +114,8 @@ typedef struct {
     VEC(MFfiFree) ffrees;   /* .ffi_free */
     VEC(MCallback) callbacks; /* .callback */
     VEC(MRequire) requires; /* .requires */
+    VEC(AsmOp) formats;     /* .debug_format, resolved in finish */
+    VEC(const PLine *) format_pl;
     char *lib_name, *lib_version; /* .library: this file is a library's manifest */
     const PLine *lib_pl;
     VEC(char *) publics;    /* .public */
@@ -161,7 +163,8 @@ static bool expect_punct(Asm *A, Cur *c, const char *p) {
 
 /* ---- registers & expressions ----------------------------------------------- */
 
-static void var_from_here(AsmFunc *f, const char *name, int reg);
+static void var_from_here(AsmFunc *f, const char *name, const uint8_t *regs, int nregs);
+static void var_from_here1(AsmFunc *f, const char *name, int reg);
 
 static int parse_reg_name(const char *s, size_t n) {
     if (n == 2 && !memcmp(s, "SP", 2)) return REG_MAKE(BANK_S, SREG_SP);
@@ -815,7 +818,7 @@ static bool dir_func(Asm *A, Cur *c) {
                     return false;
                 }
                 smap_put(&f->aliases, pn, IV((size_t)reg));
-                var_from_here(f, pn, reg);
+                var_from_here1(f, pn, reg);
                 free(pn);
                 c->pos++;
             }
@@ -897,41 +900,79 @@ static void note_operand_regs(int maxr[NBANKS], const Operand *o) {
     }
 }
 
-/* A name for a register from the next instruction: what had the name, or the
- * register, ends there. reg < 0: only the end of the name. */
-static void var_from_here(AsmFunc *f, const char *name, int reg) {
+/* A name for registers from the next instruction: what had the name, or one
+ * of the registers, ends there. nregs 0: only the end of the name. */
+static void var_from_here(AsmFunc *f, const char *name, const uint8_t *regs, int nregs) {
     uint32_t here = (uint32_t)f->insns.n;
     for (size_t i = 0; i < f->vars.n; i++) {
         MVar *v = &f->vars.v[i];
-        if (v->end == UINT32_MAX && (!strcmp(v->name, name) || (reg >= 0 && v->reg == (uint8_t)reg))) v->end = here;
+        if (v->end != UINT32_MAX) continue;
+        bool hit = !strcmp(v->name, name);
+        for (int j = 0; j < v->nregs && !hit; j++)
+            for (int k = 0; k < nregs && !hit; k++) hit = v->regs[j] == regs[k];
+        if (hit) v->end = here;
     }
-    if (reg < 0) return;
-    MVar v = {here, UINT32_MAX, xstrdup(name), (uint8_t)reg};
+    if (!nregs) return;
+    MVar v = {here, UINT32_MAX, xstrdup(name), (uint8_t)nregs, {0}};
+    memcpy(v.regs, regs, (size_t)nregs);
     VEC_PUSH(f->vars, v);
 }
 
-/* `.local name, REG`: from the next instruction register REG holds the
- * variable `name` of the program a compiler translated, until the function ends,
- * or another `.local` names the variable or the register. `.local name` alone
- * ends it. For debuggers. */
+static void var_from_here1(AsmFunc *f, const char *name, int reg) {
+    uint8_t r = (uint8_t)reg;
+    var_from_here(f, name, &r, 1);
+}
+
+/* `.local name, REG...`: from the next instruction the registers (up to one of
+ * each bank: a value a compiler splits across banks) hold the variable `name`
+ * of the program a compiler translated, until the function ends, or another
+ * `.local` names the variable or one of the registers. `.local name` alone
+ * ends it. For debuggers, which show it through a `.debug_format` function. */
 static bool dir_local(Asm *A, Cur *c) {
     if (!A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".local must be inside a .func");
     Token *t = cur(c);
-    if (t->kind != TK_IDENT && t->kind != TK_STRING) return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "expected `.local name, register`");
+    if (t->kind != TK_IDENT && t->kind != TK_STRING) return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "expected `.local name, register...`");
     char *name = t->kind == TK_STRING ? xstrndup(t->sval, t->slen) : tokdup(t);
     c->pos++;
-    int reg = -1;
-    if (tok_is(cur(c), ",")) {
+    uint8_t regs[MVAR_REGS];
+    int n = 0;
+    unsigned banks = 0;
+    while (tok_is(cur(c), ",")) {
         c->pos++;
-        reg = cur(c)->kind == TK_IDENT ? resolve_reg(A, cur(c)) : -1;
+        int reg = cur(c)->kind == TK_IDENT ? resolve_reg(A, cur(c)) : -1;
         if (reg < 0 || REG_BANK(reg) >= NBANKS) {
             free(name);
             return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected an I, F, R or P register");
         }
+        if (banks & (1u << REG_BANK(reg))) {
+            free(name);
+            return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "a variable has at most one register of each bank");
+        }
+        banks |= 1u << REG_BANK(reg);
+        regs[n++] = (uint8_t)reg;
         c->pos++;
     }
-    var_from_here(A->cur, name, reg);
+    var_from_here(A->cur, name, regs, n);
     free(name);
+    return expect_eol(A, c);
+}
+
+/* `.debug_format f`: f, a function of this module or one it imports, shows
+ * a variable of the program for a debugger: called with the variable's
+ * registers (in its own process, sandboxed), it returns what to show. A
+ * variable is shown by the formatter whose parameters are of its registers'
+ * banks, in their order. */
+static bool dir_debug_format(Asm *A, Cur *c) {
+    if (A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".debug_format belongs outside functions");
+    Token *t = cur(c);
+    if (t->kind != TK_IDENT || resolve_reg(A, t) >= 0) return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "expected `.debug_format function`");
+    AsmOp op;
+    memset(&op, 0, sizeof op);
+    op_init_mode(&op, OM_FUNC, t->col);
+    op.sym = tokdup(t);
+    c->pos++;
+    VEC_PUSH(A->formats, op);
+    VEC_PUSH(A->format_pl, c->pl);
     return expect_eol(A, c);
 }
 
@@ -1014,7 +1055,9 @@ static bool dir_endf(Asm *A, Cur *c) {
     for (size_t i = 0; i < f->vars.n; i++) {
         MVar v = f->vars.v[i];
         if (v.end == UINT32_MAX) v.end = (uint32_t)f->insns.n;
-        if (v.start >= v.end || REG_IDX(v.reg) >= f->mf.nregs[REG_BANK(v.reg)]) {
+        bool outside = false;
+        for (int j = 0; j < v.nregs; j++) outside = outside || REG_IDX(v.regs[j]) >= f->mf.nregs[REG_BANK(v.regs[j])];
+        if (v.start >= v.end || outside) {
             free(v.name);
             continue;
         }
@@ -1062,7 +1105,7 @@ static bool dir_alias(Asm *A, Cur *c) {
     }
     c->pos++;
     smap_put(A->cur ? &A->cur->aliases : &A->mod_aliases, name, IV((size_t)r));
-    if (A->cur && REG_BANK(r) < NBANKS) var_from_here(A->cur, name, r);
+    if (A->cur && REG_BANK(r) < NBANKS) var_from_here1(A->cur, name, r);
     free(name);
     return expect_eol(A, c);
 }
@@ -1762,6 +1805,7 @@ static bool directive(Asm *A, Cur *c) {
     if (IS(".endtry")) return dir_endtry(A, c);
     if (IS(".loc")) return dir_loc(A, c);
     if (IS(".local")) return dir_local(A, c);
+    if (IS(".debug_format")) return dir_debug_format(A, c);
     if (IS(".requires")) return dir_requires(A, c);
     if (IS(".library")) return dir_library(A, c);
     if (IS(".public")) return dir_public(A, c);
@@ -2269,6 +2313,24 @@ static Module *finish(Asm *A) {
                 if (!resolve_module_refs(A, ai->pl, &ai->ops[k])) return NULL;
         }
     }
+    for (size_t i = 0; i < A->formats.n; i++) { /* checked here if its own; an import's when a debugger uses it */
+        AsmOp *op = &A->formats.v[i];
+        if (!resolve_func_ref(A, A->format_pl.v[i], op)) return NULL;
+        if (op->o.index >= A->funcs.n) continue;
+        const MFunc *mf = &A->funcs.v[op->o.index]->mf;
+        unsigned banks = 0;
+        bool ok = mf->nparams >= 1 && mf->nparams <= MVAR_REGS && mf->nrets == 1 && (mf->flags & MF_RETS_DECLARED);
+        for (int k = 0; ok && k < mf->nparams; k++) {
+            unsigned bit = 1u << type_bank((MlwsType)mf->params[k]);
+            ok = !(banks & bit);
+            banks |= bit;
+        }
+        if (!ok) {
+            aerr(A, A->format_pl.v[i], op->col, "E_ASM_SYNTAX",
+                 "a debug formatter takes 1 to %d values of different banks and returns one", MVAR_REGS);
+            return NULL;
+        }
+    }
 
     Module *m = xcalloc(1, sizeof *m);
     m->name = xstrdup(A->modname);
@@ -2284,6 +2346,9 @@ static Module *finish(Asm *A) {
     m->npublics = (uint32_t)A->publics.n;
     m->publics = xcalloc(A->publics.n + 1, sizeof(char *));
     for (size_t i = 0; i < A->publics.n; i++) m->publics[i] = xstrdup(A->publics.v[i]);
+    m->nformats = (uint32_t)A->formats.n;
+    m->formats = xcalloc(A->formats.n + 1, sizeof(uint32_t));
+    for (size_t i = 0; i < A->formats.n; i++) m->formats[i] = A->formats.v[i].o.index;
     m->nsrcfiles = (uint32_t)A->srcfiles.n;
     m->srcfiles = xcalloc(A->srcfiles.n + 1, sizeof(char *));
     for (size_t i = 0; i < A->srcfiles.n; i++) m->srcfiles[i] = xstrdup(A->srcfiles.v[i]);
@@ -2392,6 +2457,9 @@ static void asm_free(Asm *A) {
         free(A->requires.v[i].constraint);
     }
     VEC_FREE(A->requires);
+    for (size_t i = 0; i < A->formats.n; i++) free(A->formats.v[i].sym);
+    VEC_FREE(A->formats);
+    VEC_FREE(A->format_pl);
     free(A->lib_name);
     free(A->lib_version);
     for (size_t i = 0; i < A->publics.n; i++) free(A->publics.v[i]);

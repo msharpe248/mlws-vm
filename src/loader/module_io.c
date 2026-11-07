@@ -67,6 +67,7 @@ void module_free(Module *m) {
     free(m->lib_version);
     for (uint32_t i = 0; i < m->npublics; i++) free(m->publics[i]);
     free(m->publics);
+    free(m->formats);
     for (uint32_t i = 0; i < m->nstructs; i++) {
         MStruct *st = &m->structs[i];
         free(st->name);
@@ -153,7 +154,8 @@ void module_write(const Module *m, ByteBuf *b) {
             bb_uleb(b, f->vars[k].start);
             bb_uleb(b, f->vars[k].end);
             bb_str(b, f->vars[k].name);
-            bb_u8(b, f->vars[k].reg);
+            bb_u8(b, f->vars[k].nregs);
+            for (int j = 0; j < f->vars[k].nregs; j++) bb_u8(b, f->vars[k].regs[j]);
         }
         bb_uleb(b, f->nhandlers);
         for (uint32_t k = 0; k < f->nhandlers; k++) {
@@ -266,6 +268,8 @@ void module_write(const Module *m, ByteBuf *b) {
     bb_str(b, m->lib_version ? m->lib_version : "");
     bb_uleb(b, m->npublics);
     for (uint32_t i = 0; i < m->npublics; i++) bb_str(b, m->publics[i]);
+    bb_uleb(b, m->nformats);
+    for (uint32_t i = 0; i < m->nformats; i++) bb_uleb(b, m->formats[i]);
 }
 
 #define FAIL(...)                                                              \
@@ -387,12 +391,17 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
             v->start = (uint32_t)br_uleb(&r);
             v->end = (uint32_t)br_uleb(&r);
             v->name = br_str(&r);
-            v->reg = br_u8(&r);
+            v->nregs = br_u8(&r);
+            bool ok = v->nregs >= 1 && v->nregs <= MVAR_REGS;
+            unsigned banks = 0;
+            for (int j = 0; ok && j < v->nregs; j++) {
+                uint8_t g = v->regs[j] = br_u8(&r);
+                ok = REG_BANK(g) < NBANKS && REG_IDX(g) < f->nregs[REG_BANK(g)] && !(banks & (1u << REG_BANK(g)));
+                banks |= 1u << REG_BANK(g);
+            }
             f->nvars = k + 1;
             CHECK();
-            if (!v->name || v->start >= v->end || v->end > f->ninsns || REG_BANK(v->reg) >= NBANKS ||
-                REG_IDX(v->reg) >= f->nregs[REG_BANK(v->reg)])
-                FAIL("function %s: bad variable", f->name);
+            if (!ok || !v->name || v->start >= v->end || v->end > f->ninsns) FAIL("function %s: bad variable", f->name);
         }
         uint64_t nh = br_uleb(&r);
         CHECK_COUNT(nh, 3);
@@ -640,7 +649,14 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
     m->npublics = (uint32_t)n;
     m->publics = xcalloc(n + 1, sizeof(char *));
     for (uint32_t i = 0; i < m->npublics; i++) m->publics[i] = br_str(&r);
+    n = br_uleb(&r);
+    CHECK_COUNT(n, 1);
+    m->nformats = (uint32_t)n;
+    m->formats = xcalloc(n + 1, sizeof(uint32_t));
+    for (uint32_t i = 0; i < m->nformats; i++) m->formats[i] = (uint32_t)br_uleb(&r);
     CHECK();
+    for (uint32_t i = 0; i < m->nformats; i++)
+        if (m->formats[i] >= m->nfuncs) FAIL("debug formatter out of range");
     for (uint32_t i = 0; i < m->nrequires; i++) {
         char why[256];
         if (!semver_constraint_ok(m->requires[i].constraint, why, sizeof why)) FAIL("requires %s: %s", m->requires[i].lib, why);

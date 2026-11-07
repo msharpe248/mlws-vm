@@ -1,0 +1,12 @@
+; A debug formatter takes the registers of a variable, one of each bank it
+; has, and returns one value to show: two integers cannot be a variable.
+; expect-error: E_ASM_SYNTAX
+.debug_format show
+
+.func show(i64 a, i64 b) -> ref
+    ret "x"
+.endf
+
+.func main
+    ret
+.endf

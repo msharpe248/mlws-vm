@@ -281,10 +281,122 @@ const MVar *dbg_var_at(const Function *f, uint32_t pc, const char *name) {
     return found;
 }
 
-void dbg_var_value(const Process *p, const Frame *fr, const MVar *v, Word *w, MlwsType *t) {
-    int b = REG_BANK(v->reg);
-    memcpy(w, frame_reg(p->regs, fr, b, REG_IDX(v->reg)), sizeof *w);
+void dbg_var_reg(const Process *p, const Frame *fr, const MVar *v, int k, Word *w, MlwsType *t) {
+    int b = REG_BANK(v->regs[k]);
+    memcpy(w, frame_reg(p->regs, fr, b, REG_IDX(v->regs[k])), sizeof *w);
     *t = b == BANK_I ? T_I64 : b == BANK_F ? T_F64 : b == BANK_R ? T_R : T_P;
+}
+
+void dbg_var_regs(StrBuf *b, const MVar *v) {
+    char rb[8];
+    for (int k = 0; k < v->nregs; k++) sb_printf(b, "%s%s", k ? ", " : "", reg_name(v->regs[k], rb));
+}
+
+/* ---- formatters (`.debug_format`) ----
+ * A variable of the translated program, which a compiler may split across
+ * registers of several banks, is shown by a function of the program: its
+ * module's formatter whose parameters are of the variable's registers' banks,
+ * in their order. It runs in a process of its own, as a spawned process would,
+ * with the values copied in: restricted (it reaches no file, host, command or
+ * environment), unable to reach other processes (Process.sandboxed: no send,
+ * spawn, kill, link, monitor or exit), with an instruction and a heap quota,
+ * and without the debugger's hook. So it cannot change the stopped program,
+ * wait, or run on: what goes wrong is shown, with the registers. */
+#define FMT_INSNS 10000000u          /* a formatter's instructions */
+#define FMT_HEAP ((uint64_t)64 << 20) /* and its heap */
+
+static bool formatter_fits(const Function *fn, const MVar *v) {
+    const MFunc *mf = fn->mf;
+    if (mf->nparams != v->nregs || mf->nrets != 1 || !(mf->flags & MF_RETS_DECLARED)) return false;
+    for (int k = 0; k < v->nregs; k++)
+        if ((int)type_bank((MlwsType)mf->params[k]) != REG_BANK(v->regs[k])) return false;
+    return true;
+}
+
+static Function *formatter_for(const Function *f, const MVar *v) {
+    const LModule *lm = f->mod;
+    for (uint32_t i = 0; i < lm->m->nformats; i++) {
+        Function *g = lm->funcs[lm->m->formats[i]].target;
+        if (formatter_fits(g, v)) return g;
+    }
+    return NULL;
+}
+
+/* fn on v's registers in frame fr of p: true with what it returned, in out;
+ * false with why. */
+static bool run_formatter(Process *p, const Frame *fr, const MVar *v, Function *fn, StrBuf *out) {
+    VM *vm = p->vm;
+    Process *q = proc_new(vm);
+    q->prog = p->prog;
+    caps_release(q->caps);
+    q->caps = caps_new(); /* granted nothing */
+    q->sandboxed = true;
+    q->quota[QUOTA_INSNS] = FMT_INSNS;
+    q->quota[QUOTA_HEAP] = FMT_HEAP;
+    Word args[MVAR_REGS];
+    char why[300] = "";
+    bool ok = true;
+    for (int k = 0; k < v->nregs && ok; k++) {
+        MlwsType t;
+        dbg_var_reg(p, fr, v, k, &args[k], &t);
+        if (t == T_R) ok = msg_copy_soft(p, q, &args[k], T_R, why, sizeof why);
+    }
+    if (ok) {
+        InsnHook hook = vm->hook; /* no breakpoints or steps in it */
+        vm->hook = NULL;
+        proc_start(q, fn, NULL, args, v->nregs);
+        q->state = PROC_RUNNING;
+        int r;
+        do r = proc_run_slice(q, 100000);
+        while (r == SLICE_YIELD);
+        vm->hook = hook;
+        if (r == SLICE_DONE && q->nresults >= 1) {
+            Word w = q->results[0];
+            MlwsType t = (MlwsType)q->result_types[0];
+            if (type_is_ref(t) && w.r && ((Obj *)w.r)->kind == OBJ_STRING) sb_putn(out, ((ObjString *)w.r)->data, ((ObjString *)w.r)->len);
+            else fmt_value(out, w, t, 2);
+        } else if (r == SLICE_FAILED) {
+            snprintf(why, sizeof why, "%s: %s", q->err.code, q->err.msg);
+            ok = false;
+        } else {
+            snprintf(why, sizeof why, "it would wait (for a message, a time or a blocking call)");
+            ok = false;
+        }
+    }
+    if (!ok) sb_puts(out, why);
+    q->state = ok ? PROC_DONE : PROC_FAILED;
+    vm->live--; /* (proc_free counts only a process that has not ended) */
+    proc_free(q);
+    return ok;
+}
+
+void dbg_show_var(Process *p, const Frame *fr, const MVar *v, int depth, StrBuf *out) {
+    Function *fn = formatter_for(fr->fn, v);
+    if (fn) {
+        StrBuf s = {0};
+        bool ok = run_formatter(p, fr, v, fn, &s);
+        if (ok) sb_putn(out, s.s ? s.s : "", s.n);
+        else sb_printf(out, "<%s failed: %s> ", fn->name, s.s ? s.s : "");
+        sb_free(&s);
+        if (ok) return;
+    }
+    if (v->nregs == 1) {
+        Word w;
+        MlwsType t;
+        dbg_var_reg(p, fr, v, 0, &w, &t);
+        fmt_value(out, w, t, depth);
+        return;
+    }
+    char rb[8];
+    sb_putc(out, '{');
+    for (int k = 0; k < v->nregs; k++) {
+        Word w;
+        MlwsType t;
+        dbg_var_reg(p, fr, v, k, &w, &t);
+        sb_printf(out, "%s%s = ", k ? ", " : "", reg_name(v->regs[k], rb));
+        fmt_value(out, w, t, depth > 0 ? depth - 1 : 0);
+    }
+    sb_putc(out, '}');
 }
 
 /* `locals`: the frame's named variables, as they are now. */
@@ -299,13 +411,11 @@ static void cmd_locals(Debugger *d) {
     for (uint32_t i = 0; i < fr->fn->mf->nvars; i++) {
         const MVar *v = &fr->fn->mf->vars[i];
         if (fr->pc < v->start || fr->pc >= v->end || dbg_var_at(fr->fn, fr->pc, v->name) != v) continue;
-        Word w;
-        MlwsType t;
-        dbg_var_value(p, fr, v, &w, &t);
-        char rb[8];
         StrBuf s = {0};
-        sb_printf(&s, "%s (%s) = ", v->name, reg_name(v->reg, rb));
-        fmt_value(&s, w, t, 3);
+        sb_printf(&s, "%s (", v->name);
+        dbg_var_regs(&s, v);
+        sb_puts(&s, ") = ");
+        dbg_show_var(p, fr, v, 3, &s);
         sb_putc(&s, '\n');
         say_sb(d, &s);
         shown++;
@@ -327,7 +437,15 @@ static void cmd_print(Debugger *d, const char *arg) {
             say(d, "usage: print REGISTER or NAME   (I0..I31, F0..F31, R0..R31, P0..P31, SP, FP, PID, or a variable here)\n");
             return;
         }
-        reg = v->reg;
+        if (v->nregs > 1 || formatter_for(fr->fn, v)) { /* shown as the program's own value */
+            StrBuf s = {0};
+            sb_printf(&s, "%s = ", arg);
+            dbg_show_var(p, fr, v, 3, &s);
+            sb_putc(&s, '\n');
+            say_sb(d, &s);
+            return;
+        }
+        reg = v->regs[0];
     }
     const Frame *fr = &p->frames[p->nframes - 1];
     int b = REG_BANK(reg);

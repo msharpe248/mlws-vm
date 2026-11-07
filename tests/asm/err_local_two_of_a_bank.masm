@@ -1,0 +1,7 @@
+; A variable has at most one register of each bank: its registers are the
+; parts of one value, which a formatter takes one bank each.
+; expect-error: E_ASM_SYNTAX
+.func main
+    .local x, I1, I2
+    ret
+.endf

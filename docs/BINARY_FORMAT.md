@@ -13,7 +13,7 @@ file produces `E_LOAD_FORMAT` (or `E_VERIFY`) rather than a crash.
 
 ```
 magic        4 bytes  "MLWS"
-version      u16      10
+version      u16      11
 flags        u16      0
 name         str      dotted module name, e.g. "std.io"
 source       str      source file name (for backtraces); may be empty
@@ -51,8 +51,9 @@ functions    uleb n, then n × {
                  nvars   uleb, then nvars × {        names of registers (`.local`, parameters,
                            start uleb,               `.alias`), in increasing start order: from
                            end   uleb,               instruction start until end - 1,
-                           name  str,                the register holds the variable name
-                           reg   u8                  (its bank and index, as in an operand)
+                           name  str,                the registers hold the variable name:
+                           nregs u8,                 1 to 4, each of another bank
+                           regs  nregs × u8          (bank and index, as in an operand)
                          }
                  nhandlers uleb, then nhandlers × {start uleb, end uleb, target uleb}
                                                      exception regions [start, end) -> target,
@@ -125,6 +126,8 @@ callbacks    uleb n, then n × {             .callback function-pointer types
 requires     uleb n, then n × { library str, constraint str }   .requires
 library      name str, version str          .library, in a library's manifest; both empty otherwise
 publics      uleb n, then n × str           .public: the library's public modules (a manifest only)
+formats      uleb n, then n × uleb          .debug_format: functions (indices into the function
+                                            table, an import stub or not) that show variables
 
 (nothing may follow)
 ```

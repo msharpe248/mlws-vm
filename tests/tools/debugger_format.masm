@@ -1,0 +1,169 @@
+; A compiler that splits a value across registers of several banks names them
+; all in one `.local`, and says with `.debug_format` how to show such a value:
+; the debugger calls the module's formatter whose parameters are of the
+; variable's registers' banks, in their order, and shows what it returns.
+; Here a value is a triple, as in a Lua compiler (an integer, a float, and a
+; reference that says which it is or is the value), or a pair, as in an Erlang
+; one. A formatter runs in a process of its own, with the values copied: what
+; it cannot do (wait, run on, reach another process) or does wrong (throw) is
+; shown, with the registers, and the stopped program goes on as it was.
+; no-opt: the optimizer renames registers, and with them the names go
+; debug-script: break here
+; debug-script: run
+; debug-script: finish
+; debug-script: locals
+; debug-script: print n
+; debug-script: print pi
+; debug-script: continue
+; debug-script: quit
+;
+; expect-stdout: MLWSVM debugger. Type 'help' for commands.
+; expect-stdout: (mdb) break here
+; expect-stdout: Breakpoint 1 at debugger_format.here+0 (tests/tools/debugger_format.masm:121)
+; expect-stdout: (mdb) run
+; expect-stdout: Breakpoint 1, process 1 at debugger_format.here+0 (tests/tools/debugger_format.masm:121)
+; expect-stdout: =>    0  line 121   nop
+; expect-stdout: (mdb) finish
+; expect-stdout: process 1 at debugger_format.main+27 (tests/tools/debugger_format.masm:166)
+; expect-stdout: =>   27  line 166   recvt I0, 0, .L29
+; expect-stdout: (mdb) locals
+; expect-stdout: n (I3, F3, R3) = 5
+; expect-stdout: pi (I4, F4, R4) = 3.25
+; expect-stdout: s (I5, F5, R5) = "hello"
+; expect-stdout: e_int (I6, R6) = 42
+; expect-stdout: e_atom (I7, R7) = ok
+; expect-stdout: thrown (F8) = <show_thrown failed: E_MINE: this formatter throws> 1.5
+; expect-stdout: forever (P0) = <show_forever failed: E_QUOTA: instruction quota of 10000000 exceeded> null
+; expect-stdout: sending (I9, F9) = <show_sending failed: E_PERMISSION: send is not allowed in a debugger's formatter> {I9 = 1, F9 = 0.5}
+; expect-stdout: a_coroutine (R10) = <show_spawning failed: E_TYPE: coroutines cannot be sent to another process (they are process-local)> <object>
+; expect-stdout: spawning (R11) = <show_spawning failed: E_PERMISSION: spawn is not allowed in a debugger's formatter> "x"
+; expect-stdout: waiting (I12, F12, R12, P12) = <show_waiting failed: it would wait (for a message, a time or a blocking call)> {I12 = 1, F12 = 2, R12 = null, P12 = null}
+; expect-stdout: undecoded (F13, R13) = {F13 = 7.5, R13 = null}
+; expect-stdout: (mdb) print n
+; expect-stdout: n = 5
+; expect-stdout: (mdb) print pi
+; expect-stdout: pi = 3.25
+; expect-stdout: (mdb) continue
+; expect-stdout: Program exited with code 0.
+; expect-stdout: (mdb) quit
+.include "std/test.inc"
+
+.debug_format show_triple
+.debug_format show_pair
+.debug_format show_thrown
+.debug_format show_forever
+.debug_format show_sending
+.debug_format show_spawning
+.debug_format show_waiting
+
+; Called by nothing: the optimizer removes it, and the formatters after it move.
+.func unused -> i64
+    ret 0
+.endf
+
+; (I, F, R): R null: an integer, in I; R "f": a float, in F; else R is the value.
+.func show_triple(i64 i, f64 f, ref r) -> ref
+    bnz.r r, 1f
+    tostr R1, i
+    ret R1
+1:  strcmp I1, r, "f"
+    bnz I1, 2f
+    tostr R1, f
+    ret R1
+2:  strcat R1, "\"", r, "\""
+    ret R1
+.endf
+
+; (I, R): R null: an integer; else an atom, R.
+.func show_pair(i64 i, ref r) -> ref
+    bnz.r r, 1f
+    tostr R1, i
+    ret R1
+1:  ret r
+.endf
+
+.func show_thrown(f64 f) -> ref
+    new R0, Error
+    mov R0->Error.code, "E_MINE"
+    mov R0->Error.message, "this formatter throws"
+    throw R0
+.endf
+
+.func show_forever(ptr q) -> ref
+1:  jmp 1b
+.endf
+
+.func show_sending(i64 pid, f64 f) -> ref
+    send pid, 1
+    ret "sent"
+.endf
+
+.func show_spawning(ref r) -> ref
+    spawn nothing
+    ret "spawned"
+.endf
+
+.func show_waiting(i64 i, f64 f, ref r, ptr q) -> ref
+    recv I1
+    ret "received"
+.endf
+
+.func nothing
+    ret
+.endf
+
+.func body -> i64
+    coyield (1)
+    ret 2
+.endf
+
+.func here
+    nop
+    ret
+.endf
+
+.func main
+    mov I3, 5                           ; n = 5
+    mov F3, 0.0
+    mov.r R3, null
+    .local n, I3, F3, R3
+    mov I4, 0                           ; pi = 3.25
+    mov F4, 3.25
+    mov R4, "f"
+    .local pi, I4, F4, R4
+    mov I5, 0                           ; s = "hello"
+    mov F5, 0.0
+    mov R5, "hello"
+    .local s, I5, F5, R5
+    mov I6, 42                          ; E = 42
+    mov.r R6, null
+    .local e_int, I6, R6
+    mov I7, 0                           ; E = ok
+    mov R7, "ok"
+    .local e_atom, I7, R7
+    mov F8, 1.5
+    .local thrown, F8
+    mov P0, null
+    .local forever, P0
+    mov I9, PID
+    mov F9, 0.5
+    .local sending, I9, F9
+    closure body -> (R10)
+    conew R10, R10
+    .local a_coroutine, R10
+    mov R11, "x"
+    .local spawning, R11
+    mov I12, 1
+    mov F12, 2.0
+    mov.r R12, null
+    mov P12, null
+    .local waiting, I12, F12, R12, P12
+    mov F13, 7.5
+    mov.r R13, null
+    .local undecoded, F13, R13
+    call here
+    ; Nothing reached the program: no message.
+    recvt I0, 0, 1f
+    FAIL "a formatter sent a message"
+1:  ret 0
+.endf

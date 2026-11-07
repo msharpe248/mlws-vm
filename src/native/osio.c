@@ -610,6 +610,7 @@ static void os_environ(Process *p, Word *a, Word *r) {
 
 static void os_exit(Process *p, Word *a, Word *r) {
     (void)r;
+    proc_reach(p, "os.exit");
     sched_request_exit(p->vm, a[0].i);
     p->native_req = NREQ_EXIT;
 }

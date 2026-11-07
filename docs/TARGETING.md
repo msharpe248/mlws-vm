@@ -482,6 +482,15 @@ with names in the `.func` line are named already. A compiler that moves a variab
 to another register says so with another `.local`, which ends the old one
 ([ASSEMBLY.md §5.4](ASSEMBLY.md#54-source-positions-of-a-translated-program)).
 
+A language whose values take several registers (a dynamically typed value as an
+integer, a float and a reference that says which, say) names them all,
+`.local x, I3, F3, R3`, and gives the debugger a function that reads such a
+value back, `.debug_format show_value`: it takes the registers and returns a
+string in the language's own syntax (`nil`, `{1, 2}`, `'ok'`). Most runtimes
+have one already, for printing values. The debugger runs it sandboxed, in a
+process of its own, so it cannot disturb the program, though it may call
+anything the runtime has, a user's `__tostring` too.
+
 Every error has a stable code ([ERRORS.md](ERRORS.md)), so compiler tests can assert
 on them.
 

@@ -1,7 +1,8 @@
 /* funcs.c - deadfuncs: functions of this module that nothing can call are
  * removed. What can be called is what is exported (other modules, module.function
- * and C hosts reach only those), `main`, and every function named by an
- * instruction of one that can be called (a call, a spawn, a closure). */
+ * and C hosts reach only those), `main`, a debugger's formatter (`.debug_format`),
+ * and every function named by an instruction of one that can be called (a call,
+ * a spawn, a closure). */
 #include "opt_internal.h"
 
 static void mark(OModule *om, uint32_t fi, uint8_t *live) {
@@ -27,6 +28,8 @@ void pass_deadfuncs(OModule *om) {
         const MFunc *mf = &m->funcs[i];
         if ((mf->flags & (MF_EXPORT | MF_IMPORT)) || !strcmp(mf->name, "main") || !om->fn[i]) mark(om, i, live);
     }
+    for (uint32_t i = 0; i < m->nformats; i++)
+        if (m->formats[i] < n) mark(om, m->formats[i], live);
     uint32_t *to = xcalloc(n + 1, sizeof *to), j = 0;
     for (uint32_t i = 0; i < n; i++) to[i] = live[i] ? j++ : UINT32_MAX;
     if (j == n) {
@@ -43,6 +46,7 @@ void pass_deadfuncs(OModule *om) {
                 if (in->ops[k].mode == OM_FUNC && in->ops[k].index < n) in->ops[k].index = to[in->ops[k].index];
         }
     }
+    for (uint32_t i = 0; i < m->nformats; i++) m->formats[i] = to[m->formats[i]];
     for (uint32_t i = 0; i < n; i++) {
         if (live[i]) continue;
         OFunc *f = om->fn[i];

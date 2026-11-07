@@ -193,7 +193,7 @@ static Obj *shallow(Process *from, Process *to, struct CopyState *cs, Obj *o) {
     }
     ...
     case OBJ_FOREIGN:
-        vm_trap(from, "E_TYPE", "foreign handles cannot be sent to another process (they are process-local)");
+        refuse(from, "E_TYPE", "foreign handles cannot be sent to another process (they are process-local)");
     ...
     }
     map_insert(cs, o, c);
@@ -207,7 +207,9 @@ static Obj *shallow(Process *from, Process *to, struct CopyState *cs, Obj *o) {
 references by calling `shallow` on each one, until the worklist is empty.
 Immortal objects (constant-pool strings) are shared, since nothing can
 change them. Raw pointers, foreign handles and coroutines belong to one
-process and trap `E_TYPE` in the sender.
+process and trap `E_TYPE` in the sender (`refuse`; for the debugger,
+`msg_copy_soft` turns that into a reason instead, since the sender is then a
+stopped program that must not change).
 
 Where the copy is built matters too. `sched_send` in
 [src/vm/sched.c](../../src/vm/sched.c) copies into a scratch process that

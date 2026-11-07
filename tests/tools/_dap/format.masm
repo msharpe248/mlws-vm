@@ -1,0 +1,20 @@
+; The program tests/tools/check_tools.sh debugs through `mlwsvm dap` to see a
+; variable of two registers shown by its formatter.
+.debug_format show
+
+; (I, R): R null: an integer, in I; else R is the value.
+.func show(i64 i, ref r) -> ref
+    bnz.r r, 1f
+    tostr R1, i
+    strcat R1, "int ", R1
+    ret R1
+1:  ret r
+.endf
+
+.func main
+    mov I3, 7
+    mov.r R3, null
+    .local x, I3, R3
+    nop
+    ret 0
+.endf

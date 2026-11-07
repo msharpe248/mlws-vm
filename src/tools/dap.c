@@ -146,13 +146,13 @@ static void sb_jsons(StrBuf *b, const char *s) { sb_json(b, s, strlen(s)); }
 /* ---- the session ---- */
 
 typedef struct {
-    int kind; /* V_*; V_BANK's bank -1: the frame's named variables */
+    int kind; /* V_*; V_BANK's bank -1: the frame's named variables; V_VAR's bank: the variable's index */
     uint64_t pid;
     uint32_t frame; /* V_BANK: its index in the process's frames */
     int bank;
     Obj *obj; /* V_OBJECT: valid until the program runs again */
 } VarRef;
-enum { V_BANK, V_OBJECT };
+enum { V_BANK, V_OBJECT, V_VAR };
 
 typedef struct {
     const ToolEnv *env;
@@ -466,19 +466,56 @@ static void sb_object_vars(Dap *a, StrBuf *b, Obj *o) {
 
 static uint32_t frame_pc(const Process *p, uint32_t i);
 
-/* The frame's named variables live at its instruction (the latest of a name). */
-static void sb_named_vars(Dap *a, StrBuf *b, const Process *p, uint32_t i) {
+/* What to expand a named variable into: its object, if it is one register's;
+ * its registers, if more; or nothing (0). */
+static int64_t var_children(Dap *a, const Process *p, uint32_t frame, const MVar *v) {
+    const Frame *fr = &p->frames[frame];
+    if (v->nregs > 1) {
+        VarRef r = {V_VAR, p->pid, frame, (int)(v - fr->fn->mf->vars), NULL};
+        return var_ref(a, r);
+    }
+    Word w;
+    MlwsType t;
+    dbg_var_reg(p, fr, v, 0, &w, &t);
+    VarRef r = {V_OBJECT, 0, 0, 0, w.r};
+    return expandable(w, t) ? var_ref(a, r) : 0;
+}
+
+/* The frame's named variables live at its instruction (the latest of a name),
+ * as their formatters show them. */
+static void sb_named_vars(Dap *a, StrBuf *b, Process *p, uint32_t i) {
     const Frame *fr = &p->frames[i];
     uint32_t pc = frame_pc(p, i);
     bool first = true;
     for (uint32_t k = 0; k < fr->fn->mf->nvars; k++) {
         const MVar *v = &fr->fn->mf->vars[k];
         if (pc < v->start || pc >= v->end || dbg_var_at(fr->fn, pc, v->name) != v) continue;
+        StrBuf val = {0};
+        dbg_show_var(p, fr, v, 1, &val);
+        if (!first) sb_putc(b, ',');
+        sb_puts(b, "{\"name\":");
+        sb_jsons(b, v->name);
+        sb_puts(b, ",\"value\":");
+        sb_json(b, val.s ? val.s : "", val.n);
+        sb_printf(b, ",\"variablesReference\":%lld}", (long long)var_children(a, p, i, v));
+        sb_free(&val);
+        first = false;
+    }
+}
+
+/* A named variable's registers, each as itself. */
+static void sb_var_regs(Dap *a, StrBuf *b, const VarRef *r) {
+    Process *p = vm_process(a->vm, r->pid);
+    if (!p && r->pid == a->d.main->pid) p = a->d.main;
+    if (!p || r->frame >= p->nframes || r->bank < 0 || (uint32_t)r->bank >= p->frames[r->frame].fn->mf->nvars) return;
+    const Frame *fr = &p->frames[r->frame];
+    const MVar *v = &fr->fn->mf->vars[r->bank];
+    char rb[8];
+    for (int k = 0; k < v->nregs; k++) {
         Word w;
         MlwsType t;
-        dbg_var_value(p, fr, v, &w, &t);
-        sb_variable(a, b, first, v->name, w, t);
-        first = false;
+        dbg_var_reg(p, fr, v, k, &w, &t);
+        sb_variable(a, b, k == 0, reg_name(v->regs[k], rb), w, t);
     }
 }
 
@@ -664,6 +701,7 @@ static void do_variables(Dap *a, const Json *req) {
     if (ref > 0 && (size_t)ref <= a->vars.n) {
         VarRef v = a->vars.v[ref - 1]; /* (a copy: more may be added) */
         if (v.kind == V_BANK) sb_bank_vars(a, &b, &v);
+        else if (v.kind == V_VAR) sb_var_regs(a, &b, &v);
         else sb_object_vars(a, &b, v.obj);
     }
     sb_puts(&b, "]}");
@@ -682,10 +720,16 @@ static void do_evaluate(Dap *a, const Json *req) {
     char *end = NULL;
     long idx = bk ? strtol(expr + 1, &end, 10) : -1;
     const MVar *named = p && i < p->nframes && expr ? dbg_var_at(p->frames[i].fn, frame_pc(p, i), expr) : NULL;
-    if (named) { /* a variable's name, before a register's */
-        bk = banks + REG_BANK(named->reg);
-        idx = REG_IDX(named->reg);
-        end = (char *)"";
+    if (named) { /* a variable's name, before a register's: as its formatter shows it */
+        StrBuf v = {0}, b = {0};
+        dbg_show_var(p, &p->frames[i], named, 2, &v);
+        sb_puts(&b, "{\"result\":");
+        sb_json(&b, v.s ? v.s : "", v.n);
+        sb_printf(&b, ",\"variablesReference\":%lld}", (long long)var_children(a, p, i, named));
+        send_response(a, req, b.s);
+        sb_free(&v);
+        sb_free(&b);
+        return;
     }
     if (!p || i >= p->nframes || !bk || (!named && (end == expr + 1 || *end)) || idx < 0 || idx >= p->frames[i].fn->mf->nregs[bk - banks]) {
         send_error(a, req, "not a variable or register of this frame");

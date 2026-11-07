@@ -77,10 +77,14 @@ Process *dbg_selected(Debugger *d);
 void dbg_add_bp(Debugger *d, const char *spec, Function *f, uint32_t pc);
 bool dbg_break_line(Debugger *d, const char *spec, const char *file, uint32_t line);
 void dbg_clear_spec(Debugger *d, const char *spec);
-/* The named variable (`.local`, a parameter or an alias) live at pc, or NULL;
- * dbg_var_value reads it in a frame of p. */
+/* The named variable (`.local`, a parameter or an alias) live at pc, or NULL.
+ * dbg_var_reg reads register k of it in a frame of p; dbg_show_var shows it:
+ * by its module's formatter for its registers (`.debug_format`), run in a
+ * sandboxed process of its own, else its value, or each of its registers. */
 const MVar *dbg_var_at(const Function *f, uint32_t pc, const char *name);
-void dbg_var_value(const Process *p, const Frame *fr, const MVar *v, Word *w, MlwsType *t);
+void dbg_var_reg(const Process *p, const Frame *fr, const MVar *v, int k, Word *w, MlwsType *t);
+void dbg_show_var(Process *p, const Frame *fr, const MVar *v, int depth, StrBuf *out);
+void dbg_var_regs(StrBuf *b, const MVar *v); /* "I3, F3, R3" */
 
 /* Formatting shared by the debugger and the monitor. */
 void fmt_location(StrBuf *b, const Function *f, uint32_t pc);

@@ -306,6 +306,50 @@ debugger's `locals` and `print result` and an editor's Locals use them. A name
 says nothing about how the program runs. The optimizer renames registers, so a
 function it changes loses its names: debug code that is not optimized.
 
+A value that a compiler splits across banks is one variable of several
+registers, at most one of each bank: `.local x, I3, F3, R3`. A new `.local`
+that gives the name, or any of the registers, ends it. How such a value reads
+is the language's own, so the module says how to show it with
+`.debug_format`, naming a function of the module, or one it imports, that takes
+the registers' values and returns what to show:
+
+```asm
+.debug_format show_value                ; for every variable of (I, F, R)
+
+; R null: an integer, in I; R "f": a float, in F; else R is the value.
+.func show_value(i64 i, f64 f, ref r) -> ref
+    bnz.r r, 1f
+    tostr R1, i
+    ret R1
+1:  strcmp I1, r, "f"
+    bnz I1, 2f
+    tostr R1, f
+    ret R1
+2:  ret r
+.endf
+
+.func L7$scale(i64 i, f64 f, ref r) -> (i64, f64, ref)
+    .local x, I0, F0, R0                ; the program's x, in three registers
+    ...
+```
+
+* A variable is shown by the module's formatter whose parameters are of its
+  registers' banks, in the same order: a module may have one for its triples
+  and another for its pairs, or one for single references. Without one, each
+  register is shown (`{I3 = 5, F3 = 0, R3 = null}`). A formatter takes one to
+  four values and returns one; a string is shown as its text, anything else as
+  the debugger shows a value.
+* The debugger calls a formatter in a process of its own, as if spawned with the
+  values: what it allocates is its own, it may reach no file, host, command or
+  environment, and it may not send, spawn, kill, link, monitor or end the
+  program (`E_PERMISSION`), so it cannot change the program being debugged. It
+  has 10,000,000 instructions and 64 MiB. A formatter that throws, runs out,
+  would wait (`recv`, `sleep`, a blocking call), or is given what cannot be
+  copied to another process (a pointer is passed as is; a coroutine, foreign
+  handle or weak reference cannot be) is shown failing, with its registers.
+* `.debug_format` is kept in the binary module, and the optimizer keeps its
+  functions, which nothing may call.
+
 ### 5.5 Processes
 
 ```asm
@@ -750,7 +794,8 @@ macro-only files use the `.inc` extension and are not modules.
 | `.struct Name` ... `field: type` ... `.ends` | top level | Define a struct type |
 | `.try handler` ... `.endtry`, `.try start, end, handler` | in function | Exception handler region |
 | `.loc "file", line`, `.loc` | in function | Source position (in a translated program) of the instructions that follow; bare: none |
-| `.local name, REG`, `.local name` | in function | Register REG holds the variable `name` from here on; alone: it no longer does (§5.4) |
+| `.local name, REG...`, `.local name` | in function | The registers (one of each bank at most) hold the variable `name` from here on; alone: it no longer does (§5.4) |
+| `.debug_format function` | top level | A function that shows a variable of the registers its parameters' banks name, for debuggers (§5.4) |
 | `.requires lib, "constraint"` | top level | A library (or `mlwsvm`) this module needs, and which versions (§8.1) |
 | `.library name, "version"`, `.public mod, ...` | a manifest | A library's name and version, and its public modules (§8.1) |
 | `.regs I=n, F=n, R=n, P=n` | in function | Minimum register window |

@@ -536,6 +536,7 @@ struct Process {
     bool in_runq;                /* [L] */
     bool published;              /* in the process table */
     bool raising;                /* building an Error: exempt from the heap quota */
+    bool sandboxed;              /* a debugger's formatter: may not reach other processes (proc_reach) */
     char kill_code[32];          /* [L] why kill_req was set */
     char kill_msg[256];
     PidVec links;                /* [L] */
@@ -693,6 +694,11 @@ void fn_qualname(StrBuf *b, const Function *f);
 void proc_free(Process *p);
 /* Raise a runtime fault as a catchable Error exception. */
 MLWS_NORETURN void vm_trap(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);
+/* A debugger's formatter (Process.sandboxed) may not reach other processes:
+ * no send, spawn, kill, link or monitor, and no ending the program. */
+static inline void proc_reach(Process *p, const char *what) {
+    if (__builtin_expect(p->sandboxed, 0)) vm_trap(p, "E_PERMISSION", "%s is not allowed in a debugger's formatter", what);
+}
 /* Raise any non-null object as an exception. */
 MLWS_NORETURN void proc_throw(Process *p, Obj *ex);
 /* Run up to `budget` instructions; returns a SLICE_* code. On SLICE_FAILED,
@@ -784,6 +790,7 @@ Process *vm_proc_at(VM *vm, uint64_t pid); /* any process still in the table */
 uint64_t vm_pid_end(VM *vm);               /* one past the highest pid assigned */
 /* Copy a value from one process into another's heap (heap/copy.c). */
 Word msg_copy(Process *from, Process *to, Word v, uint8_t tag);
+bool msg_copy_soft(Process *from, Process *to, Word *v, uint8_t tag, char *why, size_t n); /* for tools: no trap */
 void copy_state_free(void); /* the calling thread's copy scratch */
 
 /* natives.c */

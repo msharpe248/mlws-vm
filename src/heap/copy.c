@@ -21,6 +21,18 @@ struct CopyState {
 };
 
 static MLWS_THREAD_LOCAL struct CopyState *tls_copy;
+/* msg_copy_soft: where a copy that cannot be made goes, instead of a trap in
+ * the sender, and why. */
+static MLWS_THREAD_LOCAL jmp_buf *soft_jb;
+static MLWS_THREAD_LOCAL char soft_why[256];
+
+static MLWS_NORETURN void refuse(Process *from, const char *code, const char *msg) {
+    if (soft_jb) {
+        snprintf(soft_why, sizeof soft_why, "%s: %s", code, msg);
+        VM_LONGJMP(*soft_jb, 1);
+    }
+    vm_trap(from, code, "%s", msg);
+}
 
 static uint32_t ptr_hash(const void *p) {
     uint64_t x = (uint64_t)(uintptr_t)p;
@@ -60,7 +72,7 @@ static void map_insert(struct CopyState *cs, Obj *o, Obj *c) {
 }
 
 static void no_pointer(Process *from, uint8_t tag) {
-    if (tag == T_P) vm_trap(from, "E_TYPE", "pointers cannot be sent to another process (they are process-local)");
+    if (tag == T_P) refuse(from, "E_TYPE", "pointers cannot be sent to another process (they are process-local)");
 }
 
 /* Allocate a copy of o without its references (they are fixed up from the worklist). */
@@ -132,12 +144,16 @@ static Obj *shallow(Process *from, Process *to, struct CopyState *cs, Obj *o) {
         break;
     }
     case OBJ_FOREIGN:
-        vm_trap(from, "E_TYPE", "foreign handles cannot be sent to another process (they are process-local)");
+        refuse(from, "E_TYPE", "foreign handles cannot be sent to another process (they are process-local)");
     case OBJ_CORO:
-        vm_trap(from, "E_TYPE", "coroutines cannot be sent to another process (they are process-local)");
+        refuse(from, "E_TYPE", "coroutines cannot be sent to another process (they are process-local)");
     case OBJ_WEAK:
-        vm_trap(from, "E_TYPE", "weak references cannot be sent to another process (they are process-local)");
-    default: vm_trap(from, "E_INTERNAL", "cannot copy object kind %d", o->kind);
+        refuse(from, "E_TYPE", "weak references cannot be sent to another process (they are process-local)");
+    default: {
+        char m[64];
+        snprintf(m, sizeof m, "cannot copy object kind %d", o->kind);
+        refuse(from, "E_INTERNAL", m);
+    }
     }
     map_insert(cs, o, c);
     CopyPair pr = {o, c};
@@ -203,6 +219,29 @@ Word msg_copy(Process *from, Process *to, Word v, uint8_t tag) {
         }
     }
     return out;
+}
+
+/* A copy for a tool, which neither the stopped sender nor the tool may trap
+ * in: what cannot be copied (a pointer, a coroutine, a foreign handle, a weak
+ * reference), or does not fit in to's heap, is false, with why. to's own jb is
+ * used meanwhile, so a trap in it (its heap quota) lands here too. */
+bool msg_copy_soft(Process *from, Process *to, Word *v, uint8_t tag, char *why, size_t n) {
+    jmp_buf jb;
+    jmp_buf *outer = to->jb;
+    volatile bool ok = false;
+    soft_why[0] = 0;
+    soft_jb = &jb;
+    to->jb = &jb;
+    if (!VM_SETJMP(jb)) {
+        *v = msg_copy(from, to, *v, tag);
+        ok = true;
+    } else if (!soft_why[0]) {
+        snprintf(soft_why, sizeof soft_why, "E_QUOTA: it does not fit in the formatter's heap");
+    }
+    soft_jb = NULL;
+    to->jb = outer;
+    if (!ok) snprintf(why, n, "%s", soft_why);
+    return ok;
 }
 
 void copy_state_free(void) {

@@ -1,0 +1,7 @@
+; A debug formatter is a function of the module, or one it imports.
+; expect-error: E_ASM_UNDEF_SYM
+.debug_format nowhere
+
+.func main
+    ret
+.endf

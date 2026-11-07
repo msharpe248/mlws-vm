@@ -2229,6 +2229,18 @@ worker, so the tool sees every instruction in order.
   `sched_run`, which returns when the hook stops it. Because a debugger
   shows registers the program never wrote, it makes every call clear its
   whole window (`vm_whole_windows`).
+* **Variables** (`MFunc.vars`, from `.local`, parameters and aliases) name one
+  to four registers each. One of several is shown by the program's own
+  formatter (`.debug_format`, `Module.formats`): the module's function whose
+  parameters are of the registers' banks, in order (`formatter_for`).
+  `run_formatter` runs it while the program is stopped, on the debugger's
+  thread, in a new process that never joins the process table: the values
+  are copied in by `msg_copy_soft`, which reports what cannot be copied
+  instead of trapping in the stopped process; its capabilities grant nothing;
+  `Process.sandboxed` makes send, spawn, kill, link, monitor and `os.exit` trap
+  (`proc_reach`); its quotas are 10,000,000 instructions and 64 MiB; and the
+  debugger's hook is off meanwhile. It runs by `proc_run_slice` until it ends;
+  a slice that would wait counts as failing. The process is freed after.
 * **The profiler** (`tools/hooks.c`) counts each instruction executed per
   function (`Function.prof`), counts which opcodes ran quickened and which
   generically (the list that chose the quickened shapes), and every 997th

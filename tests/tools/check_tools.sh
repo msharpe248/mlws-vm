@@ -29,6 +29,16 @@ echo "$REPORT" | grep -q "shapes.lua:12" || fail "profile: shapes.lua:12"
 TMPD=$(mktemp -d)
 $BIN asm tests/asm/loc.masm -o "$TMPD/loc.mlwso" >/dev/null 2>&1 || fail "asm loc.masm"
 $BIN dis "$TMPD/loc.mlwso" | grep -q '\.loc "shapes.lua", 12' || fail "dis: .loc"
+# .local of several registers and .debug_format: printed back, and the
+# formatters kept, by name, through every pass (nothing calls them)
+$BIN asm tests/tools/debugger_format.masm -o "$TMPD/fmt.mlwso" >/dev/null 2>&1 || fail "asm debugger_format.masm"
+$BIN dis "$TMPD/fmt.mlwso" | grep -q '^    \.local n, I3, F3, R3$' || fail "dis: .local of several registers"
+$BIN opt -q --passes all -o "$TMPD/fmt2.mlwso" tests/tools/debugger_format.masm || fail "opt debugger_format.masm"
+$BIN dis "$TMPD/fmt2.mlwso" > "$TMPD/fmt2.masm"
+for f in show_triple show_pair show_thrown show_forever show_sending show_spawning show_waiting; do
+    grep -q "^\.debug_format $f\$" "$TMPD/fmt2.masm" || fail "opt: formatter $f lost"
+done
+rm -f "$TMPD/fmt.mlwso" "$TMPD/fmt2.mlwso" "$TMPD/fmt2.masm"
 rm -f "$TMPD/loc.mlwso"
 
 # mlwsvm bundle: one executable that runs with no lib/ beside it, whose command
@@ -159,6 +169,23 @@ EOF
 dap "$DAPD/d"
 grep -q '"reason":"pause"' "$DAPD/d.out" || fail "dap: pause"
 grep -q '"name":"spin.main"' "$DAPD/d.out" || fail "dap: stack after a pause"
+# A variable of two registers, shown by the program's formatter, expanded into
+# its registers, and evaluated by name.
+cat > "$DAPD/e" <<'EOF'
+initialize {"adapterID":"test"}
+launch {"program":"tests/tools/_dap/format.masm"}
+setBreakpoints {"source":{"path":"tests/tools/_dap/format.masm"},"breakpoints":[{"line":18}]}
+configurationDone
+scopes {"frameId":65537}
+variables {"variablesReference":1}
+variables {"variablesReference":4}
+evaluate {"expression":"x","frameId":65537}
+disconnect
+EOF
+dap "$DAPD/e"
+grep -q '"name":"x","value":"int 7","variablesReference":4' "$DAPD/e.out" || fail "dap: a variable shown by its formatter"
+grep -q '"name":"I3","value":"7".*"name":"R3","value":"null"' "$DAPD/e.out" || fail "dap: a variable's registers"
+grep -q '"result":"int 7"' "$DAPD/e.out" || fail "dap: evaluate a formatted variable"
 rm -rf "${DAPD:?}"
 
 # std.node: two VMs on this machine, plainly and, if there is a TLS library,

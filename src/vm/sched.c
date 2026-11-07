@@ -424,6 +424,7 @@ static void deliver(Sched *s, uint64_t pid, InMsg *m) {
 }
 
 void sched_send(Process *p, uint64_t pid, Word v, uint8_t tag) {
+    proc_reach(p, "send");
     Sched *s = p->vm->sched;
     uint64_t node = pid >> NODE_SHIFT;
     if (node) { /* a pid that names a node */

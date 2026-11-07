@@ -6,7 +6,7 @@
 #include "types.h"
 
 #define MLWSO_MAGIC "MLWS"
-#define MLWSO_VERSION 10
+#define MLWSO_VERSION 11
 
 /* A call has a target and an argc operand, leaving 30 for arguments/results. */
 #define MAX_PARAMS 30
@@ -39,11 +39,16 @@ typedef struct {
 } MLoc;
 
 /* A variable of the program a compiler translated (`.local`), or a parameter or
- * alias: for instructions start to end - 1, register reg holds it. For tools. */
+ * alias: for instructions start to end - 1, its registers hold it, one or
+ * more (a value a compiler splits across banks), each of another bank. For
+ * tools, which show it through one of the module's formatters (Module.formats)
+ * whose parameters are of those banks, in that order. */
+#define MVAR_REGS 4
 typedef struct {
     uint32_t start, end;
     char *name;
-    uint8_t reg;
+    uint8_t nregs;
+    uint8_t regs[MVAR_REGS];
 } MVar;
 
 typedef struct {
@@ -226,6 +231,10 @@ typedef struct Module {
     char *lib_name, *lib_version;
     char **publics;
     uint32_t npublics;
+    /* `.debug_format f`: functions (indexes into funcs, maybe imports) that
+     * show a variable of the program for a debugger, from its registers. */
+    uint32_t *formats;
+    uint32_t nformats;
 } Module;
 
 void module_free(Module *m);
