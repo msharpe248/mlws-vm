@@ -1,0 +1,83 @@
+; A finalizer runs as a callback at the safepoint after the instruction whose
+; collection found its object dead. It may call as deep as it likes and throw
+; and catch there: the frames and the register stack it grows may move, and the
+; code it interrupted goes on with its own frame and registers as they were.
+; (They used to go on with pointers into the frames' old place.)
+.include "std/test.inc"
+
+.struct Box
+    n: i64
+.ends
+
+; n calls down, then a throw.
+.func down(i64 n)
+    beq n, 0, 1f
+    sub I1, n, 1
+    call down (I1)
+    ret
+1:  new R0, Error
+    mov R0->Error.code, "E_DEEP"
+    throw R0
+.endf
+
+; The finalizer: UP[0] is the log. The throw is caught here, below the
+; finalizer's own frame, and the finalizer goes on.
+.func caught(i64 n) -> i64
+.try 1f
+    call down (n)
+.endtry
+    ret 0
+1:  catch R0
+    ret 1
+.endf
+
+.func fin(ref o)
+    call caught (5000) -> (I0)
+    lpush UP[0], I0
+    lpush UP[0], o->Box.n
+    ret
+.endf
+
+.func doomed(i64 n, ref fn)
+    new R1, Box
+    mov R1->Box.n, n
+    ncall "gc.finalize" (R1, fn)
+    ret
+.endf
+
+.func main
+    lnew R0
+    closure fin (R0) -> (R1)
+    mov I5, 42                          ; the interrupted code's own registers
+    mov F5, 2.5
+    mov R5, "kept"
+    call doomed (7, R1)
+    ncall "gc.collect" ()               ; the finalizer runs after this
+    ASSERT_EQ I5, 42
+    ASSERT_EQ F5, 2.5
+    len I6, R5
+    ASSERT_EQ I6, 4
+    len I0, R0
+    ASSERT_EQ I0, 2
+    mov I1, R0[0]
+    ASSERT_EQ I1, 1                     ; caught
+    mov I1, R0[1]
+    ASSERT_EQ I1, 7
+    ; And again, now that the frames are larger: from deeper still.
+    call doomed (8, R1)
+    call deeper (300)
+    len I0, R0
+    ASSERT_EQ I0, 4
+    ret
+.endf
+
+.func deeper(i64 n)
+    beq n, 0, 1f
+    sub I1, n, 1
+    call deeper (I1)
+    ret
+1:  mov I7, 9
+    ncall "gc.collect" ()
+    ASSERT_EQ I7, 9
+    ret
+.endf

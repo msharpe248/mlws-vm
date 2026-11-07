@@ -2134,7 +2134,10 @@ static QCC QNOSP int h_generic(QPARAMS) {
             return SLICE_FAILED;
         }
         gc_collect(p);
-        if (p->fin_ready.n) proc_run_finalizers(p);
+        if (p->fin_ready.n) {
+            proc_run_finalizers(p);
+            ctx_load(c); /* a finalizer's calls may have moved the frames and the register banks */
+        }
     }
     /* What is left of the slice: unchanged, unless a native's callback ran
      * instructions too. */
@@ -2343,7 +2346,10 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
                 return SLICE_FAILED;
             }
             gc_collect(p);
-            if (p->fin_ready.n) proc_run_finalizers(p);
+            if (p->fin_ready.n) {
+                proc_run_finalizers(p);
+                ctx_load(&c); /* a finalizer's calls may have moved the frames and the register banks */
+            }
         }
         /* The slice counter is recomputed from what SPILL wrote, not kept: then
          * it is not live across this path's calls, and the compiler is free to
