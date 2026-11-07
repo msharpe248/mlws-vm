@@ -245,7 +245,8 @@ ended:
     jmp 1b
 5:  mov I3, R3[1]
     mov I4, R3[2]
-    spawn watch (I3, I4)
+    spawn watch (I3, I4, PID)
+    recv I5                            ; in place before the next frame: it may end the process
     jmp 1b
 .endtry
 closed:
@@ -281,14 +282,15 @@ failed:
 .endf
 
 ; Says when a process here ends, to a watcher on another node.
-.func watch(i64 watcher, i64 pid)
-    and I2, pid, 0xFFFFFFFFFFFF        ; (its plain pid: monitor works here)
-    monitor I2
+.func watch(i64 watcher, i64 pid, i64 reader)
+    and I3, pid, 0xFFFFFFFFFFFF        ; (its plain pid: monitor works here)
+    monitor I3
+    send reader, 1
     recv R0
-    ncall "node.global" (I2) -> (I2)
+    ncall "node.global" (I3) -> (I3)
     lnew R1
     lpush R1, "down"
-    lpush R1, I2
+    lpush R1, I3
     mov R2, R0->Down.code
     lpush R1, R2
     send watcher, R1
