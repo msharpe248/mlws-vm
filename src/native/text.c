@@ -439,15 +439,18 @@ static size_t re_after(const char *s, size_t n, const int64_t *caps) {
     return e;
 }
 
-static int64_t *re_caps(const Regex *re) { return xmalloc(sizeof(int64_t) * (size_t)(2 * (regex_groups(re) + 1))); }
+/* Room for a match's offsets, on the heap: what follows may trap (the quota,
+ * or the heap's), and then nothing here could free it. */
+static int64_t *re_caps(Process *p, const Regex *re) {
+    return (int64_t *)bytes_new(p, (int64_t)sizeof(int64_t) * 2 * (regex_groups(re) + 1))->data;
+}
 
 static void n_re_test(Process *p, Word *a, Word *r) {
     uint32_t n;
     const Regex *re = re_arg(p, a[0]);
     const char *s = str_arg(p, a[1], &n);
-    int64_t *caps = re_caps(re);
+    int64_t *caps = re_caps(p, re);
     r[0].i = re_search(p, re, s, n, 0, caps);
-    free(caps);
 }
 
 /* find: each group's start and end, as a list of integers. */
@@ -456,7 +459,7 @@ static void n_re_find(Process *p, Word *a, Word *r) {
     const Regex *re = re_arg(p, a[0]);
     const char *s = str_arg(p, a[1], &n);
     if (a[2].i < 0 || a[2].i > (int64_t)n) vm_trap(p, "E_BOUNDS", "regex.find: offset %lld out of range", (long long)a[2].i);
-    int64_t *caps = re_caps(re);
+    int64_t *caps = re_caps(p, re);
     r[0].r = NULL;
     if (re_search(p, re, s, n, (size_t)a[2].i, caps)) {
         int ns = 2 * (regex_groups(re) + 1);
@@ -464,7 +467,6 @@ static void n_re_find(Process *p, Word *a, Word *r) {
         for (int k = 0; k < ns; k++) list_push(p, l, (Word){.i = caps[k]}, T_I64);
         r[0].r = &l->h;
     }
-    free(caps);
 }
 
 /* groups: the text of the match and of each group, null for one that took no part. */
@@ -473,7 +475,7 @@ static void n_re_groups(Process *p, Word *a, Word *r) {
     const Regex *re = re_arg(p, a[0]);
     const char *s = str_arg(p, a[1], &n);
     if (a[2].i < 0 || a[2].i > (int64_t)n) vm_trap(p, "E_BOUNDS", "regex.groups: offset %lld out of range", (long long)a[2].i);
-    int64_t *caps = re_caps(re);
+    int64_t *caps = re_caps(p, re);
     r[0].r = NULL;
     if (re_search(p, re, s, n, (size_t)a[2].i, caps)) {
         int ng = regex_groups(re) + 1;
@@ -484,28 +486,26 @@ static void n_re_groups(Process *p, Word *a, Word *r) {
         }
         r[0].r = &l->h;
     }
-    free(caps);
 }
 
 static void n_re_find_all(Process *p, Word *a, Word *r) {
     uint32_t n;
     const Regex *re = re_arg(p, a[0]);
     const char *s = str_arg(p, a[1], &n);
-    int64_t *caps = re_caps(re);
+    int64_t *caps = re_caps(p, re);
     ObjList *l = list_new(p, 0);
     r[0].r = &l->h;
     for (size_t at = 0; at <= n && re_search(p, re, s, n, at, caps); at = re_after(s, n, caps)) {
         Word w = {.r = str_new(p, s + caps[0], (size_t)(caps[1] - caps[0]))};
         list_push(p, l, w, T_R);
     }
-    free(caps);
 }
 
 static void n_re_split(Process *p, Word *a, Word *r) {
     uint32_t n;
     const Regex *re = re_arg(p, a[0]);
     const char *s = str_arg(p, a[1], &n);
-    int64_t *caps = re_caps(re);
+    int64_t *caps = re_caps(p, re);
     ObjList *l = list_new(p, 0);
     r[0].r = &l->h;
     size_t last = 0;
@@ -517,20 +517,19 @@ static void n_re_split(Process *p, Word *a, Word *r) {
     }
     Word w = {.r = str_new(p, s + last, n - last)};
     list_push(p, l, w, T_R);
-    free(caps);
 }
 
 /* $1, ${1}, ${name}, $$ in a replacement. */
-static void re_expand(Process *p, const Regex *re, StrBuf *b, const char *s, const int64_t *caps, const char *rep, size_t rn) {
+static void re_expand(Process *p, const Regex *re, ObjBytes *b, const char *s, const int64_t *caps, const char *rep, size_t rn) {
     for (size_t i = 0; i < rn; i++) {
         if (rep[i] != '$' || i + 1 == rn) {
-            sb_putc(b, rep[i]);
+            bytes_append(p, b, rep + i, 1);
             continue;
         }
         char c = rep[++i];
         int g = -1;
         if (c == '$') {
-            sb_putc(b, '$');
+            bytes_append(p, b, "$", 1);
             continue;
         }
         if (c >= '0' && c <= '9') {
@@ -550,7 +549,7 @@ static void re_expand(Process *p, const Regex *re, StrBuf *b, const char *s, con
             vm_trap(p, "E_REGEX", "regex.replace: $ needs a group, or $$ for itself");
         }
         if (g > regex_groups(re)) vm_trap(p, "E_REGEX", "regex.replace: no group %d", g);
-        if (caps[2 * g] >= 0) sb_putn(b, s + caps[2 * g], (size_t)(caps[2 * g + 1] - caps[2 * g]));
+        if (caps[2 * g] >= 0) bytes_append(p, b, s + caps[2 * g], (size_t)(caps[2 * g + 1] - caps[2 * g]));
     }
 }
 
@@ -559,19 +558,17 @@ static void n_re_replace(Process *p, Word *a, Word *r) {
     const Regex *re = re_arg(p, a[0]);
     const char *s = str_arg(p, a[1], &n), *rep = str_arg(p, a[2], &rn);
     int64_t limit = a[3].i, count = 0;
-    int64_t *caps = re_caps(re);
-    StrBuf b = {0};
+    int64_t *caps = re_caps(p, re);
+    ObjBytes *b = bytes_new(p, 0);
     size_t last = 0;
     for (size_t at = 0; at <= n && (limit < 0 || count < limit) && re_search(p, re, s, n, at, caps); at = re_after(s, n, caps), count++) {
-        sb_putn(&b, s + last, (size_t)caps[0] - last);
-        re_expand(p, re, &b, s, caps, rep, rn);
+        bytes_append(p, b, s + last, (size_t)caps[0] - last);
+        re_expand(p, re, b, s, caps, rep, rn);
         last = (size_t)caps[1];
     }
-    sb_putn(&b, s + last, n - last);
-    r[0].r = str_new(p, b.s ? b.s : "", b.n);
+    bytes_append(p, b, s + last, n - last);
+    r[0].r = str_new(p, (const char *)bytes_data(b), b->len);
     r[1].i = count;
-    sb_free(&b);
-    free(caps);
 }
 
 static void n_re_group_named(Process *p, Word *a, Word *r) {
