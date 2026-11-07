@@ -25,7 +25,7 @@ static void usage(FILE *f) {
           "        --gc-verify                     check each minor collection against the whole heap (VM testing)\n"
           "        --unsafe-native                 load native code without the trust checks (development)\n"
           "        --no-cache                      assemble .masm files afresh (or MLWSVM_NO_CACHE=1)\n"
-          "      VM options (also for test; or MLWSVM_<NAME>, e.g. MLWSVM_MAX_FRAMES=500000):\n"
+          "      VM options (also for test, debug, dap, bundle; or MLWSVM_<NAME>, e.g. MLWSVM_MAX_FRAMES=500000):\n"
           "        --threads N                     worker threads (default: one per core)\n"
           "        --stack-words N                 data stack per process, in 8-byte words (131072)\n"
           "        --max-frames N                  call depth limit (100000)\n"
@@ -42,7 +42,7 @@ static void usage(FILE *f) {
           "                                        function and block (all: a test); docs/JIT.md\n"
           "        --jit-hot N                     calls or loop iterations before compiling (1000)\n"
           "        --jit-report FILE|-             what the JIT did, written when the run ends\n"
-          "  debug [-L dir] file.(masm|mlwso)      interactive debugger (type 'help')\n"
+          "  debug [-L dir] [VM options] file.(masm|mlwso)   interactive debugger (type 'help')\n"
           "  top   [HOST:PORT] [--once]            live process table of a VM run with --monitor\n"
           "  asm  [-L dir] [-o out.mlwso] [-E] file.masm                   assemble (-E: preprocess only)\n"
           "  dis  [-L dir] file.(masm|mlwso)                               disassemble\n"
@@ -51,7 +51,7 @@ static void usage(FILE *f) {
           "  ext  list|install|remove|allow-ffi|deny-ffi [--dir D] ...  manage trusted native code\n"
           "  lib  build DIR [-o FILE] | info FILE.mlwsl | list           library archives\n",
           f);
-    fputs("  dap  [-L dir]                         a debugger for editors: the Debug Adapter Protocol on stdin and stdout\n"
+    fputs("  dap  [-L dir] [VM options]            a debugger for editors: the Debug Adapter Protocol on stdin and stdout\n"
           "  bundle [-L dir] [-o out] [--with MODULE]... [VM options] file.(masm|mlwso)\n"
           "                                        one executable: this mlwsvm, the program and all it imports\n"
           "  opt  [-L dir] [-O0|-O1|-O2|-O3] [--passes LIST] [-o out.mlwso] [-S] [--report FILE|-] [-v] file.(masm|mlwso)\n"
@@ -76,6 +76,33 @@ static VEC(char *) g_mlwsvm_path; /* $MLWSVM_PATH: searched after the -L directo
 void tool_env_libpaths(const ToolEnv *env, VM *vm) {
     for (size_t i = 0; i < env->libpaths.n; i++) vm_add_libpath(vm, env->libpaths.v[i]);
     if (env->ext_dir) VEC_PUSH(vm->ext_paths, xstrdup(env->ext_dir)); /* searched last */
+}
+
+bool tool_env_options(const ToolEnv *env, VM *vm, MlwsError *err) {
+    const char *eo = getenv("MLWSVM_OPT");
+    if (eo && *eo && !vm_set_option(vm, "opt", "0", err)) return false;
+    for (size_t i = 0; i + 1 < env->vmopts.n; i += 2)
+        if (!vm_set_option(vm, env->vmopts.v[i], env->vmopts.v[i + 1], err)) return false;
+    return true;
+}
+
+/* Remove VM options (`--max-frames 500000`) from argv, wherever they are,
+ * into g_env.vmopts: the new argc, or -1 if one has no value. */
+static int take_vm_opts(int argc, char **argv, const char *cmd) {
+    int j = 0;
+    for (int i = 0; i < argc; i++) {
+        if (strncmp(argv[i], "--", 2) || !vm_option_known(argv[i] + 2)) {
+            argv[j++] = argv[i];
+            continue;
+        }
+        if (i + 1 >= argc) {
+            fprintf(stderr, "mlwsvm %s: %s needs a value\n", cmd, argv[i]);
+            return -1;
+        }
+        VEC_PUSH(g_env.vmopts, xstrdup(argv[i] + 2));
+        VEC_PUSH(g_env.vmopts, xstrdup(argv[++i]));
+    }
+    return j;
 }
 
 static void env_init(const char *argv0) {
@@ -331,8 +358,13 @@ static int cmd_debug(int argc, char **argv) {
         return 2;
     }
     VM *vm = vm_new();
-    tool_env_libpaths(&g_env, vm);
     MlwsError err = {{0}, {0}};
+    if (!tool_env_options(&g_env, vm, &err)) {
+        fprintf(stderr, "mlwsvm debug: %s\n", err.msg);
+        vm_free(vm);
+        return 2;
+    }
+    tool_env_libpaths(&g_env, vm);
     LModule *root = vm_load_root(vm, argv[0], &err);
     Function *main_fn = root ? vm_find_main(root, &err) : NULL;
     if (!main_fn) {
@@ -477,9 +509,11 @@ int main(int argc, char **argv) {
     const char *cmd = argv[1];
     int n = take_lib_opts(argc - 2, argv + 2, !strcmp(cmd, "run"));
     if (strcmp(cmd, "run")) finish_libpaths();
+    if (!strcmp(cmd, "debug") || !strcmp(cmd, "dap")) n = take_vm_opts(n, argv + 2, cmd);
     char **args = argv + 2;
     int rc;
-    if (!strcmp(cmd, "run")) rc = cmd_run(n, args);
+    if (n < 0) rc = 2;
+    else if (!strcmp(cmd, "run")) rc = cmd_run(n, args);
     else if (!strcmp(cmd, "asm")) rc = cmd_asm(n, args);
     else if (!strcmp(cmd, "dis")) rc = cmd_dis(n, args);
     else if (!strcmp(cmd, "test")) rc = tool_test(n, args, &g_env);
@@ -506,6 +540,8 @@ int main(int argc, char **argv) {
     }
     for (size_t i = 0; i < g_env.libpaths.n; i++) free(g_env.libpaths.v[i]);
     VEC_FREE(g_env.libpaths);
+    for (size_t i = 0; i < g_env.vmopts.n; i++) free(g_env.vmopts.v[i]);
+    VEC_FREE(g_env.vmopts);
     free(g_exe_lib);
     return rc;
 }

@@ -543,6 +543,22 @@ static void sb_bank_vars(Dap *a, StrBuf *b, const VarRef *v) {
 
 /* ---- requests ---- */
 
+/* A launch's `vmOptions`: VM options as on the command line, e.g.
+ * ["--max-frames", "500000"], after the command line's. */
+static bool launch_options(VM *vm, const Json *o, MlwsError *err) {
+    if (!o) return true;
+    if (o->kind != J_ARR) return mlws_err(err, "E_BAD_OPTION", "vmOptions: not a list of strings"), false;
+    for (size_t i = 0; i < o->items.n; i += 2) {
+        const Json *k = o->items.v[i], *v = i + 1 < o->items.n ? o->items.v[i + 1] : NULL;
+        if (k->kind != J_STR || strncmp(k->str, "--", 2) || !vm_option_known(k->str + 2))
+            return mlws_err(err, "E_BAD_OPTION", "vmOptions: %s is not a VM option",
+                            k->kind == J_STR ? k->str : "a non-string"), false;
+        if (!v || v->kind != J_STR) return mlws_err(err, "E_BAD_OPTION", "vmOptions: %s needs a value", k->str), false;
+        if (!vm_set_option(vm, k->str + 2, v->str, err)) return false;
+    }
+    return true;
+}
+
 static void do_launch(Dap *a, const Json *req) {
     const Json *args = json_get(req, "arguments");
     const char *program = json_str(args, "program");
@@ -551,12 +567,16 @@ static void do_launch(Dap *a, const Json *req) {
         return;
     }
     VM *vm = a->vm = vm_new();
+    MlwsError err = {{0}, {0}};
+    if (!tool_env_options(a->env, vm, &err) || !launch_options(vm, json_get(args, "vmOptions"), &err)) {
+        send_error(a, req, err.msg);
+        return;
+    }
     tool_env_libpaths(a->env, vm);
     const Json *pa = json_get(args, "args");
     if (pa && pa->kind == J_ARR)
         for (size_t i = 0; i < pa->items.n; i++)
             if (pa->items.v[i]->kind == J_STR) VEC_PUSH(vm->prog_args, xstrdup(pa->items.v[i]->str));
-    MlwsError err = {{0}, {0}};
     LModule *root = vm_load_root(vm, program, &err);
     Function *main_fn = root ? vm_find_main(root, &err) : NULL;
     if (!main_fn) {
@@ -819,7 +839,7 @@ static void handle(Dap *a, const Json *req) {
 int tool_dap(int argc, char **argv, const ToolEnv *env) {
     (void)argv;
     if (argc) {
-        fprintf(stderr, "usage: mlwsvm dap   (requests on stdin, responses on stdout: an editor runs it)\n");
+        fprintf(stderr, "usage: mlwsvm dap [-L dir] [VM options]   (requests on stdin, responses on stdout: an editor runs it)\n");
         return 2;
     }
     Dap *a = xcalloc(1, sizeof *a);

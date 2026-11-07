@@ -22,7 +22,8 @@
             "properties": {
               "program": { "type": "string", "description": "The program: a .masm or .mlwso file." },
               "args": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Its arguments." },
-              "stopOnEntry": { "type": "boolean", "default": false, "description": "Stop at the start of main." }
+              "stopOnEntry": { "type": "boolean", "default": false, "description": "Stop at the start of main." },
+              "vmOptions": { "type": "array", "items": { "type": "string" }, "default": [], "description": "VM options, as on the command line, e.g. [\"--max-frames\", \"50000000\"]." }
             }
           }
         },

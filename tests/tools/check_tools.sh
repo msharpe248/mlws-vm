@@ -142,8 +142,10 @@ rm -rf "${BD:?}"
 # some), the stack, registers and an object's fields, stepping in and out,
 # the program's output and exit status.
 DAPD=$(mktemp -d)
-dap() { # session file -> the adapter's output
-    perl tests/tools/_dap/session.pl "$1" | perl -e 'alarm 30; exec @ARGV' $BIN dap > "$1.out" || fail "dap: did not end"
+dap() { # session file [VM options...] -> the adapter's output
+    f=$1
+    shift
+    perl tests/tools/_dap/session.pl "$f" | perl -e 'alarm 30; exec @ARGV' $BIN dap "$@" > "$f.out" || fail "dap: did not end"
 }
 cat > "$DAPD/a" <<'EOF'
 initialize {"adapterID":"test"}
@@ -231,6 +233,38 @@ dap "$DAPD/e"
 grep -q '"name":"x","value":"int 7","variablesReference":4' "$DAPD/e.out" || fail "dap: a variable shown by its formatter"
 grep -q '"name":"I3","value":"7".*"name":"R3","value":"null"' "$DAPD/e.out" || fail "dap: a variable's registers"
 grep -q '"result":"int 7"' "$DAPD/e.out" || fail "dap: evaluate a formatted variable"
+# VM options: a recursion 150,000 deep runs past the default limit of 100,000
+# frames with --max-frames from the adapter's command line, or from the
+# launch's vmOptions; a bad one fails the launch.
+printf '.func down(i64 n) -> i64\n    bz n, 1f\n    dec n\n    call down (n) -> (n)\n1:  ret n\n.endf\n.func main\n    call down (150000) -> (I0)\n    ret 7\n.endf\n' > "$DAPD/deep.masm"
+k=0
+for v in '' ',"vmOptions":["--max-frames","200000"]' ',"vmOptions":["--max-frames"]' ',"vmOptions":["--frames","1"]'; do
+    k=$((k + 1))
+    printf 'initialize {"adapterID":"test"}\nlaunch {"program":"%s"%s}\nconfigurationDone\ndisconnect\n' "$DAPD/deep.masm" "$v" > "$DAPD/f$k"
+    dap "$DAPD/f$k"
+done
+grep -q '"exitCode":70' "$DAPD/f1.out" || fail "dap: the default call depth limit"
+grep -q '"exitCode":7}' "$DAPD/f2.out" || fail "dap: --max-frames in vmOptions"
+grep -q '"success":false,"command":"launch","message":"vmOptions: --max-frames needs a value"' "$DAPD/f3.out" || fail "dap: a VM option without a value"
+grep -q '"success":false,"command":"launch","message":"vmOptions: --frames is not a VM option"' "$DAPD/f4.out" || fail "dap: an unknown VM option"
+printf 'initialize {"adapterID":"test"}\nlaunch {"program":"%s"}\nconfigurationDone\ndisconnect\n' "$DAPD/deep.masm" > "$DAPD/g"
+dap "$DAPD/g" --max-frames 200000
+grep -q '"exitCode":7}' "$DAPD/g.out" || fail "dap --max-frames"
+
+# mlwsvm debug takes the same VM options, anywhere on its command line, and,
+# like dap, does not optimize for MLWSVM_OPT: the names would go.
+echo run | $BIN debug "$DAPD/deep.masm" | grep -q E_CALL_DEPTH || fail "debug: the default call depth limit"
+echo run | $BIN debug --max-frames 200000 "$DAPD/deep.masm" | grep -q 'Program exited with code 7' || fail "debug --max-frames"
+echo run | $BIN debug "$DAPD/deep.masm" --max-frames 200000 | grep -q 'Program exited with code 7' || fail "debug: a VM option after the program"
+set +e
+$BIN debug --max-frames x "$DAPD/deep.masm" </dev/null 2>/dev/null; RC_BAD=$?
+$BIN debug "$DAPD/deep.masm" --max-frames </dev/null 2>/dev/null; RC_NOVAL=$?
+set -e
+[ $RC_BAD = 2 ] || fail "debug: a bad VM option (exit $RC_BAD)"
+[ $RC_NOVAL = 2 ] || fail "debug: a VM option without a value (exit $RC_NOVAL)"
+printf 'break area\nrun\nlocals\nquit\n' > "$DAPD/script"
+MLWSVM_OPT=3 $BIN debug tests/tools/debugger_locals.masm < "$DAPD/script" | grep -q '^width (I0) = 3$' || fail "debug: optimized for MLWSVM_OPT"
+$BIN debug --opt 3 tests/tools/debugger_locals.masm < "$DAPD/script" | grep -q "No function named 'area'" || fail "debug --opt 3: not optimized"
 rm -rf "${DAPD:?}"
 
 # std.node: two VMs on this machine, plainly and, if there is a TLS library,

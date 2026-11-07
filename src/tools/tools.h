@@ -10,10 +10,15 @@ typedef struct {
     VEC(char *) libpaths;
     char *exe;     /* this executable, or NULL */
     char *ext_dir; /* the default trusted extension directory (lib/ext next to mlwsvm) */
+    VEC(char *) vmopts; /* debug and dap: VM options from the command line, name and value pairs */
 } ToolEnv;
 
 /* Add the library path and the default extension directory to a VM. */
 void tool_env_libpaths(const ToolEnv *env, VM *vm);
+/* The VM options of `mlwsvm debug` and `dap`: the environment's, except
+ * MLWSVM_OPT (the debuggers optimize only when asked), then the command
+ * line's. False, with *err, for a bad value. */
+bool tool_env_options(const ToolEnv *env, VM *vm, MlwsError *err);
 int tool_ext(int argc, char **argv, const ToolEnv *env); /* `mlwsvm ext` */
 int tool_lib(int argc, char **argv, const ToolEnv *env); /* `mlwsvm lib` (libtool.c) */
 int tool_opt(int argc, char **argv, const ToolEnv *env); /* `mlwsvm opt` (opttool.c) */

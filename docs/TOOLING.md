@@ -151,8 +151,8 @@ The layout is in [BINARY_FORMAT.md](BINARY_FORMAT.md#bundles).
 
 ## VM options
 
-Settings for the VM itself. Each can be given on the command line (`mlwsvm run`
-and `mlwsvm test`), as an environment variable (`MLWSVM_` plus the name in
+Settings for the VM itself. Each can be given on the command line (`mlwsvm run`,
+`test`, `debug` and `dap`), as an environment variable (`MLWSVM_` plus the name in
 capitals with `_` for `-`, e.g. `MLWSVM_MAX_FRAMES=500000`), or in a test file as
 `; option: --max-frames 500000`. The command line overrides the environment, and
 a test file's own lines override both.
@@ -286,6 +286,16 @@ A gdb-style command line. The program starts stopped, so you can set breakpoints
 first and then `run`. A `break` instruction in the code also stops the program
 here (outside the debugger it does nothing).
 
+```
+mlwsvm debug [-L dir] [VM options] prog.masm|prog.mlwso
+```
+
+It takes `run`'s [VM options](#vm-options), e.g. `--max-frames 50000000` for a
+deep recursion, from the command line and the environment, but optimizes only
+for `--opt` on its own command line, not for `MLWSVM_OPT`: a function the
+optimizer changes loses its variables' names. The JIT options have no effect,
+since the debugger interprets.
+
 | Command | Short | Action |
 |---|---|---|
 | `run` | `r` | start the program |
@@ -353,8 +363,11 @@ language's own files, wherever its compiler marked the lines with `.loc`.
 * **Output** comes as output events. The adapter has stdin, so a program being
   debugged reads end of input.
 
-The `launch` request takes `program`, `args` (a list) and `stopOnEntry`; there
-is no `attach`. `-L` adds to the library path, as for `run`.
+The `launch` request takes `program`, `args` (a list), `stopOnEntry`, and
+`vmOptions`, a list of VM options as on the command line, e.g. `["--max-frames",
+"50000000"]`; there is no `attach`. `mlwsvm dap` itself takes `-L` and the VM
+options too, applied before a launch's own, and like `mlwsvm debug` ignores
+`MLWSVM_OPT`.
 
 `editors/vscode/` is a small VS Code extension that declares the debugger:
 copy it into `~/.vscode/extensions/`, or run it from there with `code

@@ -815,7 +815,7 @@ macro-only files use the `.inc` extension and are not modules.
 
 ```
 mlwsvm run  [-L dir] [--stats] [--profile] [--trace FILE] [--monitor PORT] [VM options] prog.masm|prog.mlwso [args...]
-mlwsvm debug [-L dir] prog.masm|prog.mlwso
+mlwsvm debug [-L dir] [VM options] prog.masm|prog.mlwso
 mlwsvm top  [HOST:PORT] [--once]
 mlwsvm asm  [-L dir] [-o out.mlwso] [-E] prog.masm
 mlwsvm dis  [-L dir] prog.masm|prog.mlwso
