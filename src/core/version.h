@@ -2,6 +2,6 @@
 #ifndef MLWSVM_VERSION_H
 #define MLWSVM_VERSION_H
 
-#define MLWSVM_VERSION "0.16.1"
+#define MLWSVM_VERSION "0.17.0"
 
 #endif
