@@ -347,6 +347,9 @@ the registers' values and returns what to show:
   would wait (`recv`, `sleep`, a blocking call), or is given what cannot be
   copied to another process (a pointer is passed as is; a coroutine, foreign
   handle or weak reference cannot be) is shown failing, with its registers.
+* Since the values are copies, a string the program took from a constant is
+  not the formatter's own constant, so `beq.r` finds them different: compare
+  strings by their text (`strcmp`), as `show_value` does.
 * `.debug_format` is kept in the binary module, and the optimizer keeps its
   functions, which nothing may call.
 
