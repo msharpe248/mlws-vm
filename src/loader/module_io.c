@@ -17,6 +17,8 @@ void module_free(Module *m) {
         free(m->funcs[i].name);
         free(m->funcs[i].lines);
         free(m->funcs[i].locs);
+        for (uint32_t k = 0; k < m->funcs[i].nvars; k++) free(m->funcs[i].vars[k].name);
+        free(m->funcs[i].vars);
         free(m->funcs[i].handlers);
     }
     free(m->funcs);
@@ -145,6 +147,13 @@ void module_write(const Module *m, ByteBuf *b) {
             bb_uleb(b, f->locs[k].start);
             bb_uleb(b, f->locs[k].file);
             bb_uleb(b, f->locs[k].line);
+        }
+        bb_uleb(b, f->nvars);
+        for (uint32_t k = 0; k < f->nvars; k++) {
+            bb_uleb(b, f->vars[k].start);
+            bb_uleb(b, f->vars[k].end);
+            bb_str(b, f->vars[k].name);
+            bb_u8(b, f->vars[k].reg);
         }
         bb_uleb(b, f->nhandlers);
         for (uint32_t k = 0; k < f->nhandlers; k++) {
@@ -369,6 +378,21 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
             CHECK();
             if (l->start >= f->ninsns || (k && l->start <= f->locs[k - 1].start) || l->file > m->nsrcfiles)
                 FAIL("function %s: bad source position", f->name);
+        }
+        uint64_t nv = br_uleb(&r);
+        CHECK_COUNT(nv, 4);
+        f->vars = xcalloc(nv + 1, sizeof(MVar));
+        for (uint32_t k = 0; k < nv; k++) {
+            MVar *v = &f->vars[k];
+            v->start = (uint32_t)br_uleb(&r);
+            v->end = (uint32_t)br_uleb(&r);
+            v->name = br_str(&r);
+            v->reg = br_u8(&r);
+            f->nvars = k + 1;
+            CHECK();
+            if (!v->name || v->start >= v->end || v->end > f->ninsns || REG_BANK(v->reg) >= NBANKS ||
+                REG_IDX(v->reg) >= f->nregs[REG_BANK(v->reg)])
+                FAIL("function %s: bad variable", f->name);
         }
         uint64_t nh = br_uleb(&r);
         CHECK_COUNT(nh, 3);

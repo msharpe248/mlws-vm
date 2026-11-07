@@ -1,0 +1,63 @@
+; Named variables in the debugger: a function's parameters, `.alias` names and
+; what `.local` says a register holds, each from where it is given until the
+; function ends or the name or register is given again. `locals` lists those
+; live at the current instruction, and `print` takes a name as well as a
+; register. The test runner drives it with the debug-script lines below.
+; no-opt: the optimizer renames registers, and with them the names go
+; debug-script: break area
+; debug-script: run
+; debug-script: locals
+; debug-script: print width
+; debug-script: next
+; debug-script: locals
+; debug-script: print result
+; debug-script: next
+; debug-script: locals
+; debug-script: print result
+; debug-script: quit
+;
+; expect-stdout: MLWSVM debugger. Type 'help' for commands.
+; expect-stdout: (mdb) break area
+; expect-stdout: Breakpoint 1 at debugger_locals.area+0 (shapes.lua:3; tests/tools/debugger_locals.masm:51)
+; expect-stdout: (mdb) run
+; expect-stdout: Breakpoint 1, process 1 at debugger_locals.area+0 (shapes.lua:3; tests/tools/debugger_locals.masm:51)
+; expect-stdout: =>    0  line 51    mul.i64 I2, I0, I1    ; shapes.lua:3
+; expect-stdout: (mdb) locals
+; expect-stdout: h (I1) = 4
+; expect-stdout: width (I0) = 3
+; expect-stdout: (mdb) print width
+; expect-stdout: width = 3
+; expect-stdout: (mdb) next
+; expect-stdout: process 1 at debugger_locals.area+1 (shapes.lua:4; tests/tools/debugger_locals.masm:54)
+; expect-stdout: =>    1  line 54    ret I2    ; shapes.lua:4
+; expect-stdout: (mdb) locals
+; expect-stdout: h (I1) = 4
+; expect-stdout: width (I0) = 3
+; expect-stdout: result (I2) = 12
+; expect-stdout: (mdb) print result
+; expect-stdout: result = 12  (0xc)
+; expect-stdout: (mdb) next
+; expect-stdout: process 1 at debugger_locals.main+2 (tests/tools/debugger_locals.masm:62)
+; expect-stdout: =>    2  line 62    ret 0
+; expect-stdout: (mdb) locals
+; expect-stdout: No named variables here (a compiler names them with .local).
+; expect-stdout: (mdb) print result
+; expect-stdout: usage: print REGISTER or NAME   (I0..I31, F0..F31, R0..R31, P0..P31, SP, FP, PID, or a variable here)
+; expect-stdout: (mdb) quit
+
+.func area(i64 w, i64 h) -> i64
+    .loc "shapes.lua", 3
+    .local width, I0
+    mul I2, w, h
+    .local result, I2
+    .loc "shapes.lua", 4
+    ret I2
+.endf
+
+.func main
+    .alias count, I0
+    mov count, 3
+    call area (count, 4) -> (I1)
+    .local count
+    ret 0
+.endf

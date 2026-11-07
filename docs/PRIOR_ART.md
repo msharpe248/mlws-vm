@@ -293,6 +293,7 @@ of the instructions in call-heavy code.
 | M60 | Deno's permissions, OpenBSD's `pledge` and `unveil`, Capsicum, object capabilities |
 | M61 | Erlang's distribution, cookies and external term format; HMAC challenge and response |
 | M62 | Erlang's distribution over TLS (`inet_tls_dist`) |
+| M63 | DWARF's location lists (`DW_AT_location`), the JVM's `LocalVariableTable` |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

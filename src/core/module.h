@@ -6,7 +6,7 @@
 #include "types.h"
 
 #define MLWSO_MAGIC "MLWS"
-#define MLWSO_VERSION 9
+#define MLWSO_VERSION 10
 
 /* A call has a target and an argc operand, leaving 30 for arguments/results. */
 #define MAX_PARAMS 30
@@ -38,6 +38,14 @@ typedef struct {
     uint32_t start, file, line;
 } MLoc;
 
+/* A variable of the program a compiler translated (`.local`), or a parameter or
+ * alias: for instructions start to end - 1, register reg holds it. For tools. */
+typedef struct {
+    uint32_t start, end;
+    char *name;
+    uint8_t reg;
+} MVar;
+
 typedef struct {
     char *name;            /* local name, or symbol name in the imported module */
     uint32_t flags;
@@ -52,6 +60,8 @@ typedef struct {
     uint32_t *lines;       /* line in that file per instruction (ninsns entries; 0 = from another file) */
     uint32_t nlocs;        /* positions in the translated program, in order of start */
     MLoc *locs;
+    uint32_t nvars;        /* names of registers (`.local`, parameters, aliases), in order of start */
+    MVar *vars;
     uint32_t nhandlers;
     MHandler *handlers;
 } MFunc;

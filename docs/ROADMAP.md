@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M62
+## Milestones M11–M63
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -84,6 +84,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M60 Capabilities** (done) | `cap.restrict`, and `--cap` for a whole program: what a process may read, write, connect to, listen on, run and see of the environment, by name, inherited by its children, which can only narrow it. What is not granted is denied, foreign code and loading modules too. Paths are judged as they resolve | `tests/os/caps`: each kind allowed and denied, `..` and a path through a missing directory, narrowing, a wider grant dropped, inheritance, and the spawner untouched |
 | **M61 Distribution** (done) | `std.node`: VMs connected as nodes, with `send` working on pids that name a node, remote spawn, a name lookup and monitors, and a watcher told if a connection goes. A pid's top 16 bits are its node. The connections are MLWSVM processes, in `lib/std/node.masm`; C does the routing in `send`, the encoding of values, and the HMAC challenge that admits a peer. Traffic is not encrypted | `tests/native/node_values`: every kind of value through the encoding, what cannot be sent, and random, mutated and truncated bytes giving only `E_PARSE`. `make check-tools`: two VMs, with a wrong cookie refused, a lookup, a message there and back, a spawn, a monitor, a function that does not exist, and a node going away |
 | **M62 TLS between nodes** (done) | `std.node`'s `start_tls` and `connect_tls`: the connection is TLS before the cookie is proved, the connecting node checks the other's certificate, and a TLS node takes no plain connections. A TLS session can be shared by two handles (`net.split`), with a lock and its own descriptor of the socket. Found on the way, and fixed: a connection given to another process after its handshake (`fs.give`) lost its TLS, and went on in plain text | `tests/net/tls`: a connection given after its handshake, and one split between a reader and a writer, both failing without the fix. `make check-tools`: the two VMs again over TLS, with a plain connection refused |
+| **M63 Variables by name in the debuggers** (done) | `.local name, REG`: a register holds a variable of the translated program, from here until the function ends or the name or register is given again. Named parameters and `.alias` names count too. Kept in the module (format version 10) and printed back by `dis`; `locals` and `print NAME` in `mlwsvm debug`, a Locals scope and evaluating by name in `mlwsvm dap`. A function the optimizer changes loses its names | `tests/tools/debugger_locals`: names coming and going, a parameter's register taken by `.local`, an alias ending; `make check-tools`: Locals in a DAP session and a name evaluated; `dis` printing `.local` back |
 
 ## 1. Calling existing libraries (M10: done)
 

@@ -104,6 +104,9 @@ variables {"variablesReference":3}
 evaluate {"expression":"I0","frameId":65537}
 stepIn
 stackTrace {"threadId":1}
+scopes {"frameId":65538}
+variables {"variablesReference":1}
+evaluate {"expression":"b","frameId":65538}
 stepOut
 stackTrace {"threadId":1}
 next
@@ -119,6 +122,9 @@ grep -q '"name":"R0","value":"Pair' "$DAPD/a.out" || fail "dap: registers"
 grep -q '"name":"left","value":"1"' "$DAPD/a.out" || fail "dap: an object's fields"
 grep -q '"result":"40"' "$DAPD/a.out" || fail "dap: evaluate"
 grep -q '"name":"program.add"' "$DAPD/a.out" || fail "dap: step in"
+grep -q '"name":"Locals","presentationHint":"locals","variablesReference":1' "$DAPD/a.out" || fail "dap: a Locals scope"
+grep -q '"name":"a","value":"40"' "$DAPD/a.out" || fail "dap: a parameter by name"
+grep -q '"result":"2"' "$DAPD/a.out" || fail "dap: evaluate a name"
 grep -q '"output":"42"' "$DAPD/a.out" || fail "dap: the program's output"
 grep -q '"exitCode":3' "$DAPD/a.out" || fail "dap: exit status"
 grep -q '"event":"terminated"' "$DAPD/a.out" || fail "dap: terminated"

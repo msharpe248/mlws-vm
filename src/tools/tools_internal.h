@@ -77,6 +77,10 @@ Process *dbg_selected(Debugger *d);
 void dbg_add_bp(Debugger *d, const char *spec, Function *f, uint32_t pc);
 bool dbg_break_line(Debugger *d, const char *spec, const char *file, uint32_t line);
 void dbg_clear_spec(Debugger *d, const char *spec);
+/* The named variable (`.local`, a parameter or an alias) live at pc, or NULL;
+ * dbg_var_value reads it in a frame of p. */
+const MVar *dbg_var_at(const Function *f, uint32_t pc, const char *name);
+void dbg_var_value(const Process *p, const Frame *fr, const MVar *v, Word *w, MlwsType *t);
 
 /* Formatting shared by the debugger and the monitor. */
 void fmt_location(StrBuf *b, const Function *f, uint32_t pc);

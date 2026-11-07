@@ -294,7 +294,8 @@ here (outside the debugger it does nothing).
 | `break SPEC` | `b` | breakpoint at `FUNCTION`, `module.FUNCTION`, `LINE` (main file) or `FILE:LINE`; the file may be one `.loc` names (the first instruction of each function from that line) |
 | `delete [N]` | `d` | delete breakpoint N, or all |
 | `info break` | `i` | list breakpoints with hit counts |
-| `print REG` | `p` | a register (`I3`, `F0`, `R1`, `P2`, `SP`, `FP`, `PID`); objects are shown with their contents |
+| `print REG` or `print NAME` | `p` | a register (`I3`, `F0`, `R1`, `P2`, `SP`, `FP`, `PID`), or a variable by name; objects are shown with their contents |
+| `locals` | `lo` | the current frame's named variables: `.local` names, parameters and aliases ([ASSEMBLY.md §5.4](ASSEMBLY.md#54-source-positions-of-a-translated-program)) |
 | `regs` | | every register in the current frame's window |
 | `stack [N]` | `st` | the top N data-stack words, with their type tags |
 | `bt` | `where` | backtrace |
@@ -339,9 +340,11 @@ language's own files, wherever its compiler marked the lines with `.loc`.
   a line without code, one moves to the next line that has some.
 * **Stepping** by lines: step over, step in, step out.
 * **Threads** are processes. All of them stop together, and each has its stack.
-* **Variables** are a frame's registers by bank. Structs, lists, arrays and maps
+* **Variables:** a frame's **Locals**, the program's own names for its registers
+  (`.local`, parameters, aliases) where it has any, then its registers by bank.
+  Structs, lists, arrays and maps
   open to show their contents, up to a thousand entries.
-* **Watch and hover**: a register's name (`I3`, `R0`), in the selected frame.
+* **Watch and hover**: a variable's name, or a register's (`I3`, `R0`), in the selected frame.
 * **Pause** stops a running program, within 65,536 instructions.
 * **Output** comes as output events. The adapter has stdin, so a program being
   debugged reads end of input.
@@ -360,6 +363,24 @@ copy it into `~/.vscode/extensions/`, or run it from there with `code
 
 For Neovim's nvim-dap, the adapter is `{ type = 'executable', command = 'mlwsvm',
 args = { 'dap' } }`.
+
+For Vim (8.2 and later) or Neovim with [vimspector](https://github.com/puremourning/vimspector),
+put this in `.vimspector.json` at the top of the project, then `:call
+vimspector#Launch()` (F5 with its mappings) in a `.masm` file:
+
+```json
+{
+  "adapters": {
+    "mlwsvm": { "command": [ "mlwsvm", "dap" ] }
+  },
+  "configurations": {
+    "Debug": {
+      "adapter": "mlwsvm",
+      "configuration": { "request": "launch", "program": "${file}", "stopOnEntry": true }
+    }
+  }
+}
+```
 
 ## Monitor: `--monitor`
 

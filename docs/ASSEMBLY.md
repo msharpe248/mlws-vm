@@ -286,6 +286,26 @@ with `.loc`:
 * Positions are kept in the binary module, and `mlwsvm dis` prints them back as
   `.loc` directives.
 
+Debuggers can show the program's own variables, too. `.local name, REG` says
+that from the next instruction register `REG` holds the variable `name`, until
+the function ends, or another `.local` gives the name or the register again;
+`.local name` alone ends it. A function's named parameters, and `.alias` names
+given inside it, are named the same way without saying so.
+
+```asm
+.func L4$area(i64 w, i64 h) -> i64      ; w and h are named already
+    .loc "shapes.lua", 12
+    mul I2, w, h
+    .local result, I2                   ; result, from here on
+    ret I2
+.endf
+```
+
+The names are kept in the binary module, `mlwsvm dis` prints them back, and the
+debugger's `locals` and `print result` and an editor's Locals use them. A name
+says nothing about how the program runs. The optimizer renames registers, so a
+function it changes loses its names: debug code that is not optimized.
+
 ### 5.5 Processes
 
 ```asm
@@ -730,6 +750,7 @@ macro-only files use the `.inc` extension and are not modules.
 | `.struct Name` ... `field: type` ... `.ends` | top level | Define a struct type |
 | `.try handler` ... `.endtry`, `.try start, end, handler` | in function | Exception handler region |
 | `.loc "file", line`, `.loc` | in function | Source position (in a translated program) of the instructions that follow; bare: none |
+| `.local name, REG`, `.local name` | in function | Register REG holds the variable `name` from here on; alone: it no longer does (§5.4) |
 | `.requires lib, "constraint"` | top level | A library (or `mlwsvm`) this module needs, and which versions (§8.1) |
 | `.library name, "version"`, `.public mod, ...` | a manifest | A library's name and version, and its public modules (§8.1) |
 | `.regs I=n, F=n, R=n, P=n` | in function | Minimum register window |

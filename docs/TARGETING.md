@@ -476,6 +476,12 @@ the line of your source program as well as the assembly line
 | `mlwsvm debug out.masm` | Breakpoints on generated functions or lines (or `fib.lua:3`, with `.loc`), stepping, registers, objects, processes |
 | `mlwsvm test dir/` | Golden tests: put `; expect-stdout:` lines in the generated files |
 
+Emit `.local name, REG` where a source variable is given a register, and debuggers
+show it by name: `print total`, `locals`, and the Locals of an editor. Parameters
+with names in the `.func` line are named already. A compiler that moves a variable
+to another register says so with another `.local`, which ends the old one
+([ASSEMBLY.md §5.4](ASSEMBLY.md#54-source-positions-of-a-translated-program)).
+
 Every error has a stable code ([ERRORS.md](ERRORS.md)), so compiler tests can assert
 on them.
 

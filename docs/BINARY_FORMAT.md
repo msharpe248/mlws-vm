@@ -13,7 +13,7 @@ file produces `E_LOAD_FORMAT` (or `E_VERIFY`) rather than a crash.
 
 ```
 magic        4 bytes  "MLWS"
-version      u16      9
+version      u16      10
 flags        u16      0
 name         str      dotted module name, e.g. "std.io"
 source       str      source file name (for backtraces); may be empty
@@ -47,6 +47,12 @@ functions    uleb n, then n × {
                            start uleb,               from this instruction until the next run,
                            file  uleb,               the code came from this file (1-based into
                            line  uleb                srcfiles; 0 = no position) and line
+                         }
+                 nvars   uleb, then nvars × {        names of registers (`.local`, parameters,
+                           start uleb,               `.alias`), in increasing start order: from
+                           end   uleb,               instruction start until end - 1,
+                           name  str,                the register holds the variable name
+                           reg   u8                  (its bank and index, as in an operand)
                          }
                  nhandlers uleb, then nhandlers × {start uleb, end uleb, target uleb}
                                                      exception regions [start, end) -> target,

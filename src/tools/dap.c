@@ -146,7 +146,7 @@ static void sb_jsons(StrBuf *b, const char *s) { sb_json(b, s, strlen(s)); }
 /* ---- the session ---- */
 
 typedef struct {
-    int kind; /* V_* */
+    int kind; /* V_*; V_BANK's bank -1: the frame's named variables */
     uint64_t pid;
     uint32_t frame; /* V_BANK: its index in the process's frames */
     int bank;
@@ -464,10 +464,32 @@ static void sb_object_vars(Dap *a, StrBuf *b, Obj *o) {
     }
 }
 
+static uint32_t frame_pc(const Process *p, uint32_t i);
+
+/* The frame's named variables live at its instruction (the latest of a name). */
+static void sb_named_vars(Dap *a, StrBuf *b, const Process *p, uint32_t i) {
+    const Frame *fr = &p->frames[i];
+    uint32_t pc = frame_pc(p, i);
+    bool first = true;
+    for (uint32_t k = 0; k < fr->fn->mf->nvars; k++) {
+        const MVar *v = &fr->fn->mf->vars[k];
+        if (pc < v->start || pc >= v->end || dbg_var_at(fr->fn, pc, v->name) != v) continue;
+        Word w;
+        MlwsType t;
+        dbg_var_value(p, fr, v, &w, &t);
+        sb_variable(a, b, first, v->name, w, t);
+        first = false;
+    }
+}
+
 static void sb_bank_vars(Dap *a, StrBuf *b, const VarRef *v) {
     Process *p = vm_process(a->vm, v->pid);
     if (!p && v->pid == a->d.main->pid) p = a->d.main;
     if (!p || v->frame >= p->nframes) return;
+    if (v->bank < 0) {
+        sb_named_vars(a, b, p, v->frame);
+        return;
+    }
     const Frame *fr = &p->frames[v->frame];
     bool first = true;
     char name[16];
@@ -609,6 +631,18 @@ static void do_scopes(Dap *a, const Json *req) {
     StrBuf b = {0};
     sb_puts(&b, "{\"scopes\":[");
     bool first = true;
+    if (p && base.frame < p->nframes) { /* the program's own names first, if it has any here */
+        uint32_t pc = frame_pc(p, base.frame);
+        const MFunc *mf = p->frames[base.frame].fn->mf;
+        bool any = false;
+        for (uint32_t k = 0; k < mf->nvars && !any; k++) any = pc >= mf->vars[k].start && pc < mf->vars[k].end;
+        if (any) {
+            VarRef v = base;
+            v.bank = -1;
+            sb_printf(&b, "{\"name\":\"Locals\",\"presentationHint\":\"locals\",\"variablesReference\":%lld,\"expensive\":false}", (long long)var_ref(a, v));
+            first = false;
+        }
+    }
     for (size_t i = 0; p && base.frame < p->nframes && i < sizeof SCOPES / sizeof SCOPES[0]; i++) {
         if (!p->frames[base.frame].fn->mf->nregs[SCOPES[i].bank]) continue;
         VarRef v = base;
@@ -647,8 +681,14 @@ static void do_evaluate(Dap *a, const Json *req) {
     const char *banks = "IFRP", *bk = expr && expr[0] ? strchr(banks, expr[0]) : NULL;
     char *end = NULL;
     long idx = bk ? strtol(expr + 1, &end, 10) : -1;
-    if (!p || i >= p->nframes || !bk || end == expr + 1 || *end || idx < 0 || idx >= p->frames[i].fn->mf->nregs[bk - banks]) {
-        send_error(a, req, "not a register of this frame");
+    const MVar *named = p && i < p->nframes && expr ? dbg_var_at(p->frames[i].fn, frame_pc(p, i), expr) : NULL;
+    if (named) { /* a variable's name, before a register's */
+        bk = banks + REG_BANK(named->reg);
+        idx = REG_IDX(named->reg);
+        end = (char *)"";
+    }
+    if (!p || i >= p->nframes || !bk || (!named && (end == expr + 1 || *end)) || idx < 0 || idx >= p->frames[i].fn->mf->nregs[bk - banks]) {
+        send_error(a, req, "not a variable or register of this frame");
         return;
     }
     int bank = (int)(bk - banks);

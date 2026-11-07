@@ -272,6 +272,47 @@ static void reg_value(const Process *p, uint8_t reg, Word *w, MlwsType *t) {
     }
 }
 
+const MVar *dbg_var_at(const Function *f, uint32_t pc, const char *name) {
+    const MVar *found = NULL; /* the latest to start, if two overlap */
+    for (uint32_t i = 0; i < f->mf->nvars; i++) {
+        const MVar *v = &f->mf->vars[i];
+        if (pc >= v->start && pc < v->end && !strcmp(v->name, name)) found = v;
+    }
+    return found;
+}
+
+void dbg_var_value(const Process *p, const Frame *fr, const MVar *v, Word *w, MlwsType *t) {
+    int b = REG_BANK(v->reg);
+    memcpy(w, frame_reg(p->regs, fr, b, REG_IDX(v->reg)), sizeof *w);
+    *t = b == BANK_I ? T_I64 : b == BANK_F ? T_F64 : b == BANK_R ? T_R : T_P;
+}
+
+/* `locals`: the frame's named variables, as they are now. */
+static void cmd_locals(Debugger *d) {
+    Process *p = dbg_selected(d);
+    if (!p) {
+        say(d, "The program is not stopped in a process.\n");
+        return;
+    }
+    const Frame *fr = &p->frames[p->nframes - 1];
+    int shown = 0;
+    for (uint32_t i = 0; i < fr->fn->mf->nvars; i++) {
+        const MVar *v = &fr->fn->mf->vars[i];
+        if (fr->pc < v->start || fr->pc >= v->end || dbg_var_at(fr->fn, fr->pc, v->name) != v) continue;
+        Word w;
+        MlwsType t;
+        dbg_var_value(p, fr, v, &w, &t);
+        char rb[8];
+        StrBuf s = {0};
+        sb_printf(&s, "%s (%s) = ", v->name, reg_name(v->reg, rb));
+        fmt_value(&s, w, t, 3);
+        sb_putc(&s, '\n');
+        say_sb(d, &s);
+        shown++;
+    }
+    if (!shown) say(d, "No named variables here (a compiler names them with .local).\n");
+}
+
 static void cmd_print(Debugger *d, const char *arg) {
     Process *p = dbg_selected(d);
     uint8_t reg;
@@ -280,8 +321,13 @@ static void cmd_print(Debugger *d, const char *arg) {
         return;
     }
     if (!parse_reg(arg, &reg)) {
-        say(d, "usage: print REGISTER   (I0..I31, F0..F31, R0..R31, P0..P31, SP, FP, PID)\n");
-        return;
+        const Frame *fr = &p->frames[p->nframes - 1];
+        const MVar *v = dbg_var_at(fr->fn, fr->pc, arg);
+        if (!v) {
+            say(d, "usage: print REGISTER or NAME   (I0..I31, F0..F31, R0..R31, P0..P31, SP, FP, PID, or a variable here)\n");
+            return;
+        }
+        reg = v->reg;
     }
     const Frame *fr = &p->frames[p->nframes - 1];
     int b = REG_BANK(reg);
@@ -473,7 +519,8 @@ static const char *HELP =
     "  break (b) SPEC       breakpoint at a FUNCTION, LINE (main file) or FILE:LINE\n"
     "  delete (d) [N]       delete breakpoint N, or all\n"
     "  info break           list breakpoints\n"
-    "  print (p) REG        show a register: I3, F0, R1 (objects are expanded), P2, SP, FP, PID\n"
+    "  print (p) REG|NAME   show a register: I3, F0, R1 (objects are expanded), P2, SP, FP, PID, or a variable\n"
+    "  locals               the named variables of the current frame (.local, parameters)\n"
     "  regs                 all registers of the current frame\n"
     "  stack [N]            the top N data-stack words with their types\n"
     "  bt                   backtrace\n"
@@ -542,6 +589,7 @@ int debugger_run(VM *vm, LModule *root, Function *main_fn, DebugIO *io) {
         else if (IS("delete", "d")) cmd_delete(&d, arg);
         else if (IS("info", "i")) cmd_info_break(&d);
         else if (IS("print", "p")) cmd_print(&d, arg);
+        else if (IS("locals", "lo")) cmd_locals(&d);
         else if (IS("regs", "reg")) cmd_regs(&d);
         else if (IS("bt", "bt") || IS("backtrace", "ba") || IS("where", "wh")) cmd_bt(&d);
         else if (IS("list", "l") || IS("dis", "dis")) cmd_list(&d);

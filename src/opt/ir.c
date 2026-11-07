@@ -155,9 +155,13 @@ void ofn_store(OModule *om) {
         }
         ofn_compact(f);
         uint32_t n = (uint32_t)f->code.n;
+        uint32_t old_off = mf->code_off, old_len = mf->code_len, old_n = mf->ninsns;
         mf->code_off = (uint32_t)code.n;
         for (uint32_t i = 0; i < n; i++) encode_insn(&code, &f->code.v[i].in);
         mf->code_len = (uint32_t)code.n - mf->code_off;
+        /* Names of registers hold only for the code they were given for: once
+         * the passes have changed it, registers may have been renamed. */
+        bool same = n == old_n && mf->code_len == old_len && !memcmp(code.b + mf->code_off, m->code + old_off, old_len);
         mf->ninsns = n;
         if (mf->lines) {
             free(mf->lines);
@@ -181,6 +185,12 @@ void ofn_store(OModule *om) {
         free(mf->locs);
         mf->locs = locs;
         mf->nlocs = nl;
+        if (!same) {
+            for (uint32_t k = 0; k < mf->nvars; k++) free(mf->vars[k].name);
+            free(mf->vars);
+            mf->vars = NULL;
+            mf->nvars = 0;
+        }
         free(mf->handlers);
         mf->nhandlers = (uint32_t)f->h.n;
         mf->handlers = f->h.n ? xcalloc(f->h.n, sizeof *mf->handlers) : NULL;

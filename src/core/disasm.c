@@ -352,6 +352,18 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
         uint32_t nloc = 0; /* the next .loc run */
         for (size_t i = 0; i < code.n; i++) {
             if (is_target[i]) sb_printf(b, ".L%zu:\n", i);
+            for (uint32_t v = 0; v < f->nvars; v++) { /* names that end here, then those that start */
+                const MVar *mv = &f->vars[v];
+                bool again = false;
+                for (uint32_t w = 0; w < f->nvars && !again; w++)
+                    again = w != v && f->vars[w].start == i && (!strcmp(f->vars[w].name, mv->name) || f->vars[w].reg == mv->reg);
+                if (mv->end == i && !again) sb_printf(b, "    .local %s\n", mv->name);
+            }
+            for (uint32_t v = 0; v < f->nvars; v++)
+                if (f->vars[v].start == i) {
+                    char rb[8];
+                    sb_printf(b, "    .local %s, %s\n", f->vars[v].name, reg_name(f->vars[v].reg, rb));
+                }
             if (nloc < f->nlocs && f->locs[nloc].start == i) { /* where the program's code came from */
                 const MLoc *l = &f->locs[nloc++];
                 if (l->file) {
