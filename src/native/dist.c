@@ -9,6 +9,10 @@
 #include "../platform/platform.h"
 
 #define MAX_DEPTH 200
+/* A string the sender has interned (a literal, or text.intern's): a code of
+ * its own beside the object kinds, so that it is interned where it arrives
+ * too, the same object there as that VM's literal of it. */
+#define WIRE_INTERNED 0xF0
 #define MAX_NODE 65535
 
 /* ---- values as bytes ---- *
@@ -83,6 +87,11 @@ static void encode_obj(Process *p, Writer *b, const Obj *o, int depth) {
         return;
     }
     if (depth > MAX_DEPTH) vm_trap(p, "E_TYPE", "node: a value nested too deep (or a cycle) cannot be sent to a node");
+    if (o->kind == OBJ_STRING && (o->flags & OBJF_IMMORTAL)) {
+        put8(b, WIRE_INTERNED);
+        put_bytes(b, ((const ObjString *)o)->data, ((const ObjString *)o)->len);
+        return;
+    }
     put8(b, o->kind);
     switch (o->kind) {
     case OBJ_STRING: put_bytes(b, ((const ObjString *)o)->data, ((const ObjString *)o)->len); break;
@@ -257,6 +266,11 @@ static Obj *decode_obj(Reader *r, int depth) {
     switch (kind) {
     case OBJ_NULL: return NULL;
     case OBJ_CLOSURE: return decode_closure(r, depth);
+    case WIRE_INTERNED: { /* (one with a NUL in it is no literal: a string of its own) */
+        const char *s = get_span(r, &n);
+        Obj *o = vm_intern(p->vm, s, n);
+        return o ? o : &str_new(p, s, n)->h;
+    }
     case OBJ_STRING: {
         const char *s = get_span(r, &n);
         return &str_new(p, s, n)->h;

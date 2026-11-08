@@ -1782,7 +1782,9 @@ handle closes first.
 is left, before anything is allocated, recursion is bounded, type codes and kinds
 are checked, and a struct is looked up by module and name and must have the same
 fields. Bytes that are not a value raise `E_PARSE`, and the reader drops that
-frame, not the connection. A closure is written as its module's name, its
+frame, not the connection. A string that is immortal where it is sent, a
+literal or `text.intern`'s, is written with a code of its own, and read back
+through `vm_intern`, so that it is that VM's literal of the same text. A closure is written as its module's name, its
 version's hash (`vm_module_hash`: SHA-256 of the module's `.mlwso` image with
 its files' names left out, kept in `LModule.hash`), its function's name and
 signature, and its captures; it is read back as a closure of that version's

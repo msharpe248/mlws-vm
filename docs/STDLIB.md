@@ -561,7 +561,11 @@ this node's number in it, which works here too, wherever a plain one does. `node
 
 * **What crosses** is what a message can be: numbers, strings, byte buffers,
   arrays, lists, maps, BigInts, decimals, structs, whose module must be loaded
-  at the other end (a program's own, or the library path's), and closures. Coroutines, handles of `handle` and pointers
+  at the other end (a program's own, or the library path's), and closures. A
+  string interned where it is sent (a literal, or `text.intern`'s) is interned
+  where it arrives, the same object there as that VM's literal of it, so that
+  identity tests (`beq.r`) of atoms and symbols hold across nodes; any other
+  string is a new string. Coroutines, handles of `handle` and pointers
   cannot (`E_TYPE`), nor a value with a cycle.
 * **A closure crosses as its code's identity and its captured values:** its
   module's name, the hash of that module's version, its function (exported or

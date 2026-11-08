@@ -157,6 +157,9 @@ plain_refused:
     send I4, R28                       ; (dropped there: no struct one.Note)
     ncall "proc.call" (I4, "still there", 5000) -> (R27)
     ASSERT_TRUE R27, r                 ; (a call after it: still connected)
+    beq.r R27, "still there", 1f       ; a literal there and back: the very literal here
+    FAIL "a literal came back from node 2 another object"
+1:
 
     ; A registered process there, and a message there and back.
     call node.whereis (2, "doubler") -> (I5)

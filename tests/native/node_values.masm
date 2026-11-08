@@ -147,6 +147,29 @@ h:
     calli R8 (12) -> (I1)
     ASSERT_EQ I1, 42
 
+    ; An interned string (a literal, text.intern's) comes back the very
+    ; object, as every module's literal of it; another is a string of its own.
+    lnew R24
+    lpush R24, "an atom"
+    strcat R25, "an", " atom"
+    lpush R24, R25
+    strcat R26, "made", " here"
+    ncall "text.intern" (R26) -> (R26)
+    lpush R24, R26
+    call trip (R24) -> (R27)
+    mov R28, R27[0]
+    beq.r R28, "an atom", 1f
+    FAIL "a literal came back another object"
+1:  mov R28, R27[1]
+    bne.r R28, "an atom", 1f
+    FAIL "a string made here came back the literal"
+1:  strcmp I1, R28, "an atom"
+    ASSERT_EQ I1, 0
+    mov R28, R27[2]
+    ncall "text.intern" ("made here") -> (R29)
+    beq.r R28, R29, 1f
+    FAIL "an interned string came back another object"
+1:
     ; What is of this VM alone stays.
     closure f -> (R10)
     conew R23, R10
