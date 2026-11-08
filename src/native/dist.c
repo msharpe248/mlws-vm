@@ -40,6 +40,43 @@ static void put_word(Writer *b, Word w) {
 
 static void encode(Process *p, Writer *b, Word w, uint8_t tag, int depth);
 
+/* A closure: 0, its module's name and version's hash, its function's name and
+ * signature, and its captured values; or 1 for a module.handle, the module's
+ * and function's names and the signature (no version: a handle calls the
+ * current one). A stand-in for one of another node (vm_remote_stub) goes as
+ * what it stands for. */
+static void put_signature(Writer *b, const MFunc *mf) {
+    put8(b, mf->nparams);
+    for (int i = 0; i < mf->nparams; i++) put8(b, mf->params[i]);
+    put8(b, mf->nrets);
+    for (int i = 0; i < mf->nrets; i++) put8(b, mf->rets[i]);
+}
+
+static void encode_closure(Process *p, Writer *b, const ObjClosure *c, int depth) {
+    Function *fn = c->fn->target ? c->fn->target : c->fn;
+    LModule *lm = fn->mod;
+    if (lm->handle || (lm->remote_mod && lm->remote_handle)) {
+        Function *imp = NULL;
+        for (uint32_t i = 0; lm->handle && i < lm->m->nfuncs && !imp; i++)
+            if (lm->funcs[i].mf->flags & MF_IMPORT) imp = &lm->funcs[i];
+        put8(b, 1);
+        put_str(b, lm->handle ? lm->deps[0]->m->name : lm->remote_mod);
+        put_str(b, lm->handle ? imp->name : lm->remote_fn);
+        put_signature(b, fn->mf);
+        return;
+    }
+    put8(b, 0);
+    uint8_t h[16];
+    if (lm->remote_mod) memcpy(h, lm->remote_hash, 16);
+    else vm_module_hash(p->vm, lm, h);
+    put_str(b, lm->remote_mod ? lm->remote_mod : lm->m->name);
+    bytes_append(b->p, b->out, h, 16);
+    put_str(b, lm->remote_mod ? lm->remote_fn : fn->name);
+    put_signature(b, fn->mf);
+    put32(b, c->nup);
+    for (uint32_t i = 0; i < c->nup; i++) encode(p, b, c->up[i], c->tags[i], depth + 1);
+}
+
 static void encode_obj(Process *p, Writer *b, const Obj *o, int depth) {
     if (!o) {
         put8(b, OBJ_NULL);
@@ -82,6 +119,7 @@ static void encode_obj(Process *p, Writer *b, const Obj *o, int depth) {
         }
         break;
     }
+    case OBJ_CLOSURE: encode_closure(p, b, (const ObjClosure *)o, depth); break;
     case OBJ_BIG: case OBJ_DEC: {
         StrBuf t = {0};
         num_format(&t, o);
@@ -149,6 +187,66 @@ static const StructDef *find_struct(Process *p, const char *module, const char *
 
 static uint8_t decode(Reader *r, Word *out, int depth);
 
+/* A signature as it was sent: parameters and results, each a type a function
+ * may have. */
+static int get_types(Reader *r, uint8_t *t) {
+    int n = get8(r);
+    if (n > 64) bad(r);
+    for (int i = 0; i < n; i++) {
+        t[i] = get8(r);
+        if (t[i] >= T__COUNT || t[i] == T_NONE) bad(r);
+    }
+    return n;
+}
+
+static bool fits(const MFunc *mf, const uint8_t *pt, int np, const uint8_t *rt, int nr) {
+    return mf->nparams == np && mf->nrets == nr && !memcmp(mf->params, pt, (size_t)np) && !memcmp(mf->rets, rt, (size_t)nr);
+}
+
+static Obj *decode_closure(Reader *r, int depth) {
+    Process *p = r->p;
+    VM *vm = p->vm;
+    uint8_t kind = get8(r), hash[16], pt[64], rt[64];
+    if (kind > 1) bad(r);
+    uint32_t mn, fnn;
+    const char *ms = get_span(r, &mn);
+    if (!kind) {
+        if (r->n - r->i < 16) bad(r);
+        memcpy(hash, r->s + r->i, 16);
+        r->i += 16;
+    }
+    const char *fs = get_span(r, &fnn);
+    int np = get_types(r, pt), nr = get_types(r, rt);
+    uint32_t nup = kind ? 0 : get_count(r, 2);
+    char *mod = xstrndup(ms, mn), *fname = xstrndup(fs, fnn);
+    Function *fn = NULL;
+    MlwsError err = {{0}, {0}};
+    if (kind) { /* a handle: to this node's current version, if it exports the function */
+        LModule *lm = vm_module_named(vm, mod, NULL);
+        int i = lm ? module_find_export_func(lm->m, fname) : -1;
+        if (i >= 0 && !(lm->m->funcs[i].flags & MF_IMPORT) && fits(&lm->m->funcs[i], pt, np, rt, nr))
+            fn = vm_handle(vm, lm, fname, &err);
+    } else {
+        LModule *lm = vm_module_version(vm, mod, hash);
+        Function *f = lm ? vm_module_func(lm, fname) : NULL;
+        if (f && fits(f->mf, pt, np, rt, nr)) fn = f;
+    }
+    if (!fn) fn = vm_remote_stub(vm, mod, kind ? NULL : hash, fname, pt, np, rt, nr, &err);
+    free(mod);
+    free(fname);
+    if (!fn) vm_trap(p, "E_TYPE", "node: a closure that cannot be made here: %s", err.msg);
+    proc_grow_globals(p); /* (its module may be new to this process) */
+    ObjClosure *c = closure_new(p, fn, nup);
+    for (uint32_t i = 0; i < nup; i++) c->up[i] = (Word){0}, c->tags[i] = T_I64; /* (until decoded) */
+    for (uint32_t i = 0; i < nup; i++) {
+        Word w;
+        uint8_t t = decode(r, &w, depth + 1);
+        c->up[i] = w;
+        c->tags[i] = t;
+    }
+    return &c->h;
+}
+
 static Obj *decode_obj(Reader *r, int depth) {
     Process *p = r->p;
     if (depth > MAX_DEPTH) bad(r);
@@ -156,6 +254,7 @@ static Obj *decode_obj(Reader *r, int depth) {
     uint32_t n;
     switch (kind) {
     case OBJ_NULL: return NULL;
+    case OBJ_CLOSURE: return decode_closure(r, depth);
     case OBJ_STRING: {
         const char *s = get_span(r, &n);
         return &str_new(p, s, n)->h;

@@ -36,6 +36,39 @@
     ncall "proc.reply" (R0, R2)
     jmp 1b
 .endf
+; Calls the closure in a call's body [f, x] with x, and answers [result], or
+; [null, code] if it raised.
+.func applier
+    ncall "proc.register" ("applier", PID)
+1:  recv R0
+    mov R1, R0->Call.body
+    call apply (R1) -> (R2)
+    ncall "proc.reply" (R0, R2)
+    jmp 1b
+.endf
+.func apply(ref fx) -> ref
+    mov R1, fx[0]
+    mov I1, fx[1]
+    lnew R3
+.try raised
+    calli R1 (I1) -> (I2)
+.endtry
+    lpush R3, I2
+    ret R3
+raised:
+    catch R4
+    mov R5, R4->Error.code
+    lpush R3, null, R5
+    ret R3
+.endf
+; Answers a call with its body.
+.func echoer
+    ncall "proc.register" ("echoer", PID)
+1:  recv R0
+    mov R1, R0->Call.body
+    ncall "proc.reply" (R0, R1)
+    jmp 1b
+.endf
 .func stopper
     ncall "proc.register" ("stopper", PID)
     recv I0
@@ -54,6 +87,8 @@
     spawn doubler
     spawn tripler
     spawn namer
+    spawn applier
+    spawn echoer
     spawn stopper
     sleep 100                          ; (all registered by now)
     ncall "io.print_i" (I1)

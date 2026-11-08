@@ -3,6 +3,7 @@
 ; (and then a plain connection must be refused). Exits 0 if all is well.
 .include "std/test.inc"
 .import std.node as node
+.import worker                         ; (also node 2's: the same code, so its closures cross)
 
 tls:    .i64 0                       ; 1: node 2 takes only TLS
 w1: .i64 0                              ; the watchers
@@ -112,6 +113,34 @@ plain_refused:
     ASSERT_EQ I3, 0
     mov I3, R25[1]
     ASSERT_EQ I3, 1
+
+    ; Closures cross: one of worker's (loaded there too), not exported and with
+    ; a captured value, runs there; a handle there calls node 2's twice; one of
+    ; this module's, which node 2 does not have, raises E_LINK_UNDEF there, and
+    ; comes back as itself. A struct node 2 has not is dropped there, and the
+    ; connection goes on.
+    call node.whereis (2, "applier") -> (I3)
+    call worker.make_adder (5) -> (R26)
+    call apply_there (I3, R26, 10) -> (R27)
+    mov I4, R27[0]
+    ASSERT_EQ I4, 15
+    ncall "module.handle" ("worker", "twice") -> (R26)
+    call apply_there (I3, R26, 21) -> (R27)
+    mov I4, R27[0]
+    ASSERT_EQ I4, 42
+    closure here_only (7) -> R26
+    call apply_there (I3, R26, 1) -> (R27)
+    mov R28, R27[1]
+    strcmp I4, R28, "E_LINK_UNDEF"
+    ASSERT_EQ I4, 0
+    call node.whereis (2, "echoer") -> (I4)
+    ncall "proc.call" (I4, R26, 5000) -> (R27)
+    calli R27 (1) -> (I5)              ; back here: the closure it was
+    ASSERT_EQ I5, 8
+    new R28, Note
+    send I4, R28                       ; (dropped there: no struct one.Note)
+    ncall "proc.call" (I4, "still there", 5000) -> (R27)
+    ASSERT_TRUE R27, r                 ; (a call after it: still connected)
 
     ; A registered process there, and a message there and back.
     call node.whereis (2, "doubler") -> (I5)
@@ -412,4 +441,19 @@ h:  catch R3
     mov I5, e->NodeEvent.up
     ASSERT_EQ I5, up
     ret
+.endf
+
+; Call there [f, x], and return the answer: [result] or [null, code].
+.func apply_there(i64 to, ref f, i64 x) -> ref
+    lnew R1
+    lpush R1, f, x
+    ncall "proc.call" (to, R1, 5000) -> (R2)
+    ret R2
+.endf
+
+; Adds UP[0]: a closure of a module only this node has.
+.func here_only(i64 x) -> i64
+    mov I1, UP[0]
+    add I0, x, I1
+    ret I0
 .endf

@@ -280,11 +280,30 @@ ended:
     ret
 .endf
 
+; A frame's value, or null if it cannot be read here (a struct this VM does not
+; have, bytes that are not a value): then it is dropped, with a warning in the
+; monitor's log, and the connection goes on, since frames come one by one.
+.func read_one(ref bytes, i64 peer) -> ref
+.try bad
+    ncall "node.decode" (bytes) -> (R2)
+.endtry
+    ret R2
+bad:
+    catch R3
+    mov R4, R3->Error.code
+    mov R5, R3->Error.message
+    tostr R6, peer
+    strcat R7, "std.node: a frame from node ", R6, " was dropped: [", R4, "] ", R5
+    ncall "monitor.log" (2, R7)
+    ret null
+.endf
+
 .func read_frames(ref conn, i64 peer)
 .try lost
 1:  ncall "net.read_frame" (conn) -> (R2)
     bz R2, closed
-    ncall "node.decode" (R2) -> (R3)
+    call read_one (R2, peer) -> (R3)
+    bz.r R3, 1b                        ; (dropped)
     mov I2, R3[0]
     bnz I2, 2f
     ldel R3, 0                         ; [pid, value]

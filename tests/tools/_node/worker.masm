@@ -1,5 +1,5 @@
 ; Spawned on another node by tests/tools/_node/one.masm.
-.export serve, wait_one, ignore, fail_on_msg
+.export serve, wait_one, ignore, fail_on_msg, make_adder, twice
 
 ; Answers once.
 .func serve(ref who)
@@ -29,4 +29,20 @@
     mov R2->Error.code, "E_TOLD"
     mov R2->Error.message, "told to fail"
     throw R2
+.endf
+
+; A closure of a function that is not exported, with n captured: adds n.
+.func make_adder(i64 n) -> ref
+    closure add_n (n) -> R0
+    ret R0
+.endf
+.func add_n(i64 x) -> i64
+    mov I1, UP[0]
+    add I0, x, I1
+    ret I0
+.endf
+
+.func twice(i64 x) -> i64
+    add I0, x, x
+    ret I0
 .endf

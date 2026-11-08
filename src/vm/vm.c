@@ -91,6 +91,8 @@ static void lmodule_free(LModule *lm) {
     free(lm->structs);
     free(lm->frefs);
     free(lm->carry);
+    free(lm->remote_mod);
+    free(lm->remote_fn);
     free(lm->path);
     free(lm->key);
     free(lm->deps);
@@ -186,6 +188,7 @@ void vm_free(VM *vm) {
     VEC_FREE(vm->const_objs);
     smap_free(&vm->const_pool);
     smap_free(&vm->handles); /* (the stubs are their modules') */
+    smap_free(&vm->remotes);
     for (size_t i = 0; i < vm->wants.n; i++) {
         free(vm->wants.v[i].lib);
         free(vm->wants.v[i].constraint);
