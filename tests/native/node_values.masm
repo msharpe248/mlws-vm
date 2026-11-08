@@ -170,6 +170,27 @@ h:
     beq.r R28, R29, 1f
     FAIL "an interned string came back another object"
 1:
+    ; So with a BigInt or decimal literal, however it is spelled; a number
+    ; made here is a number of its own.
+    lnew R24
+    mov.r R25, 0d
+    lpush R24, R25
+    mov.r R25, 007n
+    lpush R24, R25
+    mov.r R26, 1d
+    add.dec R27, R26, R26              ; 2d, made here
+    lpush R24, R27
+    call trip (R24) -> (R28)
+    mov R29, R28[0]
+    beq.r R29, 0d, 1f
+    FAIL "a decimal literal came back another object"
+1:  mov R29, R28[1]
+    beq.r R29, 7n, 1f
+    FAIL "a BigInt literal came back another object"
+1:  mov R29, R28[2]
+    bne.r R29, 2d, 1f
+    FAIL "a decimal made here came back a literal"
+1:
     ; What is of this VM alone stays.
     closure f -> (R10)
     conew R23, R10

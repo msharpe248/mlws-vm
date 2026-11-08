@@ -4,6 +4,7 @@
 .include "std/test.inc"
 .import std.node as node
 .import worker                         ; (also node 2's: the same code, so its closures cross)
+.import vers
 
 tls:    .i64 0                       ; 1: node 2 takes only TLS
 w1: .i64 0                              ; the watchers
@@ -30,10 +31,6 @@ h:
     ret R2
 .endf
 
-.struct Note
-    text: ref
-    n: i64
-.ends
 
 .func main
     ncall "os.args" () -> (R0)
@@ -116,9 +113,11 @@ plain_refused:
 
     ; Closures cross: one of worker's (loaded there too), not exported and with
     ; a captured value, runs there; a handle there calls node 2's twice; one of
-    ; this module's, which node 2 does not have, raises E_LINK_CODE there, and
-    ; comes back as itself. A struct node 2 has not is dropped there, and the
-    ; connection goes on.
+    ; this module's, which node 2 has not loaded but finds in its directory,
+    ; runs there, loaded for it; one of a version of vers that node 2 cannot
+    ; find (this node reloaded it) raises E_LINK_CODE there, and comes back as
+    ; itself. A struct of that version is dropped there, and the connection
+    ; goes on; a struct of worker's, and literals, arrive as themselves.
     call node.whereis (2, "applier") -> (I3)
     call worker.make_adder (5) -> (R26)
     call apply_there (I3, R26, 10) -> (R27)
@@ -128,7 +127,12 @@ plain_refused:
     call apply_there (I3, R26, 21) -> (R27)
     mov I4, R27[0]
     ASSERT_EQ I4, 42
-    closure here_only (7) -> R26
+    closure here_only (7) -> R26       ; node 2 has not loaded one, but its directory has it:
+    call apply_there (I3, R26, 1) -> (R27) ; loaded there for the closure, as Erlang loads code
+    mov I4, R27[0]
+    ASSERT_EQ I4, 8
+    ncall "module.reload_text" ("vers", ".export plus2, gone\n.struct Gone\n    n: i64\n.ends\n.func plus2(i64 x) -> i64\n    add I0, x, 2\n    ret I0\n.endf\n.func gone -> ref\n    new R0, Gone\n    ret R0\n.endf\n")
+    ncall "module.function" ("vers", "plus2") -> (R26) ; (a version node 2 can find nowhere)
     call apply_there (I3, R26, 1) -> (R27)
     mov R28, R27[1]
     strcmp I4, R28, "E_LINK_CODE"
@@ -136,7 +140,7 @@ plain_refused:
     call node.whereis (2, "echoer") -> (I4)
     ncall "proc.call" (I4, R26, 5000) -> (R27)
     calli R27 (1) -> (I5)              ; back here: the closure it was
-    ASSERT_EQ I5, 8
+    ASSERT_EQ I5, 3
     new R28, worker.Box                ; a struct of a module of the program's own,
     mov R28->worker.Box.v, 41          ; which node 2 has: it arrives, and comes back
     mov R28->worker.Box.tag, "boxed"
@@ -153,8 +157,9 @@ plain_refused:
     ncall "proc.whereis" ("by global pid") -> (I6)
     ASSERT_EQ I6, PID
     ncall "proc.unregister" ("by global pid")
-    new R28, Note
-    send I4, R28                       ; (dropped there: no struct one.Note)
+    ncall "module.function" ("vers", "gone") -> (R28)
+    calli R28 () -> (R28)
+    send I4, R28                       ; (dropped there: node 2's vers has no struct Gone)
     ncall "proc.call" (I4, "still there", 5000) -> (R27)
     ASSERT_TRUE R27, r                 ; (a call after it: still connected)
     beq.r R27, "still there", 1f       ; a literal there and back: the very literal here

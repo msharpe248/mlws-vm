@@ -1,0 +1,7 @@
+; A module node 1 reloads with other text (one.masm), so that its closures
+; are of a version node 2, which can load only this file, does not have.
+.export plus2
+.func plus2(i64 x) -> i64
+    add I0, x, 2
+    ret I0
+.endf

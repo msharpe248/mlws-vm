@@ -704,6 +704,7 @@ LModule *vm_load_root(VM *vm, const char *path, MlwsError *err);
 bool vm_load_roots(VM *vm, const char *const *paths, int n, LModule **out, MlwsError *errs);
 LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err); /* source in memory */
 Obj *vm_intern(VM *vm, const char *s, size_t n); /* text.intern: the literals' one string of this text; NULL for a NUL in it */
+Obj *vm_intern_num(VM *vm, MlwsType t, const char *s, size_t n); /* a BigInt or decimal literal of this value; NULL if malformed */
 Function *vm_handle(VM *vm, LModule *lm, const char *fname, MlwsError *err); /* module.handle's function */
 void vm_module_hash(VM *vm, LModule *lm, uint8_t out[16]); /* its version's identity across nodes */
 LModule *vm_module_version(VM *vm, const char *name, const uint8_t hash[16]); /* that version, if loaded */
@@ -715,6 +716,7 @@ Function *vm_remote_stub(VM *vm, const char *mod, const uint8_t *hash, const cha
  * library path only), under mods_lock. A load that fails leaves the modules
  * it had not linked unusable and their names free. */
 LModule *vm_load_dynamic(VM *vm, const char *name, const LModule *from, MlwsError *err);
+LModule *vm_module_for_node(VM *vm, const char *name, MlwsError *err); /* loaded, or from a program's directory or the library path */
 /* A new version of a loaded module, from its file (text NULL) or from text:
  * calls to it from other modules go to the new version from now on. Code
  * already running, and the old version's calls to itself, stay on the old
