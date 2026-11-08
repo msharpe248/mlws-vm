@@ -235,7 +235,12 @@ typedef struct Module {
      * show a variable of the program for a debugger, from its registers. */
     uint32_t *formats;
     uint32_t nformats;
+    uint16_t flags; /* MOD_* */
 } Module;
+
+/* Module.flags, in the .mlwso header. */
+#define MOD_RELOAD_FRESH 0x0001u /* `.reload fresh`: a reload to this version carries no global's value */
+#define MOD_FLAGS_KNOWN MOD_RELOAD_FRESH
 
 void module_free(Module *m);
 /* Index of an exported function/data symbol by name, or -1. */

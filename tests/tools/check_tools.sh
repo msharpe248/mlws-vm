@@ -276,6 +276,14 @@ if [ "$(uname -s)" = Linux ] && [ "$(ulimit -Hn)" = unlimited -o "$(ulimit -Hn)"
     echo "$OUT" | grep -q 'E_RESOURCES net.connect: 127.0.0.1:[0-9]*: no local port is free' || fail "no_port: $OUT"
 fi
 
+# Crash reports: a process nobody watches that is killed ends quietly; its own
+# failure, or an E_LINKED, is reported.
+OUT=$($BIN run tests/tools/_reports/kills.masm 2>&1) || fail "reports: $OUT"
+[ "$(echo "$OUT" | grep -c ' failed: ')" = 2 ] || fail "reports: $OUT"
+echo "$OUT" | grep -q '(divider) failed: \[E_DIV_ZERO\]' || fail "reports: $OUT"
+echo "$OUT" | grep -q '(partner) failed: \[E_LINKED\]' || fail "reports: $OUT"
+! echo "$OUT" | grep -q E_KILLED || fail "reports: $OUT"
+
 # std.node: two VMs on this machine, plainly and, if there is a TLS library,
 # over TLS. Node 1 checks all of it against node 2, and ends it.
 NODED=$(mktemp -d)

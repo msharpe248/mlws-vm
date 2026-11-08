@@ -606,7 +606,13 @@ compiler or a deployment that sends code over a socket:
   version (by calling it, or after a reload of its own). A reference in a global
   goes with it. A global that is new, or changes its size, starts as the file
   says, and so do all of a process's that starts after the reload; to start one
-  afresh, rename it. The old version's globals stay with the old code: a write
+  afresh, rename it. A new version that says `.reload fresh` keeps none: all
+  its globals start as its file says, as for a module loaded the first time. A
+  compiler that keeps in globals what it makes once (a closure for a constant,
+  say) wants that, since a closure carried there is the old version's code,
+  which the process would then still run and hold, even after a reload of the
+  same text. It is each version's own choice: a reload from a fresh version to
+  one that does not say it carries as usual. The old version's globals stay with the old code: a write
   there, by code still running in it, after the process has met the new version
   is not seen by the new one, and a pointer into them still points there.
 * **A struct type with the same name, fields and types in both versions is one

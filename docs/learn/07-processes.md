@@ -569,7 +569,8 @@ deliberate ([DESIGN.md §13.5](../DESIGN.md#135-ending-links-and-monitors)):
         if (claimed) finish(s, l, true);
     }
     ...
-    if (failed && !observed && !is_main) report_unobserved(vm, p);
+    bool killed = p->killed && !strcmp(p->err.code, "E_KILLED");
+    if (failed && !observed && !is_main && !killed) report_unobserved(vm, p);
 ```
 
 The `...` after the Downs tells watchers and linked processes on other nodes
@@ -577,7 +578,8 @@ The `...` after the Downs tells watchers and linked processes on other nodes
 `rlinks` are this process's ties there. The dead process's files and sockets
 are closed, and its registered names released, *before* anyone hears of it, so a supervisor that restarts it can
 open the same port at once. A failure nobody watches is printed, as in the
-`lost.masm` run above. With `spawnm` instead of `spawn`, the same failure
+`lost.masm` run above, unless it was a `kill`: a process stopped on purpose
+(`E_KILLED`) has nothing to report. With `spawnm` instead of `spawn`, the same failure
 arrives as a message. `watched.masm` is the same child with this `main`
 (and `.include "std/io.inc"` for the printing macros):
 

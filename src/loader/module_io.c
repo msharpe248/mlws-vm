@@ -111,7 +111,7 @@ int module_find_export_struct(const Module *m, const char *name) {
 void module_write(const Module *m, ByteBuf *b) {
     bb_bytes(b, MLWSO_MAGIC, 4);
     bb_u16(b, MLWSO_VERSION);
-    bb_u16(b, 0);
+    bb_u16(b, m->flags);
     bb_str(b, m->name);
     bb_str(b, m->source);
     bb_uleb(b, m->nsrcfiles);
@@ -295,9 +295,10 @@ Module *module_read(const uint8_t *data, size_t len, MlwsError *err) {
     char magic[4];
     if (!br_bytes(&r, magic, 4) || memcmp(magic, MLWSO_MAGIC, 4) != 0) FAIL("not an MLWSVM module (bad magic)");
     uint16_t ver = br_u16(&r);
-    br_u16(&r);
+    m->flags = br_u16(&r);
     CHECK();
     if (ver != MLWSO_VERSION) FAIL("unsupported module version %u (expected %u)", ver, MLWSO_VERSION);
+    if (m->flags & ~MOD_FLAGS_KNOWN) FAIL("unknown module flags 0x%x", (unsigned)(m->flags & ~MOD_FLAGS_KNOWN));
     m->name = br_str(&r);
     m->source = br_str(&r);
     CHECK();

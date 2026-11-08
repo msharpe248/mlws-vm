@@ -1,0 +1,27 @@
+; The first version of the module reload_fresh.masm replaces: a count, and a
+; closure it makes once and keeps, as a compiler may keep a constant.
+.export version, bump, start
+n:     .i64 0                  ; how many times bump was called, in this process
+cache: .zero 8                 ; the closure start spawns, made at its first call
+.func version -> i64
+    ret 1
+.endf
+.func bump -> i64
+    inc @n
+    mov I0, @n
+    ret I0
+.endf
+.func loop
+1:  sleep 5
+    jmp 1b
+.endf
+; Spawns the kept closure (making it first, if need be): the new process runs
+; this version until it is killed.
+.func start -> i64
+    mov R0, @cache
+    bnz.r R0, 1f
+    closure loop () -> R0
+    mov @cache, R0
+1:  spawnim R0 () -> (I0)
+    ret I0
+.endf

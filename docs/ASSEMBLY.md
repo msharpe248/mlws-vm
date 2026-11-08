@@ -410,6 +410,12 @@ buffer:   .zero 64
 | `.zero n` / `.space n` | n zero bytes |
 | `.align n` | Pad to a multiple of n (a power of two, at most 4096) |
 
+A reload of the module ([ABI.md](ABI.md#reloading-a-module)) gives each global
+of the new version that has the same name and size as one of the old version's
+the value it had there, in each process. A module that says `.reload fresh`
+asks for none of that: when a reload brings in this version, every one of its
+globals starts as the file says.
+
 Each 8-byte word of the image carries a type tag (`i64`, `f64`, ...) that untyped
 moves respect. The tags record the declared type of 8-byte data; words holding
 smaller values or string bytes are tagged as raw bytes.
@@ -800,6 +806,7 @@ macro-only files use the `.inc` extension and are not modules.
 | `.loc "file", line`, `.loc` | in function | Source position (in a translated program) of the instructions that follow; bare: none |
 | `.local name, REG...`, `.local name` | in function | The registers (one of each bank at most) hold the variable `name` from here on; alone: it no longer does (§5.4) |
 | `.debug_format function` | top level | A function that shows a variable of the registers its parameters' banks name, for debuggers (§5.4) |
+| `.reload fresh` | top level | A reload to this version of the module carries no global's value from the old one (§6) |
 | `.requires lib, "constraint"` | top level | A library (or `mlwsvm`) this module needs, and which versions (§8.1) |
 | `.library name, "version"`, `.public mod, ...` | a manifest | A library's name and version, and its public modules (§8.1) |
 | `.regs I=n, F=n, R=n, P=n` | in function | Minimum register window |

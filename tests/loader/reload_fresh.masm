@@ -1,0 +1,50 @@
+; `.reload fresh`: a reload to a version that says it carries none of the old
+; version's globals, even those with the same name and size, which start as
+; the new file says. It is the new version's choice: a reload from it to one
+; without the directive carries as usual.
+;
+; A compiler that keeps what it makes once in globals (here a closure, as a
+; constant) uses it so that a reload to the same text does not keep the old
+; version's: with the closure carried, the caller would hold the old version,
+; and module.purge_kill would keep it and kill nobody; with it fresh, the
+; process still running the old version is killed, and the version freed.
+.include "std/test.inc"
+.import _reload_fresh.f as f
+
+.func main
+    call f.bump -> (I0)
+    call f.bump -> (I0)
+    ASSERT_EQ I0, 2
+    call f.start -> (I10)              ; (the closure kept in cache)
+    sleep 20
+
+    ; Fresh: the count starts again, and the kept closure is gone.
+    ncall "module.reload_text" ("_reload_fresh.f", ".reload fresh\n.export version, bump, start\nn: .i64 0\ncache: .zero 8\n.func version -> i64\n    ret 2\n.endf\n.func bump -> i64\n    inc @n\n    mov I0, @n\n    ret I0\n.endf\n.func start -> i64\n    mov R0, @cache\n    ret 0\n.endf\n")
+    call f.version -> (I0)
+    ASSERT_EQ I0, 2
+    call f.bump -> (I0)
+    ASSERT_EQ I0, 1
+    ncall "module.purge_kill" ("_reload_fresh.f") -> (I0, I1, I2)
+    ASSERT_EQ I0, 1                    ; freed
+    ASSERT_EQ I1, 0
+    ASSERT_EQ I2, 1                    ; the process in loop, killed
+    recv R0
+    mov I3, R0->Down.pid
+    ASSERT_EQ I3, I10
+    mov R1, R0->Down.code
+    strcmp I4, R1, "E_KILLED"
+    ASSERT_EQ I4, 0
+
+    ; Not fresh: the count carries from the fresh version.
+    ncall "module.reload_text" ("_reload_fresh.f", ".export version, bump, start\nn: .i64 0\n.func version -> i64\n    ret 3\n.endf\n.func bump -> i64\n    inc @n\n    mov I0, @n\n    ret I0\n.endf\n.func start -> i64\n    ret 0\n.endf\n")
+    call f.version -> (I0)
+    ASSERT_EQ I0, 3
+    call f.bump -> (I0)
+    ASSERT_EQ I0, 2
+
+    ; And fresh again, from the same text but for the directive.
+    ncall "module.reload_text" ("_reload_fresh.f", ".reload fresh\n.export version, bump, start\nn: .i64 0\n.func version -> i64\n    ret 3\n.endf\n.func bump -> i64\n    inc @n\n    mov I0, @n\n    ret I0\n.endf\n.func start -> i64\n    ret 0\n.endf\n")
+    call f.bump -> (I0)
+    ASSERT_EQ I0, 1
+    ret 0
+.endf

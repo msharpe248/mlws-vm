@@ -1,0 +1,48 @@
+; Which ends of processes nobody watches print a crash report (check_tools.sh
+; reads its standard error): a kill does not, whether by another process or
+; of itself; a failure of the process's own does, and so does the E_LINKED of
+; a process killed through a link, which carries the failure that began it.
+.func waiter
+    recv I0
+    ret
+.endf
+
+.func suicide
+    kill PID
+    ret
+.endf
+
+.func divider(i64 n)
+    div I1, 1, n                       ; n is 0: E_DIV_ZERO
+    ret
+.endf
+
+; Linked to a divider (the link is watched, so the divider's failure is not
+; printed): this one is killed with E_LINKED, and nobody watches it.
+.func partner
+    spawnl divider (0) -> (I0)
+    recv I1
+    ret
+.endf
+
+; Waits until pid has ended.
+.func gone(i64 pid)
+1:  alive I1, pid
+    bz I1, 2f
+    sleep 1
+    jmp 1b
+2:  ret
+.endf
+
+.func main
+    spawn waiter -> (I0)
+    kill I0                            ; quiet
+    spawn suicide -> (I0)              ; quiet
+    call gone (I0)
+    spawn divider (0) -> (I0)          ; reported: E_DIV_ZERO
+    call gone (I0)
+    spawn partner -> (I0)              ; reported: E_LINKED
+    call gone (I0)
+    sleep 50                           ; (dead at once, but reported as it is finished)
+    ret 0
+.endf

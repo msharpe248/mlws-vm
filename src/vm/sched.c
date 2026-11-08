@@ -520,6 +520,7 @@ static void unlink_pid(PidVec *v, uint64_t pid) {
  * slice; any other is claimed (marked failed) and the caller must finish it:
  * returns true then. */
 static bool kill_locked(Process *t, const char *code, const char *msg) {
+    if (!strcmp(code, "E_KILLED")) t->killed = true;
     if (t->state == PROC_RUNNING || t->state == PROC_NATIVE) { /* in a blocking call: stops when it returns */
         if (tls_worker && tls_worker->current == t) {
             snprintf(t->err.code, sizeof t->err.code, "%s", code);
@@ -714,7 +715,11 @@ static void finish(Sched *s, Process *p, bool failed) {
     VEC_FREE(rlinks);
     VEC_FREE(rmons);
     bool is_main = p->prog && p->prog->main == p;
-    if (failed && !observed && !is_main) report_unobserved(vm, p);
+    /* Killed (E_KILLED): stopped from outside on purpose, not a failure of its
+     * own to bring to anyone's notice. A link's E_LINKED is still told: it
+     * carries the failure that began it. */
+    bool killed = p->killed && !strcmp(p->err.code, "E_KILLED");
+    if (failed && !observed && !is_main && !killed) report_unobserved(vm, p);
     if (!is_main) {
         proc_free(p);
     } else if (atomic_fetch_sub(&vm->progs_live, 1) == 1) { /* the last program has ended: so does the run */

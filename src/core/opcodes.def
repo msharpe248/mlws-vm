@@ -274,7 +274,7 @@ OP(YIELD,  0x0104, "yield",  "Processes", "", 0, 0,
 OP(SLEEP,  0x0105, "sleep",  "Processes", "Q", 0, 0,
    "Suspend this process for at least the given number of milliseconds.")
 OP(KILL,   0x0106, "kill",   "Processes", "Q", 0, 0,
-   "Terminate a process with error E_KILLED (as a failure, so links and monitors are notified). Killing a finished or unknown process does nothing; killing yourself ends this process.")
+   "Terminate a process with error E_KILLED (as a failure, so links and monitors are notified; one nobody watches ends without the crash report a failure of its own prints). Killing a finished or unknown process does nothing; killing yourself ends this process.")
 OP(LINK,   0x0107, "link",   "Processes", "Q", 0, 0,
    "Link this process and another. If either fails (an uncaught exception, kill or quota), the other is killed with E_LINKED. Normal exits do not propagate. A pid of another node (std.node) works too; then losing the connection fails this process with E_LINKED, and linking to a node not connected raises E_NODE_DOWN.")
 OP(MONITOR,0x0108, "monitor","Processes", "Q", 0, 0,

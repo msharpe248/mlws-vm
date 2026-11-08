@@ -1,0 +1,7 @@
+; `.reload` takes only `fresh`.
+; expect-error: E_ASM_SYNTAX
+.reload stale
+
+.func main
+    ret
+.endf

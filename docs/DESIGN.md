@@ -567,7 +567,9 @@ new version loads and links as any module does, with its name freed for the
 moment, and every other module is checked against it (`still_links`); struct
 types the same in both versions are shared as it links (`reload_same_struct`).
 A new version records which of the old version's globals it carries: each data
-symbol with the same name and size in both (`carry_globals`), as byte ranges.
+symbol with the same name and size in both (`carry_globals`), as byte ranges,
+or nothing if the new version says `.reload fresh` (`MOD_RELOAD_FRESH`, a bit
+in the `.mlwso` header's flags word).
 Globals are copied into each process lazily, so the copy is made there too:
 `proc_grow_globals`, which gives a process its segments of the modules loaded
 since it last looked, starts the new version's from the image and then copies
@@ -1672,7 +1674,11 @@ passed.
 4. Kill each linked process that is still alive with `E_LINKED`, if this one
    failed (`finish` runs recursively along chains of links); a normal exit
    only removes the link.
-5. If it failed with nobody watching, print a crash report.
+5. If it failed with nobody watching, print a crash report, unless it was
+   killed (`E_KILLED`, by `kill`, `module.purge_kill`, the monitor or its
+   program's end): stopped on purpose, it has no failure of its own to
+   report. A link's `E_LINKED` is reported, since it carries the failure
+   that began it.
 6. Free it, unless it is a program's `main`, which is kept for the run's
    result. When the last program's `main` ends, the run is over; when
    another program's `main` ends, that program's other processes are killed.

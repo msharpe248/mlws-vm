@@ -237,6 +237,7 @@ bool disasm_module(StrBuf *b, const Module *m, MlwsError *err) {
     for (uint32_t i = 0; i < m->nextensions; i++) sb_printf(b, ".extension \"%s\"\n", m->extensions[i]);
     for (uint32_t i = 0; i < m->nrequires; i++)
         sb_printf(b, ".requires %s, \"%s\"\n", m->requires[i].lib, m->requires[i].constraint);
+    if (m->flags & MOD_RELOAD_FRESH) sb_puts(b, ".reload fresh\n");
     if (m->lib_name) sb_printf(b, ".library %s, \"%s\"\n", m->lib_name, m->lib_version ? m->lib_version : "0.0.0");
     for (uint32_t i = 0; i < m->npublics; i++) sb_printf(b, ".public %s\n", m->publics[i]);
     for (uint32_t i = 0; i < m->nformats; i++) {
