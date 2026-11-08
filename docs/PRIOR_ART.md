@@ -327,6 +327,7 @@ of the instructions in call-heavy code.
 | M87 | curl's `--cacert`, which adds an authority but never turns checking off by itself |
 | M88 | Erlang's funs in the external term format (`NEW_FUN_EXT`: module, index, a hash of the module's code, free variables), which a node without that code can hold and pass on but not call |
 | M89 | Erlang's `epmd` (a name service per host, a registration held by the node's connection to it, `-sname` and `-name`) |
+| M90 | Erlang's atoms in the external term format (`ATOM_UTF8_EXT`), made atoms again where they arrive |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References
