@@ -3,6 +3,8 @@
  * Each request is served with the other workers paused (sched_stop_world), so
  * it can read every process. It serves read-only JSON statistics, a plain-text
  * table for `mlwsvm top`, and the embedded web dashboard. See docs/TOOLING.md. */
+#include <math.h>
+
 #include "../heap/heap.h"
 #include "../platform/platform.h"
 #include "tools.h"
@@ -30,6 +32,81 @@ static void json_str(StrBuf *b, const char *s) {
         else sb_putc(b, (char)c);
     }
     sb_putc(b, '"');
+}
+
+/* The same, for n bytes that may hold anything: cut at a character's start
+ * when longer than max. */
+static void json_strn(StrBuf *b, const char *s, size_t n, size_t max) {
+    bool cut = n > max;
+    if (cut) {
+        n = max;
+        while (n && ((unsigned char)s[n] & 0xC0) == 0x80) n--;
+    }
+    sb_putc(b, '"');
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '"' || c == '\\') sb_printf(b, "\\%c", c);
+        else if (c < 0x20) sb_printf(b, "\\u%04x", c);
+        else sb_putc(b, (char)c);
+    }
+    if (cut) sb_puts(b, "\u2026"); /* ... */
+    sb_putc(b, '"');
+}
+
+/* A pid of another node, as JSON: {"node": N, "pid": P} (a whole pid can be
+ * more than JavaScript's numbers hold exactly). */
+static void far_pid_json(StrBuf *b, uint64_t pid) {
+    sb_printf(b, "{\"node\":%llu,\"pid\":%llu}", (unsigned long long)(pid >> NODE_SHIFT),
+              (unsigned long long)(pid & PID_LOCAL));
+}
+
+static void far_pids_json(StrBuf *b, const char *name, const PidVec *v) {
+    sb_printf(b, ",\"%s\":[", name);
+    for (size_t i = 0; i < v->n; i++) {
+        if (i) sb_putc(b, ',');
+        far_pid_json(b, v->v[i]);
+    }
+    sb_putc(b, ']');
+}
+
+/* What a message is, for the monitor: its type, size and a short preview. */
+static void value_brief(StrBuf *b, Word v, uint8_t tag) {
+    if (!type_is_ref(tag)) {
+        sb_puts(b, "{\"type\":");
+        json_str(b, type_name((MlwsType)tag));
+        if (type_is_float((MlwsType)tag)) sb_printf(b, isfinite(v.f) ? ",\"preview\":%.17g}" : ",\"preview\":null}", v.f);
+        else if (type_is_signed((MlwsType)tag)) sb_printf(b, ",\"preview\":%lld}", (long long)v.i);
+        else sb_printf(b, ",\"preview\":%llu}", (unsigned long long)v.u);
+        return;
+    }
+    const Obj *o = v.r;
+    sb_puts(b, "{\"type\":");
+    json_str(b, o ? obj_kind_name(o->kind) : "null");
+    if (!o) {
+        sb_putc(b, '}');
+        return;
+    }
+    switch (o->kind) {
+    case OBJ_STRING:
+        sb_printf(b, ",\"size\":%u,\"preview\":", ((const ObjString *)o)->len);
+        json_strn(b, ((const ObjString *)o)->data, ((const ObjString *)o)->len, 80);
+        break;
+    case OBJ_BYTES: sb_printf(b, ",\"size\":%u", ((const ObjBytes *)o)->len); break;
+    case OBJ_LIST: sb_printf(b, ",\"size\":%u", ((const ObjList *)o)->len); break;
+    case OBJ_ARRAY: sb_printf(b, ",\"size\":%u", ((const ObjArray *)o)->len); break;
+    case OBJ_MAP: sb_printf(b, ",\"size\":%u", ((const ObjMap *)o)->count); break;
+    case OBJ_STRUCT: {
+        const StructDef *d = ((const ObjStruct *)o)->def;
+        StrBuf q = {0};
+        sb_printf(&q, "%s.%s", d->module, d->name);
+        sb_puts(b, ",\"preview\":");
+        json_str(b, q.s);
+        sb_free(&q);
+        break;
+    }
+    default: break;
+    }
+    sb_putc(b, '}');
 }
 
 static uint32_t stack_bytes(const Process *p) {
@@ -77,6 +154,9 @@ static void proc_json(StrBuf *b, const Process *p, bool detail) {
     for (size_t i = 0; i < p->monitors.n; i++)
         sb_printf(b, "%s%llu", i ? "," : "", (unsigned long long)p->monitors.v[i]);
     sb_puts(b, "]");
+    far_pids_json(b, "far_links", &p->rlinks);
+    far_pids_json(b, "far_monitors", &p->rmonitors);
+    far_pids_json(b, "far_watching", &p->rwatch);
     if (detail) {
         static const char *const qn[] = {"heap", "raw", "mailbox", "insns", "foreign", "os"};
         sb_puts(b, ",\"quota\":{");
@@ -85,7 +165,18 @@ static void proc_json(StrBuf *b, const Process *p, bool detail) {
             if (p->quota[q] == UINT64_MAX) sb_puts(b, "null");
             else sb_printf(b, "%llu", (unsigned long long)p->quota[q]);
         }
-        sb_puts(b, "},\"backtrace\":[");
+        /* The first messages waiting: taken into its heap, then delivered. */
+        sb_puts(b, "},\"messages\":[");
+        size_t shown = 0;
+        for (size_t i = p->mbox_head; i < p->mbox.n && shown < 20; i++, shown++) {
+            if (shown) sb_putc(b, ',');
+            value_brief(b, p->mbox.v[i].v, p->mbox.v[i].tag);
+        }
+        for (size_t i = 0; i < p->inbox.n && shown < 20; i++, shown++) {
+            if (shown) sb_putc(b, ',');
+            value_brief(b, p->inbox.v[i].v, p->inbox.v[i].tag);
+        }
+        sb_puts(b, "],\"backtrace\":[");
         for (uint32_t i = p->nframes; i-- > 0;) {
             const Frame *f = &p->frames[i];
             uint32_t fpc = i == p->nframes - 1 ? f->pc : (f->pc ? f->pc - 1 : 0);
@@ -116,6 +207,118 @@ static void vm_json(StrBuf *b, VM *vm) {
               (unsigned long long)vm->spawned, (unsigned long long)vm->max_live, (unsigned long long)vm->slices,
               (unsigned long long)insns, (unsigned long long)heap, (unsigned long long)raw, vm->mods.n,
               (unsigned long long)vm->main_pid);
+}
+
+static const char *const MOD_STATES[] = {"", "loading", "ready", "failed", "purged"};
+
+/* Every module loaded, each version of one in the order loaded. */
+static void modules_json(StrBuf *b, VM *vm) {
+    sb_putc(b, '[');
+    for (size_t i = 0; i < vm->mods.n; i++) {
+        const LModule *lm = vm->mods.v[i];
+        uint32_t version = 1;
+        for (size_t j = 0; j < i; j++) version += !strcmp(vm->mods.v[j]->m->name, lm->m->name);
+        sb_puts(b, i ? ",{\"name\":" : "{\"name\":");
+        json_str(b, lm->m->name);
+        sb_puts(b, ",\"path\":");
+        json_str(b, lm->path);
+        sb_printf(b, ",\"version\":%u,\"current\":%s,\"state\":", version,
+                  lm->replaced || lm->state != LM_READY ? "false" : "true");
+        json_str(b, lm->state >= 1 && lm->state <= 4 ? MOD_STATES[lm->state] : "?");
+        sb_printf(b, ",\"functions\":%u,\"globals_bytes\":%u}", lm->m->nfuncs, lm->m->gsize);
+    }
+    sb_putc(b, ']');
+}
+
+/* The registry: each name and its process. */
+static void names_json(StrBuf *b, VM *vm) {
+    sb_putc(b, '[');
+    bool first = true;
+    plat_lock(vm->lock);
+    for (size_t i = 0; i < vm->registry.cap; i++) {
+        if (!vm->registry.keys || !vm->registry.keys[i] || !vm->registry.vals[i]) continue;
+        sb_puts(b, first ? "{\"name\":" : ",{\"name\":");
+        first = false;
+        json_str(b, vm->registry.keys[i]);
+        sb_printf(b, ",\"pid\":%llu}", (unsigned long long)(uintptr_t)vm->registry.vals[i]);
+    }
+    plat_unlock(vm->lock);
+    sb_putc(b, ']');
+}
+
+/* This VM's node number (0: none), and the nodes it is connected to, with the
+ * process carrying each connection. */
+static void nodes_json(StrBuf *b, VM *vm) {
+    sb_printf(b, "{\"self\":%u,\"connected\":[", vm->node_self);
+    bool first = true;
+    for (uint32_t n = 1; vm->node_route && n <= 65535; n++) {
+        uint64_t c = __atomic_load_n(&vm->node_route[n], __ATOMIC_ACQUIRE);
+        if (!c) continue;
+        sb_printf(b, "%s{\"node\":%u,\"carrier\":%llu}", first ? "" : ",", n, (unsigned long long)c);
+        first = false;
+    }
+    sb_puts(b, "]}");
+}
+
+/* Who is linked with whom, and who watches whom: here, and with other nodes. */
+static void graph_json(StrBuf *b, VM *vm) {
+    StrBuf links = {0}, mons = {0}, far = {0};
+    for (uint64_t pid = 1, end = vm_pid_end(vm); pid < end; pid++) {
+        const Process *p = vm_proc_at(vm, pid);
+        if (!p) continue;
+        for (size_t i = 0; i < p->links.n; i++) /* (each link is on both sides: once) */
+            if (p->links.v[i] > pid) sb_printf(&links, "%s[%llu,%llu]", links.n ? "," : "", (unsigned long long)pid, (unsigned long long)p->links.v[i]);
+        for (size_t i = 0; i < p->monitors.n; i++)
+            sb_printf(&mons, "%s[%llu,%llu]", mons.n ? "," : "", (unsigned long long)p->monitors.v[i], (unsigned long long)pid);
+        const PidVec *v[3] = {&p->rlinks, &p->rmonitors, &p->rwatch};
+        static const char *const kind[3] = {"link", "watched_by", "watches"};
+        for (int k = 0; k < 3; k++)
+            for (size_t i = 0; i < v[k]->n; i++) {
+                sb_printf(&far, "%s{\"pid\":%llu,\"kind\":\"%s\",\"other\":", far.n ? "," : "", (unsigned long long)pid, kind[k]);
+                far_pid_json(&far, v[k]->v[i]);
+                sb_putc(&far, '}');
+            }
+    }
+    sb_printf(b, "{\"links\":[%s],\"monitors\":[%s],\"far\":[%s]}", links.n ? links.s : "", mons.n ? mons.s : "",
+              far.n ? far.s : "");
+    sb_free(&links);
+    sb_free(&mons);
+    sb_free(&far);
+}
+
+static const char *const LOG_LEVELS[] = {"debug", "info", "warn", "error"};
+
+/* The log channel's entries after `since`, oldest first, with the number to
+ * ask from next, and how many were lost (overwritten before being asked for). */
+static void log_json(StrBuf *b, VM *vm, uint64_t since) {
+    if (!vm->mlog) {
+        sb_puts(b, "{\"next\":0,\"lost\":0,\"entries\":[]}");
+        return;
+    }
+    plat_lock(vm->mlog_lock);
+    uint64_t last = vm->mlog_seq, first = last > vm->mlog_cap ? last - vm->mlog_cap + 1 : 1;
+    if (since > last) since = last;
+    uint64_t from = since + 1 > first ? since + 1 : first;
+    sb_printf(b, "{\"next\":%llu,\"lost\":%llu,\"entries\":[", (unsigned long long)last,
+              (unsigned long long)(from - (since + 1)));
+    for (uint64_t q = from; q <= last; q++) {
+        const MLogEntry *e = &vm->mlog[(q - 1) % vm->mlog_cap];
+        sb_printf(b, "%s{\"seq\":%llu,\"t_ns\":%llu,\"pid\":%llu,", q == from ? "" : ",", (unsigned long long)e->seq,
+                  (unsigned long long)e->t_ns, (unsigned long long)e->pid);
+        if (e->level < 0) {
+            sb_puts(b, "\"event\":");
+            json_str(b, e->name);
+            sb_printf(b, ",\"value\":%s}", e->text); /* (JSON already) */
+        } else {
+            sb_puts(b, "\"level\":");
+            json_str(b, LOG_LEVELS[e->level]);
+            sb_puts(b, ",\"text\":");
+            json_strn(b, e->text, strlen(e->text), MLOG_TEXT_MAX);
+            sb_putc(b, '}');
+        }
+    }
+    sb_puts(b, "]}");
+    plat_unlock(vm->mlog_lock);
 }
 
 static void exits_json(StrBuf *b, VM *vm) {
@@ -242,7 +445,8 @@ static void serve(Monitor *mon, VM *vm, int fd) {
         return;
     }
     char *q = strchr(path, '?');
-    if (q) *q = 0;
+    if (q) *q++ = 0;
+    const char *since = q && !strncmp(q, "since=", 6) ? q + 6 : NULL;
     StrBuf b = {0};
     const char *json = "application/json";
     if (!strcmp(path, "/") || !strcmp(path, "/index.html")) {
@@ -271,6 +475,16 @@ static void serve(Monitor *mon, VM *vm, int fd) {
         proc_json(&b, p, true);
     } else if (!strcmp(path, "/api/exits")) {
         exits_json(&b, vm);
+    } else if (!strcmp(path, "/api/modules")) {
+        modules_json(&b, vm);
+    } else if (!strcmp(path, "/api/names")) {
+        names_json(&b, vm);
+    } else if (!strcmp(path, "/api/nodes")) {
+        nodes_json(&b, vm);
+    } else if (!strcmp(path, "/api/graph")) {
+        graph_json(&b, vm);
+    } else if (!strcmp(path, "/api/log")) {
+        log_json(&b, vm, since ? strtoull(since, NULL, 10) : 0);
     } else if (!strcmp(path, "/top")) {
         top_text(&b, mon, vm);
         respond(fd, 200, "text/plain; charset=utf-8", b.s, b.n);
@@ -319,6 +533,7 @@ bool tools_monitor(VM *vm, const char *addr, char *err, size_t errlen) {
     t->mon->fd = fd;
     snprintf(t->mon->addr, sizeof t->mon->addr, "%s:%d", host, port);
     vm->poll = monitor_poll;
+    vm_mlog_enable(vm, 1000); /* monitor.log and monitor.event keep what they are given */
     return true;
 }
 

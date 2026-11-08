@@ -415,23 +415,47 @@ ends, so you can inspect the final state (Ctrl-C to quit).
 
 Summary tiles (live processes, instructions per second, heap, time slices per
 second), two-minute charts of instructions per second and heap size, a sortable
-process table (click a row for details: quotas, links, monitors and a backtrace),
-and the most recent exits with their results. It is a single self-contained page,
-compiled into the binary from `web/dashboard.html`, and it polls the JSON API once
-a second.
+process table (click a row for details: quotas, links and monitors, here and on
+other nodes, a backtrace, and the first messages waiting), the program's log
+(below), a graph of who is linked with and who monitors whom, the modules loaded
+with each version, the registered names, the nodes connected, and the most recent
+exits with their results. It is a single self-contained page, compiled into the
+binary from `web/dashboard.html`, and it polls the JSON API once a second (the
+modules, names, nodes and graph every five).
 
 ### JSON API
 
 | Endpoint | Returns |
 |---|---|
 | `GET /api/vm` | `vm` (`"mlwsvm"`), `uptime_ns`, `processes` (live), `spawned`, `max_live`, `slices`, `insns` (all processes), `heap_bytes`, `raw_bytes`, `modules`, `main_pid` |
-| `GET /api/procs` | an array, per live process: `pid`, `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors` |
-| `GET /api/proc/PID` | the same for one process, plus `quota` (`heap`, `raw`, `mailbox`, `insns`, `foreign`, `os`; `null` = unlimited) and `backtrace` |
+| `GET /api/procs` | an array, per live process: `pid`, `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors`, and `far_links`, `far_monitors` and `far_watching`, its ties with processes on other nodes (`node` and `pid`: a whole pid can be larger than JavaScript's numbers hold exactly) |
+| `GET /api/proc/PID` | the same for one process, plus `quota` (`heap`, `raw`, `mailbox`, `insns`, `foreign`, `os`; `null` = unlimited), `messages` (the first 20 waiting: `type`, and `size` or a short `preview`) and `backtrace` |
 | `GET /api/exits` | the last 64 finished processes, newest first: `pid`, `entry`, `failed`, `code`, `exit`, `insns`, `cpu_ns`, `ago_ns` |
+| `GET /api/log?since=N` | the log's entries after number `N` (0: all it has), oldest first: `seq`, `t_ns` (since the VM started), `pid`, and `level` and `text`, or `event` and `value` (JSON); with `next`, the number to ask from next time, and `lost`, how many were overwritten before being asked for |
+| `GET /api/modules` | every module loaded, each version in the order loaded: `name`, `path`, `version` (1, 2, ...), `current`, `state` (`ready`, `failed`, `purged`), `functions`, `globals_bytes` |
+| `GET /api/names` | the registry: `name` and `pid` |
+| `GET /api/nodes` | `self`, this VM's node number (0: none), and `connected`: `node`, and `carrier`, the process carrying that connection |
+| `GET /api/graph` | `links` (`[a, b]`, each once), `monitors` (`[watcher, watched]`), and `far`: ties with other nodes, `pid`, `kind` (`link`, `watched_by`, `watches`) and `other` |
 | `GET /top` | the plain-text table that `mlwsvm top` shows |
 
 Counters are cumulative; compute rates by differencing two samples, as the
 dashboard does. `cpu_ns` is the time spent executing that process's time slices.
+
+### The program's log
+
+A program writes to the monitor's log with `monitor.log(level, text)`, a line at a
+level (0 debug, 1 info, 2 warn, 3 error), and `monitor.event(name, value)`, a named
+event whose value is kept as JSON; `monitor.on()` says whether a monitor is there
+to keep them. Nothing else goes there: the program's output and its files are its
+own. The log keeps the last 1,000 entries, each line up to 4 KiB. Without
+`--monitor` the calls check their arguments and keep nothing, and an event's value
+is not turned into JSON, so it costs next to nothing; with one, a value with no
+JSON form is `E_JSON`.
+
+```asm
+    ncall "monitor.log" (1, "listening")
+    ncall "monitor.event" ("request", R0)    ; R0: a map, say
+```
 
 ## Terminal view: `mlwsvm top`
 

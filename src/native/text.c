@@ -1229,6 +1229,16 @@ static void jw_value(JW *w, Word v, uint8_t tag, int depth) {
     }
 }
 
+/* A value as compact JSON, appended to out (E_JSON for one with no JSON form). */
+void text_json_append(Process *p, Word v, uint8_t tag, StrBuf *out) {
+    JW w = {p, {0}, 0};
+    jw_value(&w, v, tag, 0);
+    sb_putn(out, w.b.s, w.b.n);
+    sb_free(&w.b);
+}
+
+bool text_utf8_valid(const char *s, size_t n) { return utf8_valid((const unsigned char *)s, n); }
+
 /* json.stringify(value, indent): compact for indent 0, else pretty-printed */
 static void n_json_stringify(Process *p, Word *a, Word *r) {
     JW w = {p, {0}, a[1].i > 16 ? 16 : a[1].i};

@@ -234,6 +234,9 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `math.powmod` | i64, i64, i64 | i64 | b^e mod m, without overflow (e >= 0, m > 0). |
 | `math.gcd` | i64, i64 | i64 | Greatest common divisor (of the absolute values). |
 | `math.lcm` | i64, i64 | i64 | Least common multiple (E_OVERFLOW if it does not fit). |
+| `monitor.on` | - | b | Whether a monitor (--monitor) is watching, so that monitor.log and monitor.event keep what they are given. |
+| `monitor.log` | i64, r | - | A line for the monitor's log (GET /api/log), at a level: 0 debug, 1 info, 2 warn, 3 error. Up to 4 KiB is kept, of the last 1,000 entries. Without a monitor, nothing is kept. |
+| `monitor.event` | r, r | - | A named event for the monitor's log, with a value kept as JSON (E_JSON if it has no JSON form). Without a monitor, nothing is kept. |
 
 ## Loading modules at run time (`module.*`)
 

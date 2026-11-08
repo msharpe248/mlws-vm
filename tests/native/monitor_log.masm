@@ -1,0 +1,44 @@
+; monitor.log and monitor.event write to the monitor's log (--monitor: GET
+; /api/log), which keeps them only while a monitor is attached; here there is
+; none, so monitor.on is false and they keep nothing, but their arguments are
+; checked all the same: a level from 0 to 3, text that is a string of valid
+; UTF-8. (An event's value is turned into JSON only when kept: E_JSON for one
+; with no JSON form then. check_tools.sh runs them with a monitor.)
+.include "std/test.inc"
+
+.func code_of(i64 level, ref text) -> ref
+.try h
+    ncall "monitor.log" (level, text)
+.endtry
+    ret null
+h:  catch R1
+    mov R2, R1->Error.code
+    ret R2
+.endf
+
+.func main
+    ncall "monitor.on" () -> (I0)
+    ASSERT_FALSE I0
+    ncall "monitor.log" (1, "nobody sees this")
+    lnew R0
+    lpush R0, 1
+    ncall "monitor.event" ("started", R0)
+    closure code_of -> (R1)
+    ncall "monitor.event" ("not JSON, not checked", R1)
+    call code_of (4, "x") -> (R2)
+    strcmp I1, R2, "E_RANGE"
+    ASSERT_EQ I1, 0
+    call code_of (-1, "x") -> (R2)
+    strcmp I1, R2, "E_RANGE"
+    ASSERT_EQ I1, 0
+    call code_of (1, null) -> (R2)
+    strcmp I1, R2, "E_TYPE"
+    ASSERT_EQ I1, 0
+    bufnew R3, 1
+    bufpush R3, 0xFF
+    strcat R4, R3                      ; a string that is not UTF-8
+    call code_of (1, R4) -> (R2)
+    strcmp I1, R2, "E_TYPE"
+    ASSERT_EQ I1, 0
+    ret 0
+.endf

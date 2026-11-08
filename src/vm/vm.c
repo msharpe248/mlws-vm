@@ -98,6 +98,29 @@ static void lmodule_free(LModule *lm) {
     free(lm);
 }
 
+void vm_mlog_enable(VM *vm, uint32_t cap) {
+    if (vm->mlog || !cap) return;
+    vm->mlog_lock = plat_lock_new();
+    vm->mlog = xcalloc(cap, sizeof *vm->mlog);
+    vm->mlog_cap = cap;
+    atomic_store(&vm->mlog_on, true);
+}
+
+void vm_mlog_put(VM *vm, uint64_t pid, int level, const char *name, const char *text, size_t n) {
+    if (n > MLOG_TEXT_MAX) { /* (at a character's start: not in a UTF-8 sequence) */
+        n = MLOG_TEXT_MAX;
+        while (n && ((unsigned char)text[n] & 0xC0) == 0x80) n--;
+    }
+    char *t = xstrndup(text, n), *nm = name ? xstrdup(name) : NULL;
+    uint64_t now = plat_now_ns() - vm->start_ns;
+    plat_lock(vm->mlog_lock);
+    MLogEntry *e = &vm->mlog[vm->mlog_seq % vm->mlog_cap];
+    free(e->name);
+    free(e->text);
+    *e = (MLogEntry){++vm->mlog_seq, now, pid, level, nm, t};
+    plat_unlock(vm->mlog_lock);
+}
+
 void vm_free(VM *vm) {
     if (!vm) return;
     if (vm->tools_free) vm->tools_free(vm);
@@ -169,6 +192,9 @@ void vm_free(VM *vm) {
     }
     VEC_FREE(vm->homes);
     VEC_FREE(vm->exits);
+    for (uint32_t i = 0; i < vm->mlog_cap; i++) free(vm->mlog[i].name), free(vm->mlog[i].text);
+    free(vm->mlog);
+    if (vm->mlog_lock) plat_lock_free(vm->mlog_lock);
     for (size_t i = 0; i < vm->prog_args.n; i++) free(vm->prog_args.v[i]);
     VEC_FREE(vm->prog_args);
     for (size_t i = 0; i < vm->tickets.n; i++)

@@ -1,0 +1,34 @@
+; Watched by --monitor in check_tools.sh: log lines and events (with a monitor,
+; an event's value with no JSON form is E_JSON), a registered name, a link and a
+; monitor, and messages waiting in a process that sleeps. It runs for a minute
+; at most; the test stops it.
+.func sleeper
+    ncall "proc.register" ("sleeper", PID)
+    sleep 60000                        ; (its messages wait meanwhile)
+    ret
+.endf
+.func main
+    ncall "monitor.on" () -> (I0)
+    bz I0, 2f
+    spawnl sleeper -> (I1)
+    monitor I1
+    ncall "monitor.log" (1, "watched: started")
+    ncall "monitor.log" (3, "an \"error\"\nin two lines")
+    lnew R0
+    lpush R0, 42
+    lpush R0, "x"
+    ncall "monitor.event" ("ready", R0)
+    closure sleeper -> (R1)
+.try h
+    ncall "monitor.event" ("not JSON", R1)
+.endtry
+    jmp 1f
+h:  catch R2
+    mov R3, R2->Error.code
+    ncall "monitor.log" (2, R3)          ; "E_JSON"
+1:  send I1, "first"
+    send I1, 7
+    sleep 60000
+    ret 0
+2:  ret 1                              ; (no monitor)
+.endf

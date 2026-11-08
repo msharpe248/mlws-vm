@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MLWSVM Monitor</title>
 <!-- Served by `mlwsvm run --monitor HOST:PORT`. Self-contained: no external assets.
-     Polls /api/vm, /api/procs and /api/exits once a second. -->
+     Polls /api/vm, /api/procs, /api/exits and /api/log once a second, and
+     /api/modules, /api/names, /api/nodes and /api/graph every five. -->
 <style>
 :root {
   color-scheme: light;
@@ -108,7 +109,25 @@ td.fn { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 
 dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
 dt { color: var(--text-secondary); }
 dd { margin: 0; font-variant-numeric: tabular-nums; }
-@media (max-width: 600px) { .tile .value { font-size: 20px; } }
+.three { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.log { max-height: 320px; overflow-y: auto; }
+.log td.msg { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; text-align: left; white-space: pre-wrap; word-break: break-word; width: 100%; }
+.log tbody tr { cursor: default; }
+.lvl { display: inline-flex; align-items: center; gap: 6px; }
+.lvl .dot.warn { background: var(--warning); }
+.lvl .dot.info { background: var(--series-1); }
+.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; color: var(--text-secondary); }
+.toolbar h2 { margin: 0; }
+select { font: inherit; font-size: 12px; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
+.graph { position: relative; }
+.graph svg { width: 100%; height: 420px; display: block; }
+.graph .tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; display: none; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.legend { display: flex; gap: 16px; font-size: 12px; color: var(--text-secondary); flex-wrap: wrap; }
+.legend svg { vertical-align: middle; margin-right: 4px; }
+.mini td, .mini th { padding: 4px 8px; }
+.note { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+.mini tbody tr { cursor: default; }
+@media (max-width: 600px) { .tile .value { font-size: 20px; } .graph svg { height: 300px; } }
 </style>
 </head>
 <body>
@@ -140,7 +159,30 @@ dd { margin: 0; font-variant-numeric: tabular-nums; }
     <div class="detail">
       <div><dl id="detail-stats"></dl></div>
       <div><h2>Backtrace</h2><pre id="detail-bt"></pre></div>
+      <div><h2>Waiting messages</h2><pre id="detail-msgs"></pre></div>
     </div>
+  </section>
+  <section class="card">
+    <div class="toolbar"><h2>Log</h2><span class="spacer"></span>
+      <label>Show <select id="log-level"><option value="0">everything</option><option value="1">info and up</option><option value="2">warnings and errors</option><option value="3">errors</option></select></label>
+    </div>
+    <div class="log table-wrap" id="log-wrap"><table class="mini"><tbody id="log"></tbody></table></div>
+    <div class="empty" id="log-empty">Nothing logged yet. A program writes here with monitor.log and monitor.event.</div>
+  </section>
+  <section class="card">
+    <h2>Links and monitors</h2>
+    <div class="legend">
+      <span><svg width="22" height="8"><line x1="1" y1="4" x2="21" y2="4" stroke="var(--series-1)" stroke-width="2"/></svg>linked</span>
+      <span><svg width="22" height="8"><line x1="1" y1="4" x2="21" y2="4" stroke="var(--text-muted)" stroke-width="1.5" stroke-dasharray="3 3"/></svg>monitors (toward the one watched)</span>
+      <span><svg width="22" height="8"><line x1="1" y1="4" x2="21" y2="4" stroke="var(--text-secondary)" stroke-width="1.5" stroke-dasharray="1 3"/></svg>with another node</span>
+    </div>
+    <div class="graph"><svg id="graph" role="img" aria-label="Processes with their links and monitors"></svg><div class="tip" id="graph-tip"></div></div>
+    <div class="empty" id="graph-empty" hidden>No links or monitors.</div>
+  </section>
+  <section class="three">
+    <div class="card"><h2>Modules</h2><div class="table-wrap"><table class="mini" id="mods"><thead><tr><th class="text">Module</th><th>Version</th><th class="text">State</th><th>Functions</th></tr></thead><tbody></tbody></table></div></div>
+    <div class="card"><h2>Registered names</h2><div class="table-wrap"><table class="mini" id="names"><thead><tr><th class="text">Name</th><th>PID</th></tr></thead><tbody></tbody></table></div><div class="empty" id="names-empty">No names registered.</div></div>
+    <div class="card"><h2>Nodes</h2><div id="nodes-self" class="note"></div><div class="table-wrap"><table class="mini" id="nodes"><thead><tr><th>Node</th><th>Carried by</th></tr></thead><tbody></tbody></table></div><div class="empty" id="nodes-empty">Not connected to other nodes.</div></div>
   </section>
   <section class="card">
     <h2>Recent exits</h2>
@@ -296,11 +338,17 @@ async function loadDetail() {
       ["Raw memory", bytes(p.raw_bytes)], ["Stack", bytes(p.stack_bytes) + `, ${p.depth} frames`],
       ["Mailbox", `${p.mailbox} waiting · ${human(p.msgs_received)} received · ${human(p.msgs_sent)} sent`],
       ["GC", `${p.gc_count} collections, ${ms(p.gc_ns)}`], ["Exceptions thrown", p.exceptions],
-      ["Links", p.links.join(", ") || "none"], ["Monitored by", p.monitors.join(", ") || "none"],
+      ["Links", [...p.links, ...p.far_links.map(farName)].join(", ") || "none"],
+      ["Monitored by", [...p.monitors, ...p.far_monitors.map(farName)].join(", ") || "none"],
+      ["Watches elsewhere", p.far_watching.map(farName).join(", ") || "none"],
       ["Quotas", `heap ${q(p.quota.heap, bytes)} · raw ${q(p.quota.raw, bytes)} · mailbox ${q(p.quota.mailbox, String)} · insns ${q(p.quota.insns, human)} · foreign calls ${q(p.quota.foreign, human)} · OS calls ${q(p.quota.os, human)}`],
     ];
     $("detail-stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
     $("detail-bt").textContent = p.backtrace.join("\n") || "(no frames)";
+    $("detail-msgs").textContent = p.messages.length
+      ? p.messages.map((m) => m.type + (m.size != null ? ` (${m.size})` : "") + (m.preview != null ? "  " + (typeof m.preview === "string" ? JSON.stringify(m.preview) : m.preview) : "")).join("\n")
+        + (p.mailbox > p.messages.length ? `\n… ${p.mailbox - p.messages.length} more` : "")
+      : "(none)";
   } catch (e) { /* connection problems are shown in the header */ }
 }
 
@@ -312,6 +360,94 @@ function renderExits(exits) {
                                   : `<span class="state"><span class="dot good"></span>exit ${e.exit}</span>`}</td>
       <td>${human(e.insns)}</td><td>${ms(e.cpu_ns)}</td><td>${Math.round(e.ago_ns / 1e9)} s ago</td></tr>`).join("");
   $("exits-empty").hidden = exits.length > 0;
+}
+
+function farName(x) { return `node ${x.node} pid ${x.pid}`; }
+
+// ---- the log ---------------------------------------------------------------------
+const LOG_KEEP = 500;
+const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
+let logNext = 0, logLines = [];
+function logRow(e) {
+  const t = (e.t_ns / 1e9).toFixed(3) + " s";
+  const lv = e.event != null ? `<span class="lvl"><span class="dot"></span>event</span>`
+    : `<span class="lvl"><span class="dot ${e.level === "error" ? "critical" : e.level === "warn" ? "warn" : e.level === "info" ? "info" : ""}"></span>${e.level}</span>`;
+  const msg = e.event != null ? `${esc(e.event)} ${esc(JSON.stringify(e.value))}` : esc(e.text);
+  return `<tr><td>${t}</td><td>${e.pid}</td><td class="text">${lv}</td><td class="msg">${msg}</td></tr>`;
+}
+function renderLog() {
+  const min = Number($("log-level").value);
+  const shown = logLines.filter((e) => e.event != null ? min <= 1 : LEVELS[e.level] >= min);
+  const wrap = $("log-wrap"), atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 4;
+  $("log").innerHTML = shown.map(logRow).join("");
+  $("log-empty").hidden = logLines.length > 0;
+  if (atBottom) wrap.scrollTop = wrap.scrollHeight;
+}
+async function pollLog() {
+  const r = await fetch(`/api/log?since=${logNext}`).then((x) => x.json());
+  if (!r.entries.length) return;
+  logNext = r.next;
+  logLines = logLines.concat(r.entries).slice(-LOG_KEEP);
+  renderLog();
+}
+$("log-level").addEventListener("change", renderLog);
+
+// ---- modules, names, nodes and the graph (every five seconds) --------------------
+const SVGNS = "http://www.w3.org/2000/svg";
+function svgEl(name, attrs) { const e = document.createElementNS(SVGNS, name); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+function drawGraph(g) {
+  const svg = $("graph"), tip = $("graph-tip");
+  svg.textContent = "";
+  const ties = new Set();
+  for (const [a, b] of g.links) ties.add(a), ties.add(b);
+  for (const [a, b] of g.monitors) ties.add(a), ties.add(b);
+  for (const f of g.far) ties.add(f.pid);
+  const byPid = new Map(procs.map((p) => [p.pid, p]));
+  const pids = [...ties].filter((pid) => byPid.has(pid)).sort((a, b) => a - b).slice(0, 150);
+  $("graph-empty").hidden = pids.length > 0;
+  svg.style.display = pids.length ? "" : "none";
+  if (!pids.length) return;
+  const W = svg.clientWidth || 800, H = svg.clientHeight || 420, cx = W / 2, cy = H / 2;
+  const R = Math.max(40, Math.min(W, H) / 2 - 50), at = new Map();
+  pids.forEach((pid, i) => { const a = (2 * Math.PI * i) / pids.length - Math.PI / 2; at.set(pid, [cx + R * Math.cos(a), cy + R * Math.sin(a)]); });
+  const defs = svgEl("defs", {}), mk = svgEl("marker", { id: "arrow", viewBox: "0 0 10 10", refX: "16", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
+  mk.appendChild(svgEl("path", { d: "M0,0 L10,5 L0,10 z", fill: "var(--text-muted)" }));
+  defs.appendChild(mk); svg.appendChild(defs);
+  for (const [a, b] of g.links) if (at.has(a) && at.has(b))
+    svg.appendChild(svgEl("line", { x1: at.get(a)[0], y1: at.get(a)[1], x2: at.get(b)[0], y2: at.get(b)[1], stroke: "var(--series-1)", "stroke-width": 2 }));
+  for (const [w, t] of g.monitors) if (at.has(w) && at.has(t))
+    svg.appendChild(svgEl("line", { x1: at.get(w)[0], y1: at.get(w)[1], x2: at.get(t)[0], y2: at.get(t)[1], stroke: "var(--text-muted)", "stroke-width": 1.5, "stroke-dasharray": "3 3", "marker-end": "url(#arrow)" }));
+  for (const f of g.far) if (at.has(f.pid)) { /* a short spoke outward, labelled with the other node */
+    const [x, y] = at.get(f.pid), dx = x - cx, dy = y - cy, d = Math.hypot(dx, dy) || 1;
+    svg.appendChild(svgEl("line", { x1: x, y1: y, x2: x + (dx / d) * 34, y2: y + (dy / d) * 34, stroke: "var(--text-secondary)", "stroke-width": 1.5, "stroke-dasharray": "1 3" }));
+    const lb = svgEl("text", { x: x + (dx / d) * 40, y: y + (dy / d) * 40 + 4, "font-size": 11, fill: "var(--text-muted)", "text-anchor": dx < 0 ? "end" : "start" });
+    lb.textContent = `node ${f.other.node}`; svg.appendChild(lb);
+  }
+  for (const pid of pids) {
+    const [x, y] = at.get(pid), p = byPid.get(pid);
+    const c = svgEl("circle", { cx: x, cy: y, r: 9, fill: pid === selectedPid ? "var(--series-1)" : "var(--surface-1)", stroke: "var(--series-1)", "stroke-width": 2, style: "cursor:pointer" });
+    c.addEventListener("mouseenter", () => { tip.style.display = "block"; tip.style.left = x + 12 + "px"; tip.style.top = y - 10 + "px"; tip.textContent = `${pid} · ${p.entry} · ${p.state}`; });
+    c.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+    c.addEventListener("click", () => { selectedPid = pid; loadDetail(); renderProcs(); });
+    svg.appendChild(c);
+    const dx = x - cx, dy = y - cy, d = Math.hypot(dx, dy) || 1; /* the label outward, clear of the lines */
+    const t = svgEl("text", { x: x + (dx / d) * 22, y: y + (dy / d) * 22 + 4, "font-size": 11, fill: "var(--text-secondary)", "text-anchor": "middle",
+                              stroke: "var(--surface-1)", "stroke-width": 3, "paint-order": "stroke" });
+    t.textContent = pid; svg.appendChild(t);
+  }
+}
+async function slowTick() {
+  try {
+    const [mods, names, nodes, graph] = await Promise.all(["/api/modules", "/api/names", "/api/nodes", "/api/graph"].map((u) => fetch(u).then((r) => r.json())));
+    $("mods").querySelector("tbody").innerHTML = mods.map((m) => `<tr><td class="text">${esc(m.name)}</td><td>${m.version}</td>
+      <td class="text"><span class="state"><span class="dot ${m.current ? "good" : ""}"></span>${m.current ? "current" : m.state === "purged" ? "purged" : "replaced"}</span></td><td>${m.functions}</td></tr>`).join("");
+    $("names").querySelector("tbody").innerHTML = names.map((n) => `<tr><td class="text">${esc(n.name)}</td><td>${n.pid}</td></tr>`).join("");
+    $("names-empty").hidden = names.length > 0;
+    $("nodes-self").textContent = nodes.self ? `This VM is node ${nodes.self}.` : "This VM is not a node.";
+    $("nodes").querySelector("tbody").innerHTML = nodes.connected.map((n) => `<tr><td>${n.node}</td><td>process ${n.carrier}</td></tr>`).join("");
+    $("nodes-empty").hidden = nodes.connected.length > 0;
+    drawGraph(graph);
+  } catch (e) { /* shown in the header by tick */ }
 }
 
 // ---- polling -------------------------------------------------------------------
@@ -344,13 +480,15 @@ async function tick() {
     $("k-heap").textContent = bytes(vm.heap_bytes);
     $("k-raw").textContent = `raw ${bytes(vm.raw_bytes)}`;
     $("k-slices").textContent = human(sps);
-    drawCharts(); renderProcs(); renderExits(exits); loadDetail();
+    drawCharts(); renderProcs(); renderExits(exits); loadDetail(); pollLog();
   } catch (e) {
     $("conn").textContent = "disconnected (has the program finished?)"; $("conn-dot").className = "dot critical";
   }
 }
 tick();
 setInterval(tick, 1000);
+slowTick();
+setInterval(slowTick, 5000);
 </script>
 </body>
 </html>

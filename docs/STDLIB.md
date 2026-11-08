@@ -458,6 +458,12 @@ raises `E_OVERFLOW` when the result does not fit in an `i64`. `std.math`
 (`lib/std/math.masm`) has more, written in assembly: `ipow`, `isqrt`,
 `fact` and `clamp`.
 
+## The monitor's log
+
+`monitor.log(level, text)` and `monitor.event(name, value)` write to the log that
+`--monitor` shows and serves (`GET /api/log`), and `monitor.on()` says whether a
+monitor is there; without one they keep nothing ([TOOLING.md](TOOLING.md#the-programs-log)).
+
 ## Processes: names, calls and supervisors
 
 ### The registry

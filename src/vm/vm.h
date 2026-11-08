@@ -213,6 +213,14 @@ typedef struct {
     uint64_t insns, cpu_ns, ended_ns;
 } ExitRecord;
 
+/* An entry of the monitor's log channel (monitor.log, monitor.event). */
+typedef struct MLogEntry {
+    uint64_t seq, t_ns, pid; /* t_ns: since the VM started */
+    int level;               /* 0 debug, 1 info, 2 warn, 3 error; -1 for an event */
+    char *name;              /* an event's name, or NULL */
+    char *text;              /* a log line, or an event's value as JSON */
+} MLogEntry;
+
 /* Called before every instruction while a tool (debugger, trace, profiler) is
  * active; returning true stops the scheduler before the instruction runs. */
 typedef bool (*InsnHook)(struct Process *p, uint32_t pc);
@@ -296,6 +304,14 @@ typedef struct VM {
     void (*tools_free)(struct VM *vm);
     struct Process *stopped;     /* stopped by the hook; resumes first */
     VEC(ExitRecord) exits;       /* ring of recent exits (under `lock`) */
+    /* The monitor's log channel: the last mlog_cap entries, kept while a monitor
+     * is attached (mlog_on; otherwise monitor.log and monitor.event do nothing).
+     * Entry s (from 1) is at mlog[(s - 1) % mlog_cap]. */
+    _Atomic bool mlog_on;
+    struct PlatLock *mlog_lock;
+    MLogEntry *mlog;
+    uint32_t mlog_cap;
+    uint64_t mlog_seq;
     size_t exits_next;
     uint64_t start_ns;
     bool hold;                   /* --hold: keep serving the monitor after main ends */
@@ -800,6 +816,11 @@ void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag);
 void sched_node_down(VM *vm, uint32_t node);
 void sched_set_quota(Process *p, int kind, uint64_t limit);
 bool sched_alive(VM *vm, uint64_t pid);
+/* The monitor's log channel (vm.c): keep the last cap entries from now on; add
+ * one (text of n bytes, cut to MLOG_TEXT_MAX at a character's start). */
+#define MLOG_TEXT_MAX 4096
+void vm_mlog_enable(VM *vm, uint32_t cap);
+void vm_mlog_put(VM *vm, uint64_t pid, int level, const char *name, const char *text, size_t n);
 void sched_shutdown(VM *vm, Process *keep); /* free every process except `keep` */
 void sched_free(VM *vm);
 bool sched_abandoned(VM *vm); /* a blocking native call never returned: the VM cannot be freed */
@@ -863,6 +884,8 @@ void natives_register_modules(VM *vm); /* modload.c */
 const NativeDef *natives_modules_table(size_t *n);
 /* text.c: std.text and std.json */
 void natives_register_text(VM *vm);
+void text_json_append(Process *p, Word v, uint8_t tag, StrBuf *out); /* E_JSON for a value with no JSON form */
+bool text_utf8_valid(const char *s, size_t n);
 void natives_register_util(VM *vm);
 const NativeDef *natives_util_table(size_t *n);
 const NativeDef *natives_text_table(size_t *n);

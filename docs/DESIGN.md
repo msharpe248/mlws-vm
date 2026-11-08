@@ -2283,7 +2283,13 @@ worker, so the tool sees every instruction in order.
 thread of its own, which for each request stops the world (§13.7) and
 serves the dashboard (`web/dashboard.html`, compiled into the binary by
 `build-tools/embed.c`), JSON (`/api/vm`, `/api/procs`, `/api/proc/N`,
-`/api/exits`), or the table `mlwsvm top` shows (`/top`).
+`/api/exits`, `/api/modules`, `/api/names`, `/api/nodes`, `/api/graph`,
+`/api/log`), or the table `mlwsvm top` shows (`/top`). The program's log
+(`monitor.log`, `monitor.event`) is a ring in the VM, `VM.mlog`, under a lock of
+its own, since any worker may write to it; it exists only once a monitor
+starts (`vm_mlog_enable`), and until then the natives check their arguments
+and look at one flag. An event's value becomes JSON as it is written, so the
+ring holds only text.
 
 **Source positions.** Each instruction's assembly line is in
 `MFunc.lines`; a translated program's line comes from the `.loc` runs

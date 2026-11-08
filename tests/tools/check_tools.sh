@@ -694,5 +694,30 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/api/procs | grep -q '^\[' || fail "/api/procs"
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
+    curl -sf http://127.0.0.1:$PORT/api/modules | grep -q '"name":"workers","path":"[^"]*","version":1,"current":true,"state":"ready"' || fail "/api/modules"
+    curl -sf http://127.0.0.1:$PORT/api/nodes | grep -q '^{"self":0,"connected":\[\]}$' || fail "/api/nodes"
+fi
+kill $VMPID 2>/dev/null || true
+wait $VMPID 2>/dev/null || true
+
+# The log channel, the registry, links and monitors, and a mailbox, while a
+# program runs: tests/tools/_monitor/watched.masm.
+if command -v curl >/dev/null 2>&1; then
+    $BIN run --monitor 127.0.0.1:$PORT tests/tools/_monitor/watched.masm >/dev/null 2>&1 &
+    VMPID=$!
+    i=0
+    until curl -sf "http://127.0.0.1:$PORT/api/log" 2>/dev/null | grep -q '"level":"warn","text":"E_JSON"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "monitor log did not start"; sleep 0.1
+    done
+    LOG=$(curl -sf "http://127.0.0.1:$PORT/api/log")
+    echo "$LOG" | grep -q '"level":"info","text":"watched: started"' || fail "/api/log: a line ($LOG)"
+    echo "$LOG" | grep -q '"level":"error","text":"an \\"error\\"\\u000ain two lines"' || fail "/api/log: escaped ($LOG)"
+    echo "$LOG" | grep -q '"event":"ready","value":\[42,"x"\]' || fail "/api/log: an event ($LOG)"
+    curl -sf "http://127.0.0.1:$PORT/api/log?since=3" | grep -q '^{"next":4,"lost":0,"entries":\[{"seq":4,' || fail "/api/log?since"
+    curl -sf http://127.0.0.1:$PORT/api/names | grep -q '{"name":"sleeper","pid":2}' || fail "/api/names"
+    curl -sf http://127.0.0.1:$PORT/api/graph | grep -q '"links":\[\[1,2\]\],"monitors":\[\[1,2\]\]' || fail "/api/graph"
+    curl -sf http://127.0.0.1:$PORT/api/proc/2 | grep -q '"messages":\[{"type":"string","size":5,"preview":"first"},{"type":"i64","preview":7}\]' || fail "/api/proc: messages"
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
 fi
 echo "check-tools: profile, .loc, bundle, dap, node, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"

@@ -910,6 +910,41 @@ static void n_lcm(Process *p, Word *a, Word *r) {
     r[0].u = l;
 }
 
+/* ---- the monitor's log channel (--monitor: GET /api/log; docs/TOOLING.md) ------------------- *
+ * A program's own lines and events, for the monitor to show: nothing it
+ * writes elsewhere is taken. Without a monitor they are checked and dropped. */
+
+/* A log line's or an event name's text: a string of valid UTF-8. */
+static const ObjString *mlog_text(Process *p, Word v, const char *what) {
+    const ObjString *s = v.r;
+    if (!s || s->h.kind != OBJ_STRING) vm_trap(p, "E_TYPE", "%s must be a string", what);
+    if (!text_utf8_valid(s->data, s->len)) vm_trap(p, "E_TYPE", "%s is not valid UTF-8", what);
+    return s;
+}
+
+static void n_monitor_on(Process *p, Word *a, Word *r) {
+    (void)a;
+    r[0].i = atomic_load_explicit(&p->vm->mlog_on, memory_order_relaxed);
+}
+
+static void n_monitor_log(Process *p, Word *a, Word *r) {
+    (void)r;
+    if (a[0].i < 0 || a[0].i > 3) vm_trap(p, "E_RANGE", "monitor.log: level %lld is not 0 (debug) to 3 (error)", (long long)a[0].i);
+    const ObjString *s = mlog_text(p, a[1], "monitor.log: the text");
+    if (atomic_load_explicit(&p->vm->mlog_on, memory_order_relaxed))
+        vm_mlog_put(p->vm, p->pid, (int)a[0].i, NULL, s->data, s->len);
+}
+
+static void n_monitor_event(Process *p, Word *a, Word *r) {
+    (void)r;
+    const ObjString *name = mlog_text(p, a[0], "monitor.event: the name");
+    if (!atomic_load_explicit(&p->vm->mlog_on, memory_order_relaxed)) return;
+    StrBuf b = {0};
+    text_json_append(p, a[1], T_R, &b); /* (E_JSON for a value with no JSON form) */
+    vm_mlog_put(p->vm, p->pid, -1, name->data, b.s ? b.s : "null", b.n ? b.n : 4);
+    sb_free(&b);
+}
+
 /* ---- the table ------------------------------------------------------------------------------- */
 
 #define N(name, np, pt, nr, rt, fn, doc) {name, np, pt, nr, rt, fn, doc, 0, NULL, NULL, NULL}
@@ -969,6 +1004,14 @@ static const NativeDef UTIL_NATIVES[] = {
     N("math.powmod", 3, T(T_I64, T_I64, T_I64), 1, T(T_I64), n_powmod, "b^e mod m, without overflow (e >= 0, m > 0)."),
     N("math.gcd", 2, T(T_I64, T_I64), 1, T(T_I64), n_gcd, "Greatest common divisor (of the absolute values)."),
     N("math.lcm", 2, T(T_I64, T_I64), 1, T(T_I64), n_lcm, "Least common multiple (E_OVERFLOW if it does not fit)."),
+    N("monitor.on", 0, T(0), 1, T(T_B), n_monitor_on,
+      "Whether a monitor (--monitor) is watching, so that monitor.log and monitor.event keep what they are given."),
+    N("monitor.log", 2, T(T_I64, T_R), 0, T(0), n_monitor_log,
+      "A line for the monitor's log (GET /api/log), at a level: 0 debug, 1 info, 2 warn, 3 error. Up to 4 KiB "
+      "is kept, of the last 1,000 entries. Without a monitor, nothing is kept."),
+    N("monitor.event", 2, T(T_R, T_R), 0, T(0), n_monitor_event,
+      "A named event for the monitor's log, with a value kept as JSON (E_JSON if it has no JSON form). Without a "
+      "monitor, nothing is kept."),
 };
 
 void natives_register_util(VM *vm) {
