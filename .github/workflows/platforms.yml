@@ -20,7 +20,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build
-        run: make CC=clang -k -j4
+        run: |
+          rc=0; make CC=clang -k -j4 > build.log 2>&1 || rc=$?
+          cat build.log; exit $rc
+
+      # As the release check's build-warnings: a warning fails the run here,
+      # at the push, not at the release.
+      - name: No warnings
+        if: ${{ !cancelled() }}
+        run: "! grep -E 'warning:|error:' build.log"
 
       - name: The JIT is built in
         if: ${{ !cancelled() }}
@@ -73,7 +81,15 @@ jobs:
             mingw-w64-clang-aarch64-pkgconf
 
       - name: Build
-        run: make CC=clang -k -j4
+        run: |
+          rc=0; make CC=clang -k -j4 > build.log 2>&1 || rc=$?
+          cat build.log; exit $rc
+
+      # As the release check's build-warnings: a warning fails the run here,
+      # at the push, not at the release.
+      - name: No warnings
+        if: ${{ !cancelled() }}
+        run: "! grep -E 'warning:|error:' build.log"
 
       - name: Tests
         if: ${{ !cancelled() }}
