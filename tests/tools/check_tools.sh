@@ -786,6 +786,14 @@ if command -v curl >/dev/null 2>&1; then
         grep -q "^mlwsvm: monitor at https://" "$MOND/acted.err" || fail "TLS: https printed"
         [ "$(curl -s -o /dev/null -w '%{http_code}' --cacert tests/net/_tls/cert.pem -X POST -H "$A" https://localhost:$PORT/api/proc/2/kill)" = 200 ] || fail "TLS: an action"
         [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/api/vm)" != 200 ] || fail "TLS: plain HTTP answered"
+        # mlwsvm top over HTTPS: with the authority, from the address the run
+        # printed too; without it, the certificate is refused.
+        $BIN top --once --ca tests/net/_tls/cert.pem https://localhost:$PORT | grep -q "recent exits" || fail "TLS: top"
+        $BIN top --once --ca tests/net/_tls/cert.pem "https://localhost:$PORT/#token=s3cret" | grep -q "PID" || fail "TLS: top from the printed address"
+        set +e
+        TOPERR=$($BIN top --once https://localhost:$PORT 2>&1 >/dev/null); RC=$?
+        set -e
+        [ $RC = 1 ] && echo "$TOPERR" | grep -q "^mlwsvm top: https://localhost:$PORT: " || fail "TLS: top without the authority (exit $RC): $TOPERR"
         kill $VMPID 2>/dev/null || true
         wait $VMPID 2>/dev/null || true
     fi

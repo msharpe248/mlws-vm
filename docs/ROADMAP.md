@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M86
+## Milestones M11–M87
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -108,6 +108,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M84 Node names** (done) | A node may have a name besides its number (`std.node`'s `set_name`, as Erlang's `name@host`), sent in the handshake, so that each node it connects to knows it: `name(number)` and `number(name)`, kept after the connection goes, and `nodes()`, the nodes connected now. A connection from a node whose name this VM or another connected node has is refused. The monitor's `/api/nodes` and the dashboard show the names. Asked for by the Erlang compiler (`node()`, `node(Pid)`, `nodes()`, `{Name, Node} ! Msg`) | `make check-tools`: names known each way after connecting, a name not known, a second name refused, the nodes connected, the names kept after the connection goes, and a third VM with node 2's name refused at both ends with node 2 unharmed; `/api/nodes` with no name |
 | **M85 Watching nodes** (done) | `std.node`'s `watch()`: from then on, a built-in `NodeEvent {node, name, up}` comes to the process for each connection to another node that comes or goes (after the `Down`s and failures a lost connection causes); `unwatch()` stops them. For Erlang's `monitor_node` and `net_kernel:monitor_nodes`, which the compiler builds on it | `make check-tools`: a process watching from before node 1 connects gets node 2's coming and going, with its name, and one that stopped watching gets none |
 | **M86 Children's output waited for on Windows** (done) | Our end of a child's stdout and stderr is a named pipe opened for overlapped I/O, as libuv's `uv_spawn` makes it, and a wait to read it is a zero-byte read on the poller's completion port, so a process waiting for a child's output costs nothing until it comes, where the poller looked at each such pipe every millisecond. Anonymous pipes (a child's stdin, a stdin given to the VM) and waits to write are still looked at | `tests/os/spawn_pipes` (every system; CI on Windows x86-64 and arm64): eight children waited for at once, each by its own process; 82,000 bytes through a 64 KiB pipe; stdout and stderr each piped; the end with no output; a line that comes in two pieces; and a process killed while it waits for a child's output, then another child read |
+| **M87 `mlwsvm top` over HTTPS** (done) | `mlwsvm top https://HOST:PORT` reads a monitor served over TLS (`--monitor-cert`), checking its certificate against the host with the authorities in `--ca FILE` or else the system's, never without checking; the address the run prints, with its `#token` part, will do. `top` (and `plat_tcp_connect`) now take a host name too, trying each of its addresses, where they took only an IPv4 address | `make check-tools`: `top` over HTTPS with the authority, from the printed address, and refused without it (a self-signed certificate) |
 
 ## 1. Calling existing libraries (M10: done)
 

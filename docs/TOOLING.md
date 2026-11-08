@@ -15,7 +15,7 @@ run before a release.
 | Debugger for editors | `mlwsvm dap` (Debug Adapter Protocol) | — |
 | Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] [--monitor-actions] prog.masm` | none |
 | A VM that stays up | `mlwsvm serve --programs DIR [--monitor [HOST:]PORT]` | — |
-| Terminal view | `mlwsvm top [HOST:PORT] [--once] [--interval MS]` | — |
+| Terminal view | `mlwsvm top [https://]HOST:PORT [--ca FILE] [--once] [--interval MS]` | — |
 | VM options | `mlwsvm run --max-frames N --quota heap=64M --cap read=/data ... prog.masm` | — |
 | Several programs | `mlwsvm run a.masm args --also b.masm args ...` | — |
 | Native code | `mlwsvm ext list\|install\|remove\|allow-ffi\|deny-ffi` ([EXTENDING.md](EXTENDING.md)) | — |
@@ -430,7 +430,7 @@ $ mlwsvm run --monitor 0.0.0.0:7443 --monitor-cert cert.pem --monitor-key key.pe
   `monitor.reload`, `monitor.purge`). Reads still need no token.
 * **TLS** (`--monitor-cert FILE --monitor-key FILE`, PEM): the dashboard and the
   API over HTTPS, and nothing over plain HTTP. It needs OpenSSL or LibreSSL at
-  run time, as `std.tls` does. `mlwsvm top` speaks plain HTTP only.
+  run time, as `std.tls` does; so does `mlwsvm top https://HOST:PORT`.
 
 ### Web dashboard: `GET /`
 
@@ -546,7 +546,11 @@ recent exits:
 every second (`--interval MS`) and sorts processes by CPU. `--once`
 prints one snapshot and exits; there, %CPU is measured over the VM's whole uptime.
 It fetches `/top` from the monitor, so it works against any VM started with
-`--monitor`.
+`--monitor`. A monitor over TLS is `https://HOST:PORT` (the address the run
+prints, whose path and `#token` part `top` leaves alone, will do): `top`
+checks its certificate against the host, with the authorities in `--ca FILE`
+(for a certificate of your own making) or else the system's, and never
+without checking.
 
 ## Bindings generator: `mlwsvm bindgen`
 

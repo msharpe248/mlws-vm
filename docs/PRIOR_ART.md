@@ -324,6 +324,7 @@ of the instructions in call-heavy code.
 | M84 | Erlang's node names (`name@host`, `node()`, `nodes()`) and the distribution handshake's exchange of names; its refusal of a second node of the same name |
 | M85 | Erlang's `net_kernel:monitor_nodes` (`nodeup`, `nodedown`) and `monitor_node` |
 | M86 | libuv's `uv_spawn` stdio pipes (an overlapped named pipe for our end, a plain handle for the child's) and its zero-byte reads on a completion port |
+| M87 | curl's `--cacert`, which adds an authority but never turns checking off by itself |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

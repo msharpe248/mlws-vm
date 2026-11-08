@@ -17,6 +17,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #ifdef __APPLE__
@@ -210,19 +211,23 @@ int plat_tcp_accept(int listen_fd) {
     return c;
 }
 
+/* A blocking connection to host (an address or a name: each of its addresses
+ * in turn) and port, or -1. */
 int plat_tcp_connect(const char *host, int port) {
     signal(SIGPIPE, SIG_IGN);
-    struct sockaddr_in a;
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &a.sin_addr) != 1) return -1;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
-    if (connect(fd, (struct sockaddr *)&a, sizeof a) != 0) {
-        close(fd);
-        return -1;
+    char ps[16];
+    snprintf(ps, sizeof ps, "%d", port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, ps, &hints, &res) != 0) return -1;
+    int fd = -1;
+    for (struct addrinfo *a = res; a && fd < 0; a = a->ai_next) {
+        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd >= 0 && connect(fd, a->ai_addr, a->ai_addrlen) != 0) close(fd), fd = -1;
     }
+    freeaddrinfo(res);
     return fd;
 }
 
