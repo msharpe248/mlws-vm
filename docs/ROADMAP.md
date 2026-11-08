@@ -241,8 +241,17 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   (arithmetic directly on elements, raw memory), when compiled programs show
   them in the profiler's list of general-path instructions.
 * A compact decoded form for every instruction. Quickened instructions carry a
-  compact copy since M22, but each decoded operand still takes 72 bytes, so
-  programs with a lot of hot code may run out of cache before the benchmarks do.
+  compact copy since M22 (an `Insn` is 32 bytes), but each decoded operand
+  still takes 72 bytes. Measured after 0.19.0 on fifteen of the compilers'
+  benchmarks (Erlang, Lox and Lua): the operands are all but never read, since
+  every instruction but a few of `ring`'s sends and receives runs a quickened
+  form; the hot instructions take 2 to 100 KiB of `Insn`s (`--trace`, the
+  largest with their start-up code), within L2 everywhere and mostly within
+  L1. Doubling `Insn` to 64 bytes cost nothing beyond noise on the M5, with or
+  without the JIT; on the i7 and the Ryzen, with the JIT off, Erlang's `nbody`
+  (58 KiB hot) 5.9% and 4.6% and the rest within 3%, and with it within 3%. So
+  halving it would gain at most a few percent on the largest interpreted
+  programs, and nothing with the JIT: not worth a second decoded form.
 * ~~Calls: one window per frame~~ (M28: done). Calls without copying, through
   overlapping windows, would need an ABI change; only if call-heavy programs
   show the argument copies.
