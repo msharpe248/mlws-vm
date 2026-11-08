@@ -595,8 +595,12 @@ compiler or a deployment that sends code over a socket:
   each time (a language's fully qualified calls, as Erlang's `M:f()`). It is a
   closure of a small function, in a module of its own named `(handle) M.f #N`,
   whose code is one tail call to the function; as for any module calling it, a
-  reload moves that call to the new version, and is refused if it would change
-  the function's signature or remove it. The cost is that tail call. So a process
+  reload moves that call to the new version. Unlike a module's call, a handle
+  lets a reload remove the function or change its signature, as Erlang lets a
+  new version drop a function others call by name: the handle then raises
+  `E_LINK_UNDEF` when called, and calls the function again once a later
+  version has it with the signature the handle was made for. The cost is that
+  tail call. So a process
   in a loop moves to the new code when the loop calls through a closure from
   `module.function`, or returns to a caller in another module. This is
   Erlang's rule, in which a local call stays and a qualified call moves.

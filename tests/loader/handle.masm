@@ -2,10 +2,12 @@
 ; function's current version: kept in a global, it follows module.reload,
 ; where module.function's closure stays on the version it was made from. It
 ; takes the function's arguments and gives its results (several, of any
-; bank), in loops long enough to be compiled. A reload that would change the
-; function's signature is refused, as for a module that calls it; an old
-; version a handle once called is freed by a purge. A function that is not
-; exported, or a module not loaded, is refused.
+; bank), in loops long enough to be compiled. A reload may take the function
+; away, or change its signature, which it may not for a module that calls it:
+; the handle then raises E_LINK_UNDEF, and calls the function again once a
+; later version has it with the handle's signature. An old version a handle
+; once called is freed by a purge. A function that is not exported, or a
+; module not loaded, is refused.
 .include "std/test.inc"
 
 hv: .i64 0                              ; the handle to version, kept here
@@ -20,12 +22,13 @@ h:  catch R1
     ret R2
 .endf
 
-.func reload_refused(ref text) -> ref
-.try h
-    ncall "module.reload_text" ("_handle.m", text)
+; What calling a handle to version raises, or null.
+.func version_raises(ref h) -> ref
+.try c
+    calli h () -> (I0)
 .endtry
     ret null
-h:  catch R1
+c:  catch R1
     mov R2, R1->Error.code
     ret R2
 .endf
@@ -71,20 +74,42 @@ h:  catch R1
     strcmp I3, R4, "b-2"
     ASSERT_EQ I3, 0
 
-    ; A handle calls version: a new signature for it is refused.
-    call reload_refused (".export version, add, pair\n.func version -> f64\n    ret 3.0\n.endf\n.func add(i64 a, i64 b) -> i64\n    ret a\n.endf\n.func pair(ref s) -> (i64, ref)\n    ret 3, s\n.endf\n") -> (R5)
-    strcmp I3, R5, "E_LINK_RELOAD"
+    ; version with another signature, then none: the handle raises, as one
+    ; to a function that was never there would; add and pair go on.
+    ncall "module.reload_text" ("_handle.m", ".export version, add, pair\n.func version -> f64\n    ret 3.0\n.endf\n.func add(i64 a, i64 b) -> i64\n    sub I2, a, b\n    ret I2\n.endf\n.func pair(ref s) -> (i64, ref)\n    ret 3, s\n.endf\n")
+    call version_raises (R0) -> (R5)
+    strcmp I3, R5, "E_LINK_UNDEF"
     ASSERT_EQ I3, 0
-    calli R0 () -> (I0)
-    ASSERT_EQ I0, 2
+    call sum (R2, 3000) -> (I1)
+    ASSERT_EQ I1, 4495500               ; sum of i - 1
+    ncall "module.reload_text" ("_handle.m", ".export add, pair\n.func add(i64 a, i64 b) -> i64\n    sub I2, a, b\n    ret I2\n.endf\n.func pair(ref s) -> (i64, ref)\n    ret 4, s\n.endf\n")
+    call version_raises (R0) -> (R5)
+    strcmp I3, R5, "E_LINK_UNDEF"
+    ASSERT_EQ I3, 0
+    calli R3 ("c") -> (I2, R4)
+    ASSERT_EQ I2, 4
+    call code_of ("_handle.m", "version") -> (R5)
+    strcmp I3, R5, "E_LINK_UNDEF"       ; (a new handle to it: none)
+    ASSERT_EQ I3, 0
 
-    ; The old version: only module.function's closure holds it.
+    ; Back, with the handle's signature: it calls it again.
+    ncall "module.reload_text" ("_handle.m", ".export version, add, pair\n.func version -> i64\n    ret 5\n.endf\n.func add(i64 a, i64 b) -> i64\n    add I2, a, b\n    add I2, I2, 100\n    ret I2\n.endf\n.func pair(ref s) -> (i64, ref)\n    ret 5, s\n.endf\n")
+    calli R0 () -> (I0)
+    ASSERT_EQ I0, 5
+    call sum (R2, 3000) -> (I1)
+    ASSERT_EQ I1, 4801500
+
+    ; The old versions: the handles hold none, so three are freed, and the
+    ; first, which module.function's closure holds, goes once it is let go.
+    ncall "module.purge" ("_handle.m") -> (I5, I6)
+    ASSERT_EQ I5, 3
+    ASSERT_EQ I6, 1
     mov R1, null
     ncall "module.purge" ("_handle.m") -> (I5, I6)
     ASSERT_EQ I5, 1
     ASSERT_EQ I6, 0
     calli R0 () -> (I0)
-    ASSERT_EQ I0, 2
+    ASSERT_EQ I0, 5
 
     call code_of ("_handle.m", "nothing") -> (R5)
     strcmp I3, R5, "E_LINK_UNDEF"

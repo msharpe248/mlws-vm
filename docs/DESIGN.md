@@ -603,9 +603,14 @@ debugger, profiler and trace hold `Function`s). A version with FFI
 declarations is always kept, since what they bind outlives it.
 
 `module.handle` (`vm_handle`) makes, once per module and function, a module of
-its own whose one function is a tail call to the function, importing its module
-by name from its home; `retarget_users` then moves that call at each reload as it
-moves any module's, and the handle is a closure of that function. No call
+its own (`LModule.handle`) whose function `h` is a tail call to the function,
+importing its module by name from its home, beside `gone`, a function of the
+same signature that raises `E_LINK_UNDEF`; the handle is a closure of `h`.
+`still_links` passes such a module whatever the new version has, and
+`retarget_users` hands it to `retarget_handle`, which points `h`'s call (and
+the import, so that the old version is not held) at the new version's
+function of that name if it has `h`'s signature, and at `gone` if not, at each
+reload; so a later version that has it again is called again. No call
 instruction, closure or compiled form knows of handles.
 
 `module.purge_kill` (`vm_purge_kill`) first finds, with the world stopped, the

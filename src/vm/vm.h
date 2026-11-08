@@ -179,6 +179,7 @@ typedef struct LModule {
     char *key;
     atomic_bool shared_name;
     bool replaced;            /* a newer version took its name (vm_reload) */
+    bool handle;              /* a module.handle's own module (vm_handle): h, and gone in its place */
     struct LModule **deps;    /* m->nimports: the module each import resolved to */
     int index;
     int state;
