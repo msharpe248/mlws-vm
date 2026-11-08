@@ -179,7 +179,9 @@ static const StructDef *find_struct(Process *p, const char *module, const char *
         int b = builtin_struct_find(name);
         return b < 0 ? NULL : &VM_BUILTIN_DEFS[b];
     }
-    const LModule *lm = vm_module_named(p->vm, module, p->nframes ? p->frames[p->nframes - 1].fn->mod : NULL);
+    /* (As from outside any program: the decoding runs in std.node, whose home is
+     * the library path, and a frame names a module of the sending program.) */
+    const LModule *lm = vm_module_named(p->vm, module, NULL);
     for (uint32_t i = 0; lm && i < lm->m->nstructs; i++)
         if (!(lm->m->structs[i].flags & (MSF_IMPORT | MSF_BUILTIN)) && !strcmp(lm->structs[i]->name, name)) return lm->structs[i];
     return NULL;

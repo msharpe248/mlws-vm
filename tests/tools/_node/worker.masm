@@ -1,5 +1,11 @@
 ; Spawned on another node by tests/tools/_node/one.masm.
-.export serve, wait_one, ignore, fail_on_msg, make_adder, twice
+.export serve, wait_one, ignore, fail_on_msg, make_adder, twice, Box
+
+; A struct of this module, which both nodes load from the program's directory.
+.struct Box
+    v: i64
+    tag: ref
+.ends
 
 ; Answers once.
 .func serve(ref who)
