@@ -320,6 +320,7 @@ of the instructions in call-heavy code.
 | M80 | Erlang's literal areas, which a module's new version replaces whole; Common Lisp's `defvar` (keeps a value when the file is loaded again) against `defparameter` (sets it afresh) |
 | M81 | Erlang, where an exception a process does not catch is logged as an error, and an exit signal (`exit(Pid, kill)`) ends it without one |
 | M82 | Erlang's export entries, which a new version without the function leaves pointing at a stub that raises `undef`, until a version exports it again |
+| M83 | Erlang's `exit(Pid, kill)` and `exit/2` across nodes, carried by the distribution protocol's exit signals |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

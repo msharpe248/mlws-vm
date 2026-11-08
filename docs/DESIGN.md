@@ -1789,15 +1789,16 @@ it means the same process everywhere, which is why numbers are given, not assign
 per connection. Requests to a node go through a process of their own, answering
 with `proc.call`, so that a caller's mailbox holds only what it was sent.
 
-`link`, `monitor` and `proc.call` on another node's pid are the scheduler's
+`link`, `monitor`, `kill` and `proc.call` on another node's pid are the scheduler's
 (`sched.c`, "across nodes"), so they behave as on one VM. Each side keeps the
 other's pids as the wire names them: a process's `rlinks` (linked across), its
 `rmonitors` (watching it from elsewhere) and its `rwatch` (what it watches
 elsewhere). What one side must tell the other is a control frame, `[null, kind,
 ...]`, sent to the connection's writer like a message, so it keeps its order
 with the sender's messages: a link, an unlink (a normal end), an exit (a failure),
-a monitor, a down, a reply, or noproc (a `Call` for a process that is not there,
-answered at once). The reader at the far end hands it to `node.control`. A
+a monitor, a down, a reply, noproc (a `Call` for a process that is not there,
+answered at once), or a kill, which the far node carries out as its own `kill`
+would. The reader at the far end hands it to `node.control`. A
 `proc.call` to another node sends its `Call` as an ordinary message there, with
 the caller's pid as that node names it, and remembers which node it called; the
 `proc.reply` comes back as a reply frame, into the reply slot. When a reader

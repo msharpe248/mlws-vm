@@ -10,8 +10,8 @@
 ;     monitor I2                                      ; a Down when it ends
 ;     call node.self (PID) -> (I4)                    ; a pid others can use
 ;
-; A pid with a node's number in its top 16 bits works with send, link, monitor
-; and proc.call anywhere in the cluster; a plain pid means this VM. A VM has one number, from 1 to 65535,
+; A pid with a node's number in its top 16 bits works with send, link, monitor,
+; kill and proc.call anywhere in the cluster; a plain pid means this VM. A VM has one number, from 1 to 65535,
 ; unique in its cluster. Two nodes are connected by one TCP connection, once
 ; each has proved it knows the cookie: each sends a nonce and answers the other's
 ; with an HMAC of it, marked with which end it is. Plain connections are not
@@ -29,9 +29,10 @@
 ;     [0, pid, value]                      a message
 ;     [1, reply_to, module, function, args]  spawn function(args), args one value
 ;     [2, reply_to, name]                  the pid registered as name, or 0
-;     [3 to 9, pid, ...]                   link, unlink, exit, monitor, down,
-;                                          reply and noproc: the VM's, for link,
-;                                          monitor and proc.call across nodes
+;     [3 to 10, pid, ...]                  link, unlink, exit, monitor, down,
+;                                          reply, noproc and kill: the VM's, for
+;                                          link, monitor, proc.call and kill
+;                                          across nodes
 ;                                          (node.control)
 ; When the connection goes, the reader clears its route (node.attach), and the
 ; VM acts as if every process over there had failed with E_NODE_DOWN.
@@ -233,7 +234,7 @@ ended:
     jmp 1b
 2:  beq I2, 1, 3f
     beq I2, 2, 4f
-    ncall "node.control" (R3)          ; 3 to 9
+    ncall "node.control" (R3)          ; 3 to 10
     jmp 1b
 3:  spawn do_spawn (R3)
     jmp 1b

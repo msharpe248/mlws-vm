@@ -360,7 +360,7 @@ static void n_deliver(Process *p, Word *a, Word *r) {
     sched_node_deliver(p, l->items[0].u, l->items[1], l->tags[1]);
 }
 
-/* A control frame from a node, for link, monitor and proc.call across nodes:
+/* A control frame from a node, for link, monitor, proc.call and kill across nodes:
  * [kind, pid, ...] (sched.c, "across nodes"). */
 static void n_control(Process *p, Word *a, Word *r) {
     (void)r;
@@ -427,7 +427,7 @@ static const NativeDef NODE_NATIVES[] = {
     N("node.decode", 1, T(T_R), 1, T(T_R), n_decode, "A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node."),
     N("node.deliver", 1, T(T_R), 0, T(0), n_deliver, "Send [pid, value] to its process here. For std.node."),
     N("node.control", 1, T(T_R), 0, T(0), n_control,
-      "Act on a control frame from a node: link, unlink, exit, monitor, down, reply or noproc. For std.node."),
+      "Act on a control frame from a node: link, unlink, exit, monitor, down, reply, noproc or kill. For std.node."),
     N("node.proof", 3, T(T_R, T_R, T_R), 1, T(T_R), n_proof, "HMAC-SHA-256 of a role and a nonce, keyed by a cookie. For std.node."),
     N("node.proof_ok", 4, T(T_R, T_R, T_R, T_R), 1, T(T_B), n_proof_ok, "Whether a proof is right, in constant time. For std.node."),
 };

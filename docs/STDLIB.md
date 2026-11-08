@@ -572,7 +572,11 @@ this node's number in it. `node.of(pid)` says which node a pid names.
   waiting for an answer from there raises `E_NODE_DOWN`. To a node that is not
   connected, `monitor` gives that `Down` at once, and `link` and `proc.call`
   raise `E_NODE_DOWN`.
-* `kill` and `alive` work on this VM's pids only.
+* **`kill` takes a pid of another node** too: that node kills the process with
+  `E_KILLED`, as `kill` here would, so its watchers and links hear of it as of
+  any kill. To a node that is not connected, or a process not there, it does
+  nothing, as `kill` of a finished process does here. `alive` answers for this
+  VM's pids only: false for another node's.
 
 ### Supervisors (`std.supervisor`)
 

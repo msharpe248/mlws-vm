@@ -185,6 +185,18 @@ not_connected:
     mov R18, R17->Error.code
     call expect (R18, "E_NODE_DOWN")
 
+    ; kill there: the process is killed, and its watcher here hears E_KILLED;
+    ; a kill of one not there, or on a node not connected, does nothing.
+    call node.spawn (2, "worker", "ignore", R4) -> (I23)
+    monitor I23
+    kill I23
+    call down_code (I23) -> (R16)
+    call expect (R16, "E_KILLED")
+    kill I16
+    kill I18
+    alive I22, I23
+    ASSERT_FALSE I22                   ; (alive: this VM's pids only)
+
     ; The node goes: a watcher hears, a linked process goes, a call waiting
     ; for an answer fails, and a send goes nowhere.
     monitor I5
