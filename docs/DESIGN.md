@@ -600,6 +600,12 @@ so every version is kept, and so it is while a tool's hook is installed (the
 debugger, profiler and trace hold `Function`s). A version with FFI
 declarations is always kept, since what they bind outlives it.
 
+`module.purge_kill` (`vm_purge_kill`) first finds, with the world stopped, the
+processes that hold an old version by the same test, skipping a version the
+caller holds; it lets the world go, kills them as `kill` does, waits until
+each has finished (one running on another thread stops at its slice's end),
+and then purges as above.
+
 A version found unused is freed (`purge_version`), but for three things. Its
 `LModule` keeps its place in `VM.mods`, whose index numbers every process's
 global segments, with an empty `Module` and the state `LM_PURGED`; each

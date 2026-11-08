@@ -1,0 +1,84 @@
+; module.purge_kill frees a module's replaced versions as module.purge does,
+; after killing (E_KILLED) the processes still running one: one in a loop of
+; its calls to itself, one holding a closure of it. A process on the current
+; version lives on. If the caller itself holds an old version, that version is
+; kept, and nobody is killed for it. It returns how many versions it freed and
+; kept, and how many processes it killed.
+.include "std/test.inc"
+.import _purge_kill.k as k
+
+.func spinner
+    call k.spin                         ; (never returns: it is killed)
+    ret
+.endf
+
+; Holds a closure of the version current when it was made, and waits.
+.func holder(ref f)
+    recv I0
+    ret
+.endf
+
+; On the current version: lives on.
+.func bystander
+    recv I0
+    ret
+.endf
+
+; A Down of pid: its code, waiting for it.
+.func down_code(i64 pid) -> ref
+    recv R0
+    isa I2, R0, Down
+    ASSERT_TRUE I2
+    mov I1, R0->Down.pid
+    ASSERT_EQ I1, pid
+    mov R1, R0->Down.code
+    ret R1
+.endf
+
+.func main
+    spawnm spinner -> (I10)
+    ncall "module.function" ("_purge_kill.k", "version") -> (R5)
+    spawnm holder (R5) -> (I11)
+    sleep 20                            ; (the spinner inside k.spin)
+    ncall "module.reload_text" ("_purge_kill.k", ".export version, spin\n.func version -> i64\n    ret 2\n.endf\n.func spin\n1:  sleep 5\n    jmp 1b\n.endf\n")
+    spawnm bystander -> (I12)
+    call k.version -> (I0)
+    ASSERT_EQ I0, 2
+
+    ; The caller holds the old version (R5): kept, and nobody killed.
+    ncall "module.purge_kill" ("_purge_kill.k") -> (I0, I1, I2)
+    ASSERT_EQ I0, 0
+    ASSERT_EQ I1, 1
+    ASSERT_EQ I2, 0
+    alive I3, I10
+    ASSERT_TRUE I3
+    alive I3, I11
+    ASSERT_TRUE I3
+
+    ; Let go of it: the two that run it are killed, and it is freed.
+    mov R5, null
+    ncall "module.purge_kill" ("_purge_kill.k") -> (I0, I1, I2)
+    ASSERT_EQ I0, 1
+    ASSERT_EQ I1, 0
+    ASSERT_EQ I2, 2
+    mov I5, 0                           ; the two Downs, in either order
+1:  recv R0
+    mov R6, R0->Down.code
+    strcmp I4, R6, "E_KILLED"
+    ASSERT_EQ I4, 0
+    mov I6, R0->Down.pid
+    beq I6, I10, 2f
+    ASSERT_EQ I6, I11
+2:  inc I5
+    blt I5, 2, 1b
+    alive I3, I12
+    ASSERT_TRUE I3                      ; (on the current version)
+    ncall "module.purge_kill" ("_purge_kill.k") -> (I0, I1, I2)
+    ASSERT_EQ I0, 0                     ; nothing left to do
+    ASSERT_EQ I1, 0
+    ASSERT_EQ I2, 0
+    send I12, 0
+    call down_code (I12) -> (R6)
+    ASSERT_FALSE R6, r
+    ret 0
+.endf

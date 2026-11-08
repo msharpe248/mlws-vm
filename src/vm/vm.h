@@ -903,6 +903,8 @@ bool sched_post(VM *vm, uint64_t pid, Word v, uint8_t tag, const char *str, size
 bool sched_post_build(VM *vm, uint64_t pid, Word (*build)(Process *heap, void *ctx), void *ctx);
 bool sched_post_json(VM *vm, uint64_t pid, const char *json, size_t n, char *err, size_t errlen);
 bool sched_kill_from_outside(VM *vm, uint64_t pid, const char *code, const char *msg);
+bool vm_purge_kill(VM *vm, const char *name, const struct LModule *from, uint64_t self, uint32_t *freed, uint32_t *kept,
+                   uint32_t *killed, MlwsError *err);
 /* Inside a foreign call: fail it (raised when the call returns). */
 void native_fail(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);
 /* Run a foreign handle's finalizer (p: the process whose handle it is, or NULL

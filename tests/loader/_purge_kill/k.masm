@@ -1,0 +1,15 @@
+; The first version of the module purge_kill.masm replaces, then purges,
+; killing what still runs it.
+.export version, spin
+.func version -> i64
+    ret 1
+.endf
+; Runs this version until killed: its call to wait stays on this version.
+.func spin
+1:  call wait
+    jmp 1b
+.endf
+.func wait
+    sleep 5
+    ret
+.endf

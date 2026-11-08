@@ -70,6 +70,17 @@ static void n_purge(Process *p, Word *a, Word *r) {
     r[1].i = kept;
 }
 
+static void n_purge_kill(Process *p, Word *a, Word *r) {
+    const char *name = name_arg(p, a[0], "module.purge_kill");
+    no_caps(p, "module.purge_kill");
+    uint32_t freed, kept, killed;
+    MlwsError err = {{0}, {0}};
+    if (!vm_purge_kill(p->vm, name, caller_module(p), p->pid, &freed, &kept, &killed, &err)) vm_trap(p, err.code, "%s", err.msg);
+    r[0].i = freed;
+    r[1].i = kept;
+    r[2].i = killed;
+}
+
 static void n_reload_text(Process *p, Word *a, Word *r) {
     (void)r;
     const char *name = name_arg(p, a[0], "module.reload_text");
@@ -159,6 +170,8 @@ static const NativeDef MODULE_NATIVES[] = {
       "The same, with the new version's assembly text: a program's own compiler or deployment can supply it."),
     N("module.purge", 1, T(T_R), 2, T(T_I64, T_I64), n_purge,
       "Free the old versions of a module that reloads replaced and that nothing can run now: no process has one of their functions on its stack, or reaches a closure or a suspended coroutine of theirs. Returns how many were freed, and how many were kept (still in use, or not to be checked now: a process is in a blocking native call, or a debugger, profiler or trace is on). Struct types stay, and a pointer into a freed version's data traps."),
+    N("module.purge_kill", 1, T(T_R), 3, T(T_I64, T_I64, T_I64), n_purge_kill,
+      "As module.purge, after killing (E_KILLED) every process but the caller that is still running an old version, as Erlang's code:purge does. Returns how many versions were freed and kept, and how many processes were killed. A version the caller itself holds, or one that a blocking native call or a debugger, profiler or trace makes unsure, is kept, and nobody is killed for it."),
     N("module.loaded", 1, T(T_R), 1, T(T_B), n_loaded,
       "Whether a module is loaded: the module that name means to the caller, as for module.load."),
     N("module.function", 2, T(T_R, T_R), 1, T(T_R), n_function,

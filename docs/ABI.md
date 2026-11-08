@@ -634,6 +634,14 @@ it, and frees it:
 * **It returns how many old versions it freed, and how many it kept.** A kept
   version is freed by a later purge, once whatever held it lets go. Purging is
   never needed for correctness: an old version only costs memory.
+* **`module.purge_kill(name)`** frees them even so, as Erlang's `code:purge`
+  does: every process that still holds an old version (as `module.purge`
+  judges it) fails first with `E_KILLED`, and is waited for; then it purges, and
+  returns how many versions it freed and kept, and how many processes it
+  killed. The caller is never killed: a version it holds itself is kept, and
+  nobody dies for it. Nor is anyone killed while a purge would keep everything
+  (a blocking native call, a debugger, profiler or trace); a program's main
+  that has ended keeps what its results hold.
 * **Kept without looking:** every old version while a process is in a blocking
   native call (the call may use its process's heap) or while the debugger,
   profiler or trace is on, and, always, a version that declares foreign

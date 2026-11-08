@@ -1033,6 +1033,56 @@ bool vm_purge(VM *vm, const char *name, const LModule *from, uint32_t *freed, ui
     return true;
 }
 
+/* module.purge_kill: the processes that hold a replaced version of cur's
+ * module, as module.purge would find them, but `self`, are killed first
+ * (E_KILLED), as Erlang's code:purge does; then it purges. Processes in a
+ * blocking native call, or under a tool, make it kill nobody, as they make a
+ * purge keep everything. */
+bool vm_purge_kill(VM *vm, const char *name, const LModule *from, uint64_t self, uint32_t *freed, uint32_t *kept,
+                   uint32_t *killed, MlwsError *err) {
+    *killed = 0;
+    LModule *cur = vm_module_named(vm, name, from);
+    if (!cur) return mlws_err(err, "E_LOAD_NOT_FOUND", "module %s is not loaded", name);
+    if (atomic_exchange(&vm->reloading, true)) return mlws_err(err, "E_BUSY", "a module is being reloaded or purged");
+    PidVec victims = {0};
+    sched_stop_world(vm);
+    plat_lock(vm->mods_lock);
+    Process *me = vm_proc_at(vm, self);
+    if (!vm->hook && !blocking_call_in_flight(vm))
+        for (size_t i = 0; i < vm->mods.n; i++) {
+            LModule *v = vm->mods.v[i];
+            if (v == cur || !v->replaced || v->state != LM_READY || strcmp(v->key, cur->key) || binds_foreign(v->m)) continue;
+            if (me && gc_holds_code(me, v, (uint32_t)v->index)) continue; /* kept for the caller: nobody dies for it */
+            for (uint64_t pid = 1, end = vm_pid_end(vm); pid < end; pid++) {
+                Process *p = vm_proc_at(vm, pid);
+                if (!p || pid == self || p->state == PROC_DONE || p->state == PROC_FAILED) continue;
+                bool listed = false;
+                for (size_t k = 0; k < victims.n && !listed; k++) listed = victims.v[k] == pid;
+                if (!listed && gc_holds_code(p, v, (uint32_t)v->index)) VEC_PUSH(victims, pid);
+            }
+        }
+    plat_unlock(vm->mods_lock);
+    sched_start_world(vm);
+    atomic_store(&vm->reloading, false);
+    char msg[256];
+    snprintf(msg, sizeof msg, "it was running a replaced version of module %s, which was purged", name);
+    for (size_t k = 0; k < victims.n; k++)
+        if (sched_kill_from_outside(vm, victims.v[k], "E_KILLED", msg)) ++*killed;
+    /* One running on another thread stops at its slice's end: wait for them all
+     * (a little), so that what they held can go. */
+    for (int tries = 0; tries < 2000; tries++) {
+        bool any = false;
+        for (size_t k = 0; k < victims.n && !any; k++) {
+            const Process *p = vm_proc_at(vm, victims.v[k]); /* (a kill pending is not an end) */
+            any = p && p->state != PROC_DONE && p->state != PROC_FAILED;
+        }
+        if (!any) break;
+        plat_sleep_ns(1000000);
+    }
+    VEC_FREE(victims);
+    return vm_purge(vm, name, from, freed, kept, err);
+}
+
 LModule *vm_module_named(VM *vm, const char *name, const LModule *from) {
     void *v = NULL;
     plat_lock(vm->mods_lock);

@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M75
+## Milestones M11–M76
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -97,6 +97,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M73 More in the monitor, and the program's log** (done) | `--monitor` serves and shows the modules loaded with their versions, the registered names, the nodes connected, who is linked with and who monitors whom (a graph on the dashboard, ties with other nodes included), and the first messages waiting for a process. A program writes to the monitor's log with `monitor.log` and `monitor.event` (`GET /api/log`), and nothing else is taken from it; without a monitor the calls keep nothing | `make check-tools`: a program watched while it runs: its log lines, escaped, an event, `since`, an event with no JSON form, the registry, a link and a monitor, and waiting messages; the modules and nodes of another. `tests/native/monitor_log` (no monitor: nothing kept, arguments checked). The log left off, or its text not escaped, fails them |
 | **M74 Actions in the monitor** (done) | `--monitor-actions`: kill a process, send it a JSON message, reload or purge a module, from the dashboard or `POST /api/...`, with a token (random, printed in the address's `#` part, or `MLWSVM_MONITOR_TOKEN`), the monitor's own `Host` when it listens on this machine only, and no other site's `Origin`; each action in the program's log. `--monitor-cert` and `--monitor-key`: the monitor over HTTPS only | `make check-tools`: no action without `--monitor-actions`, without the token, with the wrong one, from another site or for another `Host`; send (and not JSON, and to no one), reload, purge, kill, each in the log; and over TLS, where plain HTTP gets nothing. Each of the three checks, removed, fails it. The dashboard looked at in a browser, with and without the token |
 | **M75 A VM that stays up: `mlwsvm serve`** (done) | `mlwsvm serve --programs DIR`: a VM with no program of its own and its monitor with actions on, in which programs from DIR are started (each with its own arguments, capabilities and quotas), listed, stopped and, with the VM, shut down, from the dashboard's Programs card or `/api/programs` | `make check-tools`: no `serve` without `--programs`; programs started with arguments, the same file twice, one with no capabilities (`E_PERMISSION`), one stopped (`E_KILLED`), and a program's log; refused: a path out of the directory, one into a directory named like it, no such file, a malformed start, a bad quota, no token; and a shutdown that ends it with 0. Each of the directory check, the separator check, the program's own capabilities and the reuse of its module, removed, fails it. The page looked at in a browser |
+| **M76 A purge that kills** (done) | `module.purge_kill(name)`: the processes still running a module's replaced versions, as `module.purge` judges it, but the caller, fail with `E_KILLED` and are waited for, and the versions are freed, as Erlang's `code:purge` does (`module.purge` stays as its `soft_purge`). Returns the versions freed and kept and the processes killed. Asked for by the Erlang compiler | `tests/loader/purge_kill`: a process in a loop of the old version's own calls and one holding its closure killed and the version freed, a process on the new version left alone, the caller's own hold sparing the version and everyone, and nothing left to do after, in every mode. Without the kills, or without sparing the caller's version, it fails |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -207,9 +208,9 @@ Capabilities: M60.
   overlapped named pipes would).
 
 Not done in distribution (M61, M70): `kill` and `alive` across nodes;
-and a value's cycles, which do not cross. Not done in hot reloading (M55, M72): a purge
-that ends the processes still running an old version (Erlang's `code:purge`,
-where `module.purge` keeps it, as `soft_purge` does).
+and a value's cycles, which do not cross. Not done in hot reloading (M55, M72, M76): data
+carried in a process's own state, which a program moves itself, as Erlang's
+`code_change` does.
 
 Not done in single executables (M54): signing on macOS. `codesign` signs the
 executable but rejects the program appended to it, so a bundle cannot be
