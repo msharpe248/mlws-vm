@@ -22,6 +22,7 @@ typedef struct {
     HANDLE h;      /* for files, pipes and character devices */
     SOCKET s;      /* for sockets */
     bool nonblock; /* a pipe in PIPE_NOWAIT mode, or a non-blocking socket */
+    SOCKET base;   /* a socket's base handle, for the poller (0: not yet asked) */
 } WFd;
 int wfd_new(int kind, HANDLE h, SOCKET s); /* -1 if the table is full */
 WFd *wfd_get(int fd);                      /* NULL if fd is not open */

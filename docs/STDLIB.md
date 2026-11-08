@@ -710,7 +710,8 @@ executable.
 
 ## Platforms
 
-macOS, Linux and the BSDs (kqueue or epoll), and Windows (`WSAPoll`). On
+macOS, Linux and the BSDs (kqueue or epoll), and Windows (an I/O completion
+port). On
 Windows:
 
 * `os.run` and `os.spawn` find a command as `CreateProcess` does (the

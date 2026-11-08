@@ -4,9 +4,10 @@
  * plat_err_code names for MLWSVM.
  *
  * Non-blocking pipes use PIPE_NOWAIT: a read of an empty pipe fails with
- * ERROR_NO_DATA, and a write takes what fits. The poller waits for sockets
- * with WSAPoll, and looks at the pipes it waits for every millisecond (an
- * anonymous pipe has no readiness to wait for). */
+ * ERROR_NO_DATA, and a write takes what fits. The poller waits for sockets on
+ * an I/O completion port, through the AFD driver's poll requests, and looks at
+ * the pipes it waits for every millisecond (an anonymous pipe has no readiness
+ * to wait for). */
 #ifdef _WIN32
 #include "win32.h"
 
@@ -754,76 +755,190 @@ bool plat_random_bytes(void *buf, size_t n) {
 }
 
 /* ---- the poller ----------------------------------------------------------------------
- * The waits armed (one-shot), under a lock, with an index from descriptor to
- * wait. plat_poller_wait polls the sockets among them with WSAPoll, and one
- * end of a loopback TCP connection of its own, to whose other end
- * plat_poller_wake writes a byte. (Not one UDP socket that sends to itself:
- * a send on a socket another thread is in WSAPoll with does not return.)
- * While it waits for a pipe, it wakes every millisecond to look at it. */
+ * One I/O completion port. A wait for a socket is a poll request to the AFD
+ * driver, the kernel side of Winsock, which completes on the port once the
+ * socket is ready: what libuv's uv_poll, wepoll and Rust's mio do, through
+ * ntdll's NtDeviceIoControlFile, which Windows does not document but has kept
+ * since NT. So a socket waited for costs nothing until it is ready, however
+ * many there are. plat_poller_wake posts a completion of its own. A pipe has
+ * no readiness to wait for (an anonymous pipe cannot be overlapped), so while
+ * one is waited for, the wait wakes every millisecond to look at it.
+ *
+ * The waits armed (one-shot) are kept under a lock, with an index from
+ * descriptor to wait. A socket's request (SockPoll) lives until its
+ * completion is taken from the port, even if its wait is forgotten or replaced
+ * first: then it is cancelled, and freed when that completion comes. */
+
+#include <winternl.h>
 
 #define PIPE_LOOK_MS 1
+#define WAKE_KEY 1
+#define AFD_KEY 2
+#ifndef FILE_OPEN
+#define FILE_OPEN 0x00000001
+#endif
+#ifndef SIO_BASE_HANDLE
+#define SIO_BASE_HANDLE _WSAIOR(IOC_WS2, 34)
+#endif
+
+/* The AFD driver's poll request (as wepoll and mio define it). */
+#define IOCTL_AFD_POLL 0x00012024
+#define AFD_POLL_RECEIVE 0x0001
+#define AFD_POLL_SEND 0x0004
+#define AFD_POLL_DISCONNECT 0x0008
+#define AFD_POLL_ABORT 0x0010
+#define AFD_POLL_LOCAL_CLOSE 0x0020
+#define AFD_POLL_ACCEPT 0x0080
+#define AFD_POLL_CONNECT_FAIL 0x0100
+typedef struct {
+    HANDLE handle;
+    ULONG events;
+    NTSTATUS status;
+} AfdPollHandle;
+typedef struct {
+    LARGE_INTEGER timeout;
+    ULONG nhandles;
+    ULONG exclusive;
+    AfdPollHandle handles[1];
+} AfdPollInfo;
+
+typedef NTSTATUS(NTAPI *NtCreateFileFn)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER,
+                                        ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+typedef NTSTATUS(NTAPI *NtDeviceIoControlFileFn)(HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK, ULONG, PVOID, ULONG,
+                                                 PVOID, ULONG);
+typedef NTSTATUS(NTAPI *NtCancelIoFileExFn)(HANDLE, PIO_STATUS_BLOCK, PIO_STATUS_BLOCK);
+static struct {
+    NtCreateFileFn create;
+    NtDeviceIoControlFileFn ioctl;
+    NtCancelIoFileExFn cancel;
+} nt;
+
+static BOOL CALLBACK nt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
+    (void)once, (void)arg, (void)ctx;
+    HMODULE m = GetModuleHandleW(L"ntdll.dll");
+    if (!m) return TRUE;
+    nt.create = (NtCreateFileFn)(void (*)(void))GetProcAddress(m, "NtCreateFile");
+    nt.ioctl = (NtDeviceIoControlFileFn)(void (*)(void))GetProcAddress(m, "NtDeviceIoControlFile");
+    nt.cancel = (NtCancelIoFileExFn)(void (*)(void))GetProcAddress(m, "NtCancelIoFileEx");
+    return TRUE;
+}
+
+typedef struct {
+    IO_STATUS_BLOCK iosb; /* the request's: its completion's lpOverlapped is &iosb */
+    AfdPollInfo info;
+    int fd;
+    bool live; /* still its wait's (not forgotten, replaced or ended) */
+} SockPoll;
 
 typedef struct {
     int fd;
     int events;
     uint64_t token;
-    bool seen; /* in the set the last wait polled (a pipe waited for writing: it is ready after one look) */
+    bool pipe;
+    bool seen;    /* a pipe: looked at once already (one waited for writing is ready after one look) */
+    SockPoll *sp; /* a socket: its request, until its completion is taken */
 } Arm;
 
 struct PlatPoller {
     SRWLOCK lock;
     VEC(Arm) arms;
     VEC(uint32_t) at; /* by descriptor: 1 + its wait's index in arms, or 0 */
-    SOCKET wake, wake_tx; /* the connection's ends: polled, written */
+    size_t pipes;     /* how many of the waits are for pipes */
+    size_t pending;   /* socket requests not yet taken from the port */
+    HANDLE iocp, afd;
     volatile LONG woken;
-    VEC(WSAPOLLFD) pfd; /* the set being polled (the wait's: one thread waits) */
-    VEC(int) pfd_fd;
 };
 
-/* A connected pair of loopback TCP sockets (Windows has no socketpair). */
-static bool loopback_pair(SOCKET *a, SOCKET *b) {
-    SOCKET l = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof addr);
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    int len = sizeof addr;
-    *a = *b = INVALID_SOCKET;
-    if (l != INVALID_SOCKET && bind(l, (struct sockaddr *)&addr, len) == 0 && listen(l, 1) == 0 &&
-        getsockname(l, (struct sockaddr *)&addr, &len) == 0) {
-        *b = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
-        if (*b != INVALID_SOCKET && connect(*b, (struct sockaddr *)&addr, len) == 0) *a = accept(l, NULL, NULL);
+/* The driver's handle to give a socket's poll: its base, beneath any layered
+ * provider. */
+static HANDLE base_socket(WFd *e) {
+    if (!e->base) {
+        SOCKET b = INVALID_SOCKET;
+        DWORD n = 0;
+        if (WSAIoctl(e->s, SIO_BASE_HANDLE, NULL, 0, &b, sizeof b, &n, NULL, NULL) != 0 || b == INVALID_SOCKET) b = e->s;
+        e->base = b;
     }
-    if (l != INVALID_SOCKET) closesocket(l);
-    if (*a == INVALID_SOCKET) {
-        if (*b != INVALID_SOCKET) closesocket(*b);
-        return false;
+    return (HANDLE)e->base;
+}
+
+/* A handle on the AFD driver, with its completions on the port. */
+static HANDLE afd_open(HANDLE iocp) {
+    static const WCHAR name[] = L"\\Device\\Afd\\Mlwsvm";
+    UNICODE_STRING us = {.Length = sizeof name - sizeof(WCHAR), .MaximumLength = sizeof name, .Buffer = (PWSTR)name};
+    OBJECT_ATTRIBUTES oa = {.Length = sizeof oa, .ObjectName = &us};
+    IO_STATUS_BLOCK iosb;
+    HANDLE h = NULL;
+    if (nt.create(&h, SYNCHRONIZE, &oa, &iosb, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, NULL, 0) != 0)
+        return NULL;
+    if (!CreateIoCompletionPort(h, iocp, AFD_KEY, 0)) {
+        CloseHandle(h);
+        return NULL;
     }
-    set_nonblock(*a);
-    set_nonblock(*b);
-    set_nodelay(*b);
-    return true;
+    SetFileCompletionNotificationModes(h, FILE_SKIP_SET_EVENT_ON_HANDLE);
+    return h;
 }
 
 PlatPoller *plat_poller_new(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
     wsa_init();
+    InitOnceExecuteOnce(&once, nt_load, NULL, NULL);
+    if (!nt.create || !nt.ioctl || !nt.cancel) return NULL;
     PlatPoller *p = xcalloc(1, sizeof *p);
     InitializeSRWLock(&p->lock);
-    if (!loopback_pair(&p->wake, &p->wake_tx)) {
+    p->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);
+    p->afd = p->iocp ? afd_open(p->iocp) : NULL;
+    if (!p->afd) {
+        if (p->iocp) CloseHandle(p->iocp);
         free(p);
         return NULL;
     }
     return p;
 }
 
+/* Stop a socket's request (the lock is held): its completion still comes, and
+ * frees it. */
+static void drop_request(PlatPoller *p, Arm *a) {
+    if (!a->sp) return;
+    IO_STATUS_BLOCK cancel;
+    a->sp->live = false;
+    nt.cancel(p->afd, &a->sp->iosb, &cancel); /* (not found: it has completed already) */
+    a->sp = NULL;
+}
+
+/* Take a completion from the port (the lock is held): the wait it ends, if it
+ * is still that wait's, else -1. */
+static long completed(PlatPoller *p, SockPoll *sp) {
+    long i = -1;
+    p->pending--;
+    if (sp->live && sp->fd >= 0 && (size_t)sp->fd < p->at.n) {
+        i = (long)p->at.v[sp->fd] - 1;
+        if (i >= 0 && p->arms.v[i].sp != sp) i = -1;
+    }
+    if (i >= 0) p->arms.v[i].sp = NULL;
+    free(sp);
+    return i;
+}
+
 void plat_poller_free(PlatPoller *p) {
     if (!p) return;
-    closesocket(p->wake);
-    closesocket(p->wake_tx);
+    AcquireSRWLockExclusive(&p->lock);
+    for (size_t i = 0; i < p->arms.n; i++) drop_request(p, &p->arms.v[i]);
+    ReleaseSRWLockExclusive(&p->lock);
+    /* Every request's memory belongs to the kernel until its completion is
+     * taken: take them all (cancelled, they come at once), or keep it all. */
+    uint64_t until = plat_now_ns() + 2000000000u;
+    while (p->pending && plat_now_ns() < until) {
+        OVERLAPPED_ENTRY ev[64];
+        ULONG n = 0;
+        if (!GetQueuedCompletionStatusEx(p->iocp, ev, 64, &n, 100, FALSE)) continue;
+        for (ULONG j = 0; j < n; j++)
+            if (ev[j].lpCompletionKey == AFD_KEY) completed(p, (SockPoll *)ev[j].lpOverlapped);
+    }
+    if (p->pending) return; /* (the kernel still has some: never freed) */
+    CloseHandle(p->afd);
+    CloseHandle(p->iocp);
     VEC_FREE(p->arms);
     VEC_FREE(p->at);
-    VEC_FREE(p->pfd);
-    VEC_FREE(p->pfd_fd);
     free(p);
 }
 
@@ -833,34 +948,72 @@ static long arm_find(PlatPoller *p, int fd) {
 }
 
 static void arm_remove(PlatPoller *p, size_t i) {
+    if (p->arms.v[i].pipe) p->pipes--;
     p->at.v[p->arms.v[i].fd] = 0;
     p->arms.v[i] = p->arms.v[--p->arms.n];
     if (i < p->arms.n) p->at.v[p->arms.v[i].fd] = (uint32_t)i + 1;
 }
 
+/* What a wait for reading or writing is told of: anything that makes the next
+ * call not wait, failures and closes included. */
+static ULONG afd_events(int events) {
+    ULONG e = AFD_POLL_ABORT | AFD_POLL_LOCAL_CLOSE | AFD_POLL_CONNECT_FAIL;
+    if (events & PLAT_POLL_READ) e |= AFD_POLL_RECEIVE | AFD_POLL_ACCEPT | AFD_POLL_DISCONNECT;
+    if (events & PLAT_POLL_WRITE) e |= AFD_POLL_SEND;
+    return e;
+}
+
 bool plat_poller_arm(PlatPoller *p, int fd, int events, uint64_t token) {
     WFd *e = wfd_get(fd);
     if (!e || (e->kind != WFD_SOCKET && e->kind != WFD_PIPE)) return false;
+    bool pipe = e->kind == WFD_PIPE, ok = true;
     AcquireSRWLockExclusive(&p->lock);
     long i = arm_find(p, fd);
-    if (i < 0) {
+    if (i >= 0) {
+        drop_request(p, &p->arms.v[i]);
+        if (p->arms.v[i].pipe) p->pipes--;
+    } else {
         while (p->at.n <= (size_t)fd) VEC_PUSH(p->at, 0);
         VEC_PUSH(p->arms, ((Arm){0}));
         i = (long)p->arms.n - 1;
         p->at.v[fd] = (uint32_t)i + 1;
     }
-    p->arms.v[i] = (Arm){fd, events, token, false};
+    p->arms.v[i] = (Arm){fd, events, token, pipe, false, NULL};
+    if (pipe) {
+        p->pipes++;
+    } else {
+        SockPoll *sp = xcalloc(1, sizeof *sp);
+        sp->fd = fd;
+        sp->live = true;
+        sp->info.timeout.QuadPart = INT64_MAX;
+        sp->info.nhandles = 1;
+        sp->info.handles[0].handle = base_socket(e);
+        sp->info.handles[0].events = afd_events(events);
+        sp->iosb.Status = (NTSTATUS)STATUS_PENDING;
+        NTSTATUS st = nt.ioctl(p->afd, NULL, NULL, &sp->iosb, &sp->iosb, IOCTL_AFD_POLL, &sp->info, sizeof sp->info,
+                               &sp->info, sizeof sp->info);
+        if (st == (NTSTATUS)STATUS_PENDING || st == 0) { /* (0: done already, its completion is queued) */
+            p->arms.v[i].sp = sp;
+            p->pending++;
+        } else {
+            free(sp);
+            arm_remove(p, (size_t)i);
+            ok = false;
+        }
+    }
     ReleaseSRWLockExclusive(&p->lock);
-    plat_poller_wake(p); /* so a wait in progress polls it too */
-    return true;
+    if (pipe) plat_poller_wake(p); /* so that a wait in progress looks at it */
+    return ok;
 }
 
 void plat_poller_forget(PlatPoller *p, int fd) {
     AcquireSRWLockExclusive(&p->lock);
     long i = arm_find(p, fd);
-    if (i >= 0) arm_remove(p, (size_t)i);
+    if (i >= 0) {
+        drop_request(p, &p->arms.v[i]);
+        arm_remove(p, (size_t)i);
+    }
     ReleaseSRWLockExclusive(&p->lock);
-    if (i >= 0) plat_poller_wake(p); /* stop polling the socket before it is closed */
 }
 
 static bool pipe_ready(const Arm *a, HANDLE h) {
@@ -874,73 +1027,52 @@ static bool pipe_ready(const Arm *a, HANDLE h) {
 int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_ns) {
     uint64_t start = plat_now_ns();
     int k = 0;
+    OVERLAPPED_ENTRY ev[64];
     for (;;) {
-        p->pfd.n = p->pfd_fd.n = 0;
-        VEC_PUSH(p->pfd, ((WSAPOLLFD){p->wake, POLLRDNORM, 0}));
-        VEC_PUSH(p->pfd_fd, -1);
-        bool pipes = false;
         AcquireSRWLockExclusive(&p->lock);
-        for (size_t i = 0; i < p->arms.n; i++) {
-            Arm *a = &p->arms.v[i];
-            WFd *e = wfd_get(a->fd);
-            if (e && e->kind == WFD_SOCKET) {
-                VEC_PUSH(p->pfd, ((WSAPOLLFD){e->s, (short)(a->events & PLAT_POLL_WRITE ? POLLWRNORM : POLLRDNORM), 0}));
-                VEC_PUSH(p->pfd_fd, a->fd);
-            } else {
-                pipes = true; /* (or closed) */
-                a->seen = true;
-            }
-        }
+        bool pipes = p->pipes > 0;
         ReleaseSRWLockExclusive(&p->lock);
         int64_t left = timeout_ns < 0 ? -1 : timeout_ns - (int64_t)(plat_now_ns() - start);
-        int ms = timeout_ns < 0 ? -1 : left <= 0 ? 0 : (int)((left + 999999) / 1000000);
-        if (pipes && (ms < 0 || ms > PIPE_LOOK_MS)) ms = PIPE_LOOK_MS;
-        int n = WSAPoll(p->pfd.v, (ULONG)p->pfd.n, ms);
-        bool woken = n > 0 && p->pfd.v[0].revents;
-        /* Drained, then cleared: a wake-up before the clear armed a wait the
-         * next wait's set will have; one after it sends another byte. (The
-         * other order loses a byte sent between the two, and with it every
-         * later wake-up.) */
-        if (woken) {
-            char drain[64];
-            while (recv(p->wake, drain, sizeof drain, 0) > 0) {
-            }
-            InterlockedExchange(&p->woken, 0);
-        }
+        DWORD ms = timeout_ns < 0 ? INFINITE : left <= 0 ? 0 : (DWORD)((left + 999999) / 1000000);
+        if (pipes && (ms == INFINITE || ms > PIPE_LOOK_MS)) ms = PIPE_LOOK_MS;
+        ULONG n = 0, want = (ULONG)(max - k < 64 ? max - k : 64);
+        if (!GetQueuedCompletionStatusEx(p->iocp, ev, want, &n, ms, FALSE)) n = 0; /* (timed out) */
+        bool woken = false;
         AcquireSRWLockExclusive(&p->lock);
-        for (size_t j = 1; n > 0 && j < p->pfd.n && k < max; j++) {
-            if (!p->pfd.v[j].revents) continue;
-            long i = arm_find(p, p->pfd_fd.v[j]);
-            WFd *e = wfd_get(p->pfd_fd.v[j]);
-            if (i < 0 || !e || e->kind != WFD_SOCKET || e->s != p->pfd.v[j].fd) continue; /* since forgotten */
+        for (ULONG j = 0; j < n; j++) {
+            if (ev[j].lpCompletionKey == WAKE_KEY) {
+                woken = true;
+                continue;
+            }
+            long i = completed(p, (SockPoll *)ev[j].lpOverlapped);
+            if (i < 0) continue; /* (forgotten or replaced: cancelled) */
             tokens[k++] = p->arms.v[i].token;
             arm_remove(p, (size_t)i);
         }
         for (size_t i = 0; pipes && i < p->arms.n && k < max;) {
             Arm *a = &p->arms.v[i];
             WFd *e = wfd_get(a->fd);
-            if (e && e->kind == WFD_SOCKET) {
+            if (!a->pipe || (e && e->kind == WFD_PIPE && !pipe_ready(a, e->h))) {
+                if (a->pipe) a->seen = true;
                 i++;
                 continue;
             }
-            if (e && !pipe_ready(a, e->h)) {
-                i++;
-                continue;
-            }
-            tokens[k++] = a->token;
+            tokens[k++] = a->token; /* ready, or closed */
             arm_remove(p, i);
         }
         ReleaseSRWLockExclusive(&p->lock);
+        /* Taken, then cleared: a wake-up before the clear is answered by this
+         * return; one after it posts another. */
+        if (woken) InterlockedExchange(&p->woken, 0);
         bool out_of_time = timeout_ns >= 0 && (int64_t)(plat_now_ns() - start) >= timeout_ns;
-        if (k || woken || out_of_time || n < 0) break;
+        if (k || woken || out_of_time) break;
     }
     return k;
 }
 
 void plat_poller_wake(PlatPoller *p) {
     if (InterlockedExchange(&p->woken, 1)) return; /* a wake-up is pending anyway */
-    char b = 1;
-    send(p->wake_tx, &b, 1, 0);
+    PostQueuedCompletionStatus(p->iocp, 0, WAKE_KEY, NULL);
 }
 #else
 typedef int mlwsvm_win32_io_unused; /* ISO C forbids an empty translation unit */

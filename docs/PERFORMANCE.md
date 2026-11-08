@@ -37,6 +37,11 @@ per core:
 | parallel | 24 | 44 | 33 |
 | connections | 1,061 | 680 | 1,212 |
 
+On Windows (GitHub's runners, in CI), `connections` takes 2 to 5 s on x86-64
+and arm64 (the runners vary). Sockets are waited for on an I/O completion port,
+so the 20,000 waiting ends cost nothing until one is ready; asking `WSAPoll`
+about all of them at each wait takes 175 to 320 s.
+
 The Mac is a laptop with 6 performance and 12 efficiency cores, running macOS.
 The two desktops run Ubuntu 26.04: the Intel one has 8 cores (16 threads), the
 AMD one 12 (24 threads). All builds use `-O2`.

@@ -2337,7 +2337,8 @@ serves every language on the VM.
   `PlatMutex` and `PlatCond`;
 * clocks, sleeping and random bytes;
 * files, directories, modification times and real paths;
-* processes and pipes; sockets; the poller (kqueue, epoll, or WSAPoll);
+* processes and pipes; sockets; the poller (kqueue, epoll, or an I/O
+  completion port);
 * dynamic loading;
 * memory for the JIT's machine code (`plat_code_*`): written, then made
   executable (`MAP_JIT` on Apple silicon);
@@ -2356,11 +2357,16 @@ runtime):
   handles.
 * A non-blocking pipe is in `PIPE_NOWAIT` mode: a read of an empty one fails
   with `ERROR_NO_DATA`, and a write takes what fits.
-* The poller waits for sockets with `WSAPoll`, and for its own wake-up on a
-  loopback TCP connection (a send on a socket that another thread is polling
-  does not return, so one socket cannot wake itself). An anonymous pipe has
-  no readiness to wait for, so while a process waits for one, the poller
-  looks at it every millisecond (`PeekNamedPipe`).
+* The poller is an I/O completion port. A wait for a socket is a poll
+  request to the AFD driver, the kernel side of Winsock (`IOCTL_AFD_POLL`,
+  through ntdll's `NtDeviceIoControlFile`, looked up at run time), as libuv's
+  `uv_poll`, wepoll and Rust's mio do it. It completes on the port when the
+  socket is ready, so a socket waited for costs nothing until then, however
+  many there are. A wait forgotten or replaced first is cancelled, and its
+  request is freed only when its completion is taken, since until then the
+  kernel may still write to it. A wake-up is a completion posted to the port.
+  An anonymous pipe has no readiness to wait for, so while a process waits
+  for one, the poller looks at it every millisecond (`PeekNamedPipe`).
 * A child is started with `CreateProcessW`, inheriting only its three
   standard handles (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`); its arguments are
   quoted as the C runtime parses them. A signal ends it
@@ -2438,10 +2444,6 @@ Each of these was considered, and most were measured
 * **Lock-free run queues and spinning before sleeping.** The queue locks
   are almost always uncontended, and waking one thread at a time avoided the
   latency problem in every benchmark so far.
-* **A completion-port poller on Windows.** `WSAPoll` is given every socket
-  waited for at each wait, and pipes are looked at every millisecond; I/O
-  completion ports (or the AFD driver, as wepoll does) would cost nothing per
-  idle socket. 1,000 idle connections are well within `WSAPoll`'s reach.
 * **MSVC.** Clang is needed for computed goto and guaranteed tail calls, and
   the build uses GNU make and a POSIX shell; MSVC would get the switch
   dispatch, without the JIT.

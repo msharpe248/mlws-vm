@@ -76,7 +76,7 @@ int wfd_new(int kind, HANDLE h, SOCKET s) {
         fd = wfd_top++;
         if (!wfd_chunks[fd / WFD_CHUNK]) wfd_chunks[fd / WFD_CHUNK] = xcalloc(WFD_CHUNK, sizeof(WFd));
     }
-    if (fd >= 0) *slot(fd) = (WFd){kind, h, s, false};
+    if (fd >= 0) *slot(fd) = (WFd){.kind = kind, .h = h, .s = s};
     ReleaseSRWLockExclusive(&wfd_lock);
     return fd;
 }
