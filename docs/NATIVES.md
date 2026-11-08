@@ -156,6 +156,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `text.replace_n` | r, r, r, i64 | r, i64 | Replace the first n occurrences (every one, if n < 0), and how many were: Lua's gsub of a plain pattern, but for n < 0. |
 | `text.starts_with` | r, r | b | Whether a string starts with a prefix. |
 | `text.ends_with` | r, r | b | Whether a string ends with a suffix. |
+| `text.intern` | r | r | The one string with this text: the same object as every module's literal of it, now or loaded later, so that identity (beq.r) tests text, as for atoms or symbols. Kept until the VM ends. E_TYPE for a byte buffer, or text with a NUL in it. |
 | `text.slice` | r, i64, i64 | r | The bytes [start, end) as a string; negative offsets count from the end; clamped to the string. |
 | `text.upper` | r | r | Upper case, by Unicode's full mappings (ß becomes SS). |
 | `text.lower` | r | r | Lower case, by Unicode's full mappings (a final Σ becomes ς). |

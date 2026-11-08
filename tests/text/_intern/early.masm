@@ -1,0 +1,5 @@
+; Imported by tests/text/intern.masm: its literal "ok" is the VM's one "ok".
+.export ok
+.func ok -> ref
+    ret "ok"
+.endf

@@ -207,6 +207,25 @@ replaced, as Lua's `gsub` of a plain pattern does, where an empty string
 occurs before each byte and at the end. A negative n replaces every
 occurrence (Lua's `gsub` replaces none).
 
+### Interned strings
+
+Every module's literal of a text is one object in the whole VM, so `beq.r R0,
+"ok"` tests identity, not text, and a string made at run time is never that
+object. `text.intern(s)` returns the one string with `s`'s text: the literal
+itself if a module has one, or else a string made now, which every module
+loaded later shares as its literal of that text. That is how a language's atoms
+or symbols, some written in its source and some made by the program (Erlang's
+`list_to_atom`), compare by identity across modules:
+
+```asm
+    ncall "text.intern" (R0) -> (R0)
+    beq.r R0, "ok", matched
+```
+
+Interned strings last as long as the VM, as literals do: intern what is known to
+be few, not every string a program reads. A byte buffer, or text with a NUL in
+it, is `E_TYPE`.
+
 ### Unicode
 
 The text natives follow Unicode 17.0 (`text.unicode_version`), from tables

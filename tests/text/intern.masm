@@ -1,0 +1,53 @@
+; text.intern(s) returns the VM's one string with s's text: the same object as
+; every module's literal of it (this one's, one imported, one loaded after it
+; was interned), so that identity (beq.r) compares text, as atoms and symbols
+; are compared. A text made twice and interned twice is one object; a string
+; already interned comes back as it is. A byte buffer, or text with a NUL in
+; it, is E_TYPE.
+.include "std/test.inc"
+.import _intern.early as early
+
+.func code_of(ref v) -> ref
+.try h
+    ncall "text.intern" (v) -> (R1)
+.endtry
+    ret null
+h:  catch R1
+    mov R2, R1->Error.code
+    ret R2
+.endf
+
+.func main
+    strcat R0, "o", "k"                  ; a new string, not the literal
+    beq.r R0, "ok", 9f
+    ncall "text.intern" (R0) -> (R1)
+    bne.r R1, "ok", 9f                   ; this module's literal
+    call early.ok -> (R2)
+    bne.r R1, R2, 9f                     ; and the imported one's
+    ncall "text.intern" (R1) -> (R3)
+    bne.r R3, R1, 9f                     ; interned again: itself
+
+    strcat R4, "fresh", " atom"          ; a text no module has yet
+    ncall "text.intern" (R4) -> (R5)
+    strcat R6, "fresh ", "atom"
+    ncall "text.intern" (R6) -> (R7)
+    bne.r R5, R7, 9f                     ; made twice, one string
+    ncall "module.load" ("_intern.late")
+    ncall "module.function" ("_intern.late", "fresh") -> (R8)
+    calli R8 () -> (R9)
+    bne.r R9, R5, 9f                     ; a module loaded later shares it
+
+    bufnew R10, 2
+    call code_of (R10) -> (R11)
+    strcmp I0, R11, "E_TYPE"
+    ASSERT_EQ I0, 0
+    bufpush R10, 0x61
+    bufpush R10, 0
+    strcat R12, R10                      ; "a\0": text with a NUL
+    call code_of (R12) -> (R11)
+    strcmp I0, R11, "E_TYPE"
+    ASSERT_EQ I0, 0
+    ret 0
+9:  FAIL "not the one string"
+    ret 1
+.endf

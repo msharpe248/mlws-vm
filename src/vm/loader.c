@@ -223,6 +223,26 @@ static const StructDef *reload_same_struct(const VM *vm, const Module *m, const 
     return NULL;
 }
 
+/* text.intern: the VM's one string with this text, the same object as every
+ * module's literal of it (const_pool), made and added if there is none yet.
+ * NULL for text with a NUL in it, which literals do not share either. */
+Obj *vm_intern(VM *vm, const char *s, size_t n) {
+    if (memchr(s, 0, n)) return NULL;
+    StrBuf key = {0};
+    sb_putc(&key, (char)('0' + CONST_STRING));
+    sb_putn(&key, s, n);
+    void *v = NULL;
+    plat_lock(vm->mods_lock);
+    if (!smap_get(&vm->const_pool, key.s, &v)) {
+        v = &str_new_immortal(s, n)->h;
+        VEC_PUSH(vm->const_objs, v);
+        smap_put(&vm->const_pool, key.s, v);
+    }
+    plat_unlock(vm->mods_lock);
+    sb_free(&key);
+    return v;
+}
+
 static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
     Module *m = lm->m;
     lm->consts = xcalloc(m->nconsts + 1, sizeof(Obj *));

@@ -1267,6 +1267,15 @@ static void n_json_stringify(Process *p, Word *a, Word *r) {
     r[0] = sb_string(p, &w.b);
 }
 
+/* text.intern(s): the VM's one string with s's text (vm_intern). */
+static void n_intern(Process *p, Word *a, Word *r) {
+    const ObjString *s = a[0].r;
+    if (!s || s->h.kind != OBJ_STRING) vm_trap(p, "E_TYPE", "text.intern: expected a string");
+    Obj *o = vm_intern(p->vm, s->data, s->len);
+    if (!o) vm_trap(p, "E_TYPE", "text.intern: text with a NUL in it is not interned");
+    r[0].r = o;
+}
+
 /* ---- the table ------------------------------------------------------------------------------- */
 
 #define N(name, np, pt, nr, rt, fn, doc) {name, np, pt, nr, rt, fn, doc, 0, NULL, NULL, NULL}
@@ -1304,6 +1313,8 @@ static const NativeDef TEXT_NATIVES[] = {
       "Replace the first n occurrences (every one, if n < 0), and how many were: Lua's gsub of a plain pattern, but for n < 0."),
     N("text.starts_with", 2, T(T_R, T_R), 1, T(T_B), n_starts_with, "Whether a string starts with a prefix."),
     N("text.ends_with", 2, T(T_R, T_R), 1, T(T_B), n_ends_with, "Whether a string ends with a suffix."),
+    N("text.intern", 1, T(T_R), 1, T(T_R), n_intern,
+      "The one string with this text: the same object as every module's literal of it, now or loaded later, so that identity (beq.r) tests text, as for atoms or symbols. Kept until the VM ends. E_TYPE for a byte buffer, or text with a NUL in it."),
     N("text.slice", 3, T(T_R, T_I64, T_I64), 1, T(T_R), n_slice,
       "The bytes [start, end) as a string; negative offsets count from the end; clamped to the string."),
     N("text.upper", 1, T(T_R), 1, T(T_R), n_upper, "Upper case, by Unicode's full mappings (ß becomes SS)."),
