@@ -1,0 +1,6 @@
+; Loaded by tests/text/intern.masm after it interned "fresh atom": its literal
+; of that text is the string interned.
+.export fresh
+.func fresh -> ref
+    ret "fresh atom"
+.endf

@@ -315,6 +315,7 @@ of the instructions in call-heavy code.
 | M75 | Erlang/OTP's release handling and application controller (`application:start`); application servers (Tomcat's manager, deploying to a running JVM); PM2 and systemd for starting and stopping services |
 | M76 | Erlang's `code:purge` (kills what runs old code) beside `code:soft_purge` (refuses) |
 | M77 | PM2's and systemd's restart of a service with its arguments; Erlang Observer's per-application views |
+| M78 | Lisp's `intern`, Java's `String.intern`, Ruby's `to_sym`, Erlang's atom table, Lua's interned strings |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References
