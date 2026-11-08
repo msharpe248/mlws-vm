@@ -1,0 +1,107 @@
+; A child's output, read through pipes as the poller waits for them: many
+; children waited for at once, each by its own process; more output than a
+; pipe holds; stdout and stderr each piped; the end of output with none; lines
+; that come in pieces; and a process killed while it waits for a child's
+; output, after which the rest goes on.
+.include "std/test.inc"
+
+; Run sh -c script with pipes, and return its stdout, read to the end, as a string.
+.func output(ref script, i64 pipes) -> ref
+    lnew R10
+    lpush R10, "sh", "-c", script
+    ncall "os.spawn" (R10, pipes) -> (R1, R2, R3, R4)
+    ncall "fs.read_all" (R3) -> (R5)
+    ncall "os.wait" (R1) -> (I1)
+    ASSERT_EQ I1, 0
+    strcat R6, R5
+    ret R6
+.endf
+
+; One of the children waited for at once: sends parent its output.
+.func waiter(i64 parent, i64 n)
+    tostr R0, n
+    strcat R1, "sleep 0.3; echo child ", R0
+    call output (R1, 2) -> (R2)
+    send parent, R2
+    ret
+.endf
+
+; Waits for a child that answers late: killed meanwhile.
+.func late
+    call output ("sleep 2; echo late 2>/dev/null", 2) -> (R0)
+    ret
+.endf
+
+.func main
+    ; Eight at once, each in its own process.
+    mov I0, 0
+1:  spawn waiter (PID, I0)
+    inc I0
+    blt I0, 8, 1b
+    mov I1, 0                          ; a bit for each child heard from
+    mov I2, 0
+2:  recv R0
+    ncall "text.find" (R0, "child ", 0) -> (I3)
+    ASSERT_EQ I3, 0
+    len I4, R0
+    sub I4, I4, 2
+    mov.u8 I5, R0[I4]                  ; the digit before the newline
+    sub I5, I5, 48
+    mov I6, 1
+    shl I6, I6, I5
+    and I7, I1, I6
+    ASSERT_EQ I7, 0
+    or I1, I1, I6
+    inc I2
+    blt I2, 8, 2b
+    ASSERT_EQ I1, 255
+
+    ; More than a pipe holds (82,000 bytes), in lines.
+    call output ("i=0; while [ $i -lt 2000 ]; do echo 0123456789012345678901234567890123456789; i=$((i+1)); done", 2) -> (R0)
+    len I0, R0
+    ASSERT_EQ I0, 82000
+
+    ; stdout and stderr, each its own pipe.
+    lnew R0
+    lpush R0, "sh", "-c", "echo out; echo err >&2"
+    ncall "os.spawn" (R0, 6) -> (R1, R2, R3, R4)
+    ncall "fs.read_all" (R3) -> (R5)
+    ncall "fs.read_all" (R4) -> (R6)
+    ncall "os.wait" (R1) -> (I0)
+    strcat R7, R5
+    strcmp I1, R7, "out\n"
+    ASSERT_EQ I1, 0
+    strcat R7, R6
+    strcmp I1, R7, "err\n"
+    ASSERT_EQ I1, 0
+
+    ; No output: the end at once.
+    call output ("exit 0", 2) -> (R0)
+    len I0, R0
+    ASSERT_EQ I0, 0
+
+    ; Lines in pieces.
+    lnew R0
+    lpush R0, "sh", "-c", "printf 'a\\nb'; sleep 0.2; printf 'c\\n'"
+    ncall "os.spawn" (R0, 2) -> (R1, R2, R3, R4)
+    ncall "fs.read_line" (R3) -> (R5)
+    strcmp I1, R5, "a"
+    ASSERT_EQ I1, 0
+    ncall "fs.read_line" (R3) -> (R5)
+    strcmp I1, R5, "bc"
+    ASSERT_EQ I1, 0
+    ncall "os.wait" (R1) -> (I0)
+
+    ; Killed while it waits for a child's output: the rest goes on.
+    spawnm late -> (I10)
+    sleep 100
+    kill I10
+    recv R0
+    mov R1, R0->Down.code
+    strcmp I1, R1, "E_KILLED"
+    ASSERT_EQ I1, 0
+    call output ("echo after", 2) -> (R0)
+    strcmp I1, R0, "after\n"
+    ASSERT_EQ I1, 0
+    ret 0
+.endf

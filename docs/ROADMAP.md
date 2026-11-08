@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M85
+## Milestones M11–M86
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -107,6 +107,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M83 Kill across nodes** (done) | `kill` takes a pid of another node (`std.node`): a control frame asks that node to kill the process with `E_KILLED`, as its own `kill` would, so watchers and links on either node hear of it. A kill of a process not there, or on a node not connected, does nothing, as one of a finished process does. `alive` stays this VM's. Asked for by the Erlang compiler (`exit(Pid, Reason)` on a remote pid) | `make check-tools`: node 1 kills a process on node 2 and gets its `Down` with `E_KILLED`; kills of a pid nobody has there and of a node not connected do nothing. With the kill not sent, it times out |
 | **M84 Node names** (done) | A node may have a name besides its number (`std.node`'s `set_name`, as Erlang's `name@host`), sent in the handshake, so that each node it connects to knows it: `name(number)` and `number(name)`, kept after the connection goes, and `nodes()`, the nodes connected now. A connection from a node whose name this VM or another connected node has is refused. The monitor's `/api/nodes` and the dashboard show the names. Asked for by the Erlang compiler (`node()`, `node(Pid)`, `nodes()`, `{Name, Node} ! Msg`) | `make check-tools`: names known each way after connecting, a name not known, a second name refused, the nodes connected, the names kept after the connection goes, and a third VM with node 2's name refused at both ends with node 2 unharmed; `/api/nodes` with no name |
 | **M85 Watching nodes** (done) | `std.node`'s `watch()`: from then on, a built-in `NodeEvent {node, name, up}` comes to the process for each connection to another node that comes or goes (after the `Down`s and failures a lost connection causes); `unwatch()` stops them. For Erlang's `monitor_node` and `net_kernel:monitor_nodes`, which the compiler builds on it | `make check-tools`: a process watching from before node 1 connects gets node 2's coming and going, with its name, and one that stopped watching gets none |
+| **M86 Children's output waited for on Windows** (done) | Our end of a child's stdout and stderr is a named pipe opened for overlapped I/O, as libuv's `uv_spawn` makes it, and a wait to read it is a zero-byte read on the poller's completion port, so a process waiting for a child's output costs nothing until it comes, where the poller looked at each such pipe every millisecond. Anonymous pipes (a child's stdin, a stdin given to the VM) and waits to write are still looked at | `tests/os/spawn_pipes` (every system; CI on Windows x86-64 and arm64): eight children waited for at once, each by its own process; 82,000 bytes through a 64 KiB pipe; stdout and stderr each piped; the end with no output; a line that comes in two pieces; and a process killed while it waits for a child's output, then another child read |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -212,9 +213,10 @@ Capabilities: M60.
 * Linux and CI: M11.
 * Windows: M47, on x86-64 with Clang (MSYS2); arm64 too, with the JIT,
   tested in the Platforms workflow; sockets waited for on an I/O completion
-  port (M71). Not done: MSVC builds, and waiting for pipes without looking
-  at them every millisecond (an anonymous pipe has no readiness to wait for;
-  overlapped named pipes would).
+  port (M71), and children's output as overlapped pipes on the same port
+  (M86). Not done: MSVC builds, and waiting without looking every
+  millisecond for anonymous pipes (a child's stdin, a stdin given to the
+  VM), which have no readiness to wait for, and for pipes waited for writing.
 
 Not done in distribution (M61, M70): `kill` and `alive` across nodes;
 and a value's cycles, which do not cross. Not done in hot reloading (M55, M72, M76): data

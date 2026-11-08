@@ -2405,8 +2405,14 @@ runtime):
   many there are. A wait forgotten or replaced first is cancelled, and its
   request is freed only when its completion is taken, since until then the
   kernel may still write to it. A wake-up is a completion posted to the port.
-  An anonymous pipe has no readiness to wait for, so while a process waits
-  for one, the poller looks at it every millisecond (`PeekNamedPipe`).
+  Our end of a child's stdout or stderr is a named pipe opened for
+  overlapped I/O, as libuv's `uv_spawn` makes it (the child's end is a plain
+  handle): a wait for it to be read is a zero-byte read on the port, which
+  completes once there is data or the child has closed it, and a read that
+  must not wait looks first (`PeekNamedPipe`). An anonymous pipe (a child's
+  stdin, or a stdin given to this process) has no readiness to wait for, nor
+  does a pipe waited for writing, so while a process waits for one of those
+  the poller looks at it every millisecond.
 * A child is started with `CreateProcessW`, inheriting only its three
   standard handles (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`); its arguments are
   quoted as the C runtime parses them. A signal ends it
