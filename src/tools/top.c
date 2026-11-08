@@ -9,7 +9,7 @@
 #include "tools.h"
 
 typedef struct {
-    char host[256];
+    char host[300]; /* (as long as an address parse_target takes) */
     int port;
     bool tls;
     const char *ca;
@@ -79,7 +79,7 @@ static bool parse_target(const char *addr, Target *t) {
     if (!strncmp(addr, "https://", 8)) t->tls = true, addr += 8;
     else if (!strncmp(addr, "http://", 7)) addr += 7;
     size_t len = strcspn(addr, "/#?");
-    char a[300];
+    char a[sizeof t->host];
     if (len >= sizeof a) return false;
     memcpy(a, addr, len);
     a[len] = 0;
