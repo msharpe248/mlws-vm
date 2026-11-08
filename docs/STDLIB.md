@@ -559,12 +559,13 @@ this node's number in it. `node.of(pid)` says which node a pid names.
   module's name, the hash of that module's version, its function (exported or
   not) and that function's signature. Where that very version is loaded, as the
   current one or one a reload replaced, it is the same closure there. Where it
-  is not, it arrives as one that raises `E_LINK_UNDEF` when called, as Erlang's
-  fun of code a node does not have, and that is still the closure it stands for
+  is not, it arrives as one that raises `E_LINK_CODE` when called, as
+  Erlang's fun of code a node does not have (`badfun`), and that is still the closure it stands for
   when it is sent on, back or to a node that has the code. Two nodes have the
   same version when the module was built from the same text with the same
   options (the hash leaves out where its files are). A `module.handle` crosses
-  as its module and function only, and calls that node's current version.
+  as its module and function only, and calls that node's current version
+  (`E_LINK_UNDEF` where that node does not export the function).
 * **A message that cannot be read where it arrives** (a struct of a module
   that node does not have) is dropped there, with a warning in its monitor's
   log, and the connection goes on.

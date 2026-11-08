@@ -815,7 +815,8 @@ Function *vm_module_func(LModule *lm, const char *fname) {
 
 /* A stand-in for a closure from another node whose code this VM does not
  * have (that version of mod, or fname in it): a function of the signature it
- * was sent with that raises E_LINK_UNDEF, in a module of its own that keeps
+ * was sent with that raises E_LINK_CODE (for a handle, whose function this
+ * VM does not export: E_LINK_UNDEF), in a module of its own that keeps
  * what it stands for, so that it is that closure again where it is sent on to
  * a node that has the code. One per identity and signature, for the VM's life. */
 Function *vm_remote_stub(VM *vm, const char *mod, const uint8_t *hash, const char *fname, const uint8_t *params,
@@ -845,7 +846,8 @@ Function *vm_remote_stub(VM *vm, const char *mod, const uint8_t *hash, const cha
         for (int i = 0; i < nr; i++) sb_printf(&t, "%s%s", i ? ", " : "", handle_type(rets[i]));
         sb_puts(&t, ")");
     }
-    sb_puts(&t, "\n    new R0, Error\n    mov R0->Error.code, \"E_LINK_UNDEF\"\n    mov R0->Error.message, \"");
+    sb_printf(&t, "\n    new R0, Error\n    mov R0->Error.code, \"%s\"\n    mov R0->Error.message, \"",
+              hash ? "E_LINK_CODE" : "E_LINK_UNDEF");
     for (const char *c = mod; *c; c++) sb_putc(&t, *c == '"' || *c == '\\' ? '_' : *c);
     sb_putc(&t, '.');
     for (const char *c = fname; *c; c++) sb_putc(&t, *c == '"' || *c == '\\' ? '_' : *c);

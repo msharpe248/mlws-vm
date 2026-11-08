@@ -116,7 +116,7 @@ plain_refused:
 
     ; Closures cross: one of worker's (loaded there too), not exported and with
     ; a captured value, runs there; a handle there calls node 2's twice; one of
-    ; this module's, which node 2 does not have, raises E_LINK_UNDEF there, and
+    ; this module's, which node 2 does not have, raises E_LINK_CODE there, and
     ; comes back as itself. A struct node 2 has not is dropped there, and the
     ; connection goes on.
     call node.whereis (2, "applier") -> (I3)
@@ -131,7 +131,7 @@ plain_refused:
     closure here_only (7) -> R26
     call apply_there (I3, R26, 1) -> (R27)
     mov R28, R27[1]
-    strcmp I4, R28, "E_LINK_UNDEF"
+    strcmp I4, R28, "E_LINK_CODE"
     ASSERT_EQ I4, 0
     call node.whereis (2, "echoer") -> (I4)
     ncall "proc.call" (I4, R26, 5000) -> (R27)

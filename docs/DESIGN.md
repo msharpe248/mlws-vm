@@ -1788,7 +1788,7 @@ its files' names left out, kept in `LModule.hash`), its function's name and
 signature, and its captures; it is read back as a closure of that version's
 function (`vm_module_version`, current or replaced), or else of a stand-in,
 `vm_remote_stub`'s: a module of its own, `(remote) M.f #N`, whose one function,
-of the signature sent, raises `E_LINK_UNDEF`, and which keeps the identity it
+of the signature sent, raises `E_LINK_CODE`, and which keeps the identity it
 stands for, so that it is written as that closure again. A `module.handle` is
 written as its module and function, and read back as that node's handle. `tests/native/node_values`
 feeds it random, mutated and truncated frames.

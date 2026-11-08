@@ -709,7 +709,7 @@ void vm_module_hash(VM *vm, LModule *lm, uint8_t out[16]); /* its version's iden
 LModule *vm_module_version(VM *vm, const char *name, const uint8_t hash[16]); /* that version, if loaded */
 Function *vm_module_func(LModule *lm, const char *fname); /* by name, exported or not */
 Function *vm_remote_stub(VM *vm, const char *mod, const uint8_t *hash, const char *fname, const uint8_t *params,
-                         int np, const uint8_t *rets, int nr, MlwsError *err); /* raises E_LINK_UNDEF; hash NULL: a handle */
+                         int np, const uint8_t *rets, int nr, MlwsError *err); /* raises E_LINK_CODE; hash NULL: a handle (E_LINK_UNDEF) */
 /* Load a module while the program runs (module.load), as an import of `from`
  * (which directory it is looked for in first, and privacy; NULL: the
  * library path only), under mods_lock. A load that fails leaves the modules
