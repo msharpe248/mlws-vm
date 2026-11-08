@@ -1,0 +1,8 @@
+; Started by check_tools.sh through mlwsvm serve: says so in the log, and ends
+; with the number of its arguments.
+.func main
+    ncall "os.args" () -> (R0)
+    len I0, R0
+    ncall "monitor.log" (1, "hello ran")
+    ret I0
+.endf

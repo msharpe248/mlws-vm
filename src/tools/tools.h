@@ -43,6 +43,8 @@ const char *tools_monitor_addr(VM *vm); /* "HOST:PORT" actually listened on */
 const char *tools_monitor_actions(VM *vm, const char *token);
 bool tools_monitor_tls(VM *vm, const char *cert, const char *key, char *err, size_t errlen); /* HTTPS */
 const char *tools_monitor_scheme(VM *vm); /* "http" or "https" */
+/* mlwsvm serve: programs may be started from dir (POST /api/programs). */
+bool tools_monitor_serve(VM *vm, const char *dir, char *err, size_t errlen);
 
 /* mlwsvm debug (debugger.c) */
 typedef struct {

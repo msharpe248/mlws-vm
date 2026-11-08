@@ -669,6 +669,10 @@ void proc_write_line_out(Process *p); /* write out p's unfinished line, if any *
  * threads, max-frames, slice, gc-min, quota. vm_new applies MLWSVM_<NAME>. */
 bool vm_option_known(const char *name);
 bool vm_set_option(VM *vm, const char *name, const char *value, MlwsError *err);
+/* --cap's and --quota's syntax: capabilities within the VM's (NULL, with err,
+ * if malformed), and quotas starting from the VM's. */
+struct Caps *vm_parse_caps(VM *vm, const char *value, MlwsError *err);
+bool vm_parse_quota(VM *vm, const char *value, uint64_t q[QUOTA__COUNT], MlwsError *err);
 void vm_options_from_env(VM *vm);
 
 /* loader.c */

@@ -70,7 +70,7 @@ static bool parse_range(const char *name, const char *value, bool bytes, uint64_
 }
 
 /* read=/data,read=/etc/hosts,connect=example.org:443 ("none" alone: nothing). */
-static bool parse_cap(VM *vm, const char *value, MlwsError *err) {
+Caps *vm_parse_caps(VM *vm, const char *value, MlwsError *err) {
     Caps *c = caps_new();
     for (const char *s = value; *s && strcmp(value, "none");) {
         const char *e = strchr(s, ',');
@@ -79,13 +79,19 @@ static bool parse_cap(VM *vm, const char *value, MlwsError *err) {
         int kind = eq ? cap_kind(s, (size_t)(eq - s)) : -1;
         if (kind < 0) {
             caps_release(c);
-            return mlws_err(err, "E_BAD_OPTION", "--cap: '%.*s' is not read=, write=, connect=, listen=, run= or env=", (int)n, s), false;
+            return mlws_err(err, "E_BAD_OPTION", "--cap: '%.*s' is not read=, write=, connect=, listen=, run= or env=", (int)n, s), NULL;
         }
         char *entry = xstrndup(eq + 1, n - (size_t)(eq + 1 - s));
         caps_grant(c, vm->default_caps, kind, entry);
         free(entry);
         s = e ? e + 1 : s + n;
     }
+    return c;
+}
+
+static bool parse_cap(VM *vm, const char *value, MlwsError *err) {
+    Caps *c = vm_parse_caps(vm, value, err);
+    if (!c) return false;
     caps_release(vm->default_caps);
     vm->default_caps = c;
     vm->default_quota[QUOTA_FOREIGN] = 0;
@@ -93,10 +99,9 @@ static bool parse_cap(VM *vm, const char *value, MlwsError *err) {
 }
 
 /* heap=64M,raw=1G,mailbox=1000,insns=5000000 (any subset; "unlimited" resets one). */
-static bool parse_quota(VM *vm, const char *value, MlwsError *err) {
+bool vm_parse_quota(VM *vm, const char *value, uint64_t q[QUOTA__COUNT], MlwsError *err) {
     static const char *const KINDS[QUOTA__COUNT] = {"heap", "raw", "mailbox", "insns", "foreign", "os"};
-    uint64_t q[QUOTA__COUNT];
-    memcpy(q, vm->default_quota, sizeof q);
+    memcpy(q, vm->default_quota, QUOTA__COUNT * sizeof *q);
     const char *s = value;
     while (*s) {
         const char *comma = strchr(s, ',');
@@ -120,6 +125,12 @@ static bool parse_quota(VM *vm, const char *value, MlwsError *err) {
         q[kind] = n;
         s = comma ? comma + 1 : s + len;
     }
+    return true;
+}
+
+static bool parse_quota(VM *vm, const char *value, MlwsError *err) {
+    uint64_t q[QUOTA__COUNT];
+    if (!vm_parse_quota(vm, value, q, err)) return false;
     memcpy(vm->default_quota, q, sizeof q);
     return true;
 }

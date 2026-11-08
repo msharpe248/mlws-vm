@@ -13,7 +13,8 @@ run before a release.
 | Tracer | `mlwsvm run --trace FILE\|- [--trace-limit N] prog.masm` | none |
 | Debugger | `mlwsvm debug prog.masm` | — |
 | Debugger for editors | `mlwsvm dap` (Debug Adapter Protocol) | — |
-| Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] prog.masm` | none |
+| Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] [--monitor-actions] prog.masm` | none |
+| A VM that stays up | `mlwsvm serve --programs DIR [--monitor [HOST:]PORT]` | — |
 | Terminal view | `mlwsvm top [HOST:PORT] [--once] [--interval MS]` | — |
 | VM options | `mlwsvm run --max-frames N --quota heap=64M --cap read=/data ... prog.masm` | — |
 | Several programs | `mlwsvm run a.masm args --also b.masm args ...` | — |
@@ -490,6 +491,37 @@ JSON form is `E_JSON`.
     ncall "monitor.log" (1, "listening")
     ncall "monitor.event" ("request", R0)    ; R0: a map, say
 ```
+
+## A VM that stays up: `mlwsvm serve`
+
+```
+$ mlwsvm serve --programs ./services --monitor 7070 --quota heap=256M
+mlwsvm: serving at http://127.0.0.1:7070/#token=9a3e...  (programs from ./services)
+```
+
+`mlwsvm serve` starts a VM that runs until it is shut down, with no program of
+its own, and its monitor with actions on (the token is printed, or
+`MLWSVM_MONITOR_TOKEN`). Programs are started from the dashboard's Programs
+card, or the API, each with its own `os.args` and, if given, capabilities and
+quotas of its own in `--cap`'s and `--quota`'s syntax, within the VM's. A
+program is a file in the `--programs` directory: a path that leads out of it,
+through `..` or a link, is refused. The same file started again is another main
+of the same module, as with `--also`. Programs share the VM's output, as with
+`--also`; what one wants to show in the dashboard it writes to the monitor's log
+(`monitor.log`). VM options apply to all of them. `--monitor-cert` and
+`--monitor-key` serve the monitor over HTTPS, as for `run`; it listens on
+127.0.0.1:7070 unless told otherwise.
+
+| Endpoint | Does |
+|---|---|
+| `GET /api/programs` | the programs started: `id`, `path` (in the programs' directory), `args`, `pid` (of its main), `state` (`running`, `done` with `exit`, `failed` with `code` and `message`) |
+| `POST /api/programs` | start one: `{"path": "app.masm", "args": ["-v"], "cap": "read=/data", "quota": "heap=64M"}` (all but `path` may be left out); answers its `id` and `pid`; 400 for a program that does not load or a bad `cap` or `quota`, 403 for a path not in the directory |
+| `POST /api/programs/ID/stop` | its main fails with `E_KILLED`, and its other processes stop, as when a program's main ends |
+| `POST /api/shutdown` | every program is stopped, and `mlwsvm serve` exits 0 |
+
+These need the token, as every action does, and each is written to the log
+(`monitor.start`, `monitor.stop`, `monitor.shutdown`). `GET /api/vm` says
+`"serve": true`.
 
 ## Terminal view: `mlwsvm top`
 

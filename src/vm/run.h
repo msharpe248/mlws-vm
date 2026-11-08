@@ -29,6 +29,15 @@ typedef struct {
 } RunResult;
 
 bool vm_run_file(VM *vm, const char *path, RunResult *res);
+/* mlwsvm serve: run until stopped (vm_serve_stop), with no program of its own;
+ * programs come and go (vm_start_program, from the monitor). */
+void vm_serve(VM *vm);
+void vm_serve_stop(VM *vm); /* every program's main is killed, and vm_serve returns */
+/* Start a program while the VM runs: its main, with capabilities and quotas
+ * in --cap's and --quota's syntax (NULL or "": the VM's own). NULL, with err,
+ * if it does not load or the options are malformed. */
+Program *vm_start_program(VM *vm, const char *path, const StrVec *args, const char *cap, const char *quota,
+                          MlwsError *err);
 /* Several programs in one VM (`mlwsvm run a.masm --also b.masm`): each one's
  * main runs as its own process, with its own os.args; a program ends with its
  * main (its other processes are stopped), and the run with the last one.

@@ -778,6 +778,47 @@ if command -v curl >/dev/null 2>&1; then
         kill $VMPID 2>/dev/null || true
         wait $VMPID 2>/dev/null || true
     fi
+
+    # mlwsvm serve: programs started, listed, stopped, kept within their
+    # capabilities, only from their directory; then shut down.
+    set +e
+    $BIN serve --monitor 127.0.0.1:$PORT >/dev/null 2>&1; RC=$?
+    set -e
+    [ $RC = 2 ] || fail "serve without --programs (exit $RC)"
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN serve --programs tests/tools/_serve --monitor 127.0.0.1:$PORT >/dev/null 2>"$MOND/serve.err" &
+    VMPID=$!
+    i=0
+    until curl -sf $U/api/vm 2>/dev/null | grep -q '"actions":true,"serve":true'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "serve did not start"; sleep 0.1
+    done
+    grep -q '^mlwsvm: serving at http://127.0.0.1:[0-9]*/#token=s3cret ' "$MOND/serve.err" || fail "serve: the address printed"
+    [ "$(code -H "$A" --data '{"path":"hello.masm","args":["a","b"]}' $U/api/programs)" = 200 ] || fail "serve: start ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"path":"hello.masm","args":["c"]}' $U/api/programs)" = 200 ] || fail "serve: start the same again"
+    [ "$(code -H "$A" --data '{"path":"long.masm"}' $U/api/programs)" = 200 ] || fail "serve: start long"
+    [ "$(code -H "$A" --data '{"path":"reader.masm","cap":"none"}' $U/api/programs)" = 200 ] || fail "serve: start reader"
+    [ "$(code -H "$A" --data '{"path":"../_monitor/acted.masm"}' $U/api/programs)" = 403 ] || fail "serve: a program outside its directory"
+    [ "$(code -H "$A" --data '{"path":"../_serve_too/beside.masm"}' $U/api/programs)" = 403 ] || fail "serve: a program in a directory named like its own"
+    [ "$(code -H "$A" --data '{"path":"nope.masm"}' $U/api/programs)" = 403 ] || fail "serve: no such program"
+    [ "$(code -H "$A" --data '{"pth":"hello.masm"}' $U/api/programs)" = 400 ] || fail "serve: not a start"
+    [ "$(code -H "$A" --data '{"path":"hello.masm","quota":"bogus=1"}' $U/api/programs)" = 400 ] || fail "serve: a bad quota"
+    [ "$(code --data '{"path":"hello.masm"}' $U/api/programs)" = 401 ] || fail "serve: a start without the token"
+    i=0
+    until curl -sf $U/api/programs | grep -q '"id":4,"path":"reader.masm","args":\[\],"pid":[0-9]*,"state":"failed","code":"E_PERMISSION"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "serve: the programs ($(curl -sf $U/api/programs))"; sleep 0.1
+    done
+    P=$(curl -sf $U/api/programs)
+    echo "$P" | grep -q '"id":1,"path":"hello.masm","args":\["a","b"\],"pid":[0-9]*,"state":"done","exit":2' || fail "serve: hello ($P)"
+    echo "$P" | grep -q '"id":2,"path":"hello.masm","args":\["c"\],"pid":[0-9]*,"state":"done","exit":1' || fail "serve: hello again ($P)"
+    echo "$P" | grep -q '"id":3,"path":"long.masm","args":\[\],"pid":[0-9]*,"state":"running"' || fail "serve: long ($P)"
+    [ "$(code -H "$A" $U/api/programs/3/stop)" = 200 ] || fail "serve: stop"
+    curl -sf $U/api/programs | grep -q '"id":3,"path":"long.masm","args":\[\],"pid":[0-9]*,"state":"failed","code":"E_KILLED"' || fail "serve: stopped"
+    [ "$(code -H "$A" $U/api/programs/3/stop)" = 404 ] || fail "serve: stop a program that has ended"
+    curl -sf "$U/api/log" | grep -q '"text":"long started"' || fail "serve: a program's log"
+    [ "$(code -H "$A" $U/api/shutdown)" = 200 ] || fail "serve: shutdown"
+    set +e
+    wait $VMPID; RC=$?
+    set -e
+    [ $RC = 0 ] || fail "serve: exit after shutdown ($RC)"
     rm -rf "${MOND:?}"
 fi
 echo "check-tools: profile, .loc, bundle, dap, node, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"

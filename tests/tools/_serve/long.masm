@@ -1,0 +1,6 @@
+; Started by check_tools.sh through mlwsvm serve, and stopped from there.
+.func main
+    ncall "monitor.log" (1, "long started")
+    sleep 60000
+    ret 0
+.endf

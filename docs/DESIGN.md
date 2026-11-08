@@ -2302,6 +2302,15 @@ raise them in), and reload and purge are the natives' own `vm_reload` and
 matches. With `--monitor-cert`, each connection is a TLS session first
 (`native/tls.c`'s, as `std.tls` uses), on the same non-blocking socket.
 
+`mlwsvm serve` (`vm_serve`, `vm/run.c`) runs a program of its own that only
+sleeps, so that the run, which ends with its last program, never ends of itself.
+`vm_start_program` loads a program's root as `--also` would, or takes the loaded
+module of that file, gives its main the capabilities and quotas asked for
+(`vm_parse_caps` and `vm_parse_quota`, `--cap`'s and `--quota`'s parsers), and
+starts it; the monitor does this with the world stopped. A program is a file
+whose real path is inside the programs' directory's real path. A shutdown kills
+every program's main, the keeper's last, and `vm_serve` returns.
+
 **Source positions.** Each instruction's assembly line is in
 `MFunc.lines`; a translated program's line comes from the `.loc` runs
 (`module_srcpos`, a binary search). Backtraces, the debugger and the

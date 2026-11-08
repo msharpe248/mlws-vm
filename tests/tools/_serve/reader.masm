@@ -1,0 +1,6 @@
+; Started by check_tools.sh through mlwsvm serve with no capabilities: reading
+; a file fails with E_PERMISSION.
+.func main
+    ncall "fs.read_file" ("tests/tools/_serve/hello.masm") -> (R0)
+    ret 0
+.endf

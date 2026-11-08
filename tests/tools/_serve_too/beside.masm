@@ -1,0 +1,5 @@
+; Beside tests/tools/_serve, with a name that starts as that one's: mlwsvm serve
+; --programs tests/tools/_serve must not start it (check_tools.sh).
+.func main
+    ret 0
+.endf

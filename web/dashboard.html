@@ -140,6 +140,8 @@ button.act.danger { color: var(--critical); }
 #act-status.ok .dot { background: var(--good); }
 #act-status.bad .dot { background: var(--critical); }
 .mini tbody tr { cursor: default; }
+.mini td.wrap { white-space: normal; }
+.mini td.wrap button { margin: 1px 0; }
 @media (max-width: 600px) { .tile .value { font-size: 20px; } .graph svg { height: 300px; } }
 </style>
 </head>
@@ -150,6 +152,7 @@ button.act.danger { color: var(--critical); }
   <span class="pill" id="uptime"></span>
   <span class="pill" id="act-status" hidden><span class="dot"></span><span id="act-text"></span></span>
   <span class="spacer"></span>
+  <button class="act danger" id="shutdown-btn" type="button" hidden>Shut down</button>
   <button class="theme" id="theme" type="button">Theme</button>
 </header>
 <main>
@@ -162,6 +165,18 @@ button.act.danger { color: var(--critical); }
   <section class="charts">
     <div class="card"><h2>Instructions per second</h2><div class="chart" id="c-ips"></div></div>
     <div class="card"><h2>Heap bytes, all processes</h2><div class="chart" id="c-heap"></div></div>
+  </section>
+  <section class="card" id="programs-card" hidden>
+    <h2>Programs (mlwsvm serve)</h2>
+    <div class="acts" id="start-form">
+      <input id="start-path" placeholder="program.masm, in the programs' directory" aria-label="Program">
+      <input id="start-args" placeholder="arguments, separated by spaces" aria-label="Arguments">
+      <input id="start-cap" placeholder="--cap, e.g. none" aria-label="Capabilities">
+      <input id="start-quota" placeholder="--quota, e.g. heap=64M" aria-label="Quotas">
+      <button class="act" id="start-btn" type="button">Start</button>
+    </div>
+    <div class="table-wrap"><table class="mini" id="programs"><thead><tr><th>#</th><th class="text">Program</th><th class="text">Arguments</th><th>PID</th><th class="text">State</th><th></th></tr></thead><tbody></tbody></table></div>
+    <div class="empty" id="programs-empty">No program started yet.</div>
   </section>
   <section class="card">
     <h2>Processes</h2>
@@ -421,6 +436,34 @@ $("send-btn").addEventListener("click", async () => {
   if (await act(`/api/proc/${selectedPid}/send`, text, `sent to ${selectedPid}`)) $("send-text").value = "";
   loadDetail();
 });
+// ---- mlwsvm serve: programs --------------------------------------------------------
+let serving = false;
+async function loadPrograms() {
+  if (!serving) return;
+  const ps = await fetch("/api/programs").then((r) => r.json()).catch(() => []);
+  $("programs").querySelector("tbody").innerHTML = ps.slice().reverse().map((p) => `<tr><td>${p.id}</td><td class="text">${esc(p.path)}</td>
+    <td class="text">${esc(p.args.join(" "))}</td><td>${p.pid}</td>
+    <td class="text"><span class="state"><span class="dot ${p.state === "running" ? "good" : p.state === "failed" ? "critical" : ""}"></span>${p.state === "done" ? "exit " + p.exit : p.state === "failed" ? "failed " + esc(p.code) : "running"}</span></td>
+    <td>${p.state === "running" && canAct() ? `<button class="act danger" data-prog="${p.id}" type="button">Stop</button>` : ""}</td></tr>`).join("");
+  $("programs-empty").hidden = ps.length > 0;
+  $("programs").querySelectorAll("button[data-prog]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm(`Stop program ${b.dataset.prog}? Its main fails with E_KILLED, and its other processes stop.`)) return;
+    await act(`/api/programs/${b.dataset.prog}/stop`, null, `stopped program ${b.dataset.prog}`); loadPrograms();
+  }));
+}
+$("start-btn").addEventListener("click", async () => {
+  const path = $("start-path").value.trim();
+  if (!path) return;
+  const body = { path, args: $("start-args").value.split(/\s+/).filter(Boolean) };
+  if ($("start-cap").value.trim()) body.cap = $("start-cap").value.trim();
+  if ($("start-quota").value.trim()) body.quota = $("start-quota").value.trim();
+  await act("/api/programs", JSON.stringify(body), `started ${path}`); loadPrograms();
+});
+$("shutdown-btn").addEventListener("click", async () => {
+  if (!confirm("Shut down this VM? Every program is stopped.")) return;
+  await act("/api/shutdown", null, "shutting down");
+});
+
 async function moduleAct(name, verb) {
   if (verb === "reload" && !confirm(`Load ${name} again from its file?`)) return;
   await act(`/api/modules/${encodeURIComponent(name)}/${verb}`, null, verb === "reload" ? `reloaded ${name}` : `purged old versions of ${name}`);
@@ -505,7 +548,7 @@ async function slowTick() {
     $("mods-acts-h").hidden = !canAct();
     $("mods").querySelector("tbody").innerHTML = mods.map((m) => `<tr><td class="text">${esc(m.name)}</td><td>${m.version}</td>
       <td class="text"><span class="state"><span class="dot ${m.current ? "good" : ""}"></span>${m.current ? "current" : m.state === "purged" ? "purged" : "replaced"}</span></td><td>${m.functions}</td>
-      ${canAct() ? `<td class="text">${m.current ? `<button class="act" data-mod="${esc(m.name)}" data-verb="reload" type="button">Reload</button> <button class="act" data-mod="${esc(m.name)}" data-verb="purge" type="button">Purge old</button>` : ""}</td>` : ""}</tr>`).join("");
+      ${canAct() ? `<td class="text wrap">${m.current && m.name !== "(serve)" ? `<button class="act" data-mod="${esc(m.name)}" data-verb="reload" type="button">Reload</button> <button class="act" data-mod="${esc(m.name)}" data-verb="purge" type="button">Purge</button>` : ""}</td>` : ""}</tr>`).join("");
     $("mods").querySelectorAll("button[data-mod]").forEach((b) => b.addEventListener("click", () => moduleAct(b.dataset.mod, b.dataset.verb)));
     $("names").querySelector("tbody").innerHTML = names.map((n) => `<tr><td class="text">${esc(n.name)}</td><td>${n.pid}</td></tr>`).join("");
     $("names-empty").hidden = names.length > 0;
@@ -534,6 +577,10 @@ async function tick() {
     prevCpu = cpuNow;
     prev = vm;
     if (actionsOn !== !!vm.actions) { actionsOn = !!vm.actions; slowTick(); } /* (buttons, now that we know) */
+    serving = !!vm.serve;
+    $("programs-card").hidden = !serving;
+    $("start-form").hidden = !canAct();
+    $("shutdown-btn").hidden = !(serving && canAct());
     if (dt > 0) { /* the first sample has no rate yet; don't plot a false zero */
       history.t.push(now); history.ips.push(ips); history.heap.push(vm.heap_bytes);
     }
@@ -547,7 +594,7 @@ async function tick() {
     $("k-heap").textContent = bytes(vm.heap_bytes);
     $("k-raw").textContent = `raw ${bytes(vm.raw_bytes)}`;
     $("k-slices").textContent = human(sps);
-    drawCharts(); renderProcs(); renderExits(exits); loadDetail(); pollLog();
+    drawCharts(); renderProcs(); renderExits(exits); loadDetail(); pollLog(); loadPrograms();
   } catch (e) {
     $("conn").textContent = "disconnected (has the program finished?)"; $("conn-dot").className = "dot critical";
   }

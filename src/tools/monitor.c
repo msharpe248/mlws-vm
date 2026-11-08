@@ -8,6 +8,7 @@
 
 #include "../heap/heap.h"
 #include "../native/tls.h"
+#include "../vm/run.h"
 #include "../platform/platform.h"
 #include "tools.h"
 #include "tools_internal.h"
@@ -22,6 +23,7 @@ typedef struct Monitor {
     int port;
     char *token;       /* --monitor-actions: what an action must show; NULL: none allowed */
     char *cert, *key;  /* --monitor-cert, --monitor-key: TLS */
+    char *programs;    /* mlwsvm serve: the directory programs are started from (real path); NULL: not serving */
     /* previous /top sample, to turn cumulative CPU time into a percentage */
     VEC(uint64_t) last_cpu;
     uint64_t last_top_ns;
@@ -572,6 +574,38 @@ static bool read_request(Conn *c, Req *q) {
     return true;
 }
 
+/* mlwsvm serve's programs (the first, its own, left out): each one's number,
+ * file (from the programs' directory), arguments, main process, and how it is. */
+static void programs_json(StrBuf *b, const Monitor *mon, VM *vm) {
+    sb_putc(b, '[');
+    size_t base = mon->programs ? strlen(mon->programs) + 1 : 0;
+    plat_lock(vm->lock);
+    for (size_t i = 1; mon->programs && i < vm->progs.n; i++) {
+        const Program *pr = vm->progs.v[i];
+        const Process *m = pr->main;
+        sb_printf(b, "%s{\"id\":%zu,\"path\":", i > 1 ? "," : "", i);
+        json_str(b, strlen(pr->path) > base ? pr->path + base : pr->path);
+        sb_puts(b, ",\"args\":[");
+        for (size_t k = 0; k < pr->args.n; k++) {
+            if (k) sb_putc(b, ',');
+            json_str(b, pr->args.v[k]);
+        }
+        bool done = m->state == PROC_DONE, failed = m->state == PROC_FAILED;
+        sb_printf(b, "],\"pid\":%llu,\"state\":\"%s\"", (unsigned long long)m->pid,
+                  failed ? "failed" : done ? "done" : "running");
+        if (done) sb_printf(b, ",\"exit\":%lld", (long long)m->exit_code);
+        if (failed) {
+            sb_puts(b, ",\"code\":");
+            json_str(b, m->err.code);
+            sb_puts(b, ",\"message\":");
+            json_str(b, m->err.msg);
+        }
+        sb_putc(b, '}');
+    }
+    plat_unlock(vm->lock);
+    sb_putc(b, ']');
+}
+
 /* The read-only API and the page, with the world stopped. */
 static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q) {
     char *path = q->path;
@@ -586,7 +620,9 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q) {
     } else if (!strcmp(path, "/api/vm")) {
         vm_json(&b, vm);
         b.n--; /* (its closing brace: one more field, whether actions are on) */
-        sb_printf(&b, ",\"actions\":%s}", mon->token ? "true" : "false");
+        sb_printf(&b, ",\"actions\":%s,\"serve\":%s}", mon->token ? "true" : "false", mon->programs ? "true" : "false");
+    } else if (!strcmp(path, "/api/programs")) {
+        programs_json(&b, mon, vm);
     } else if (!strcmp(path, "/api/procs")) {
         sb_putc(&b, '[');
         bool first = true;
@@ -688,6 +724,194 @@ static void audit(VM *vm, const char *what, const char *json) {
     if (vm->mlog) vm_mlog_put(vm, 0, -1, what, json, strlen(json));
 }
 
+/* ---- mlwsvm serve: starting programs ---------------------------------------------------- *
+ * The body of POST /api/programs is one JSON object of strings, and a list of
+ * strings for "args": read here as such, nothing else needed. */
+
+typedef struct {
+    const char *s, *end;
+} JText;
+
+static void jt_ws(JText *t) {
+    while (t->s < t->end && (*t->s == ' ' || *t->s == '\t' || *t->s == '\n' || *t->s == '\r')) t->s++;
+}
+
+/* A JSON string into out (malloc'd), or false. */
+static bool jt_str(JText *t, char **out) {
+    jt_ws(t);
+    if (t->s >= t->end || *t->s != '"') return false;
+    StrBuf b = {0};
+    for (t->s++; t->s < t->end && *t->s != '"'; t->s++) {
+        char c = *t->s;
+        if (c != '\\') {
+            sb_putc(&b, c);
+            continue;
+        }
+        if (++t->s >= t->end) break;
+        switch (*t->s) {
+        case 'n': sb_putc(&b, '\n'); break;
+        case 't': sb_putc(&b, '\t'); break;
+        case 'r': sb_putc(&b, '\r'); break;
+        case 'u': { /* (a character of the Basic Multilingual Plane, as UTF-8) */
+            unsigned u = 0;
+            if (t->end - t->s < 5 || sscanf(t->s + 1, "%4x", &u) != 1) goto bad;
+            if (u < 0x80) sb_putc(&b, (char)u);
+            else if (u < 0x800) sb_putc(&b, (char)(0xC0 | u >> 6)), sb_putc(&b, (char)(0x80 | (u & 63)));
+            else sb_putc(&b, (char)(0xE0 | u >> 12)), sb_putc(&b, (char)(0x80 | (u >> 6 & 63))), sb_putc(&b, (char)(0x80 | (u & 63)));
+            t->s += 4;
+            break;
+        }
+        default: sb_putc(&b, *t->s); /* \" \\ \/ */
+        }
+    }
+    if (t->s >= t->end) goto bad;
+    t->s++;
+    *out = b.s ? b.s : xstrdup("");
+    return true;
+bad:
+    sb_free(&b);
+    return false;
+}
+
+typedef struct {
+    char *path, *cap, *quota;
+    StrVec args;
+} StartReq;
+
+static void start_req_free(StartReq *r) {
+    free(r->path);
+    free(r->cap);
+    free(r->quota);
+    for (size_t i = 0; i < r->args.n; i++) free(r->args.v[i]);
+    VEC_FREE(r->args);
+}
+
+static bool start_req_parse(const char *body, size_t n, StartReq *r) {
+    JText t = {body, body + n};
+    jt_ws(&t);
+    if (t.s >= t.end || *t.s++ != '{') return false;
+    jt_ws(&t);
+    if (t.s < t.end && *t.s == '}') return false; /* (a path is needed) */
+    for (;;) {
+        char *key = NULL;
+        if (!jt_str(&t, &key)) return false;
+        jt_ws(&t);
+        if (t.s >= t.end || *t.s++ != ':') return free(key), false;
+        bool ok = true;
+        if (!strcmp(key, "args")) {
+            jt_ws(&t);
+            ok = t.s < t.end && *t.s++ == '[';
+            jt_ws(&t);
+            if (ok && t.s < t.end && *t.s == ']') t.s++;
+            else
+                while (ok) {
+                    char *a = NULL;
+                    if (!(ok = jt_str(&t, &a))) break;
+                    VEC_PUSH(r->args, a);
+                    jt_ws(&t);
+                    if (t.s < t.end && *t.s == ',') t.s++;
+                    else if (t.s < t.end && *t.s == ']') {
+                        t.s++;
+                        break;
+                    } else ok = false;
+                }
+        } else {
+            char **slot = !strcmp(key, "path") ? &r->path : !strcmp(key, "cap") ? &r->cap : !strcmp(key, "quota") ? &r->quota : NULL;
+            char *v = NULL;
+            ok = slot && !*slot && jt_str(&t, &v);
+            if (ok) *slot = v;
+            else free(v);
+        }
+        free(key);
+        if (!ok) return false;
+        jt_ws(&t);
+        if (t.s < t.end && *t.s == ',') {
+            t.s++;
+            continue;
+        }
+        if (t.s < t.end && *t.s == '}') break;
+        return false;
+    }
+    t.s++;
+    jt_ws(&t);
+    return t.s == t.end && r->path;
+}
+
+/* A program's file: within the programs' directory once its links are
+ * followed, or NULL. */
+static char *program_file(const Monitor *mon, const char *rel) {
+    char *joined = path_join(mon->programs, rel), *real = plat_realpath(joined);
+    free(joined);
+    size_t n = strlen(mon->programs);
+    if (!real || strncmp(real, mon->programs, n) || (real[n] != '/' && real[n] != '\\') || !file_exists(real) ||
+        plat_is_dir(real)) {
+        free(real);
+        return NULL;
+    }
+    return real;
+}
+
+static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q) {
+    StrBuf b = {0}, a = {0};
+    size_t id = 0;
+    char verb[16] = "";
+    if (!strcmp(q->path, "/api/programs")) {
+        StartReq r = {0};
+        if (!start_req_parse(q->body ? q->body : "", q->nbody, &r)) {
+            start_req_free(&r);
+            respond_json(k, 400, "{\"error\":\"expected {\\\"path\\\": FILE, \\\"args\\\": [...], \\\"cap\\\": ..., \\\"quota\\\": ...}\"}");
+            return;
+        }
+        char *file = program_file(mon, r.path);
+        if (!file) {
+            start_req_free(&r);
+            respond_json(k, 403, "{\"error\":\"no such program in the programs' directory\"}");
+            return;
+        }
+        MlwsError e = {{0}, {0}};
+        sched_stop_world(vm); /* (loading and starting while nothing else runs) */
+        Program *pr = vm_start_program(vm, file, &r.args, r.cap, r.quota, &e);
+        sched_start_world(vm);
+        if (pr) {
+            sb_printf(&b, "{\"ok\":true,\"id\":%zu,\"pid\":%llu}", vm->progs.n - 1, (unsigned long long)pr->main->pid);
+            sb_puts(&a, "{\"path\":");
+            json_str(&a, r.path);
+            sb_printf(&a, ",\"pid\":%llu}", (unsigned long long)pr->main->pid);
+            audit(vm, "monitor.start", a.s);
+            respond_json(k, 200, b.s);
+        } else {
+            sb_puts(&b, "{\"error\":");
+            json_str(&b, e.msg);
+            sb_puts(&b, ",\"code\":");
+            json_str(&b, e.code);
+            sb_putc(&b, '}');
+            respond_json(k, 400, b.s);
+        }
+        free(file);
+        start_req_free(&r);
+    } else if (sscanf(q->path, "/api/programs/%zu/%15[a-z]", &id, verb) == 2 && !strcmp(verb, "stop")) {
+        uint64_t pid = 0;
+        plat_lock(vm->lock);
+        if (id >= 1 && id < vm->progs.n) pid = vm->progs.v[id]->main->pid;
+        plat_unlock(vm->lock);
+        if (pid && sched_kill_from_outside(vm, pid, "E_KILLED", "stopped from the monitor")) {
+            sb_printf(&a, "{\"id\":%zu,\"pid\":%llu}", id, (unsigned long long)pid);
+            audit(vm, "monitor.stop", a.s);
+            respond_json(k, 200, "{\"ok\":true}");
+        } else {
+            respond_json(k, 404, "{\"error\":\"no such program running\"}");
+        }
+    } else if (!strcmp(q->path, "/api/shutdown")) {
+        audit(vm, "monitor.shutdown", "{}");
+        respond_json(k, 200, "{\"ok\":true}");
+        vm_serve_stop(vm);
+    } else {
+        respond_json(k, 404, "{\"error\":\"no such action\"}");
+    }
+    sb_free(&a);
+    sb_free(&b);
+}
+
 static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q) {
     if (!mon->token) {
         respond_json(k, 403, "{\"error\":\"actions are off: start with --monitor-actions\"}");
@@ -703,6 +927,10 @@ static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q) {
     }
     if (!token_ok(mon, q->auth)) {
         respond_json(k, 401, "{\"error\":\"the token is needed: Authorization: Bearer TOKEN\"}");
+        return;
+    }
+    if (mon->programs && (!strncmp(q->path, "/api/programs", 13) || !strcmp(q->path, "/api/shutdown"))) {
+        serve_programs(mon, vm, k, q);
         return;
     }
     StrBuf b = {0}, a = {0};
@@ -858,6 +1086,18 @@ bool tools_monitor_tls(VM *vm, const char *cert, const char *key, char *err, siz
     return true;
 }
 
+bool tools_monitor_serve(VM *vm, const char *dir, char *err, size_t errlen) {
+    Monitor *mon = ((Tools *)vm->tools)->mon;
+    char *real = plat_realpath(dir);
+    if (!real || !plat_is_dir(real)) {
+        free(real);
+        snprintf(err, errlen, "--programs: '%s' is not a directory", dir);
+        return false;
+    }
+    mon->programs = real;
+    return true;
+}
+
 const char *tools_monitor_scheme(VM *vm) {
     Tools *t = vm->tools;
     return t && t->mon && t->mon->cert ? "https" : "http";
@@ -876,6 +1116,7 @@ void tools_monitor_close(VM *vm) {
     free(t->mon->token);
     free(t->mon->cert);
     free(t->mon->key);
+    free(t->mon->programs);
     free(t->mon);
     t->mon = NULL;
     vm->poll = NULL;

@@ -47,6 +47,9 @@ static void usage(FILE *f) {
           "        --jit-report FILE|-             what the JIT did, written when the run ends\n"
           "  debug [-L dir] [VM options] file.(masm|mlwso)   interactive debugger (type 'help')\n"
           "  top   [HOST:PORT] [--once]            live process table of a VM run with --monitor\n"
+          "  serve --programs DIR [--monitor [HOST:]PORT] [--monitor-cert F --monitor-key F] [VM options]\n"
+          "                                        a VM that stays up, starting programs from DIR when its\n"
+          "                                        monitor is asked to (the token printed; 127.0.0.1:7070)\n"
           "  asm  [-L dir] [-o out.mlwso] [-E] file.masm                   assemble (-E: preprocess only)\n"
           "  dis  [-L dir] file.(masm|mlwso)                               disassemble\n"
           "  test [-L dir] [-v] [VM options] [paths...]                  run assembly tests (default: tests/)\n"
@@ -371,6 +374,58 @@ static int cmd_run(int argc, char **argv) {
     return rc;
 }
 
+/* mlwsvm serve: a VM that stays up, starting programs from a directory when
+ * the monitor is asked to (POST /api/programs, or the dashboard). */
+static int cmd_serve(int argc, char **argv) {
+    const char *monitor = "127.0.0.1:7070", *programs = NULL, *mcert = NULL, *mkey = NULL;
+    VEC(const char *) opts = {0};
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor = argv[++i];
+        else if (!strcmp(argv[i], "--programs") && i + 1 < argc) programs = argv[++i];
+        else if (!strcmp(argv[i], "--monitor-cert") && i + 1 < argc) mcert = argv[++i];
+        else if (!strcmp(argv[i], "--monitor-key") && i + 1 < argc) mkey = argv[++i];
+        else if (!strncmp(argv[i], "--", 2) && vm_option_known(argv[i] + 2) && i + 1 < argc) {
+            VEC_PUSH(opts, argv[i] + 2);
+            VEC_PUSH(opts, argv[++i]);
+        } else {
+            fprintf(stderr, "mlwsvm serve: unexpected argument '%s'\n", argv[i]);
+            VEC_FREE(opts);
+            return 2;
+        }
+    }
+    if (!programs || (mcert != NULL) != (mkey != NULL)) {
+        fprintf(stderr, "usage: mlwsvm serve --programs DIR [--monitor [HOST:]PORT] [--monitor-cert FILE --monitor-key FILE] "
+                        "[VM options]\n");
+        VEC_FREE(opts);
+        return 2;
+    }
+    VM *vm = vm_new();
+    char err[256];
+    for (size_t i = 0; i < opts.n; i += 2) {
+        MlwsError e;
+        if (!vm_set_option(vm, opts.v[i], opts.v[i + 1], &e)) {
+            fprintf(stderr, "mlwsvm serve: %s\n", e.msg);
+            VEC_FREE(opts);
+            vm_free(vm);
+            return 2;
+        }
+    }
+    VEC_FREE(opts);
+    if (!tools_monitor(vm, monitor, err, sizeof err) || !tools_monitor_serve(vm, programs, err, sizeof err) ||
+        (mcert && !tools_monitor_tls(vm, mcert, mkey, err, sizeof err))) {
+        fprintf(stderr, "mlwsvm serve: %s\n", err);
+        vm_free(vm);
+        return 1;
+    }
+    const char *token = tools_monitor_actions(vm, getenv("MLWSVM_MONITOR_TOKEN"));
+    fprintf(stderr, "mlwsvm: serving at %s://%s/#token=%s  (programs from %s)\n", tools_monitor_scheme(vm),
+            tools_monitor_addr(vm), token, programs);
+    tool_env_libpaths(&g_env, vm);
+    vm_serve(vm);
+    vm_free(vm);
+    return 0;
+}
+
 static bool stdin_line(void *ctx, char *buf, size_t n) {
     (void)ctx;
     return fgets(buf, (int)n, stdin) != NULL;
@@ -548,6 +603,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "dis")) rc = cmd_dis(n, args);
     else if (!strcmp(cmd, "test")) rc = tool_test(n, args, &g_env);
     else if (!strcmp(cmd, "debug")) rc = cmd_debug(n, args);
+    else if (!strcmp(cmd, "serve")) rc = cmd_serve(n, args);
     else if (!strcmp(cmd, "top")) rc = tool_top(n, args);
     else if (!strcmp(cmd, "doc")) rc = tool_doc(n, args);
     else if (!strcmp(cmd, "ext")) rc = tool_ext(n, args, &g_env);

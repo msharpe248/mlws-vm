@@ -128,6 +128,79 @@ static bool run_programs(VM *vm, Process **mains, int n, RunResult *res) {
     return ok;
 }
 
+Program *vm_start_program(VM *vm, const char *path, const StrVec *args, const char *cap, const char *quota,
+                          MlwsError *err) {
+    Caps *caps = NULL;
+    uint64_t q[QUOTA__COUNT];
+    if (cap && *cap && !(caps = vm_parse_caps(vm, cap, err))) return NULL;
+    if (!vm_parse_quota(vm, quota ? quota : "", q, err)) {
+        if (caps) caps_release(caps);
+        return NULL;
+    }
+    /* The same file again is another main of its module, as with --also: the
+     * module's current version, if that file's is loaded. */
+    LModule *root = NULL;
+    plat_lock(vm->mods_lock);
+    for (size_t i = 0; i < vm->mods.n && !root; i++) {
+        LModule *lm = vm->mods.v[i];
+        if (lm->state == LM_READY && !lm->replaced && lm->path && !strcmp(lm->path, path)) root = lm;
+    }
+    plat_unlock(vm->mods_lock);
+    if (!root) root = vm_load_root(vm, path, err);
+    Function *fn = root ? vm_find_main(root, err) : NULL;
+    if (!fn) {
+        if (caps) caps_release(caps);
+        return NULL;
+    }
+    Process *p = proc_new(vm);
+    if (caps) { /* (as --cap: no foreign code for a program kept within bounds) */
+        caps_release(p->caps);
+        p->caps = caps;
+        q[QUOTA_FOREIGN] = 0;
+    }
+    memcpy(p->quota, q, sizeof q);
+    plat_lock(vm->lock); /* (vm->progs: the monitor reads it) */
+    Program *pr = vm_program_add(vm, p, path, args);
+    plat_unlock(vm->lock);
+    proc_start(p, fn, NULL, NULL, 0); /* (and in the table, ready) */
+    return pr;
+}
+
+/* The program mlwsvm serve runs so that its run never ends of itself: a main
+ * that sleeps. */
+static const char SERVE_KEEPER[] = ".func main\n1:  sleep 3600000\n    jmp 1b\n.endf\n";
+
+void vm_serve(VM *vm) {
+    MlwsError err = {{0}, {0}};
+    LModule *root = vm_load_text(vm, "(serve)", SERVE_KEEPER, &err);
+    Function *fn = root ? vm_find_main(root, &err) : NULL;
+    if (!fn) { /* (never: the text is ours) */
+        fprintf(stderr, "mlwsvm serve: %s\n", err.msg);
+        return;
+    }
+    vm->exit_requested = false;
+    Process *keeper = proc_new(vm);
+    vm->main_pid = keeper->pid;
+    vm_program_add(vm, keeper, "(serve)", NULL);
+    proc_start(keeper, fn, NULL, NULL, 0);
+    while (sched_run(vm, keeper)) {}
+    sched_shutdown(vm, NULL);
+    proc_free(keeper);
+    for (size_t i = 1; i < vm->progs.n; i++) /* (each program's main was kept for its results) */
+        if (vm->progs.v[i]->main) proc_free(vm->progs.v[i]->main);
+    vm_programs_free(vm);
+}
+
+void vm_serve_stop(VM *vm) {
+    plat_lock(vm->lock);
+    size_t n = vm->progs.n;
+    uint64_t *pids = xcalloc(n + 1, sizeof *pids);
+    for (size_t i = 0; i < n; i++) pids[i] = vm->progs.v[i]->main->pid;
+    plat_unlock(vm->lock);
+    for (size_t i = n; i-- > 0;) sched_kill_from_outside(vm, pids[i], "E_KILLED", "mlwsvm serve was stopped");
+    free(pids);
+}
+
 bool vm_run_function(VM *vm, Function *fn, Word *args, int nargs, RunResult *res, const RunHooks *hooks) {
     MlwsError keep = res->err; /* (a load error already reported stays) */
     memset(res, 0, sizeof *res);
