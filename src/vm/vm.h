@@ -568,6 +568,7 @@ struct Process {
     bool published;              /* in the process table */
     bool raising;                /* building an Error: exempt from the heap quota */
     bool sandboxed;              /* a debugger's formatter: may not reach other processes (proc_reach) */
+    bool killed;                 /* [L] a kill with E_KILLED was asked for: an end with it is not reported */
     char kill_code[32];          /* [L] why kill_req was set */
     char kill_msg[256];
     PidVec links;                /* [L] */

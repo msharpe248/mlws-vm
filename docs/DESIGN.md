@@ -1674,7 +1674,11 @@ passed.
 4. Kill each linked process that is still alive with `E_LINKED`, if this one
    failed (`finish` runs recursively along chains of links); a normal exit
    only removes the link.
-5. If it failed with nobody watching, print a crash report.
+5. If it failed with nobody watching, print a crash report, unless it was
+   killed (`E_KILLED`, by `kill`, `module.purge_kill`, the monitor or its
+   program's end): stopped on purpose, it has no failure of its own to
+   report. A link's `E_LINKED` is reported, since it carries the failure
+   that began it.
 6. Free it, unless it is a program's `main`, which is kept for the run's
    result. When the last program's `main` ends, the run is over; when
    another program's `main` ends, that program's other processes are killed.
