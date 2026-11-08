@@ -1,0 +1,17 @@
+; Acted on by check_tools.sh through --monitor-actions: a registered process
+; that writes each message it gets to the monitor's log, as JSON, so that a
+; message sent from the monitor can be seen arriving; the test kills it, and
+; reloads and purges this module. It runs for a minute at most.
+.func receiver
+    ncall "proc.register" ("receiver", PID)
+1:  recv R0
+    ncall "json.stringify" (R0, 0) -> (R1)
+    strcat R2, "got ", R1
+    ncall "monitor.log" (1, R2)
+    jmp 1b
+.endf
+.func main
+    spawn receiver
+    sleep 60000
+    ret 0
+.endf

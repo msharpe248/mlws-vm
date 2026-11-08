@@ -407,9 +407,29 @@ mlwsvm: monitor at http://127.0.0.1:7070/  (or: mlwsvm top 127.0.0.1:7070)
 ```
 
 `--monitor PORT` binds to 127.0.0.1. `--monitor HOST:PORT` binds elsewhere; use
-it with care, because the API has no authentication. It is **read-only**:
-nothing it serves can change the program. `--hold` keeps serving after `main`
-ends, so you can inspect the final state (Ctrl-C to quit).
+it with care, because what it shows needs no authentication. It is
+**read-only** unless `--monitor-actions` is given (below). `--hold` keeps
+serving after `main` ends, so you can inspect the final state (Ctrl-C to quit).
+
+```
+$ mlwsvm run --monitor 7070 --monitor-actions server.masm
+mlwsvm: monitor at http://127.0.0.1:7070/#token=4f1c...  (actions allowed with that token)
+$ mlwsvm run --monitor 0.0.0.0:7443 --monitor-cert cert.pem --monitor-key key.pem server.masm
+```
+
+* **Actions** (`--monitor-actions`): kill a process, send it a message, and
+  reload or purge a module, from the dashboard or the API. Each needs a token:
+  128 random bits, printed at the start, or `MLWSVM_MONITOR_TOKEN`'s value. Open
+  the printed address: the token is in its `#` part, which a browser never sends
+  to a server, and the page keeps it for that tab only, and only then shows the
+  buttons. An action also needs, when the monitor listens on this machine only,
+  a `Host` of that address (so a page from another site cannot reach it through
+  a name of its own pointing here), and no `Origin` but the monitor's own. Every
+  action is written to the program's log (`monitor.kill`, `monitor.send`,
+  `monitor.reload`, `monitor.purge`). Reads still need no token.
+* **TLS** (`--monitor-cert FILE --monitor-key FILE`, PEM): the dashboard and the
+  API over HTTPS, and nothing over plain HTTP. It needs OpenSSL or LibreSSL at
+  run time, as `std.tls` does. `mlwsvm top` speaks plain HTTP only.
 
 ### Web dashboard: `GET /`
 
@@ -437,6 +457,20 @@ modules, names, nodes and graph every five).
 | `GET /api/nodes` | `self`, this VM's node number (0: none), and `connected`: `node`, and `carrier`, the process carrying that connection |
 | `GET /api/graph` | `links` (`[a, b]`, each once), `monitors` (`[watcher, watched]`), and `far`: ties with other nodes, `pid`, `kind` (`link`, `watched_by`, `watches`) and `other` |
 | `GET /top` | the plain-text table that `mlwsvm top` shows |
+
+Actions (with `--monitor-actions`; `Authorization: Bearer TOKEN`). Each answers
+`{"ok": true}`, or `{"error": ...}` with 400 (a bad body, or a module that will
+not reload), 401 (no token, or the wrong one), 403 (actions off, another
+`Host`, another site) or 404 (no such process, module or action):
+
+| Endpoint | Does |
+|---|---|
+| `POST /api/proc/PID/kill` | the process fails with `E_KILLED` (so its links and monitors hear of it) |
+| `POST /api/proc/PID/send` | the body, JSON of up to 64 KiB, as a message: an object is a map, an array a list, a string a string, a number an `i64` or `f64` |
+| `POST /api/modules/NAME/reload` | a new version of the module from its file (`module.reload`) |
+| `POST /api/modules/NAME/purge` | frees the old versions nothing runs (`module.purge`); answers `freed` and `kept` |
+
+`GET /api/vm` also says whether actions are on (`actions`).
 
 Counters are cumulative; compute rates by differencing two samples, as the
 dashboard does. `cpu_ns` is the time spent executing that process's time slices.

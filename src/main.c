@@ -21,6 +21,9 @@ static void usage(FILE *f) {
           "        --profile [--flame FILE]        hot functions, lines and opcodes; collapsed stacks\n"
           "        --trace FILE|- [--trace-limit N] log every instruction\n"
           "        --monitor [HOST:]PORT [--hold]  serve the web dashboard and /api while running\n"
+          "        --monitor-actions               and allow actions (kill, send, reload, purge), with a token\n"
+          "                                        (printed; or $MLWSVM_MONITOR_TOKEN)\n"
+          "        --monitor-cert FILE --monitor-key FILE   serve it over TLS (HTTPS)\n"
           "        --gc-stress                     collect garbage at every allocation (VM testing)\n"
           "        --gc-verify                     check each minor collection against the whole heap (VM testing)\n"
           "        --unsafe-native                 load native code without the trust checks (development)\n"
@@ -172,7 +175,8 @@ static void print_error(const MlwsError *e) {
 static int cmd_run(int argc, char **argv) {
     const char *file = NULL;
     bool stats = false, gc_stress = false, gc_verify = false, profile = false, hold = false, unsafe_native = false, no_cache = false;
-    const char *trace = NULL, *flame = NULL, *monitor = NULL;
+    bool actions = false;
+    const char *trace = NULL, *flame = NULL, *monitor = NULL, *mcert = NULL, *mkey = NULL;
     uint64_t trace_limit = 0;
     VEC(const char *) opts = {0}; /* VM options: name, value pairs */
     char **prog_argv = NULL;
@@ -185,6 +189,9 @@ static int cmd_run(int argc, char **argv) {
         else if (!strcmp(argv[i], "--trace") && i + 1 < argc) trace = argv[++i];
         else if (!strcmp(argv[i], "--trace-limit") && i + 1 < argc) trace_limit = strtoull(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor = argv[++i];
+        else if (!strcmp(argv[i], "--monitor-actions")) actions = true;
+        else if (!strcmp(argv[i], "--monitor-cert") && i + 1 < argc) mcert = argv[++i];
+        else if (!strcmp(argv[i], "--monitor-key") && i + 1 < argc) mkey = argv[++i];
         else if (!strcmp(argv[i], "--gc-stress")) gc_stress = true;
         else if (!strcmp(argv[i], "--gc-verify")) gc_verify = true;
         else if (!strcmp(argv[i], "--unsafe-native")) unsafe_native = true;
@@ -275,9 +282,32 @@ static int cmd_run(int argc, char **argv) {
             vm_free(vm);
             return 1;
         }
-        fprintf(stderr, "mlwsvm: monitor at http://%s/  (or: mlwsvm top %s)\n", tools_monitor_addr(vm),
-                tools_monitor_addr(vm));
+        if ((mcert != NULL) != (mkey != NULL)) {
+            fprintf(stderr, "mlwsvm run: --monitor-cert and --monitor-key go together\n");
+            vm_free(vm);
+            return 2;
+        }
+        if (mcert && !tools_monitor_tls(vm, mcert, mkey, err, sizeof err)) {
+            fprintf(stderr, "mlwsvm run: %s\n", err);
+            vm_free(vm);
+            return 1;
+        }
+        const char *scheme = tools_monitor_scheme(vm);
+        if (actions) {
+            const char *token = tools_monitor_actions(vm, getenv("MLWSVM_MONITOR_TOKEN"));
+            fprintf(stderr, "mlwsvm: monitor at %s://%s/#token=%s  (actions allowed with that token)\n", scheme,
+                    tools_monitor_addr(vm), token);
+        } else if (mcert) {
+            fprintf(stderr, "mlwsvm: monitor at %s://%s/\n", scheme, tools_monitor_addr(vm));
+        } else {
+            fprintf(stderr, "mlwsvm: monitor at http://%s/  (or: mlwsvm top %s)\n", tools_monitor_addr(vm),
+                    tools_monitor_addr(vm));
+        }
         vm->hold = hold;
+    } else if (actions || mcert || mkey) {
+        fprintf(stderr, "mlwsvm run: --monitor-actions, --monitor-cert and --monitor-key need --monitor\n");
+        vm_free(vm);
+        return 2;
     }
     tool_env_libpaths(&g_env, vm); /* (each program's own directory is searched first for its modules) */
     RunResult *rs = xcalloc(progs.n, sizeof *rs);

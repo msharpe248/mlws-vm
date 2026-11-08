@@ -6,7 +6,9 @@
 <title>MLWSVM Monitor</title>
 <!-- Served by `mlwsvm run --monitor HOST:PORT`. Self-contained: no external assets.
      Polls /api/vm, /api/procs, /api/exits and /api/log once a second, and
-     /api/modules, /api/names, /api/nodes and /api/graph every five. -->
+     /api/modules, /api/names, /api/nodes and /api/graph every five. With
+     --monitor-actions and the token in the address's #token=, it also kills,
+     sends, reloads and purges (POST, with the token). -->
 <style>
 :root {
   color-scheme: light;
@@ -56,6 +58,7 @@
   --selected: #1d2c40;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   margin: 0; background: var(--surface-0); color: var(--text-primary);
   font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -76,6 +79,7 @@ button.theme {
   border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; cursor: pointer;
 }
 main { padding: 16px; max-width: 1400px; margin: 0 auto; display: grid; gap: 16px; }
+main > *, .three > *, .charts > * { min-width: 0; } /* (wide tables scroll inside their cards) */
 .tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .tile, .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
 .tile .label { font-size: 12px; color: var(--text-secondary); }
@@ -126,6 +130,15 @@ select { font: inherit; font-size: 12px; color: var(--text-primary); background:
 .legend svg { vertical-align: middle; margin-right: 4px; }
 .mini td, .mini th { padding: 4px 8px; }
 .note { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+.acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.acts input { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-primary); background: var(--surface-0);
+  border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; min-width: 0; flex: 1 1 200px; }
+button.act { font: inherit; font-size: 12px; color: var(--text-primary); background: var(--surface-0); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+button.act:hover { background: var(--row-hover); }
+button.act.danger { color: var(--critical); }
+#act-status.ok .dot { background: var(--good); }
+#act-status.bad .dot { background: var(--critical); }
 .mini tbody tr { cursor: default; }
 @media (max-width: 600px) { .tile .value { font-size: 20px; } .graph svg { height: 300px; } }
 </style>
@@ -135,6 +148,7 @@ select { font: inherit; font-size: 12px; color: var(--text-primary); background:
   <h1>MLWSVM monitor</h1>
   <span class="pill"><span class="dot" id="conn-dot"></span><span id="conn">connecting…</span></span>
   <span class="pill" id="uptime"></span>
+  <span class="pill" id="act-status" hidden><span class="dot"></span><span id="act-text"></span></span>
   <span class="spacer"></span>
   <button class="theme" id="theme" type="button">Theme</button>
 </header>
@@ -161,6 +175,11 @@ select { font: inherit; font-size: 12px; color: var(--text-primary); background:
       <div><h2>Backtrace</h2><pre id="detail-bt"></pre></div>
       <div><h2>Waiting messages</h2><pre id="detail-msgs"></pre></div>
     </div>
+    <div class="acts" id="detail-acts" hidden>
+      <input id="send-text" placeholder='A message as JSON: {"cmd": "status"}' aria-label="Message as JSON">
+      <button class="act" id="send-btn" type="button">Send</button>
+      <button class="act danger" id="kill-btn" type="button">Kill</button>
+    </div>
   </section>
   <section class="card">
     <div class="toolbar"><h2>Log</h2><span class="spacer"></span>
@@ -180,7 +199,7 @@ select { font: inherit; font-size: 12px; color: var(--text-primary); background:
     <div class="empty" id="graph-empty" hidden>No links or monitors.</div>
   </section>
   <section class="three">
-    <div class="card"><h2>Modules</h2><div class="table-wrap"><table class="mini" id="mods"><thead><tr><th class="text">Module</th><th>Version</th><th class="text">State</th><th>Functions</th></tr></thead><tbody></tbody></table></div></div>
+    <div class="card"><h2>Modules</h2><div class="table-wrap"><table class="mini" id="mods"><thead><tr><th class="text">Module</th><th>Version</th><th class="text">State</th><th>Functions</th><th class="text" id="mods-acts-h" hidden></th></tr></thead><tbody></tbody></table></div></div>
     <div class="card"><h2>Registered names</h2><div class="table-wrap"><table class="mini" id="names"><thead><tr><th class="text">Name</th><th>PID</th></tr></thead><tbody></tbody></table></div><div class="empty" id="names-empty">No names registered.</div></div>
     <div class="card"><h2>Nodes</h2><div id="nodes-self" class="note"></div><div class="table-wrap"><table class="mini" id="nodes"><thead><tr><th>Node</th><th>Carried by</th></tr></thead><tbody></tbody></table></div><div class="empty" id="nodes-empty">Not connected to other nodes.</div></div>
   </section>
@@ -345,6 +364,7 @@ async function loadDetail() {
     ];
     $("detail-stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
     $("detail-bt").textContent = p.backtrace.join("\n") || "(no frames)";
+    $("detail-acts").hidden = !canAct();
     $("detail-msgs").textContent = p.messages.length
       ? p.messages.map((m) => m.type + (m.size != null ? ` (${m.size})` : "") + (m.preview != null ? "  " + (typeof m.preview === "string" ? JSON.stringify(m.preview) : m.preview) : "")).join("\n")
         + (p.mailbox > p.messages.length ? `\n… ${p.mailbox - p.messages.length} more` : "")
@@ -363,6 +383,45 @@ function renderExits(exits) {
 }
 
 function farName(x) { return `node ${x.node} pid ${x.pid}`; }
+
+// ---- actions (mlwsvm run --monitor-actions): the token comes in the URL's #fragment,
+// which is never sent to the server, and is kept for this tab only.
+let token = null, actionsOn = false;
+try {
+  const m = location.hash.match(/token=([^&]+)/);
+  if (m) { sessionStorage.setItem("mlwsvm-token", decodeURIComponent(m[1])); history.replaceState(null, "", location.pathname); }
+  token = sessionStorage.getItem("mlwsvm-token");
+} catch (e) { /* no storage: no actions */ }
+function canAct() { return actionsOn && token; }
+let statusTimer = 0;
+function showStatus(ok, text) {
+  const el = $("act-status");
+  el.hidden = false; el.className = "pill " + (ok ? "ok" : "bad"); $("act-text").textContent = text;
+  clearTimeout(statusTimer); statusTimer = setTimeout(() => { el.hidden = true; }, 6000);
+}
+async function act(path, body, what) {
+  try {
+    const r = await fetch(path, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body });
+    const j = await r.json().catch(() => ({}));
+    showStatus(r.ok, r.ok ? what + (j.freed != null ? ` (freed ${j.freed}, kept ${j.kept})` : "") : `${what}: ${j.error || r.status}`);
+    return r.ok;
+  } catch (e) { showStatus(false, `${what}: no answer`); return false; }
+}
+$("kill-btn").addEventListener("click", async () => {
+  if (selectedPid == null || !confirm(`Kill process ${selectedPid}? It fails with E_KILLED, and its links go with it.`)) return;
+  await act(`/api/proc/${selectedPid}/kill`, null, `killed ${selectedPid}`); loadDetail();
+});
+$("send-btn").addEventListener("click", async () => {
+  const text = $("send-text").value.trim();
+  if (selectedPid == null || !text) return;
+  if (await act(`/api/proc/${selectedPid}/send`, text, `sent to ${selectedPid}`)) $("send-text").value = "";
+  loadDetail();
+});
+async function moduleAct(name, verb) {
+  if (verb === "reload" && !confirm(`Load ${name} again from its file?`)) return;
+  await act(`/api/modules/${encodeURIComponent(name)}/${verb}`, null, verb === "reload" ? `reloaded ${name}` : `purged old versions of ${name}`);
+  slowTick();
+}
 
 // ---- the log ---------------------------------------------------------------------
 const LOG_KEEP = 500;
@@ -439,8 +498,11 @@ function drawGraph(g) {
 async function slowTick() {
   try {
     const [mods, names, nodes, graph] = await Promise.all(["/api/modules", "/api/names", "/api/nodes", "/api/graph"].map((u) => fetch(u).then((r) => r.json())));
+    $("mods-acts-h").hidden = !canAct();
     $("mods").querySelector("tbody").innerHTML = mods.map((m) => `<tr><td class="text">${esc(m.name)}</td><td>${m.version}</td>
-      <td class="text"><span class="state"><span class="dot ${m.current ? "good" : ""}"></span>${m.current ? "current" : m.state === "purged" ? "purged" : "replaced"}</span></td><td>${m.functions}</td></tr>`).join("");
+      <td class="text"><span class="state"><span class="dot ${m.current ? "good" : ""}"></span>${m.current ? "current" : m.state === "purged" ? "purged" : "replaced"}</span></td><td>${m.functions}</td>
+      ${canAct() ? `<td class="text">${m.current ? `<button class="act" data-mod="${esc(m.name)}" data-verb="reload" type="button">Reload</button> <button class="act" data-mod="${esc(m.name)}" data-verb="purge" type="button">Purge old</button>` : ""}</td>` : ""}</tr>`).join("");
+    $("mods").querySelectorAll("button[data-mod]").forEach((b) => b.addEventListener("click", () => moduleAct(b.dataset.mod, b.dataset.verb)));
     $("names").querySelector("tbody").innerHTML = names.map((n) => `<tr><td class="text">${esc(n.name)}</td><td>${n.pid}</td></tr>`).join("");
     $("names-empty").hidden = names.length > 0;
     $("nodes-self").textContent = nodes.self ? `This VM is node ${nodes.self}.` : "This VM is not a node.";
@@ -467,6 +529,7 @@ async function tick() {
     });
     prevCpu = cpuNow;
     prev = vm;
+    if (actionsOn !== !!vm.actions) { actionsOn = !!vm.actions; slowTick(); } /* (buttons, now that we know) */
     if (dt > 0) { /* the first sample has no rate yet; don't plot a false zero */
       history.t.push(now); history.ips.push(ips); history.heap.push(vm.heap_bytes);
     }

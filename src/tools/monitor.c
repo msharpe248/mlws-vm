@@ -3,9 +3,11 @@
  * Each request is served with the other workers paused (sched_stop_world), so
  * it can read every process. It serves read-only JSON statistics, a plain-text
  * table for `mlwsvm top`, and the embedded web dashboard. See docs/TOOLING.md. */
+#include <ctype.h>
 #include <math.h>
 
 #include "../heap/heap.h"
+#include "../native/tls.h"
 #include "../platform/platform.h"
 #include "tools.h"
 #include "tools_internal.h"
@@ -16,6 +18,10 @@ extern const size_t DASHBOARD_HTML_LEN;
 typedef struct Monitor {
     int fd;
     char addr[96]; /* HOST:PORT */
+    char host[64];
+    int port;
+    char *token;       /* --monitor-actions: what an action must show; NULL: none allowed */
+    char *cert, *key;  /* --monitor-cert, --monitor-key: TLS */
     /* previous /top sample, to turn cumulative CPU time into a percentage */
     VEC(uint64_t) last_cpu;
     uint64_t last_top_ns;
@@ -418,42 +424,169 @@ static void top_text(StrBuf *b, Monitor *mon, VM *vm) {
     VEC_FREE(ps);
 }
 
-static void respond(int fd, int status, const char *type, const char *body, size_t n) {
+/* ---- connections: plain, or TLS (--monitor-cert, --monitor-key) ---------------------- */
+
+#define REQ_DEADLINE_NS 2000000000u /* a request read and answered within 2 s, or dropped */
+#define BODY_MAX 65536
+
+typedef struct {
+    int fd;
+    Tls *tls;
+    uint64_t deadline;
+} Conn;
+
+static uint64_t left_ns(const Conn *c) {
+    uint64_t now = plat_now_ns();
+    return now < c->deadline ? c->deadline - now : 0;
+}
+
+/* A TLS call's progress: wait for what it wants, false once out of time. */
+static bool tls_wait(Conn *c, long r) {
+    if (!left_ns(c)) return false;
+    if (r == TLS_WANT_READ) return plat_wait_readable(c->fd, left_ns(c));
+    plat_sleep_ns(1000000); /* TLS_WANT_WRITE: rare for answers this small */
+    return true;
+}
+
+static long conn_read(Conn *c, char *buf, size_t n) {
+    if (!c->tls) return plat_sock_read(c->fd, buf, n, left_ns(c));
+    char err[160];
+    for (;;) {
+        long r = tls_read(c->tls, buf, n, err, sizeof err);
+        if (r >= 0) return r;
+        if (r == TLS_FAILED || !tls_wait(c, r)) return -1;
+    }
+}
+
+static bool conn_write(Conn *c, const char *buf, size_t n) {
+    if (!c->tls) return plat_sock_write_all(c->fd, buf, n);
+    char err[160];
+    while (n) {
+        long r = tls_write(c->tls, buf, n, err, sizeof err);
+        if (r > 0) buf += r, n -= (size_t)r;
+        else if (r == TLS_FAILED || !tls_wait(c, r)) return false;
+    }
+    return true;
+}
+
+static void conn_close(Conn *c) {
+    if (c->tls) tls_release(c->tls); /* (and its descriptor) */
+    else plat_sock_close(c->fd);
+}
+
+static const char *status_text(int status) {
+    switch (status) {
+    case 200: return "OK";
+    case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
+    case 413: return "Payload Too Large";
+    default: return "Error";
+    }
+}
+
+/* Reads may be shown to any page (Access-Control-Allow-Origin: *), as they
+ * always were; an action's answer is for the monitor's own page only. */
+static void respond(Conn *c, int status, const char *type, const char *body, size_t n, bool any_origin) {
     StrBuf h = {0};
-    sb_printf(&h,
-              "HTTP/1.0 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nCache-Control: no-store\r\n"
-              "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
-              status, status == 200 ? "OK" : "Not Found", type, n);
-    if (plat_sock_write_all(fd, h.s, h.n)) plat_sock_write_all(fd, body, n);
+    sb_printf(&h, "HTTP/1.0 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nCache-Control: no-store\r\n%s"
+                  "Connection: close\r\n\r\n",
+              status, status_text(status), type, n, any_origin ? "Access-Control-Allow-Origin: *\r\n" : "");
+    if (conn_write(c, h.s, h.n)) conn_write(c, body, n);
     sb_free(&h);
 }
 
-static void serve(Monitor *mon, VM *vm, int fd) {
-    char req[2048];
-    size_t n = 0;
-    while (n < sizeof req - 1) { /* read the request head (bodies are not used) */
-        long r = plat_sock_read(fd, req + n, sizeof req - 1 - n, 200000000);
-        if (r <= 0) break;
-        n += (size_t)r;
-        req[n] = 0;
-        if (strstr(req, "\r\n\r\n") || strstr(req, "\n\n")) break;
-    }
-    req[n] = 0;
-    char method[8] = {0}, path[256] = {0};
-    if (sscanf(req, "%7s %255s", method, path) != 2 || strcmp(method, "GET") != 0) {
-        respond(fd, 404, "text/plain", "only GET is supported\n", 22);
+static void respond_json(Conn *c, int status, const char *json) { respond(c, status, "application/json", json, strlen(json), false); }
+
+/* ---- requests ------------------------------------------------------------------------ */
+
+typedef struct {
+    char method[8], path[512], host[160], origin[200], auth[200];
+    size_t clen;
+    bool bad_len; /* a Content-Length past BODY_MAX */
+    char *body;
+    size_t nbody;
+} Req;
+
+/* Whether s starts with p, case blind (ASCII). */
+static bool starts_ci(const char *s, const char *p) {
+    for (; *p; s++, p++)
+        if (tolower((unsigned char)*s) != tolower((unsigned char)*p)) return false;
+    return true;
+}
+
+/* A header's value (name ending in ':'), case blind, into out. */
+static void header(const char *head, const char *name, char *out, size_t n) {
+    size_t k = strlen(name);
+    out[0] = 0;
+    for (const char *l = strchr(head, '\n'); l; l = strchr(l, '\n')) {
+        l++;
+        if (!starts_ci(l, name)) continue;
+        l += k;
+        while (*l == ' ' || *l == '\t') l++;
+        size_t m = strcspn(l, "\r\n");
+        if (m >= n) m = n - 1;
+        memcpy(out, l, m);
+        out[m] = 0;
         return;
     }
-    char *q = strchr(path, '?');
-    if (q) *q++ = 0;
-    const char *since = q && !strncmp(q, "since=", 6) ? q + 6 : NULL;
+}
+
+static bool read_request(Conn *c, Req *q) {
+    char head[8192];
+    size_t n = 0;
+    char *end = NULL;
+    while (n < sizeof head - 1) {
+        long r = conn_read(c, head + n, sizeof head - 1 - n);
+        if (r <= 0) return false;
+        n += (size_t)r;
+        head[n] = 0;
+        if ((end = strstr(head, "\r\n\r\n"))) {
+            end += 4;
+            break;
+        }
+    }
+    if (!end) return false;
+    if (sscanf(head, "%7s %511s", q->method, q->path) != 2) return false;
+    header(head, "Host:", q->host, sizeof q->host);
+    header(head, "Origin:", q->origin, sizeof q->origin);
+    header(head, "Authorization:", q->auth, sizeof q->auth);
+    char len[32];
+    header(head, "Content-Length:", len, sizeof len);
+    q->clen = len[0] ? strtoull(len, NULL, 10) : 0;
+    if (q->clen > BODY_MAX) {
+        q->bad_len = true;
+        return true;
+    }
+    q->body = xmalloc(q->clen + 1);
+    q->nbody = n - (size_t)(end - head) < q->clen ? n - (size_t)(end - head) : q->clen;
+    memcpy(q->body, end, q->nbody);
+    while (q->nbody < q->clen) {
+        long r = conn_read(c, q->body + q->nbody, q->clen - q->nbody);
+        if (r <= 0) return false;
+        q->nbody += (size_t)r;
+    }
+    q->body[q->nbody] = 0;
+    return true;
+}
+
+/* The read-only API and the page, with the world stopped. */
+static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q) {
+    char *path = q->path;
+    char *qs = strchr(path, '?');
+    if (qs) *qs++ = 0;
+    const char *since = qs && !strncmp(qs, "since=", 6) ? qs + 6 : NULL;
     StrBuf b = {0};
     const char *json = "application/json";
     if (!strcmp(path, "/") || !strcmp(path, "/index.html")) {
-        respond(fd, 200, "text/html; charset=utf-8", DASHBOARD_HTML, DASHBOARD_HTML_LEN);
+        respond(k, 200, "text/html; charset=utf-8", DASHBOARD_HTML, DASHBOARD_HTML_LEN, true);
         return;
     } else if (!strcmp(path, "/api/vm")) {
         vm_json(&b, vm);
+        b.n--; /* (its closing brace: one more field, whether actions are on) */
+        sb_printf(&b, ",\"actions\":%s}", mon->token ? "true" : "false");
     } else if (!strcmp(path, "/api/procs")) {
         sb_putc(&b, '[');
         bool first = true;
@@ -469,7 +602,7 @@ static void serve(Monitor *mon, VM *vm, int fd) {
         uint64_t pid = strtoull(path + 10, NULL, 10);
         const Process *p = vm_proc_at(vm, pid);
         if (!p) {
-            respond(fd, 404, json, "{\"error\":\"no such process\"}", 27);
+            respond(k, 404, json, "{\"error\":\"no such process\"}", 27, true);
             return;
         }
         proc_json(&b, p, true);
@@ -487,14 +620,145 @@ static void serve(Monitor *mon, VM *vm, int fd) {
         log_json(&b, vm, since ? strtoull(since, NULL, 10) : 0);
     } else if (!strcmp(path, "/top")) {
         top_text(&b, mon, vm);
-        respond(fd, 200, "text/plain; charset=utf-8", b.s, b.n);
+        respond(k, 200, "text/plain; charset=utf-8", b.s, b.n, true);
         sb_free(&b);
         return;
     } else {
-        respond(fd, 404, "text/plain", "not found\n", 10);
+        respond(k, 404, "text/plain", "not found\n", 10, true);
         return;
     }
-    respond(fd, 200, json, b.s, b.n);
+    respond(k, 200, json, b.s, b.n, true);
+    sb_free(&b);
+}
+
+/* ---- actions (--monitor-actions) ------------------------------------------------------ *
+ * Each needs the token (Authorization: Bearer TOKEN), the monitor's own Host
+ * when it listens on this machine only (against DNS rebinding), and no Origin
+ * but its own (against cross-site requests). They run with the world going,
+ * since a reload stops it itself, and each is written to the program's log. */
+
+static bool loopback(const char *host) {
+    return !strcmp(host, "127.0.0.1") || !strcmp(host, "localhost") || !strcmp(host, "::1");
+}
+
+/* Host: the address listened on, or another name of this machine for it. */
+static bool host_ok(const Monitor *mon, const char *host) {
+    if (!loopback(mon->host)) return true; /* (other names for the machine: the token decides) */
+    char want[3][96];
+    snprintf(want[0], sizeof want[0], "127.0.0.1:%d", mon->port);
+    snprintf(want[1], sizeof want[1], "localhost:%d", mon->port);
+    snprintf(want[2], sizeof want[2], "[::1]:%d", mon->port);
+    for (int i = 0; i < 3; i++)
+        if (!strcmp(host, want[i])) return true;
+    return false;
+}
+
+static bool origin_ok(const Monitor *mon, const Req *q) {
+    if (!q->origin[0]) return true; /* not from a page */
+    char want[220];
+    snprintf(want, sizeof want, "%s://%s", mon->cert ? "https" : "http", q->host);
+    return !strcmp(q->origin, want);
+}
+
+static bool token_ok(const Monitor *mon, const char *auth) {
+    if (strncmp(auth, "Bearer ", 7)) return false;
+    const char *t = auth + 7;
+    size_t n = strlen(t), m = strlen(mon->token);
+    unsigned diff = (unsigned)(n ^ m); /* (in time that does not depend on how much matches) */
+    for (size_t i = 0; i < m; i++) diff |= (unsigned)(t[i < n ? i : 0] ^ mon->token[i]);
+    return diff == 0;
+}
+
+/* A path's segment, %-decoded: module names may be in it. */
+static void url_decode(char *s) {
+    char *o = s;
+    for (; *s; s++) {
+        int h, l;
+        if (*s == '%' && s[1] && s[2] && sscanf(s + 1, "%1x%1x", (unsigned *)&h, (unsigned *)&l) == 2) {
+            *o++ = (char)(h * 16 + l);
+            s += 2;
+        } else {
+            *o++ = *s;
+        }
+    }
+    *o = 0;
+}
+
+static void audit(VM *vm, const char *what, const char *json) {
+    if (vm->mlog) vm_mlog_put(vm, 0, -1, what, json, strlen(json));
+}
+
+static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q) {
+    if (!mon->token) {
+        respond_json(k, 403, "{\"error\":\"actions are off: start with --monitor-actions\"}");
+        return;
+    }
+    if (!host_ok(mon, q->host)) {
+        respond_json(k, 403, "{\"error\":\"not this monitor's Host\"}");
+        return;
+    }
+    if (!origin_ok(mon, q)) {
+        respond_json(k, 403, "{\"error\":\"a request from another site\"}");
+        return;
+    }
+    if (!token_ok(mon, q->auth)) {
+        respond_json(k, 401, "{\"error\":\"the token is needed: Authorization: Bearer TOKEN\"}");
+        return;
+    }
+    StrBuf b = {0}, a = {0};
+    char *path = q->path, err[300] = "";
+    uint64_t pid = 0;
+    char verb[16] = "", name[256] = "";
+    if (sscanf(path, "/api/proc/%llu/%15[a-z]", (unsigned long long *)&pid, verb) == 2 && !strcmp(verb, "kill")) {
+        if (sched_kill_from_outside(vm, pid, "E_KILLED", "killed from the monitor")) {
+            sb_printf(&a, "{\"pid\":%llu}", (unsigned long long)pid);
+            audit(vm, "monitor.kill", a.s);
+            respond_json(k, 200, "{\"ok\":true}");
+        } else {
+            respond_json(k, 404, "{\"error\":\"no such process\"}");
+        }
+    } else if (sscanf(path, "/api/proc/%llu/%15[a-z]", (unsigned long long *)&pid, verb) == 2 && !strcmp(verb, "send")) {
+        if (sched_post_json(vm, pid, q->body ? q->body : "", q->nbody, err, sizeof err)) {
+            sb_printf(&a, "{\"pid\":%llu,\"message\":%s}", (unsigned long long)pid, q->body);
+            audit(vm, "monitor.send", a.s);
+            respond_json(k, 200, "{\"ok\":true}");
+        } else {
+            sb_puts(&b, "{\"error\":");
+            json_str(&b, err);
+            sb_putc(&b, '}');
+            respond_json(k, strstr(err, "does not exist") ? 404 : 400, b.s);
+        }
+    } else if (sscanf(path, "/api/modules/%255[^/]/%15[a-z]", name, verb) == 2 &&
+               (!strcmp(verb, "reload") || !strcmp(verb, "purge"))) {
+        url_decode(name);
+        MlwsError e = {{0}, {0}};
+        bool ok;
+        if (!strcmp(verb, "reload")) {
+            ok = vm_reload(vm, name, NULL, NULL, &e) != NULL;
+            if (ok) sb_puts(&b, "{\"ok\":true}");
+        } else {
+            uint32_t freed = 0, kept = 0;
+            ok = vm_purge(vm, name, NULL, &freed, &kept, &e);
+            if (ok) sb_printf(&b, "{\"ok\":true,\"freed\":%u,\"kept\":%u}", freed, kept);
+        }
+        if (ok) {
+            sb_puts(&a, "{\"module\":");
+            json_str(&a, name);
+            sb_putc(&a, '}');
+            audit(vm, !strcmp(verb, "reload") ? "monitor.reload" : "monitor.purge", a.s);
+            respond_json(k, 200, b.s);
+        } else {
+            sb_puts(&b, "{\"error\":");
+            json_str(&b, e.msg);
+            sb_puts(&b, ",\"code\":");
+            json_str(&b, e.code);
+            sb_putc(&b, '}');
+            respond_json(k, !strcmp(e.code, "E_LOAD_NOT_FOUND") ? 404 : 400, b.s);
+        }
+    } else {
+        respond_json(k, 404, "{\"error\":\"no such action\"}");
+    }
+    sb_free(&a);
     sb_free(&b);
 }
 
@@ -503,10 +767,39 @@ static void monitor_poll(VM *vm, uint64_t wait_ns) {
     if (wait_ns) plat_wait_readable(mon->fd, wait_ns); /* idle: sleep until a request or the timer */
     int c;
     while ((c = plat_tcp_accept(mon->fd)) >= 0) {
-        sched_stop_world(vm); /* other worker threads pause while we read their processes */
-        serve(mon, vm, c);
-        sched_start_world(vm);
-        plat_sock_close(c);
+        Conn k = {c, NULL, plat_now_ns() + REQ_DEADLINE_NS};
+        if (mon->cert) { /* TLS first */
+            char err[256];
+            plat_fd_set_nonblocking(c, true);
+            k.tls = tls_server(c, mon->cert, mon->key, err, sizeof err);
+            if (!k.tls) {
+                plat_sock_close(c);
+                continue;
+            }
+            int r;
+            while ((r = tls_handshake(k.tls, err, sizeof err)) != TLS_OK)
+                if (r == TLS_FAILED || !tls_wait(&k, r)) break;
+            if (r != TLS_OK) {
+                conn_close(&k);
+                continue;
+            }
+        }
+        Req q = {0};
+        if (read_request(&k, &q)) {
+            if (q.bad_len) {
+                respond_json(&k, 413, "{\"error\":\"the body is over 64 KiB\"}");
+            } else if (!strcmp(q.method, "GET")) {
+                sched_stop_world(vm); /* other worker threads pause while we read their processes */
+                serve_get(mon, vm, &k, &q);
+                sched_start_world(vm);
+            } else if (!strcmp(q.method, "POST")) {
+                serve_action(mon, vm, &k, &q);
+            } else {
+                respond(&k, 405, "text/plain", "GET, or POST for an action\n", 27, false);
+            }
+        }
+        free(q.body);
+        conn_close(&k);
     }
 }
 
@@ -532,9 +825,42 @@ bool tools_monitor(VM *vm, const char *addr, char *err, size_t errlen) {
     t->mon = xcalloc(1, sizeof *t->mon);
     t->mon->fd = fd;
     snprintf(t->mon->addr, sizeof t->mon->addr, "%s:%d", host, port);
+    snprintf(t->mon->host, sizeof t->mon->host, "%s", host);
+    t->mon->port = port;
     vm->poll = monitor_poll;
     vm_mlog_enable(vm, 1000); /* monitor.log and monitor.event keep what they are given */
     return true;
+}
+
+const char *tools_monitor_actions(VM *vm, const char *token) {
+    Monitor *mon = ((Tools *)vm->tools)->mon;
+    if (token && *token) {
+        mon->token = xstrdup(token);
+    } else { /* 128 random bits, as hex */
+        uint8_t r[16];
+        mon->token = xmalloc(33);
+        if (!plat_random_bytes(r, sizeof r)) {
+            for (int i = 0; i < 16; i++) r[i] = (uint8_t)(plat_now_ns() >> (i % 8 * 8)); /* (never: the OS has entropy) */
+        }
+        for (int i = 0; i < 16; i++) snprintf(mon->token + 2 * i, 3, "%02x", r[i]);
+    }
+    return mon->token;
+}
+
+bool tools_monitor_tls(VM *vm, const char *cert, const char *key, char *err, size_t errlen) {
+    if (!tls_available()) {
+        snprintf(err, errlen, "--monitor-cert: TLS needs OpenSSL or LibreSSL, and neither was found");
+        return false;
+    }
+    Monitor *mon = ((Tools *)vm->tools)->mon;
+    mon->cert = xstrdup(cert);
+    mon->key = xstrdup(key);
+    return true;
+}
+
+const char *tools_monitor_scheme(VM *vm) {
+    Tools *t = vm->tools;
+    return t && t->mon && t->mon->cert ? "https" : "http";
 }
 
 const char *tools_monitor_addr(VM *vm) {
@@ -547,6 +873,9 @@ void tools_monitor_close(VM *vm) {
     if (!t || !t->mon) return;
     plat_sock_close(t->mon->fd);
     VEC_FREE(t->mon->last_cpu);
+    free(t->mon->token);
+    free(t->mon->cert);
+    free(t->mon->key);
     free(t->mon);
     t->mon = NULL;
     vm->poll = NULL;

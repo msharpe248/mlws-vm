@@ -717,7 +717,67 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/api/names | grep -q '{"name":"sleeper","pid":2}' || fail "/api/names"
     curl -sf http://127.0.0.1:$PORT/api/graph | grep -q '"links":\[\[1,2\]\],"monitors":\[\[1,2\]\]' || fail "/api/graph"
     curl -sf http://127.0.0.1:$PORT/api/proc/2 | grep -q '"messages":\[{"type":"string","size":5,"preview":"first"},{"type":"i64","preview":7}\]' || fail "/api/proc: messages"
+    # without --monitor-actions, no action
+    [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:$PORT/api/proc/2/kill)" = 403 ] || fail "an action without --monitor-actions"
     kill $VMPID 2>/dev/null || true
     wait $VMPID 2>/dev/null || true
+
+    MOND=$(mktemp -d)
+    # Actions (--monitor-actions): the token, the Host, the Origin; then send,
+    # reload, purge and kill, each in the log.
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions tests/tools/_monitor/acted.masm >/dev/null 2>"$MOND/acted.err" &
+    VMPID=$!
+    i=0
+    until curl -sf http://127.0.0.1:$PORT/api/names 2>/dev/null | grep -q '"receiver"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "monitor actions did not start"; sleep 0.1
+    done
+    grep -q '^mlwsvm: monitor at http://127.0.0.1:[0-9]*/#token=s3cret ' "$MOND/acted.err" || fail "the token printed"
+    U=http://127.0.0.1:$PORT
+    code() { curl -s -o "$MOND/r" -w '%{http_code}' -X POST "$@"; }
+    [ "$(code $U/api/proc/2/kill)" = 401 ] || fail "an action without the token"
+    [ "$(code -H 'Authorization: Bearer nope' $U/api/proc/2/kill)" = 401 ] || fail "an action with the wrong token"
+    [ "$(code -H 'Authorization: Bearer s3cret' -H 'Origin: http://evil.example' $U/api/proc/2/kill)" = 403 ] || fail "an action from another site"
+    [ "$(code -H 'Authorization: Bearer s3cret' -H 'Host: evil.example' $U/api/proc/2/kill)" = 403 ] || fail "an action for another Host"
+    A='Authorization: Bearer s3cret'
+    [ "$(code -H "$A" -H "Origin: $U" --data '{"n":[1,2.5,"x"]}' $U/api/proc/2/send)" = 200 ] || fail "send"
+    [ "$(code -H "$A" --data '{"n":' $U/api/proc/2/send)" = 400 ] || fail "send: not JSON"
+    [ "$(code -H "$A" --data '1' $U/api/proc/99/send)" = 404 ] || fail "send: no such process"
+    i=0
+    until curl -sf "$U/api/log" | grep -q '"level":"info","text":"got {\\"n\\":\[1,2.5,\\"x\\"\]}"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "send: the message did not arrive ($(curl -sf $U/api/log))"; sleep 0.1
+    done
+    [ "$(code -H "$A" $U/api/modules/acted/reload)" = 200 ] || fail "reload"
+    curl -sf $U/api/modules | grep -q '"name":"acted","path":"[^"]*","version":2,"current":true' || fail "reload: version 2"
+    [ "$(code -H "$A" $U/api/modules/nope/reload)" = 404 ] || fail "reload: no such module"
+    [ "$(code -H "$A" $U/api/modules/acted/purge)" = 200 ] && grep -q '"kept":1' "$MOND/r" || fail "purge ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" $U/api/proc/2/kill)" = 200 ] || fail "kill"
+    curl -sf $U/api/exits | grep -q '"pid":2,"entry":"receiver","failed":true,"code":"E_KILLED"' || fail "kill: E_KILLED"
+    LOG=$(curl -sf "$U/api/log")
+    for e in send reload purge kill; do
+        echo "$LOG" | grep -q "\"event\":\"monitor.$e\"" || fail "monitor.$e not in the log"
+    done
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
+
+    # Over TLS (--monitor-cert, --monitor-key), where there is a TLS library.
+    printf '.func main\n    ncall "tls.available" () -> (I0)\n    ret I0\n.endf\n' > "$MOND/tls.masm"
+    set +e
+    $BIN run "$MOND/tls.masm"; TLS_HERE=$?
+    set -e
+    if [ $TLS_HERE = 1 ]; then
+        MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions --monitor-cert tests/net/_tls/cert.pem \
+            --monitor-key tests/net/_tls/key.pem tests/tools/_monitor/acted.masm >/dev/null 2>"$MOND/acted.err" &
+        VMPID=$!
+        i=0
+        until curl -sf --cacert tests/net/_tls/cert.pem https://localhost:$PORT/api/names 2>/dev/null | grep -q '"receiver"'; do
+            i=$((i + 1)); [ $i -lt 50 ] || fail "monitor over TLS did not start"; sleep 0.1
+        done
+        grep -q "^mlwsvm: monitor at https://" "$MOND/acted.err" || fail "TLS: https printed"
+        [ "$(curl -s -o /dev/null -w '%{http_code}' --cacert tests/net/_tls/cert.pem -X POST -H "$A" https://localhost:$PORT/api/proc/2/kill)" = 200 ] || fail "TLS: an action"
+        [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/api/vm)" != 200 ] || fail "TLS: plain HTTP answered"
+        kill $VMPID 2>/dev/null || true
+        wait $VMPID 2>/dev/null || true
+    fi
+    rm -rf "${MOND:?}"
 fi
 echo "check-tools: profile, .loc, bundle, dap, node, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"

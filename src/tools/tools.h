@@ -39,6 +39,10 @@ void tools_profile_report(VM *vm, FILE *out, const char *flame_path);
 /* --monitor (monitor.c): serve stats over HTTP while the program runs. */
 bool tools_monitor(VM *vm, const char *addr, char *err, size_t errlen);
 const char *tools_monitor_addr(VM *vm); /* "HOST:PORT" actually listened on */
+/* Allow actions, with a token (NULL or "": a random one); returns it. */
+const char *tools_monitor_actions(VM *vm, const char *token);
+bool tools_monitor_tls(VM *vm, const char *cert, const char *key, char *err, size_t errlen); /* HTTPS */
+const char *tools_monitor_scheme(VM *vm); /* "http" or "https" */
 
 /* mlwsvm debug (debugger.c) */
 typedef struct {

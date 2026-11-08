@@ -1725,6 +1725,44 @@ bool sched_post_build(VM *vm, uint64_t pid, Word (*build)(Process *heap, void *c
     return ok;
 }
 
+/* A message of JSON text, from outside the VM (the monitor's send): false, with
+ * why, if the text is not JSON (E_JSON) or the process is not there (E_NOPROC). */
+bool sched_post_json(VM *vm, uint64_t pid, const char *json, size_t n, char *err, size_t errlen) {
+    Sched *s = vm->sched;
+    if (!s) return snprintf(err, errlen, "no program is running"), false;
+    plat_lock(s->host_lock);
+    frag_reset(s->host_frag);
+    Word v;
+    uint8_t tag;
+    if (!text_json_parse(s->host_frag, json, n, &v, &tag, err, errlen)) {
+        frag_reset(s->host_frag);
+        plat_unlock(s->host_lock);
+        return false;
+    }
+    InMsg m = frag_take(s->host_frag, v, tag);
+    Process *to = pin(s, pid);
+    bool ok = to && accepts(to);
+    if (ok) push_locked(s, to, &m);
+    else gc_free_list(m.objs);
+    if (to) plat_unlock(to->lock);
+    plat_unlock(s->host_lock);
+    if (!ok) snprintf(err, errlen, "process %llu does not exist or has finished", (unsigned long long)pid);
+    return ok;
+}
+
+/* Kill a process from outside any process (the monitor's kill): false if it
+ * is not there. */
+bool sched_kill_from_outside(VM *vm, uint64_t pid, const char *code, const char *msg) {
+    Sched *s = vm->sched;
+    Process *t = s ? pin(s, pid) : NULL;
+    if (!t) return false;
+    bool live = is_live(t) && !t->kill_req;
+    bool claimed = live && kill_locked(t, code, msg);
+    plat_unlock(t->lock);
+    if (claimed) finish(s, t, true);
+    return live;
+}
+
 bool sched_post(VM *vm, uint64_t pid, Word v, uint8_t tag, const char *str, size_t len) {
     Sched *s = sched_of(vm);
     plat_lock(s->host_lock);

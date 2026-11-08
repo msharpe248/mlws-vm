@@ -2291,6 +2291,17 @@ starts (`vm_mlog_enable`), and until then the natives check their arguments
 and look at one flag. An event's value becomes JSON as it is written, so the
 ring holds only text.
 
+A request is read before anything is stopped, within two seconds, so a slow
+client never holds the other workers. Reads are served with the world stopped;
+actions (`--monitor-actions`) with it going, since a reload stops it itself:
+a kill claims the process as `kill` does, a message is parsed from JSON into
+the scratch heap that embedding hosts post from (`sched_post_json`, with the
+JSON reader's errors returned rather than raised, since no process is there to
+raise them in), and reload and purge are the natives' own `vm_reload` and
+`vm_purge`. The token is compared in time that does not depend on how much of it
+matches. With `--monitor-cert`, each connection is a TLS session first
+(`native/tls.c`'s, as `std.tls` uses), on the same non-blocking socket.
+
 **Source positions.** Each instruction's assembly line is in
 `MFunc.lines`; a translated program's line comes from the `.loc` runs
 (`module_srcpos`, a binary search). Backtraces, the debugger and the

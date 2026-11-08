@@ -13,6 +13,7 @@
 #include "../core/unicode.h"
 
 #include <math.h>
+#include <setjmp.h>
 
 /* ---- helpers ------------------------------------------------------------------------ */
 
@@ -834,6 +835,9 @@ typedef struct {
     Process *p;
     const char *s;
     size_t n, i;
+    jmp_buf *esc; /* text_json_parse: where an error goes instead of a trap */
+    char *err;
+    size_t errlen;
 } JP;
 
 MLWS_NORETURN static void jerr(JP *j, const char *what) {
@@ -841,6 +845,10 @@ MLWS_NORETURN static void jerr(JP *j, const char *what) {
     for (size_t k = 0; k < j->i && k < j->n; k++) {
         if (j->s[k] == '\n') line++, col = 1;
         else col++;
+    }
+    if (j->esc) {
+        snprintf(j->err, j->errlen, "line %zu column %zu: %s", line, col, what);
+        longjmp(*j->esc, 1);
     }
     vm_trap(j->p, "E_JSON", "json.parse: line %zu column %zu: %s", line, col, what);
 }
@@ -1063,10 +1071,23 @@ static void jvalue(JP *j, int depth, Word *v, uint8_t *tag) {
     jerr(j, "unexpected character");
 }
 
+/* JSON text as a value made in heap, from outside any running process (the
+ * monitor's actions): false, with why, if it is not JSON. What it made before
+ * finding out stays in heap, a scratch process its caller resets. */
+bool text_json_parse(Process *heap, const char *s, size_t n, Word *v, uint8_t *tag, char *err, size_t errlen) {
+    jmp_buf esc;
+    JP j = {heap, s, n, 0, &esc, err, errlen};
+    if (setjmp(esc)) return false;
+    jvalue(&j, 0, v, tag);
+    jws(&j);
+    if (j.i != j.n) jerr(&j, "unexpected text after the value");
+    return true;
+}
+
 static void jparse(Process *p, Word a, Word *v, uint8_t *tag) {
     uint32_t n;
     const char *s = str_arg(p, a, &n);
-    JP j = {p, s, n, 0};
+    JP j = {p, s, n, 0, NULL, NULL, 0};
     jvalue(&j, 0, v, tag);
     jws(&j);
     if (j.i != j.n) jerr(&j, "unexpected text after the value");

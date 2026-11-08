@@ -886,6 +886,7 @@ const NativeDef *natives_modules_table(size_t *n);
 void natives_register_text(VM *vm);
 void text_json_append(Process *p, Word v, uint8_t tag, StrBuf *out); /* E_JSON for a value with no JSON form */
 bool text_utf8_valid(const char *s, size_t n);
+bool text_json_parse(Process *heap, const char *s, size_t n, Word *v, uint8_t *tag, char *err, size_t errlen);
 void natives_register_util(VM *vm);
 const NativeDef *natives_util_table(size_t *n);
 const NativeDef *natives_text_table(size_t *n);
@@ -896,6 +897,8 @@ void sched_request_exit(VM *vm, int64_t code);
 bool sched_post(VM *vm, uint64_t pid, Word v, uint8_t tag, const char *str, size_t len);
 /* Post a message built by `build` on a scratch heap, from any thread. */
 bool sched_post_build(VM *vm, uint64_t pid, Word (*build)(Process *heap, void *ctx), void *ctx);
+bool sched_post_json(VM *vm, uint64_t pid, const char *json, size_t n, char *err, size_t errlen);
+bool sched_kill_from_outside(VM *vm, uint64_t pid, const char *code, const char *msg);
 /* Inside a foreign call: fail it (raised when the call returns). */
 void native_fail(Process *p, const char *code, const char *fmt, ...) MLWS_PRINTF(3, 4);
 /* Run a foreign handle's finalizer (p: the process whose handle it is, or NULL

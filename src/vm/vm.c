@@ -107,6 +107,12 @@ void vm_mlog_enable(VM *vm, uint32_t cap) {
 }
 
 void vm_mlog_put(VM *vm, uint64_t pid, int level, const char *name, const char *text, size_t n) {
+    char note[64];
+    if (level < 0 && n > MLOG_TEXT_MAX) { /* an event's JSON, cut, would not be JSON */
+        snprintf(note, sizeof note, "\"(%zu bytes of JSON: too long to keep)\"", n);
+        text = note;
+        n = strlen(note);
+    }
     if (n > MLOG_TEXT_MAX) { /* (at a character's start: not in a UTF-8 sequence) */
         n = MLOG_TEXT_MAX;
         while (n && ((unsigned char)text[n] & 0xC0) == 0x80) n--;
