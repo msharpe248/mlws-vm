@@ -81,6 +81,7 @@ static void program_result(VM *vm, Process *p, RunResult *res, uint64_t wall_ns)
 
 Program *vm_program_add(VM *vm, Process *main, const char *path, const StrVec *args) {
     Program *pr = xcalloc(1, sizeof *pr);
+    pr->id = (uint32_t)vm->progs.n;
     pr->path = xstrdup(path ? path : "");
     for (size_t i = 0; args && i < args->n; i++) VEC_PUSH(pr->args, xstrdup(args->v[i]));
     pr->main = main;
@@ -96,6 +97,8 @@ void vm_programs_free(VM *vm) {
         for (size_t k = 0; k < pr->args.n; k++) free(pr->args.v[k]);
         VEC_FREE(pr->args);
         free(pr->path);
+        free(pr->cap);
+        free(pr->quota);
         free(pr);
     }
     vm->progs.n = 0;
@@ -161,6 +164,8 @@ Program *vm_start_program(VM *vm, const char *path, const StrVec *args, const ch
     memcpy(p->quota, q, sizeof q);
     plat_lock(vm->lock); /* (vm->progs: the monitor reads it) */
     Program *pr = vm_program_add(vm, p, path, args);
+    pr->cap = cap && *cap ? xstrdup(cap) : NULL;
+    pr->quota = quota && *quota ? xstrdup(quota) : NULL;
     plat_unlock(vm->lock);
     proc_start(p, fn, NULL, NULL, 0); /* (and in the table, ready) */
     return pr;

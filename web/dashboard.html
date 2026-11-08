@@ -169,13 +169,13 @@ button.act.danger { color: var(--critical); }
   <section class="card" id="programs-card" hidden>
     <h2>Programs (mlwsvm serve)</h2>
     <div class="acts" id="start-form">
-      <input id="start-path" placeholder="program.masm, in the programs' directory" aria-label="Program">
+      <select id="start-path" aria-label="Program"><option value="">Choose a program…</option></select>
       <input id="start-args" placeholder="arguments, separated by spaces" aria-label="Arguments">
       <input id="start-cap" placeholder="--cap, e.g. none" aria-label="Capabilities">
       <input id="start-quota" placeholder="--quota, e.g. heap=64M" aria-label="Quotas">
       <button class="act" id="start-btn" type="button">Start</button>
     </div>
-    <div class="table-wrap"><table class="mini" id="programs"><thead><tr><th>#</th><th class="text">Program</th><th class="text">Arguments</th><th>PID</th><th class="text">State</th><th></th></tr></thead><tbody></tbody></table></div>
+    <div class="table-wrap"><table class="mini" id="programs"><thead><tr><th>#</th><th class="text">Program</th><th class="text">Arguments</th><th class="text">Limits</th><th>PID</th><th class="text">State</th><th></th></tr></thead><tbody></tbody></table></div>
     <div class="empty" id="programs-empty">No program started yet.</div>
   </section>
   <section class="card">
@@ -190,6 +190,10 @@ button.act.danger { color: var(--critical); }
       <div><h2>Backtrace</h2><pre id="detail-bt"></pre></div>
       <div><h2>Waiting messages</h2><pre id="detail-msgs"></pre></div>
     </div>
+    <div class="acts">
+      <button class="act" id="log-proc-btn" type="button">Log of this process</button>
+      <button class="act" id="log-prog-btn" type="button" hidden>Log of its program</button>
+    </div>
     <div class="acts" id="detail-acts" hidden>
       <input id="send-text" placeholder='A message as JSON: {"cmd": "status"}' aria-label="Message as JSON">
       <button class="act" id="send-btn" type="button">Send</button>
@@ -197,7 +201,9 @@ button.act.danger { color: var(--critical); }
     </div>
   </section>
   <section class="card">
-    <div class="toolbar"><h2>Log</h2><span class="spacer"></span>
+    <div class="toolbar"><h2>Log</h2>
+      <span class="pill" id="log-only" hidden><span id="log-only-text"></span><button class="act" id="log-only-clear" type="button" aria-label="Show everyone's log">×</button></span>
+      <span class="spacer"></span>
       <label>Show <select id="log-level"><option value="0">everything</option><option value="1">info and up</option><option value="2">warnings and errors</option><option value="3">errors</option></select></label>
     </div>
     <div class="log table-wrap" id="log-wrap"><table class="mini"><tbody id="log"></tbody></table></div>
@@ -221,7 +227,7 @@ button.act.danger { color: var(--critical); }
   <section class="card">
     <h2>Recent exits</h2>
     <div class="table-wrap"><table id="exits"><thead><tr>
-      <th class="text">PID</th><th class="text">Entry</th><th class="text">Result</th><th>Instructions</th><th>CPU</th><th>Ended</th>
+      <th class="text">PID</th><th class="text">Program</th><th class="text">Entry</th><th class="text">Result</th><th>Instructions</th><th>CPU</th><th>Ended</th><th></th>
     </tr></thead><tbody></tbody></table></div>
     <div class="empty" id="exits-empty">No process has finished yet.</div>
   </section>
@@ -322,7 +328,7 @@ window.addEventListener("resize", drawCharts);
 
 // ---- process table ------------------------------------------------------------
 const COLS = [
-  ["pid", "PID", "text"], ["state", "State", "text"], ["cpu", "CPU %"], ["insns", "Instructions"],
+  ["pid", "PID", "text"], ["program_name", "Program", "text"], ["state", "State", "text"], ["cpu", "CPU %"], ["insns", "Instructions"],
   ["heap_bytes", "Heap"], ["raw_bytes", "Raw"], ["stack_bytes", "Stack"], ["mailbox", "Mailbox"],
   ["msgs", "Msgs in / out"], ["gc_count", "GCs"], ["function", "Current function", "text"],
 ];
@@ -336,16 +342,16 @@ function renderProcs() {
     `<th class="${cls || ""}" data-k="${k}">${label}${k === sortKey ? `<span class="arrow">${sortDir < 0 ? "▼" : "▲"}</span>` : ""}</th>`).join("") + "</tr>";
   thead.querySelectorAll("th").forEach((th) => th.addEventListener("click", () => {
     const k = th.dataset.k;
-    if (k === sortKey) sortDir = -sortDir; else { sortKey = k; sortDir = k === "pid" || k === "function" ? 1 : -1; }
+    if (k === sortKey) sortDir = -sortDir; else { sortKey = k; sortDir = k === "pid" || k === "function" || k === "program_name" ? 1 : -1; }
     renderProcs();
   }));
   const val = (p) => sortKey === "msgs" ? p.msgs_received + p.msgs_sent : p[sortKey];
   const rows = procs.slice().sort((a, b) => {
     const x = val(a), y = val(b);
-    return (typeof x === "string" ? x.localeCompare(y) : x - y) * sortDir;
+    return (typeof x === "string" || typeof y === "string" ? String(x ?? "").localeCompare(String(y ?? "")) : x - y) * sortDir;
   });
   tbody.innerHTML = rows.map((p) => `<tr data-pid="${p.pid}" class="${p.pid === selectedPid ? "selected" : ""}">
-      <td class="text">${p.pid}</td><td class="text">${stateCell(p.state)}</td>
+      <td class="text">${p.pid}</td><td class="text">${esc(p.program_name ?? "–")}</td><td class="text">${stateCell(p.state)}</td>
       <td>${p.cpu.toFixed(1)}</td><td>${human(p.insns)}</td><td>${bytes(p.heap_bytes)}</td>
       <td>${bytes(p.raw_bytes)}</td><td>${bytes(p.stack_bytes)}</td><td>${p.mailbox}</td>
       <td>${human(p.msgs_received)} / ${human(p.msgs_sent)}</td><td>${p.gc_count}</td>
@@ -364,7 +370,7 @@ async function loadDetail() {
     if (!r.ok) { $("detail-title").textContent = `Process ${selectedPid} has finished`; $("detail-stats").innerHTML = ""; $("detail-bt").textContent = ""; return; }
     const p = await r.json();
     card.hidden = false;
-    $("detail-title").textContent = `Process ${p.pid} · ${p.entry}`;
+    $("detail-title").textContent = `Process ${p.pid} · ${p.entry}` + (p.program_name ? ` · ${p.program_name}` : "");
     const q = (v, f) => v == null ? "unlimited" : f(v);
     const rows = [
       ["State", p.state], ["Instructions", human(p.insns)], ["CPU time", ms(p.cpu_ns)],
@@ -380,6 +386,9 @@ async function loadDetail() {
     $("detail-stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
     $("detail-bt").textContent = p.backtrace.join("\n") || "(no frames)";
     $("detail-acts").hidden = !canAct();
+    detailProc = p;
+    $("log-prog-btn").hidden = p.program == null;
+    $("log-prog-btn").textContent = p.program == null ? "" : `Log of ${p.program_name}`;
     $("detail-msgs").textContent = p.messages.length
       ? p.messages.map((m) => m.type + (m.size != null ? ` (${m.size})` : "") + (m.preview != null ? "  " + (typeof m.preview === "string" ? JSON.stringify(m.preview) : m.preview) : "")).join("\n")
         + (p.mailbox > p.messages.length ? `\n… ${p.mailbox - p.messages.length} more` : "")
@@ -390,11 +399,13 @@ async function loadDetail() {
 function renderExits(exits) {
   const tbody = $("exits").querySelector("tbody");
   tbody.innerHTML = exits.slice(0, 20).map((e) => `<tr>
-      <td class="text">${e.pid}</td><td class="text">${esc(e.entry)}</td>
+      <td class="text">${e.pid}</td><td class="text">${esc(e.program_name ?? "–")}</td><td class="text">${esc(e.entry)}</td>
       <td class="text">${e.failed ? `<span class="state"><span class="dot critical"></span>failed ${esc(e.code)}</span>`
                                   : `<span class="state"><span class="dot good"></span>exit ${e.exit}</span>`}</td>
-      <td>${human(e.insns)}</td><td>${ms(e.cpu_ns)}</td><td>${Math.round(e.ago_ns / 1e9)} s ago</td></tr>`).join("");
+      <td>${human(e.insns)}</td><td>${ms(e.cpu_ns)}</td><td>${Math.round(e.ago_ns / 1e9)} s ago</td>
+      <td>${serving && canAct() && e.main && e.program > 0 ? `<button class="act" data-rerun="${e.program}" type="button">Re-run</button>` : ""}</td></tr>`).join("");
   $("exits-empty").hidden = exits.length > 0;
+  bindRerun($("exits"));
 }
 
 function farName(x) { return `node ${x.node} pid ${x.pid}`; }
@@ -426,6 +437,11 @@ async function act(path, body, what) {
     return r.ok;
   } catch (e) { showStatus(false, `${what}: no answer`); return false; }
 }
+let detailProc = null;
+$("log-proc-btn").addEventListener("click", () => { if (detailProc) setLogOnly({ pid: detailProc.pid }); });
+$("log-prog-btn").addEventListener("click", () => {
+  if (detailProc && detailProc.program != null) setLogOnly({ program: detailProc.program, name: detailProc.program_name });
+});
 $("kill-btn").addEventListener("click", async () => {
   if (selectedPid == null || !confirm(`Kill process ${selectedPid}? It fails with E_KILLED, and its links go with it.`)) return;
   await act(`/api/proc/${selectedPid}/kill`, null, `killed ${selectedPid}`); loadDetail();
@@ -442,14 +458,42 @@ async function loadPrograms() {
   if (!serving) return;
   const ps = await fetch("/api/programs").then((r) => r.json()).catch(() => []);
   $("programs").querySelector("tbody").innerHTML = ps.slice().reverse().map((p) => `<tr><td>${p.id}</td><td class="text">${esc(p.path)}</td>
-    <td class="text">${esc(p.args.join(" "))}</td><td>${p.pid}</td>
+    <td class="text">${esc(p.args.join(" "))}</td>
+    <td class="text">${esc([p.cap != null ? "cap " + p.cap : "", p.quota != null ? "quota " + p.quota : ""].filter(Boolean).join(" · ") || "–")}</td><td>${p.pid}</td>
     <td class="text"><span class="state"><span class="dot ${p.state === "running" ? "good" : p.state === "failed" ? "critical" : ""}"></span>${p.state === "done" ? "exit " + p.exit : p.state === "failed" ? "failed " + esc(p.code) : "running"}</span></td>
-    <td>${p.state === "running" && canAct() ? `<button class="act danger" data-prog="${p.id}" type="button">Stop</button>` : ""}</td></tr>`).join("");
+    <td>${!canAct() ? "" : p.state === "running" ? `<button class="act danger" data-prog="${p.id}" type="button">Stop</button>`
+                    : `<button class="act" data-rerun="${p.id}" type="button">Re-run</button>`}</td></tr>`).join("");
   $("programs-empty").hidden = ps.length > 0;
+  bindRerun($("programs"));
   $("programs").querySelectorAll("button[data-prog]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm(`Stop program ${b.dataset.prog}? Its main fails with E_KILLED, and its other processes stop.`)) return;
     await act(`/api/programs/${b.dataset.prog}/stop`, null, `stopped program ${b.dataset.prog}`); loadPrograms();
   }));
+}
+async function rerun(id) {
+  await act(`/api/programs/${id}/rerun`, null, `started program ${id} again`); loadPrograms();
+}
+function bindRerun(root) {
+  root.querySelectorAll("button[data-rerun]").forEach((b) => b.addEventListener("click", () => rerun(b.dataset.rerun)));
+}
+// The programs' directory, for the picker: grouped by sub-directory, kept as chosen.
+let programFiles = "";
+async function loadProgramFiles() {
+  if (!serving) return;
+  const files = await fetch("/api/programs/files").then((r) => r.json()).catch(() => null);
+  if (!files) return;
+  files.sort((a, b) => (a.includes("/") - b.includes("/")) || a.localeCompare(b));
+  const key = files.join("\n");
+  if (key === programFiles) return;
+  programFiles = key;
+  const sel = $("start-path"), keep = sel.value, groups = new Map();
+  for (const f of files) { const d = f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : ""; if (!groups.has(d)) groups.set(d, []); groups.get(d).push(f); }
+  sel.innerHTML = `<option value="">${files.length ? "Choose a program…" : "No programs in the directory"}</option>` +
+    [...groups].map(([d, fs]) => {
+      const opts = fs.map((f) => `<option value="${esc(f)}">${esc(d ? f.slice(d.length + 1) : f)}</option>`).join("");
+      return d ? `<optgroup label="${esc(d)}/">${opts}</optgroup>` : opts;
+    }).join("");
+  sel.value = keep;
 }
 $("start-btn").addEventListener("click", async () => {
   const path = $("start-path").value.trim();
@@ -479,11 +523,19 @@ function logRow(e) {
   const lv = e.event != null ? `<span class="lvl"><span class="dot"></span>event</span>`
     : `<span class="lvl"><span class="dot ${e.level === "error" ? "critical" : e.level === "warn" ? "warn" : e.level === "info" ? "info" : ""}"></span>${e.level}</span>`;
   const msg = e.event != null ? `${esc(e.event)} ${esc(JSON.stringify(e.value))}` : esc(e.text);
-  return `<tr><td>${t}</td><td>${e.pid}</td><td class="text">${lv}</td><td class="msg">${msg}</td></tr>`;
+  return `<tr><td>${t}</td><td>${e.pid || "–"}</td><td class="text">${esc(e.program_name ?? (e.pid ? "" : "monitor"))}</td><td class="text">${lv}</td><td class="msg">${msg}</td></tr>`;
+}
+let logOnly = null;                       // {pid} or {program, name}: the log of one process or program
+function setLogOnly(f) {
+  logOnly = f;
+  $("log-only").hidden = !f;
+  $("log-only-text").textContent = !f ? "" : f.pid != null ? `process ${f.pid} only` : `program ${f.name} only`;
+  renderLog();
 }
 function renderLog() {
   const min = Number($("log-level").value);
-  const shown = logLines.filter((e) => e.event != null ? min <= 1 : LEVELS[e.level] >= min);
+  const shown = logLines.filter((e) => (e.event != null ? min <= 1 : LEVELS[e.level] >= min) &&
+    (!logOnly || (logOnly.pid != null ? e.pid === logOnly.pid : e.program === logOnly.program)));
   const wrap = $("log-wrap"), atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 4;
   $("log").innerHTML = shown.map(logRow).join("");
   $("log-empty").hidden = logLines.length > 0;
@@ -497,6 +549,7 @@ async function pollLog() {
   renderLog();
 }
 $("log-level").addEventListener("change", renderLog);
+$("log-only-clear").addEventListener("click", () => setLogOnly(null));
 
 // ---- modules, names, nodes and the graph (every five seconds) --------------------
 const SVGNS = "http://www.w3.org/2000/svg";
@@ -556,6 +609,7 @@ async function slowTick() {
     $("nodes").querySelector("tbody").innerHTML = nodes.connected.map((n) => `<tr><td>${n.node}</td><td>process ${n.carrier}</td></tr>`).join("");
     $("nodes-empty").hidden = nodes.connected.length > 0;
     drawGraph(graph);
+    loadProgramFiles();
   } catch (e) { /* shown in the header by tick */ }
 }
 
@@ -579,6 +633,7 @@ async function tick() {
     if (actionsOn !== !!vm.actions) { actionsOn = !!vm.actions; slowTick(); } /* (buttons, now that we know) */
     serving = !!vm.serve;
     $("programs-card").hidden = !serving;
+    if (serving && !programFiles) loadProgramFiles();
     $("start-form").hidden = !canAct();
     $("shutdown-btn").hidden = !(serving && canAct());
     if (dt > 0) { /* the first sample has no rate yet; don't plot a false zero */

@@ -751,7 +751,7 @@ if command -v curl >/dev/null 2>&1; then
     [ "$(code -H "$A" $U/api/modules/nope/reload)" = 404 ] || fail "reload: no such module"
     [ "$(code -H "$A" $U/api/modules/acted/purge)" = 200 ] && grep -q '"kept":1' "$MOND/r" || fail "purge ($(cat "$MOND/r"))"
     [ "$(code -H "$A" $U/api/proc/2/kill)" = 200 ] || fail "kill"
-    curl -sf $U/api/exits | grep -q '"pid":2,"entry":"receiver","failed":true,"code":"E_KILLED"' || fail "kill: E_KILLED"
+    curl -sf $U/api/exits | grep -q '"pid":2,"entry":"receiver","program":0,"program_name":"acted.masm","main":false,"failed":true,"code":"E_KILLED"' || fail "kill: E_KILLED"
     LOG=$(curl -sf "$U/api/log")
     for e in send reload purge kill; do
         echo "$LOG" | grep -q "\"event\":\"monitor.$e\"" || fail "monitor.$e not in the log"
@@ -803,17 +803,30 @@ if command -v curl >/dev/null 2>&1; then
     [ "$(code -H "$A" --data '{"path":"hello.masm","quota":"bogus=1"}' $U/api/programs)" = 400 ] || fail "serve: a bad quota"
     [ "$(code --data '{"path":"hello.masm"}' $U/api/programs)" = 401 ] || fail "serve: a start without the token"
     i=0
-    until curl -sf $U/api/programs | grep -q '"id":4,"path":"reader.masm","args":\[\],"pid":[0-9]*,"state":"failed","code":"E_PERMISSION"'; do
+    until curl -sf $U/api/programs | grep -q '"id":4,"path":"reader.masm","cap":"none","quota":null,"args":\[\],"pid":[0-9]*,"state":"failed","code":"E_PERMISSION"'; do
         i=$((i + 1)); [ $i -lt 50 ] || fail "serve: the programs ($(curl -sf $U/api/programs))"; sleep 0.1
     done
     P=$(curl -sf $U/api/programs)
-    echo "$P" | grep -q '"id":1,"path":"hello.masm","args":\["a","b"\],"pid":[0-9]*,"state":"done","exit":2' || fail "serve: hello ($P)"
-    echo "$P" | grep -q '"id":2,"path":"hello.masm","args":\["c"\],"pid":[0-9]*,"state":"done","exit":1' || fail "serve: hello again ($P)"
-    echo "$P" | grep -q '"id":3,"path":"long.masm","args":\[\],"pid":[0-9]*,"state":"running"' || fail "serve: long ($P)"
+    echo "$P" | grep -q '"id":1,"path":"hello.masm","cap":null,"quota":null,"args":\["a","b"\],"pid":[0-9]*,"state":"done","exit":2' || fail "serve: hello ($P)"
+    echo "$P" | grep -q '"id":2,"path":"hello.masm","cap":null,"quota":null,"args":\["c"\],"pid":[0-9]*,"state":"done","exit":1' || fail "serve: hello again ($P)"
+    echo "$P" | grep -q '"id":3,"path":"long.masm","cap":null,"quota":null,"args":\[\],"pid":[0-9]*,"state":"running"' || fail "serve: long ($P)"
     [ "$(code -H "$A" $U/api/programs/3/stop)" = 200 ] || fail "serve: stop"
-    curl -sf $U/api/programs | grep -q '"id":3,"path":"long.masm","args":\[\],"pid":[0-9]*,"state":"failed","code":"E_KILLED"' || fail "serve: stopped"
+    curl -sf $U/api/programs | grep -q '"id":3,"path":"long.masm","cap":null,"quota":null,"args":\[\],"pid":[0-9]*,"state":"failed","code":"E_KILLED"' || fail "serve: stopped"
     [ "$(code -H "$A" $U/api/programs/3/stop)" = 404 ] || fail "serve: stop a program that has ended"
-    curl -sf "$U/api/log" | grep -q '"text":"long started"' || fail "serve: a program's log"
+    curl -sf "$U/api/log" | grep -q '"pid":[0-9]*,"program":3,"program_name":"long.masm","level":"info","text":"long started"' || fail "serve: a program's log, with its program"
+    F=$(curl -sf $U/api/programs/files)
+    for f in hello.masm long.masm reader.masm; do echo "$F" | grep -q "\"$f\"" || fail "serve: $f not listed ($F)"; done
+    curl -sf $U/api/procs | grep -q '"entry":"main","program":3,"program_name":"long.masm"' || fail "serve: a process's program"
+    curl -sf $U/api/exits | grep -q '"entry":"main","program":1,"program_name":"hello.masm","main":true' || fail "serve: an exit's program"
+    [ "$(code -H "$A" $U/api/programs/1/rerun)" = 200 ] || fail "serve: rerun ($(cat "$MOND/r"))"
+    grep -q '"id":5' "$MOND/r" || fail "serve: rerun's id ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" $U/api/programs/4/rerun)" = 200 ] || fail "serve: rerun of one with no capabilities"
+    [ "$(code -H "$A" $U/api/programs/99/rerun)" = 404 ] || fail "serve: rerun of no such program"
+    i=0
+    until curl -sf $U/api/programs | grep -q '"id":6,"path":"reader.masm","cap":"none","quota":null,"args":\[\],"pid":[0-9]*,"state":"failed","code":"E_PERMISSION"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "serve: rerun, the same again ($(curl -sf $U/api/programs))"; sleep 0.1
+    done
+    curl -sf $U/api/programs | grep -q '"id":5,"path":"hello.masm","cap":null,"quota":null,"args":\["a","b"\],"pid":[0-9]*,"state":"done","exit":2' || fail "serve: rerun with its arguments"
     [ "$(code -H "$A" $U/api/shutdown)" = 200 ] || fail "serve: shutdown"
     set +e
     wait $VMPID; RC=$?
