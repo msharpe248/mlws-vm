@@ -387,11 +387,15 @@ function farName(x) { return `node ${x.node} pid ${x.pid}`; }
 // ---- actions (mlwsvm run --monitor-actions): the token comes in the URL's #fragment,
 // which is never sent to the server, and is kept for this tab only.
 let token = null, actionsOn = false;
-try {
+{
   const m = location.hash.match(/token=([^&]+)/);
-  if (m) { sessionStorage.setItem("mlwsvm-token", decodeURIComponent(m[1])); history.replaceState(null, "", location.pathname); }
-  token = sessionStorage.getItem("mlwsvm-token");
-} catch (e) { /* no storage: no actions */ }
+  if (m) token = decodeURIComponent(m[1]);
+  try { /* kept for this tab, so a reload keeps it, where storage is allowed */
+    if (token) sessionStorage.setItem("mlwsvm-token", token);
+    else token = sessionStorage.getItem("mlwsvm-token");
+  } catch (e) { /* no storage: the token lasts as long as the page */ }
+  if (m) window.history.replaceState(null, "", location.pathname); /* (out of the address bar; `history` here is the charts') */
+}
 function canAct() { return actionsOn && token; }
 let statusTimer = 0;
 function showStatus(ok, text) {
