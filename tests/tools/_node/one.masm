@@ -137,6 +137,22 @@ plain_refused:
     ncall "proc.call" (I4, R26, 5000) -> (R27)
     calli R27 (1) -> (I5)              ; back here: the closure it was
     ASSERT_EQ I5, 8
+    new R28, worker.Box                ; a struct of a module of the program's own,
+    mov R28->worker.Box.v, 41          ; which node 2 has: it arrives, and comes back
+    mov R28->worker.Box.tag, "boxed"
+    ncall "proc.call" (I4, R28, 5000) -> (R27)
+    mov I5, R27->worker.Box.v
+    ASSERT_EQ I5, 41
+    mov R29, R27->worker.Box.tag
+    strcmp I5, R29, "boxed"
+    ASSERT_EQ I5, 0
+    ncall "node.global" (PID) -> (I5)  ; this node's own number in a pid: the same process
+    alive I6, I5
+    ASSERT_TRUE I6
+    ncall "proc.register" ("by global pid", I5)
+    ncall "proc.whereis" ("by global pid") -> (I6)
+    ASSERT_EQ I6, PID
+    ncall "proc.unregister" ("by global pid")
     new R28, Note
     send I4, R28                       ; (dropped there: no struct one.Note)
     ncall "proc.call" (I4, "still there", 5000) -> (R27)

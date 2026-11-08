@@ -536,7 +536,7 @@ have names and no numbers of their own choosing take one made from the name
 (`start_named` with 0): two names may give one number, and then the second to
 connect is refused. Messages between two processes keep their order, as on one VM. A
 plain pid (`PID`) means this VM, so give others `node.self(PID)`, the same pid with
-this node's number in it. `node.of(pid)` says which node a pid names.
+this node's number in it, which works here too, wherever a plain one does. `node.of(pid)` says which node a pid names.
 
 | Function | Does |
 |---|---|
@@ -561,7 +561,7 @@ this node's number in it. `node.of(pid)` says which node a pid names.
 
 * **What crosses** is what a message can be: numbers, strings, byte buffers,
   arrays, lists, maps, BigInts, decimals, structs, whose module must be loaded
-  at the other end, and closures. Coroutines, handles of `handle` and pointers
+  at the other end (a program's own, or the library path's), and closures. Coroutines, handles of `handle` and pointers
   cannot (`E_TYPE`), nor a value with a cycle.
 * **A closure crosses as its code's identity and its captured values:** its
   module's name, the hash of that module's version, its function (exported or

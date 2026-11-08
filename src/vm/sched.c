@@ -87,6 +87,7 @@ typedef struct Sched {
     /* messages sent from outside the VM (sched_post): its own scratch heap */
     PlatLock *host_lock;
     Process *host_frag;
+    VM *vm;
 } Sched;
 
 #define IO_MAX_THREADS 64
@@ -139,6 +140,7 @@ static Sched *sched_of(VM *vm) {
     s->nworkers = n;
     s->workers = xcalloc((size_t)n, sizeof *s->workers);
     for (int i = 0; i < n; i++) s->workers[i] = worker_new(vm, i);
+    s->vm = vm;
     vm->sched = s;
     return s;
 }
@@ -175,7 +177,10 @@ static Process **slot(Sched *s, uint64_t pid, bool create) {
 
 /* The process with this pid, locked; NULL if it is not in the table. It may
  * have finished (main stays in the table until its runner frees it). */
+/* A process of this VM, locked, or NULL: a pid with this node's own number
+ * in it (node.global) is the same process as the plain one. */
 static Process *pin(Sched *s, uint64_t pid) {
+    if (pid >> NODE_SHIFT && pid >> NODE_SHIFT == __atomic_load_n(&s->vm->node_self, __ATOMIC_ACQUIRE)) pid &= PID_LOCAL;
     Process **sl = slot(s, pid, false);
     if (!sl) return NULL;
     PlatLock *st = s->stripes[pid % PT_STRIPES];
@@ -1100,6 +1105,7 @@ static void n_register(Process *p, Word *a, Word *r) {
         if (t) plat_unlock(t->lock);
         vm_trap(p, "E_NOPROC", "proc.register: process %llu does not exist or has finished", (unsigned long long)pid);
     }
+    pid = t->pid; /* (as this VM names it: the pid may have this node's number in it) */
     plat_lock(vm->lock);
     void *old = NULL;
     /* A holder's names are released as it finishes, so any holder here is live. */
