@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M84
+## Milestones M11–M85
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -106,6 +106,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M82 Handles that outlive their function** (done) | A reload may remove a function that a `module.handle` calls, or change its signature, as Erlang's new version may drop a function others call by name: the handle then raises `E_LINK_UNDEF`, and calls the function again once a later version has it with the handle's signature. A module's own calls still refuse such a reload. Asked for by the Erlang compiler (`code:load_binary` of a version without `f`, then `m:f()`) | `tests/loader/handle`: a handle to a function given another signature, then removed, raising while the module's other handles call the new code; the function back, called again; the versions it called freed by a purge; in every mode. The compilers' Erlang case loads, and its `m:g()` runs the new code |
 | **M83 Kill across nodes** (done) | `kill` takes a pid of another node (`std.node`): a control frame asks that node to kill the process with `E_KILLED`, as its own `kill` would, so watchers and links on either node hear of it. A kill of a process not there, or on a node not connected, does nothing, as one of a finished process does. `alive` stays this VM's. Asked for by the Erlang compiler (`exit(Pid, Reason)` on a remote pid) | `make check-tools`: node 1 kills a process on node 2 and gets its `Down` with `E_KILLED`; kills of a pid nobody has there and of a node not connected do nothing. With the kill not sent, it times out |
 | **M84 Node names** (done) | A node may have a name besides its number (`std.node`'s `set_name`, as Erlang's `name@host`), sent in the handshake, so that each node it connects to knows it: `name(number)` and `number(name)`, kept after the connection goes, and `nodes()`, the nodes connected now. A connection from a node whose name this VM or another connected node has is refused. The monitor's `/api/nodes` and the dashboard show the names. Asked for by the Erlang compiler (`node()`, `node(Pid)`, `nodes()`, `{Name, Node} ! Msg`) | `make check-tools`: names known each way after connecting, a name not known, a second name refused, the nodes connected, the names kept after the connection goes, and a third VM with node 2's name refused at both ends with node 2 unharmed; `/api/nodes` with no name |
+| **M85 Watching nodes** (done) | `std.node`'s `watch()`: from then on, a built-in `NodeEvent {node, name, up}` comes to the process for each connection to another node that comes or goes (after the `Down`s and failures a lost connection causes); `unwatch()` stops them. For Erlang's `monitor_node` and `net_kernel:monitor_nodes`, which the compiler builds on it | `make check-tools`: a process watching from before node 1 connects gets node 2's coming and going, with its name, and one that stopped watching gets none |
 
 ## 1. Calling existing libraries (M10: done)
 

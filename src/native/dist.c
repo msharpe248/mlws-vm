@@ -296,7 +296,12 @@ static void n_attach(Process *p, Word *a, Word *r) {
     if (!vm->node_route) vm->node_route = xcalloc(MAX_NODE + 1, sizeof *vm->node_route);
     plat_unlock(vm->lock);
     uint64_t old = __atomic_exchange_n(&vm->node_route[a[0].i], a[1].u, __ATOMIC_ACQ_REL);
-    if (old && !a[1].u) sched_node_down(vm, (uint32_t)a[0].i); /* the connection has gone */
+    if (old && !a[1].u) { /* the connection has gone */
+        sched_node_down(vm, (uint32_t)a[0].i);
+        sched_node_event(vm, (uint32_t)a[0].i, false);
+    } else if (!old && a[1].u) {
+        sched_node_event(vm, (uint32_t)a[0].i, true);
+    }
 }
 
 /* ---- names ----
@@ -394,6 +399,21 @@ static void n_named(Process *p, Word *a, Word *r) {
     }
     plat_unlock(vm->lock);
     r[0].i = ok;
+}
+
+/* node.watch(on): whether this process is told, by a NodeEvent, of each
+ * connection to another node that comes or goes. */
+static void n_watch(Process *p, Word *a, Word *r) {
+    (void)r;
+    VM *vm = p->vm;
+    plat_lock(vm->lock);
+    bool had = false;
+    for (size_t i = 0; i < vm->node_watchers.n && !had; i++) had = vm->node_watchers.v[i] == p->pid;
+    if (a[0].i && !had) VEC_PUSH(vm->node_watchers, p->pid);
+    if (!a[0].i && had)
+        for (size_t i = 0; i < vm->node_watchers.n; i++)
+            if (vm->node_watchers.v[i] == p->pid) vm->node_watchers.v[i] = vm->node_watchers.v[--vm->node_watchers.n];
+    plat_unlock(vm->lock);
 }
 
 /* The numbers of the nodes connected now, in order. */
@@ -537,6 +557,8 @@ static const NativeDef NODE_NATIVES[] = {
       "The number of the node with this name: this VM's, a connected node's, or else the last node that had it; 0 if none."),
     N("node.named", 2, T(T_I64, T_R), 1, T(T_B), n_named,
       "Record the name a node gave; false if this VM or another connected node has it. For std.node."),
+    N("node.watch", 1, T(T_B), 0, T(0), n_watch,
+      "Whether this process gets a NodeEvent {node, name, up} for each connection to another node that comes (up) or goes, from now on."),
     N("node.nodes", 0, T(0), 1, T(T_R), n_connected_nodes, "The numbers of the nodes connected now, as a list, in order."),
     N("node.route", 1, T(T_I64), 1, T(T_I64), n_route, "The process messages for a node go to, or 0. For std.node."),
     N("node.function", 2, T(T_R, T_R), 1, T(T_R), n_function, "A closure for a module's exported function, as a peer names it. For std.node."),

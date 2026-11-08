@@ -912,6 +912,41 @@ void sched_node_down(VM *vm, uint32_t node) {
     }
 }
 
+/* A connection to node came or went: a NodeEvent {node, name, up} to each
+ * process watching (node.watch), after what the connection's going does to
+ * the processes tied to it (sched_node_down). Watchers that have ended are
+ * dropped from the list. */
+void sched_node_event(VM *vm, uint32_t node, bool up) {
+    Sched *s = vm->sched;
+    PidVec to = {0};
+    char name[256] = "";
+    plat_lock(vm->lock);
+    for (size_t i = 0; i < vm->node_watchers.n; i++) VEC_PUSH(to, vm->node_watchers.v[i]);
+    if (vm->node_names && vm->node_names[node]) snprintf(name, sizeof name, "%s", vm->node_names[node]);
+    plat_unlock(vm->lock);
+    for (size_t i = 0; i < to.n; i++) {
+        Process *t = pin(s, to.v[i]);
+        bool live = t && accepts(t);
+        if (t) plat_unlock(t->lock);
+        if (!live) {
+            plat_lock(vm->lock);
+            for (size_t k = 0; k < vm->node_watchers.n; k++)
+                if (vm->node_watchers.v[k] == to.v[i]) vm->node_watchers.v[k--] = vm->node_watchers.v[--vm->node_watchers.n];
+            plat_unlock(vm->lock);
+            continue;
+        }
+        Process *f = my_frag(s);
+        frag_reset(f);
+        ObjStruct *e = struct_new(f, &VM_BUILTIN_DEFS[BUILTIN_NODEEVENT]);
+        e->fields[NEF_NODE].i = node;
+        e->fields[NEF_NAME].r = str_new(f, name, strlen(name));
+        e->fields[NEF_UP].i = up;
+        InMsg m = frag_take(f, (Word){.r = e}, T_R);
+        deliver(s, to.v[i], &m);
+    }
+    VEC_FREE(to);
+}
+
 /* A string field of a control frame, or NULL. */
 static const ObjString *frame_str(const ObjList *l, uint32_t i) {
     const Obj *o = l->items[i].r;

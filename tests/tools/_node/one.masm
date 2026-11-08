@@ -5,6 +5,8 @@
 .import std.node as node
 
 tls:    .i64 0                       ; 1: node 2 takes only TLS
+w1: .i64 0                              ; the watchers
+w2: .i64 0
 
 ; Connect, as node 2 wants.
 .func open(i64 port, ref cookie) -> i64
@@ -52,6 +54,11 @@ h:
 renamed:
     catch R25
     call node.start (1, "the cookie", 0) -> (I1)
+    spawn watcher (2) -> (I3)          ; NodeEvents, from before connecting
+    mov @w1, I3
+    spawn watcher (0) -> (I3)          ; one that stops watching: none
+    mov @w2, I3
+    sleep 50                           ; (both watching, the second no longer)
     ncall "node.self" () -> (I2)
     ASSERT_EQ I2, 1
 
@@ -271,6 +278,21 @@ not_connected:
     or I1, I1, I4
     bne I1, 15, 1b
     send I5, R3
+    ; The watchers saw node 2 come and go.
+    mov I3, @w1
+    send I3, PID
+    recv R25
+    len I3, R25
+    ASSERT_EQ I3, 2
+    mov R26, R25[0]
+    call event_is (R26, 1)
+    mov R26, R25[1]
+    call event_is (R26, 0)
+    mov I3, @w2
+    send I3, PID
+    recv R25
+    len I3, R25
+    ASSERT_EQ I3, 0
     ; Gone, but its name still known; no node connected.
     call node.name (2) -> (R25)
     strcmp I3, R25, "two@test"
@@ -359,4 +381,35 @@ h:  catch R3
     mov R0->Error.code, "E_TOLD"
     mov R0->Error.message, "told to fail"
     throw R0
+.endf
+
+; Watch nodes (and, if n is 0, stop at once), keep the first n NodeEvents, and
+; send them as a list to the pid that asks.
+.func watcher(i64 n)
+    call node.watch ()
+    bnz n, 1f
+    call node.unwatch ()
+1:  lnew R0
+3:  len I1, R0
+    bge I1, n, 2f
+    recv R1
+    isa I2, R1, NodeEvent
+    ASSERT_TRUE I2
+    lpush R0, R1
+    jmp 3b
+2:  recv I3
+    send I3, R0
+    ret
+.endf
+
+; Fail unless e is a NodeEvent of node 2, two@test, coming (up 1) or going.
+.func event_is(ref e, i64 up)
+    mov I3, e->NodeEvent.node
+    ASSERT_EQ I3, 2
+    mov R1, e->NodeEvent.name
+    strcmp I4, R1, "two@test"
+    ASSERT_EQ I4, 0
+    mov I5, e->NodeEvent.up
+    ASSERT_EQ I5, up
+    ret
 .endf

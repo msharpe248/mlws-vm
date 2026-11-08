@@ -22,6 +22,7 @@ enum {
     BUILTIN_CALL = 3,
     BUILTIN_CALLBACK = 4,
     BUILTIN_DATE = 5,
+    BUILTIN_NODEEVENT = 6,
     BUILTIN__COUNT
 };
 enum { ERRF_CODE = 0, ERRF_MESSAGE = 1, ERRF_TRACE = 2 };
@@ -29,6 +30,8 @@ enum { DOWNF_PID = 0, DOWNF_EXIT = 1, DOWNF_CODE = 2, DOWNF_MESSAGE = 3 };
 enum { FIF_SIZE = 0, FIF_MTIME = 1, FIF_MODE = 2, FIF_KIND = 3 };
 /* Call: a request from proc.call, answered with proc.reply. */
 enum { CALLF_FROM = 0, CALLF_ID = 1, CALLF_BODY = 2 };
+/* NodeEvent: a connection to another node came (up) or went (node.watch). */
+enum { NEF_NODE = 0, NEF_NAME = 1, NEF_UP = 2 };
 /* Callback: C called an async .callback; its arguments, as a list. */
 enum { CBF_NAME = 0, CBF_ARGS = 1 };
 /* Date: a time as a calendar date (time.date); offset in minutes east of UTC. */

@@ -68,6 +68,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `node.name` | i64 | r | A node's name, as it gave it when it last connected; this VM's for 0 or its own number; "" if none is known. |
 | `node.number` | r | i64 | The number of the node with this name: this VM's, a connected node's, or else the last node that had it; 0 if none. |
 | `node.named` | i64, r | b | Record the name a node gave; false if this VM or another connected node has it. For std.node. |
+| `node.watch` | b | - | Whether this process gets a NodeEvent {node, name, up} for each connection to another node that comes (up) or goes, from now on. |
 | `node.nodes` | - | r | The numbers of the nodes connected now, as a list, in order. |
 | `node.route` | i64 | i64 | The process messages for a node go to, or 0. For std.node. |
 | `node.function` | r, r | r | A closure for a module's exported function, as a peer names it. For std.node. |

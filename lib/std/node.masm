@@ -41,7 +41,7 @@
 
 .module std.node
 .export start, start_tls, connect, connect_tls, spawn, whereis, self, node_of, connected
-.export set_name, name, number, nodes
+.export set_name, name, number, nodes, watch, unwatch
 
 .const CONNECT_TIMEOUT = 5000
 
@@ -96,6 +96,18 @@
 .func nodes -> ref
     ncall "node.nodes" () -> (R0)
     ret R0
+.endf
+
+; From now on, a NodeEvent {node, name, up} comes to this process for each
+; connection to another node that comes (up true) or goes (false); when one
+; goes, after the Downs and failures it causes. unwatch stops them.
+.func watch
+    ncall "node.watch" (1)
+    ret
+.endf
+.func unwatch
+    ncall "node.watch" (0)
+    ret
 .endf
 
 ; Name this VM (as Erlang's name@host), once, before it connects: each node it

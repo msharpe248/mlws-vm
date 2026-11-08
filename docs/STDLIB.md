@@ -546,6 +546,7 @@ this node's number in it. `node.of(pid)` says which node a pid names.
 | `set_name(name)` | name this VM (as Erlang's `name@host`): once, before it connects, at most 255 bytes |
 | `name(number)` | a node's name, as it gave it when it last connected (`""`: none known); this VM's for 0 |
 | `number(name)` | the number of the node with that name: this VM's, a connected node's, or the last that had it; 0 if none |
+| `watch()`, `unwatch()` | from now on, a `NodeEvent` comes to this process for each connection that comes or goes; or no more |
 | `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
 | `spawn(number, module, function, arg)` | run an exported function of one reference there; its pid, or 0 |
 | `self(pid)` | a pid as other nodes can use it |
@@ -579,6 +580,12 @@ this node's number in it. `node.of(pid)` says which node a pid names.
   waiting for an answer from there raises `E_NODE_DOWN`. To a node that is not
   connected, `monitor` gives that `Down` at once, and `link` and `proc.call`
   raise `E_NODE_DOWN`.
+* **Watching nodes.** After `watch()`, a process gets a built-in `NodeEvent`
+  struct, `{node, name, up}`, each time a connection to another node comes
+  (`up` true) or goes. One that goes is told after the `Down`s and failures it
+  causes. A watcher that wants to hear of one node only (Erlang's
+  `monitor_node`) looks at `node`, and the nodes connected before it watched
+  are in `nodes()`.
 * **`kill` takes a pid of another node** too: that node kills the process with
   `E_KILLED`, as `kill` here would, so its watchers and links hear of it as of
   any kill. To a node that is not connected, or a process not there, it does

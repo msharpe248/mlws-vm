@@ -1809,7 +1809,10 @@ the caller's pid as that node names it, and remembers which node it called; the
 loses its connection it clears the route (`node.attach(n, 0)`), and
 `sched_node_down` walks the processes once: it drops their ties to that node,
 fails the linked ones with `E_LINKED`, gives each watcher a `Down` with
-`E_NODE_DOWN`, and ends each call waiting there.
+`E_NODE_DOWN`, and ends each call waiting there. Then `sched_node_event` sends a
+`NodeEvent` to each process in `VM.node_watchers` (`node.watch`), as it does
+when `node.attach` gives a node its first route; a watcher that has ended is
+dropped from the list then.
 
 ## 15. Input and output
 
