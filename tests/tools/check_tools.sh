@@ -315,18 +315,18 @@ rm -rf "${NODED:?}"
 
 # mlwsvm names, and nodes that register with it and connect by name: node b
 # registers and waits, node a registers too, connects to b by name, checks the
-# service's answers, and tells b to end. The service's port is one of its own,
-# so as not to meet a service already running here.
+# service's answers, and tells b to end. The service takes any free port (0),
+# so as not to meet a service already running here, and says which.
 NAMESD=$(mktemp -d)
-MLWSVM_NAMES_PORT=$(( 20000 + $$ % 20000 ))
-export MLWSVM_NAMES_PORT
-$BIN names --port $MLWSVM_NAMES_PORT > "$NAMESD/names.out" 2>&1 &
+$BIN names --port 0 > "$NAMESD/names.out" 2>&1 &
 NAMES_PID=$!
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    grep -q "^mlwsvm names: on port $MLWSVM_NAMES_PORT" "$NAMESD/names.out" 2>/dev/null && break
+    grep -q "^mlwsvm names: on port [0-9]" "$NAMESD/names.out" 2>/dev/null && break
     perl -e 'select(undef, undef, undef, 0.25)'
 done
-grep -q "^mlwsvm names: on port $MLWSVM_NAMES_PORT" "$NAMESD/names.out" || { kill $NAMES_PID 2>/dev/null || true; fail "names did not start ($(cat "$NAMESD/names.out"))"; }
+grep -q "^mlwsvm names: on port [0-9]" "$NAMESD/names.out" || { kill $NAMES_PID 2>/dev/null || true; fail "names did not start ($(cat "$NAMESD/names.out"))"; }
+MLWSVM_NAMES_PORT=$(sed -n 's/^mlwsvm names: on port \([0-9]*\).*/\1/p' "$NAMESD/names.out")
+export MLWSVM_NAMES_PORT
 $BIN run tests/tools/_names/b.masm > "$NAMESD/b.port" 2>/dev/null &
 B_PID=$!
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
