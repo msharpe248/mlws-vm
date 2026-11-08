@@ -211,6 +211,7 @@ make release-check           # all of the above, longer fuzzing, and the compile
 ./mlwsvm run --profile examples/fib.masm
 ./mlwsvm debug examples/fib.masm          # then: break fib, run, bt, print I0, ...
 ./mlwsvm run --monitor 7070 --hold examples/workers.masm   # open http://127.0.0.1:7070/
+./mlwsvm serve --programs examples/serve   # start echo.masm in the dashboard, and Send it messages
 ./mlwsvm asm prog.masm -o prog.mlwso && ./mlwsvm run prog.mlwso
 ./mlwsvm dis prog.mlwso          # disassemble
 ./mlwsvm asm -E prog.masm      # show the source after macro expansion

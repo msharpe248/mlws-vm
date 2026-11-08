@@ -851,6 +851,33 @@ if command -v curl >/dev/null 2>&1; then
     wait $VMPID; RC=$?
     set -e
     [ $RC = 0 ] || fail "serve: exit after shutdown ($RC)"
+
+    # examples/serve/echo.masm, as its comment says to run it: two messages
+    # sent, each in the log, then goodbye.
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN serve --programs examples/serve --monitor 127.0.0.1:$PORT >/dev/null 2>"$MOND/echo.err" &
+    VMPID=$!
+    i=0
+    until curl -sf $U/api/vm 2>/dev/null | grep -q '"serve":true'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "echo: serve did not start"; sleep 0.1
+    done
+    [ "$(code -H "$A" --data '{"path":"echo.masm","args":["2"]}' $U/api/programs)" = 200 ] || fail "echo: start ($(cat "$MOND/r"))"
+    i=0
+    until curl -sf "$U/api/log" | grep -q 'hello: echo is listening for 2 messages'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "echo: hello ($(curl -sf $U/api/log))"; sleep 0.1
+    done
+    EP=$(curl -sf $U/api/programs | sed 's/.*"path":"echo.masm"[^}]*"pid":\([0-9]*\).*/\1/')
+    [ "$(code -H "$A" --data '7' $U/api/proc/$EP/send)" = 200 ] || fail "echo: send ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"n":[1,"x"]}' $U/api/proc/$EP/send)" = 200 ] || fail "echo: send a map"
+    i=0
+    until curl -sf "$U/api/log" | grep -q 'echo: that was the last one; goodbye'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "echo: goodbye ($(curl -sf $U/api/log))"; sleep 0.1
+    done
+    L=$(curl -sf "$U/api/log")
+    echo "$L" | grep -q '"text":"echo 1/2: 7"' || fail "echo: the first message ($L)"
+    echo "$L" | grep -q '"text":"echo 2/2: {\\"n\\":\[1,\\"x\\"\]}"' || fail "echo: the second message ($L)"
+    curl -sf $U/api/programs | grep -q '"path":"echo.masm","cap":null,"quota":null,"args":\["2"\],"pid":[0-9]*,"state":"done","exit":0' || fail "echo: done ($(curl -sf $U/api/programs))"
+    [ "$(code -H "$A" $U/api/shutdown)" = 200 ] || fail "echo: shutdown"
+    wait $VMPID || fail "echo: serve's exit"
     rm -rf "${MOND:?}"
 fi
 echo "check-tools: profile, .loc, bundle, dap, node, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"

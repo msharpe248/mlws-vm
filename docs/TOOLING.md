@@ -508,7 +508,9 @@ program is a file in the `--programs` directory: a path that leads out of it,
 through `..` or a link, is refused. The same file started again is another main
 of the same module, as with `--also`. Programs share the VM's output, as with
 `--also`; what one wants to show in the dashboard it writes to the monitor's log
-(`monitor.log`). VM options apply to all of them. `--monitor-cert` and
+(`monitor.log`): [examples/serve/echo.masm](../examples/serve/echo.masm) is
+one to try, which writes there each message the dashboard sends it. VM options
+apply to all of them. `--monitor-cert` and
 `--monitor-key` serve the monitor over HTTPS, as for `run`; it listens on
 127.0.0.1:7070 unless told otherwise.
 

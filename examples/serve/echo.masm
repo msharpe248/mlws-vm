@@ -1,0 +1,77 @@
+; echo.masm - a small echo server for mlwsvm serve's dashboard.
+;
+;     mlwsvm serve --programs examples/serve
+;
+; then, in the dashboard the run prints the address of, start echo.masm from
+; the Programs card (with an argument, say 3), select its process, and Send it
+; messages. It says hello, then writes each message to the monitor's log, and
+; to its output, until it has had N of them; then it says goodbye and ends.
+;
+;     argument: N, how many messages to take (default 10)
+;
+; skip: it waits for messages from the dashboard (tests/tools/check_tools.sh
+; runs it under mlwsvm serve)
+;
+; A message keeps its type: JSON's objects arrive as maps, arrays as lists,
+; strings as strings, and numbers as i64 or f64. recv into a register of the
+; wrong bank leaves the message where it is (E_TYPE), so each is tried as a
+; reference, then an integer, then a float.
+
+; The message, whatever it is, as text: JSON for a reference.
+.func take -> ref
+.try not_ref
+    recv R0
+.endtry
+    ncall "json.stringify" (R0, 0) -> (R1)
+    ret R1
+not_ref:
+    catch R2
+.try not_int
+    recv I0
+.endtry
+    tostr R1, I0
+    ret R1
+not_int:
+    catch R2
+    recv F0
+    tostr R1, F0
+    ret R1
+.endf
+
+; The count from the first argument, or 10.
+.func count -> i64
+    ncall "os.args" () -> (R0)
+    len I0, R0
+    bz I0, 1f
+    mov R1, R0[0]
+.try bad
+    parse.i64 I1, R1
+.endtry
+    blt I1, 1, bad_count
+    ret I1
+bad:
+    catch R2
+bad_count:
+    ncall "monitor.log" (2, "echo: the argument is not a count above 0; taking 10")
+1:  ret 10
+.endf
+
+.func main
+    call count -> (I10)
+    tostr R0, I10
+    strcat R1, "hello: echo is listening for ", R0, " messages"
+    ncall "monitor.log" (1, R1)
+    ncall "io.print_s" (R1)
+    ncall "io.nl" ()
+    mov I11, 0
+1:  call take -> (R2)
+    inc I11
+    tostr R3, I11
+    strcat R4, "echo ", R3, "/", R0, ": ", R2
+    ncall "monitor.log" (1, R4)
+    ncall "io.print_s" (R4)
+    ncall "io.nl" ()
+    blt I11, I10, 1b
+    ncall "monitor.log" (1, "echo: that was the last one; goodbye")
+    ret 0
+.endf
