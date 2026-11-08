@@ -35,7 +35,15 @@ jobs:
         run: sudo sysctl vm.mmap_rnd_bits=28
 
       - name: Build
-        run: make CC=$CC -k -j4
+        run: |
+          rc=0; make CC=$CC -k -j4 > build.log 2>&1 || rc=$?
+          cat build.log; exit $rc
+
+      # As the release check's build-warnings: a warning fails the run here,
+      # at the push, not at the release.
+      - name: No warnings
+        if: ${{ !cancelled() }}
+        run: "! grep -E 'warning:|error:' build.log"
 
       - name: Tests
         run: make CC=$CC test
@@ -110,7 +118,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libffi-dev pkg-config
 
       - name: Build
-        run: make CC=$CC -k -j4
+        run: |
+          rc=0; make CC=$CC -k -j4 > build.log 2>&1 || rc=$?
+          cat build.log; exit $rc
+
+      # As the release check's build-warnings: a warning fails the run here,
+      # at the push, not at the release.
+      - name: No warnings
+        if: ${{ !cancelled() }}
+        run: "! grep -E 'warning:|error:' build.log"
 
       - name: Tests
         run: make CC=$CC test
