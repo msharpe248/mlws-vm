@@ -1,6 +1,7 @@
 ; A third VM that check_tools.sh runs against node 2 (on the port in its first
-; argument, plainly) before node 1 does: it takes node 2's own name, so each
-; end refuses the connection (E_NODE), and node 2 is as it was for node 1.
+; argument, plainly) before node 1 does, as the node numbered and named by its
+; second and third arguments: node 2's name, or node 2's number, so that each
+; end refuses the connection (E_NODE) and node 2 is as it was for node 1.
 .include "std/test.inc"
 .import std.node as node
 
@@ -8,8 +9,11 @@
     ncall "os.args" () -> (R0)
     mov R1, R0[0]
     parse.i64 I0, R1
-    call node.set_name ("two@test")
-    call node.start (3, "the cookie", 0) -> (I1)
+    mov R5, R0[1]
+    parse.i64 I6, R5
+    mov R6, R0[2]
+    call node.set_name (R6)
+    call node.start (I6, "the cookie", 0) -> (I1)
 .try refused
     call node.connect ("127.0.0.1", I0, "the cookie") -> (I2)
 .endtry
@@ -20,7 +24,7 @@ refused:
     strcmp I3, R3, "E_NODE"
     ASSERT_EQ I3, 0
     mov R4, R2->Error.message
-    ncall "text.find" (R4, "name, two@test,", 0) -> (I4)
+    ncall "text.find" (R4, "or number is this node's or a connected node's", 0) -> (I4)
     ASSERT_GE I4, 0
     call node.connected (2) -> (I5)
     ASSERT_FALSE I5

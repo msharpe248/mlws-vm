@@ -47,6 +47,8 @@ static void usage(FILE *f) {
           "        --jit-report FILE|-             what the JIT did, written when the run ends\n"
           "  debug [-L dir] [VM options] file.(masm|mlwso)   interactive debugger (type 'help')\n"
           "  top   [https://]HOST:PORT [--ca FILE] [--once]   live process table of a VM run with --monitor\n"
+          "  names [--port N]                      the name service for nodes, by which they connect by name\n"
+          "                                        (as Erlang's epmd: one per machine; port 4368)\n"
           "  serve --programs DIR [--monitor [HOST:]PORT] [--monitor-cert F --monitor-key F] [VM options]\n"
           "                                        a VM that stays up, starting programs from DIR when its\n"
           "                                        monitor is asked to (the token printed; 127.0.0.1:7070)\n"
@@ -564,6 +566,30 @@ static int cmd_dis(int argc, char **argv) {
     return rc;
 }
 
+/* `mlwsvm names [--port N]`: the name service for nodes, lib/std/names.masm,
+ * run as a program. */
+static int cmd_names(int argc, char **argv) {
+    const char *port = NULL;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--port") && i + 1 < argc) port = argv[++i];
+        else {
+            fprintf(stderr, "usage: mlwsvm names [--port N]   (4368 unless given)\n");
+            return 2;
+        }
+    }
+    if (!g_exe_lib) {
+        fprintf(stderr, "mlwsvm names: lib/ is not beside this executable\n");
+        return 1;
+    }
+    char *std = path_join(g_exe_lib, "std");
+    char *file = path_join(std, "names.masm");
+    char *args[2] = {file, (char *)port};
+    int rc = cmd_run(port ? 2 : 1, args);
+    free(file);
+    free(std);
+    return rc;
+}
+
 /* A program bundled into this executable: its command line is all the
  * program's, as if given to `run` after the file. */
 static int run_bundle(int argc, char **argv) {
@@ -605,6 +631,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "debug")) rc = cmd_debug(n, args);
     else if (!strcmp(cmd, "serve")) rc = cmd_serve(n, args);
     else if (!strcmp(cmd, "top")) rc = tool_top(n, args);
+    else if (!strcmp(cmd, "names")) rc = cmd_names(n, args);
     else if (!strcmp(cmd, "doc")) rc = tool_doc(n, args);
     else if (!strcmp(cmd, "ext")) rc = tool_ext(n, args, &g_env);
     else if (!strcmp(cmd, "lib")) rc = tool_lib(n, args, &g_env);

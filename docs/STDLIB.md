@@ -530,8 +530,11 @@ numbers in a list or struct), deep-copied like any message.
 A pid may name a node: its top 16 bits are the node's number, and `send` to it
 goes there. A node may also have a name: each node it connects to learns it, and
 keeps it after the connection goes, so that the node of any pid can be named. A
-connection from a node whose name this VM, or another connected node, has is
-refused (`E_NODE`). Messages between two processes keep their order, as on one VM. A
+connection from a node whose name or number this VM, or another connected node,
+has is refused (`E_NODE`), since a pid's number must mean one node. Nodes that
+have names and no numbers of their own choosing take one made from the name
+(`start_named` with 0): two names may give one number, and then the second to
+connect is refused. Messages between two processes keep their order, as on one VM. A
 plain pid (`PID`) means this VM, so give others `node.self(PID)`, the same pid with
 this node's number in it. `node.of(pid)` says which node a pid names.
 
@@ -546,15 +549,34 @@ this node's number in it. `node.of(pid)` says which node a pid names.
 | `set_name(name)` | name this VM (as Erlang's `name@host`): once, before it connects, at most 255 bytes |
 | `name(number)` | a node's name, as it gave it when it last connected (`""`: none known); this VM's for 0 |
 | `number(name)` | the number of the node with that name: this VM's, a connected node's, or the last that had it; 0 if none |
+| `start_named(name, number, cookie, port)` | name this VM, number it (0: a number made from the name, `node.number_for`), start it as `start` does, and register the name with this machine's name service (`mlwsvm names`); returns the port. `E_NODE` without a service, or for a name registered already |
+| `start_tls_named(name, number, cookie, port, cert, key)` | the same, taking only TLS |
+| `connect_named(full, cookie)` | connect to the node named `name@host`, its port found from `host`'s name service; its number. `E_NODE` if it is not registered there |
+| `connect_tls_named(full, cookie, ca)` | the same over TLS |
+| `names(host)` | what a host's name service knows: a list of `[name, port]` |
 | `watch()`, `unwatch()` | from now on, a `NodeEvent` comes to this process for each connection that comes or goes; or no more |
 | `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
 | `spawn(number, module, function, arg)` | run an exported function of one reference there; its pid, or 0 |
 | `self(pid)` | a pid as other nodes can use it |
 
 * **What crosses** is what a message can be: numbers, strings, byte buffers,
-  arrays, lists, maps, BigInts, decimals and structs, whose module must be loaded
-  at the other end. Closures, handles, coroutines and pointers cannot (`E_TYPE`), nor
-  a value with a cycle.
+  arrays, lists, maps, BigInts, decimals, structs, whose module must be loaded
+  at the other end, and closures. Coroutines, handles of `handle` and pointers
+  cannot (`E_TYPE`), nor a value with a cycle.
+* **A closure crosses as its code's identity and its captured values:** its
+  module's name, the hash of that module's version, its function (exported or
+  not) and that function's signature. Where that very version is loaded, as the
+  current one or one a reload replaced, it is the same closure there. Where it
+  is not, it arrives as one that raises `E_LINK_CODE` when called, as
+  Erlang's fun of code a node does not have (`badfun`), and that is still the closure it stands for
+  when it is sent on, back or to a node that has the code. Two nodes have the
+  same version when the module was built from the same text with the same
+  options (the hash leaves out where its files are). A `module.handle` crosses
+  as its module and function only, and calls that node's current version
+  (`E_LINK_UNDEF` where that node does not export the function).
+* **A message that cannot be read where it arrives** (a struct of a module
+  that node does not have) is dropped there, with a warning in its monitor's
+  log, and the connection goes on.
 * **A message to a node that is not connected is dropped,** as one to a finished
   process is. So is one that does not arrive because the connection fails. Use
   `monitor`, and replies, for what must be known.

@@ -42,6 +42,9 @@
 .module std.node
 .export start, start_tls, connect, connect_tls, spawn, whereis, self, node_of, connected
 .export set_name, name, number, nodes, watch, unwatch
+.export start_named, start_tls_named, connect_named, connect_tls_named, names
+
+.const NAMES_PORT = 4368
 
 .const CONNECT_TIMEOUT = 5000
 
@@ -237,7 +240,7 @@ refused:
     mov R16->Error.message, "the peer does not know the cookie"
     throw R16
 taken:
-    strcat R19, "the peer's name, ", R18, ", is this node's or a connected node's"
+    strcat R19, "the peer's name (", R18, ") or number is this node's or a connected node's"
     new R16, Error
     mov R16->Error.code, "E_NODE"
     mov R16->Error.message, R19
@@ -280,11 +283,30 @@ ended:
     ret
 .endf
 
+; A frame's value, or null if it cannot be read here (a struct this VM does not
+; have, bytes that are not a value): then it is dropped, with a warning in the
+; monitor's log, and the connection goes on, since frames come one by one.
+.func read_one(ref bytes, i64 peer) -> ref
+.try bad
+    ncall "node.decode" (bytes) -> (R2)
+.endtry
+    ret R2
+bad:
+    catch R3
+    mov R4, R3->Error.code
+    mov R5, R3->Error.message
+    tostr R6, peer
+    strcat R7, "std.node: a frame from node ", R6, " was dropped: [", R4, "] ", R5
+    ncall "monitor.log" (2, R7)
+    ret null
+.endf
+
 .func read_frames(ref conn, i64 peer)
 .try lost
 1:  ncall "net.read_frame" (conn) -> (R2)
     bz R2, closed
-    ncall "node.decode" (R2) -> (R3)
+    call read_one (R2, peer) -> (R3)
+    bz.r R3, 1b                        ; (dropped)
     mov I2, R3[0]
     bnz I2, 2f
     ldel R3, 0                         ; [pid, value]
@@ -391,4 +413,182 @@ none:
     call ask (peer, R2) -> (R3)
     mov I4, R3[0]
     ret I4
+.endf
+
+; ---- by name (std.names: `mlwsvm names`, one per machine) ----
+
+; The port of this machine's name service: $MLWSVM_NAMES_PORT, or 4368.
+.func names_port -> i64
+.try none
+    ncall "os.env" ("MLWSVM_NAMES_PORT") -> (R0)
+.endtry
+    bz.r R0, 1f
+.try none
+    parse.i64 I0, R0
+.endtry
+    ret I0
+none:
+    catch R1
+1:  ret NAMES_PORT
+.endf
+
+; The name before a full name's last @ (all of it if it has none), and the host
+; after it ("127.0.0.1" if none).
+.func short_of(ref full) -> ref
+    call at_of (full) -> (I1)
+    blt I1, 0, 1f
+    substr R1, full, 0, I1
+    ret R1
+1:  ret full
+.endf
+.func host_of(ref full) -> ref
+    call at_of (full) -> (I1)
+    blt I1, 0, 1f
+    add I2, I1, 1
+    len I3, full
+    sub I3, I3, I2
+    substr R1, full, I2, I3
+    ret R1
+1:  ret "127.0.0.1"
+.endf
+.func at_of(ref full) -> i64
+    mov I1, -1
+    mov I2, 0
+1:  ncall "text.find" (full, "@", I2) -> (I3)
+    blt I3, 0, 2f
+    mov I1, I3
+    add I2, I3, 1
+    jmp 1b
+2:  ret I1
+.endf
+
+.func name_error(ref text)
+    new R1, Error
+    mov R1->Error.code, "E_NODE"
+    mov R1->Error.message, text
+    throw R1
+.endf
+
+; Name this VM (as Erlang's name@host) and number it (0: a number made from
+; the name, node.number_for), accept connections on a port (0: any), and
+; register the name, its part before the @, with this machine's name service,
+; for as long as this VM lives. Returns the port. E_NODE if there is no name
+; service, or the name is registered already.
+.func start_named(ref name, i64 number, ref cookie, i64 port) -> i64
+    call start_tls_named (name, number, cookie, port, null, null) -> (I3)
+    ret I3
+.endf
+
+; The same, accepting only TLS (as start_tls).
+.func start_tls_named(ref name, i64 number, ref cookie, i64 port, ref cert, ref key) -> i64
+    call set_name (name)
+    bnz number, 1f
+    ncall "node.number_for" (name) -> (I0)
+1:  call start_tls (I0, cookie, port, cert, key) -> (I3)
+    call names_port -> (I4)
+.try no_service
+    ncall "net.connect" ("127.0.0.1", I4, CONNECT_TIMEOUT) -> (R6)
+.endtry
+    call short_of (name) -> (R7)
+    tostr R8, I3
+    strcat R9, "REGISTER ", R7, " ", R8, "\n"
+    ncall "fs.write" (R6, R9)
+    ncall "fs.read_line" (R6) -> (R10)
+    bz.r R10, no_service2
+    strcmp I5, R10, "OK"
+    bnz I5, taken
+    ncall "fs.give" (R6) -> (I6)
+    spawn hold_name (I6)                ; (the registration lasts while it does)
+    ret I3
+no_service:
+    catch R11
+no_service2:
+    tostr R12, I4
+    strcat R13, "no name service on this machine at port ", R12, " (start one: mlwsvm names)"
+    call name_error (R13)
+    ret 0
+taken:
+    strcat R13, "the name service says ", R10, " to ", R7
+    call name_error (R13)
+    ret 0
+.endf
+
+; Keeps a registration's connection open, while this VM lives or the service does.
+.func hold_name(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+.try ended
+1:  ncall "fs.read_line" (R0) -> (R1)
+    bnz.r R1, 1b
+.endtry
+    ret
+ended:
+    catch R2
+    ret
+.endf
+
+; Ask a host's name service one line; its first answer line, or null.
+.func ask_names(ref host, ref line) -> ref
+    call names_port -> (I1)
+    ncall "net.connect" (host, I1, CONNECT_TIMEOUT) -> (R2)
+    ncall "fs.write" (R2, line)
+    ncall "fs.read_line" (R2) -> (R3)
+    ncall "fs.close" (R2)
+    ret R3
+.endf
+
+; Connect to the node of a full name (name@host), finding its port with its
+; host's name service. Returns its number; E_NODE if it is not registered there.
+.func connect_named(ref full, ref cookie) -> i64
+    call connect_tls_named (full, cookie, null) -> (I3)
+    ret I3
+.endf
+
+; The same over TLS, as connect_tls (ca: "" for the system's authorities).
+.func connect_tls_named(ref full, ref cookie, ref ca) -> i64
+    call short_of (full) -> (R3)
+    call host_of (full) -> (R4)
+    strcat R5, "PORT ", R3, "\n"
+.try unreachable
+    call ask_names (R4, R5) -> (R6)
+.endtry
+    mov I1, 0
+    bz.r R6, 1f
+    parse.i64 I1, R6
+1:  bz I1, unknown
+    bz.r ca, 2f
+    call connect_tls (R4, I1, cookie, ca) -> (I2)
+    ret I2
+2:  call connect (R4, I1, cookie) -> (I2)
+    ret I2
+unreachable:
+    catch R7
+    strcat R8, "no name service at ", R4, " to find ", full
+    call name_error (R8)
+    ret 0
+unknown:
+    strcat R8, "no node named ", R3, " is registered at ", R4
+    call name_error (R8)
+    ret 0
+.endf
+
+; What a host's name service knows: a list of [name, port].
+.func names(ref host) -> ref
+    call names_port -> (I1)
+    ncall "net.connect" (host, I1, CONNECT_TIMEOUT) -> (R2)
+    ncall "fs.write" (R2, "NAMES\n")
+    lnew R3
+1:  ncall "fs.read_line" (R2) -> (R4)
+    bz.r R4, 2f
+    strcmp I2, R4, "END"
+    bz I2, 2f
+    ncall "text.split" (R4, " ") -> (R5)
+    mov R6, R5[0]
+    mov R7, R5[1]
+    parse.i64 I3, R7
+    lnew R8
+    lpush R8, R6, I3
+    lpush R3, R8
+    jmp 1b
+2:  ncall "fs.close" (R2)
+    ret R3
 .endf

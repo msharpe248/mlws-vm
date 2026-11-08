@@ -180,6 +180,15 @@ typedef struct LModule {
     atomic_bool shared_name;
     bool replaced;            /* a newer version took its name (vm_reload) */
     bool handle;              /* a module.handle's own module (vm_handle): h, and gone in its place */
+    /* Its version's identity across nodes (vm_module_hash): SHA-256 of its
+     * .mlwso image but for its source files' names, first 16 bytes. */
+    bool hashed;
+    uint8_t hash[16];
+    /* A closure's stub (vm_remote_stub): the module, version and function
+     * of the closure it stands for, which this VM does not have. NULL else. */
+    char *remote_mod, *remote_fn;
+    uint8_t remote_hash[16];
+    bool remote_handle; /* it stands for a module.handle (no version) */
     struct LModule **deps;    /* m->nimports: the module each import resolved to */
     int index;
     int state;
@@ -269,6 +278,7 @@ typedef struct VM {
      * kind and text, shared by all modules: owned here, freed with the VM */
     StrMap const_pool;
     StrMap handles;      /* module.handle: "module key\x1f function" -> its stub Function (vm_handle) */
+    StrMap remotes;      /* closures from other nodes of code not here: identity -> stub Function (vm_remote_stub) */
     VEC(Obj *) const_objs;
     VEC(struct LibWant) wants;
     StrMap natives;      /* name -> const NativeDef* */
@@ -695,6 +705,11 @@ bool vm_load_roots(VM *vm, const char *const *paths, int n, LModule **out, MlwsE
 LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err); /* source in memory */
 Obj *vm_intern(VM *vm, const char *s, size_t n); /* text.intern: the literals' one string of this text; NULL for a NUL in it */
 Function *vm_handle(VM *vm, LModule *lm, const char *fname, MlwsError *err); /* module.handle's function */
+void vm_module_hash(VM *vm, LModule *lm, uint8_t out[16]); /* its version's identity across nodes */
+LModule *vm_module_version(VM *vm, const char *name, const uint8_t hash[16]); /* that version, if loaded */
+Function *vm_module_func(LModule *lm, const char *fname); /* by name, exported or not */
+Function *vm_remote_stub(VM *vm, const char *mod, const uint8_t *hash, const char *fname, const uint8_t *params,
+                         int np, const uint8_t *rets, int nr, MlwsError *err); /* raises E_LINK_CODE; hash NULL: a handle (E_LINK_UNDEF) */
 /* Load a module while the program runs (module.load), as an import of `from`
  * (which directory it is looked for in first, and privacy; NULL: the
  * library path only), under mods_lock. A load that fails leaves the modules

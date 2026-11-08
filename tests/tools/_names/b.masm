@@ -1,0 +1,20 @@
+; Node b of check_tools.sh's name service check: named b@127.0.0.1, with a
+; number made from its name, registered with the name service; it prints its
+; port, and ends when told (a message to its registered "stopper").
+.import std.node as node
+.func stopper
+    ncall "proc.register" ("stopper", PID)
+    recv I0
+    ncall "os.exit" (0)
+    ret
+.endf
+.func main
+    call node.start_named ("b@127.0.0.1", 0, "the cookie", 0) -> (I1)
+    spawn stopper
+    sleep 50
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+1:  sleep 1000
+    jmp 1b
+.endf

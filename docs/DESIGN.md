@@ -1781,7 +1781,16 @@ handle closes first.
 `node.decode` reads bytes from the network. Every length is checked against what
 is left, before anything is allocated, recursion is bounded, type codes and kinds
 are checked, and a struct is looked up by module and name and must have the same
-fields. Bytes that are not a value raise `E_PARSE`. `tests/native/node_values`
+fields. Bytes that are not a value raise `E_PARSE`, and the reader drops that
+frame, not the connection. A closure is written as its module's name, its
+version's hash (`vm_module_hash`: SHA-256 of the module's `.mlwso` image with
+its files' names left out, kept in `LModule.hash`), its function's name and
+signature, and its captures; it is read back as a closure of that version's
+function (`vm_module_version`, current or replaced), or else of a stand-in,
+`vm_remote_stub`'s: a module of its own, `(remote) M.f #N`, whose one function,
+of the signature sent, raises `E_LINK_CODE`, and which keeps the identity it
+stands for, so that it is written as that closure again. A `module.handle` is
+written as its module and function, and read back as that node's handle. `tests/native/node_values`
 feeds it random, mutated and truncated frames.
 
 A pid does not change when it crosses: `node.global` adds the sender's number, and
@@ -1790,7 +1799,12 @@ per connection. A name is beside the number, not instead of it: `VM.node_names`
 keeps, per number, the name that node gave when it last connected
 (`node.named`, which refuses one that this VM or another connected node has),
 and keeps it after the connection goes, so that a pid of a node that has gone
-still has its node's name. Requests to a node go through a process of their own, answering
+still has its node's name. `node.named` also refuses a peer of this node's
+number, or of a connected node's under another name. Finding a node's port
+by its name is `std.names` (`mlwsvm names`), a program of MLWSVM code: a
+registry process maps names to ports and monitors the process holding each
+registration's connection, so that one that ends, with its node, drops its
+name. Requests to a node go through a process of their own, answering
 with `proc.call`, so that a caller's mailbox holds only what it was sent.
 
 `link`, `monitor`, `kill` and `proc.call` on another node's pid are the scheduler's

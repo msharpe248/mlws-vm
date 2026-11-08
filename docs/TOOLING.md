@@ -16,6 +16,7 @@ run before a release.
 | Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] [--monitor-actions] prog.masm` | none |
 | A VM that stays up | `mlwsvm serve --programs DIR [--monitor [HOST:]PORT]` | — |
 | Terminal view | `mlwsvm top [https://]HOST:PORT [--ca FILE] [--once] [--interval MS]` | — |
+| Name service for nodes | `mlwsvm names [--port N]` | — |
 | VM options | `mlwsvm run --max-frames N --quota heap=64M --cap read=/data ... prog.masm` | — |
 | Several programs | `mlwsvm run a.masm args --also b.masm args ...` | — |
 | Native code | `mlwsvm ext list\|install\|remove\|allow-ffi\|deny-ffi` ([EXTENDING.md](EXTENDING.md)) | — |
@@ -530,6 +531,25 @@ directory's, by sub-directory; a program that has ended can be run again from
 the Programs card or from Recent exits; every process, exit and log line names
 its program; and the log can be narrowed to the process selected, or to its
 program.
+
+## Name service for nodes: `mlwsvm names`
+
+```
+$ mlwsvm names
+mlwsvm names: on port 4368
+```
+
+One per machine, as Erlang's `epmd`: a node that `std.node`'s `start_named`
+starts registers its name (the part before its `@`) and port with this
+machine's service, and another finds that port by asking the service of the
+name's host (`connect_named("db@host", cookie)`). A registration lasts while
+the node's connection to the service stays open, so a node that ends takes
+its name with it. Registrations are taken only from this machine; anyone may
+ask. The service listens on 4368 (`--port N`; nodes use `$MLWSVM_NAMES_PORT`
+when it is set), one below Erlang's 4369, so that both can run. It is
+`lib/std/names.masm`, run as a program; its protocol is a line and an
+answer: `REGISTER name port` (`OK`, `TAKEN` or `REFUSED`), `PORT name` (the
+port, or `0`) and `NAMES` (`name port` lines, then `END`).
 
 ## Terminal view: `mlwsvm top`
 

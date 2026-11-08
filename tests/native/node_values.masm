@@ -63,6 +63,13 @@ h:
     ret
 .endf
 
+; Adds UP[0]: a closure's function, to send with what it captured.
+.func plus(i64 x) -> i64
+    mov I1, UP[0]
+    add I0, x, I1
+    ret I0
+.endf
+
 .func main
     ; Every kind, inside a list so that each keeps its tag.
     lnew R0
@@ -88,12 +95,15 @@ h:
     mset R4, "k", 1
     mset R4, 5, "v"
     lpush R0, R4
+    strcat R21, "a capture"
+    closure plus (30, R21) -> R22
+    lpush R0, R22
     lnew R5
     lpush R5, R0
     call trip (R5) -> (R6)
     mov R7, R6[0]
     len I0, R7
-    ASSERT_EQ I0, 11
+    ASSERT_EQ I0, 12
     mov I1, R7[0]
     ASSERT_EQ I1, 42
     mov I1, R7[1]
@@ -133,11 +143,15 @@ h:
     mget R9, R8, 5
     strcmp I1, R9, "v"
     ASSERT_EQ I1, 0
+    mov R8, R7[11]                     ; the same function, its captures with it
+    calli R8 (12) -> (I1)
+    ASSERT_EQ I1, 42
 
     ; What is of this VM alone stays.
     closure f -> (R10)
+    conew R23, R10
     lnew R11
-    lpush R11, R10
+    lpush R11, R23
     call send_error (R11) -> (R12)
     strcmp I1, R12, "E_TYPE"
     ASSERT_EQ I1, 0

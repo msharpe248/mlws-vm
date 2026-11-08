@@ -12,6 +12,7 @@
 #include "../platform/platform.h"
 #include "../heap/heap.h"
 #include "../heap/numeric.h"
+#include "../core/sha256.h"
 #include "../core/version.h"
 #include "../loader/bundle.h"
 #include "vm.h"
@@ -752,6 +753,131 @@ Function *vm_handle(VM *vm, LModule *lm, const char *fname, MlwsError *err) {
     sb_free(&name);
     sb_free(&key);
     return h;
+}
+
+/* ---- closures between nodes ----
+ * A closure crosses to another node as its module's name, its version's hash,
+ * its function's name and signature, and its captured values (dist.c). The
+ * hash is what says two nodes have the same code: SHA-256 of the module's
+ * .mlwso image without the names of its source files, so that the same code
+ * built in another directory is the same version. */
+
+void vm_module_hash(VM *vm, LModule *lm, uint8_t out[16]) {
+    plat_lock(vm->mods_lock);
+    if (!lm->hashed) {
+        Module m = *lm->m; /* (a shallow copy, its names of source files blank) */
+        char *blank[1] = {""};
+        char **none = m.nsrcfiles ? xcalloc(m.nsrcfiles, sizeof *none) : NULL;
+        for (uint32_t i = 0; i < m.nsrcfiles; i++) none[i] = blank[0];
+        m.source = "";
+        m.srcfiles = none;
+        ByteBuf b = {0};
+        module_write(&m, &b);
+        free(none);
+        Sha256 s;
+        uint8_t h[32];
+        sha256_init(&s);
+        sha256_update(&s, b.b, b.n);
+        sha256_final(&s, h);
+        bb_free(&b);
+        memcpy(lm->hash, h, 16);
+        lm->hashed = true;
+    }
+    memcpy(out, lm->hash, 16);
+    plat_unlock(vm->mods_lock);
+}
+
+/* The loaded version of the module named name whose hash is this, current or
+ * replaced (but not freed), or NULL. */
+LModule *vm_module_version(VM *vm, const char *name, const uint8_t hash[16]) {
+    plat_lock(vm->mods_lock);
+    size_t n = vm->mods.n;
+    plat_unlock(vm->mods_lock);
+    for (size_t i = 0; i < n; i++) {
+        plat_lock(vm->mods_lock);
+        LModule *x = vm->mods.v[i];
+        bool cand = x->state == LM_READY && !x->handle && !x->remote_mod && !strcmp(x->m->name, name);
+        plat_unlock(vm->mods_lock);
+        if (!cand) continue;
+        uint8_t h[16];
+        vm_module_hash(vm, x, h);
+        if (!memcmp(h, hash, 16)) return x;
+    }
+    return NULL;
+}
+
+/* A function of lm by name, exported or not (an import is not one), or NULL. */
+Function *vm_module_func(LModule *lm, const char *fname) {
+    for (uint32_t i = 0; i < lm->m->nfuncs; i++)
+        if (!(lm->m->funcs[i].flags & MF_IMPORT) && !strcmp(lm->m->funcs[i].name, fname)) return &lm->funcs[i];
+    return NULL;
+}
+
+/* A stand-in for a closure from another node whose code this VM does not
+ * have (that version of mod, or fname in it): a function of the signature it
+ * was sent with that raises E_LINK_CODE (for a handle, whose function this
+ * VM does not export: E_LINK_UNDEF), in a module of its own that keeps
+ * what it stands for, so that it is that closure again where it is sent on to
+ * a node that has the code. One per identity and signature, for the VM's life. */
+Function *vm_remote_stub(VM *vm, const char *mod, const uint8_t *hash, const char *fname, const uint8_t *params,
+                         int np, const uint8_t *rets, int nr, MlwsError *err) {
+    StrBuf key = {0}, t = {0}, name = {0};
+    sb_printf(&key, "%s\x1f", mod);
+    if (!hash) sb_puts(&key, "handle");
+    for (int i = 0; hash && i < 16; i++) sb_printf(&key, "%02x", hash[i]);
+    sb_printf(&key, "\x1f%s\x1f", fname);
+    for (int i = 0; i < np; i++) sb_printf(&key, "%c", 'a' + params[i]);
+    sb_putc(&key, '>');
+    for (int i = 0; i < nr; i++) sb_printf(&key, "%c", 'a' + rets[i]);
+    void *v = NULL;
+    plat_lock(vm->mods_lock);
+    bool have = smap_get(&vm->remotes, key.s, &v);
+    plat_unlock(vm->mods_lock);
+    if (have) {
+        sb_free(&key);
+        return v;
+    }
+    sb_printf(&name, "(remote) %s.%s #%zu", mod, fname, vm->remotes.n);
+    sb_puts(&t, ".export gone\n.func gone(");
+    for (int i = 0; i < np; i++) sb_printf(&t, "%s%s a%d", i ? ", " : "", handle_type(params[i]), i);
+    sb_puts(&t, ")");
+    if (nr) {
+        sb_puts(&t, " -> (");
+        for (int i = 0; i < nr; i++) sb_printf(&t, "%s%s", i ? ", " : "", handle_type(rets[i]));
+        sb_puts(&t, ")");
+    }
+    sb_printf(&t, "\n    new R0, Error\n    mov R0->Error.code, \"%s\"\n    mov R0->Error.message, \"",
+              hash ? "E_LINK_CODE" : "E_LINK_UNDEF");
+    for (const char *c = mod; *c; c++) sb_putc(&t, *c == '"' || *c == '\\' ? '_' : *c);
+    sb_putc(&t, '.');
+    for (const char *c = fname; *c; c++) sb_putc(&t, *c == '"' || *c == '\\' ? '_' : *c);
+    sb_puts(&t, hash ? ", of a closure from another node, is not here: that version of its module is not loaded\"\n"
+                     : ", of a handle from another node, is not exported here\"\n");
+    sb_puts(&t, "    throw R0\n.endf\n");
+    Module *m = assemble_text(name.s, t.s, name.s, (const char *const *)vm->libpaths.v, vm->libpaths.n, err);
+    Function *f = NULL;
+    if (m) {
+        plat_lock(vm->mods_lock);
+        if (smap_get(&vm->remotes, key.s, &v)) {
+            module_free(m);
+            f = v;
+        } else {
+            LModule *rm = register_module(vm, m, name.s, NULL, NULL, false, err);
+            if (rm) {
+                rm->remote_mod = xstrdup(mod);
+                rm->remote_fn = xstrdup(fname);
+                rm->remote_handle = !hash;
+                if (hash) memcpy(rm->remote_hash, hash, 16);
+                f = &rm->funcs[module_find_export_func(rm->m, "gone")];
+                smap_put(&vm->remotes, key.s, f);
+            }
+        }
+        plat_unlock(vm->mods_lock);
+    }
+    sb_free(&key);
+    sb_free(&t);
+    sb_free(&name);
+    return f;
 }
 
 LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err) {
