@@ -530,8 +530,11 @@ numbers in a list or struct), deep-copied like any message.
 A pid may name a node: its top 16 bits are the node's number, and `send` to it
 goes there. A node may also have a name: each node it connects to learns it, and
 keeps it after the connection goes, so that the node of any pid can be named. A
-connection from a node whose name this VM, or another connected node, has is
-refused (`E_NODE`). Messages between two processes keep their order, as on one VM. A
+connection from a node whose name or number this VM, or another connected node,
+has is refused (`E_NODE`), since a pid's number must mean one node. Nodes that
+have names and no numbers of their own choosing take one made from the name
+(`start_named` with 0): two names may give one number, and then the second to
+connect is refused. Messages between two processes keep their order, as on one VM. A
 plain pid (`PID`) means this VM, so give others `node.self(PID)`, the same pid with
 this node's number in it. `node.of(pid)` says which node a pid names.
 
@@ -546,6 +549,11 @@ this node's number in it. `node.of(pid)` says which node a pid names.
 | `set_name(name)` | name this VM (as Erlang's `name@host`): once, before it connects, at most 255 bytes |
 | `name(number)` | a node's name, as it gave it when it last connected (`""`: none known); this VM's for 0 |
 | `number(name)` | the number of the node with that name: this VM's, a connected node's, or the last that had it; 0 if none |
+| `start_named(name, number, cookie, port)` | name this VM, number it (0: a number made from the name, `node.number_for`), start it as `start` does, and register the name with this machine's name service (`mlwsvm names`); returns the port. `E_NODE` without a service, or for a name registered already |
+| `start_tls_named(name, number, cookie, port, cert, key)` | the same, taking only TLS |
+| `connect_named(full, cookie)` | connect to the node named `name@host`, its port found from `host`'s name service; its number. `E_NODE` if it is not registered there |
+| `connect_tls_named(full, cookie, ca)` | the same over TLS |
+| `names(host)` | what a host's name service knows: a list of `[name, port]` |
 | `watch()`, `unwatch()` | from now on, a `NodeEvent` comes to this process for each connection that comes or goes; or no more |
 | `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
 | `spawn(number, module, function, arg)` | run an exported function of one reference there; its pid, or 0 |

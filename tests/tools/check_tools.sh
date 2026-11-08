@@ -296,7 +296,10 @@ node_pair() { # [tls]
     done
     [ -s "$NODED/port" ] || { kill $TWO 2>/dev/null || true; fail "node ${1:-}: the second VM did not start"; }
     if [ -z "${1:-}" ]; then # another node with node 2's name: refused, and node 2 unharmed
-        perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_node/clash.masm "$(tr -d '\r\n' < "$NODED/port")" >/dev/null 2>"$NODED/err" || { kill $TWO 2>/dev/null || true; cat "$NODED/err" >&2; fail "node names: clash"; }
+        for clash in "3 two@test" "2 other@test"; do # node 2's name; node 2's number
+            # shellcheck disable=SC2086
+            perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_node/clash.masm "$(tr -d '\r\n' < "$NODED/port")" $clash >/dev/null 2>"$NODED/err" || { kill $TWO 2>/dev/null || true; cat "$NODED/err" >&2; fail "node names: clash ($clash)"; }
+        done
     fi
     perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_node/one.masm "$(tr -d '\r\n' < "$NODED/port")" ${1:-} >/dev/null 2>"$NODED/err" || { kill $TWO 2>/dev/null || true; cat "$NODED/err" >&2; fail "node ${1:-}"; }
     wait $TWO
@@ -309,6 +312,37 @@ $BIN run "$NODED/tls.masm"; HAVE_TLS=$?
 set -e
 [ $HAVE_TLS = 1 ] && node_pair tls
 rm -rf "${NODED:?}"
+
+# mlwsvm names, and nodes that register with it and connect by name: node b
+# registers and waits, node a registers too, connects to b by name, checks the
+# service's answers, and tells b to end. The service's port is one of its own,
+# so as not to meet a service already running here.
+NAMESD=$(mktemp -d)
+MLWSVM_NAMES_PORT=$(( 20000 + $$ % 20000 ))
+export MLWSVM_NAMES_PORT
+$BIN names --port $MLWSVM_NAMES_PORT > "$NAMESD/names.out" 2>&1 &
+NAMES_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    grep -q "^mlwsvm names: on port $MLWSVM_NAMES_PORT" "$NAMESD/names.out" 2>/dev/null && break
+    perl -e 'select(undef, undef, undef, 0.25)'
+done
+grep -q "^mlwsvm names: on port $MLWSVM_NAMES_PORT" "$NAMESD/names.out" || { kill $NAMES_PID 2>/dev/null || true; fail "names did not start ($(cat "$NAMESD/names.out"))"; }
+$BIN run tests/tools/_names/b.masm > "$NAMESD/b.port" 2>/dev/null &
+B_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -s "$NAMESD/b.port" ] && break
+    perl -e 'select(undef, undef, undef, 0.25)'
+done
+perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_names/a.masm >/dev/null 2>"$NAMESD/err" || { kill $B_PID $NAMES_PID 2>/dev/null || true; cat "$NAMESD/err" >&2; fail "names: connecting by name"; }
+wait $B_PID 2>/dev/null || true
+kill $NAMES_PID 2>/dev/null || true
+wait $NAMES_PID 2>/dev/null || true
+unset MLWSVM_NAMES_PORT
+set +e
+$BIN names --bogus >/dev/null 2>&1; RC=$?
+set -e
+[ $RC = 2 ] || fail "names: a bad option (exit $RC)"
+rm -rf "${NAMESD:?}"
 
 # A .mlwso whose global word is tagged as a reference (the assembler never
 # writes one) is refused at load, not used: the word would be a forged pointer.
@@ -880,4 +914,4 @@ if command -v curl >/dev/null 2>&1; then
     wait $VMPID || fail "echo: serve's exit"
     rm -rf "${MOND:?}"
 fi
-echo "check-tools: profile, .loc, bundle, dap, node, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"
+echo "check-tools: profile, .loc, bundle, dap, node, names, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"

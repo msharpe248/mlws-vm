@@ -1799,7 +1799,12 @@ per connection. A name is beside the number, not instead of it: `VM.node_names`
 keeps, per number, the name that node gave when it last connected
 (`node.named`, which refuses one that this VM or another connected node has),
 and keeps it after the connection goes, so that a pid of a node that has gone
-still has its node's name. Requests to a node go through a process of their own, answering
+still has its node's name. `node.named` also refuses a peer of this node's
+number, or of a connected node's under another name. Finding a node's port
+by its name is `std.names` (`mlwsvm names`), a program of MLWSVM code: a
+registry process maps names to ports and monitors the process holding each
+registration's connection, so that one that ends, with its node, drops its
+name. Requests to a node go through a process of their own, answering
 with `proc.call`, so that a caller's mailbox holds only what it was sent.
 
 `link`, `monitor`, `kill` and `proc.call` on another node's pid are the scheduler's

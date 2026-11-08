@@ -1,0 +1,86 @@
+; Node a of check_tools.sh's name service check, after b has registered: a
+; registers too, connects to b by name, finds both in the service's list, is
+; refused b's name and an unknown one, and, once b is told to end, finds its
+; name gone from the service.
+.include "std/test.inc"
+.import std.node as node
+
+; What connecting to a full name raises, or null.
+.func connect_error(ref full) -> ref
+.try h
+    call node.connect_named (full, "the cookie") -> (I1)
+.endtry
+    ret null
+h:  catch R1
+    mov R2, R1->Error.code
+    ret R2
+.endf
+
+; The service's answer to one line, asked directly.
+.func ask(ref line) -> ref
+    ncall "os.env" ("MLWSVM_NAMES_PORT") -> (R1)
+    parse.i64 I1, R1
+    ncall "net.connect" ("127.0.0.1", I1, 5000) -> (R2)
+    ncall "fs.write" (R2, line)
+    ncall "fs.read_line" (R2) -> (R3)
+    ncall "fs.close" (R2)
+    ret R3
+.endf
+
+.func main
+    call node.start_named ("a@127.0.0.1", 0, "the cookie", 0) -> (I1)
+    ncall "node.number_for" ("a@127.0.0.1") -> (I2)
+    ncall "node.self" () -> (I3)
+    ASSERT_EQ I3, I2                   ; (0: a number made from the name)
+
+    call node.connect_named ("b@127.0.0.1", "the cookie") -> (I4)
+    ncall "node.number_for" ("b@127.0.0.1") -> (I5)
+    ASSERT_EQ I4, I5
+    call node.name (I4) -> (R0)
+    strcmp I6, R0, "b@127.0.0.1"
+    ASSERT_EQ I6, 0
+    call node.whereis (I4, "stopper") -> (I7)
+    ASSERT_NE I7, 0
+
+    call node.names ("127.0.0.1") -> (R1)
+    len I6, R1
+    ASSERT_EQ I6, 2
+    mov R2, R1[0]
+    mov R3, R2[0]
+    strcmp I6, R3, "b"                 ; (in the order they registered)
+    ASSERT_EQ I6, 0
+    mov R2, R1[1]
+    mov R3, R2[0]
+    strcmp I6, R3, "a"
+    ASSERT_EQ I6, 0
+    mov I8, R2[1]
+    ASSERT_EQ I8, I1
+
+    call ask ("REGISTER b 1234\n") -> (R4)
+    strcmp I6, R4, "TAKEN"
+    ASSERT_EQ I6, 0
+    call ask ("PORT nobody\n") -> (R4)
+    strcmp I6, R4, "0"
+    ASSERT_EQ I6, 0
+    call ask ("REGISTER x 0\n") -> (R4)
+    strcmp I6, R4, "ERROR"
+    ASSERT_EQ I6, 0
+    call ask ("HELLO\n") -> (R4)
+    strcmp I6, R4, "ERROR"
+    ASSERT_EQ I6, 0
+    call connect_error ("nobody@127.0.0.1") -> (R5)
+    strcmp I6, R5, "E_NODE"
+    ASSERT_EQ I6, 0
+
+    ; b ends: its registration with it.
+    send I7, 1
+    mov I9, 0
+1:  call ask ("PORT b\n") -> (R4)
+    strcmp I6, R4, "0"
+    bz I6, 2f
+    inc I9
+    ASSERT_LT I9, 100
+    sleep 50
+    jmp 1b
+2:  ret 0
+.endf

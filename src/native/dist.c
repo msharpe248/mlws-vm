@@ -488,9 +488,14 @@ static void n_named(Process *p, Word *a, Word *r) {
     const char *s = name_arg(p, a[1], "node.named", &len);
     VM *vm = p->vm;
     plat_lock(vm->lock);
-    uint32_t has = len ? number_named(vm, s, len) : 0;
-    bool ok = !has || has == n || (has != __atomic_load_n(&vm->node_self, __ATOMIC_ACQUIRE) && !connected_now(vm, has));
+    uint32_t has = len ? number_named(vm, s, len) : 0, self = __atomic_load_n(&vm->node_self, __ATOMIC_ACQUIRE);
+    bool ok = !has || has == n || (has != self && !connected_now(vm, has));
     if (vm->node_name && strlen(vm->node_name) == len && !memcmp(vm->node_name, s, len)) ok = false;
+    /* Nor a number this node has, or a connected node of another name (or of none): the
+     * numbers in pids must each mean one node. */
+    if (n == self) ok = false;
+    const char *was = vm->node_names ? vm->node_names[n] : NULL;
+    if (connected_now(vm, n) && (!was || strlen(was) != len || memcmp(was, s, len))) ok = false;
     if (ok) {
         if (!vm->node_names) vm->node_names = xcalloc(MAX_NODE + 1, sizeof *vm->node_names);
         free(vm->node_names[n]);
@@ -513,6 +518,17 @@ static void n_watch(Process *p, Word *a, Word *r) {
         for (size_t i = 0; i < vm->node_watchers.n; i++)
             if (vm->node_watchers.v[i] == p->pid) vm->node_watchers.v[i] = vm->node_watchers.v[--vm->node_watchers.n];
     plat_unlock(vm->lock);
+}
+
+/* A node's number made from its name, 1 to 65535 (FNV-1a), for nodes that
+ * have names but no numbers of their own choosing: two names may give one
+ * number, and then the second node to connect is refused (node.named). */
+static void n_number_for(Process *p, Word *a, Word *r) {
+    uint32_t len;
+    const char *s = name_arg(p, a[0], "node.number_for", &len);
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < len; i++) h = (h ^ (uint8_t)s[i]) * 16777619u;
+    r[0].i = 1 + (int64_t)(h % MAX_NODE);
 }
 
 /* The numbers of the nodes connected now, in order. */
@@ -658,6 +674,8 @@ static const NativeDef NODE_NATIVES[] = {
       "Record the name a node gave; false if this VM or another connected node has it. For std.node."),
     N("node.watch", 1, T(T_B), 0, T(0), n_watch,
       "Whether this process gets a NodeEvent {node, name, up} for each connection to another node that comes (up) or goes, from now on."),
+    N("node.number_for", 1, T(T_R), 1, T(T_I64), n_number_for,
+      "A node number, 1 to 65535, made from a node's name (as std.node's start_named does when given 0)."),
     N("node.nodes", 0, T(0), 1, T(T_R), n_connected_nodes, "The numbers of the nodes connected now, as a list, in order."),
     N("node.route", 1, T(T_I64), 1, T(T_I64), n_route, "The process messages for a node go to, or 0. For std.node."),
     N("node.function", 2, T(T_R, T_R), 1, T(T_R), n_function, "A closure for a module's exported function, as a peer names it. For std.node."),
