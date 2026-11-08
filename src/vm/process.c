@@ -30,7 +30,23 @@ void proc_grow_globals(Process *p) {
     if (n > p->nglobals) {
         Segment *g = xcalloc(n + 1, sizeof(Segment));
         memcpy(g, p->globals, p->nglobals * sizeof(Segment));
-        for (uint32_t i = p->nglobals; i < n; i++) global_init(&g[i], vm->mods.v[i]->m);
+        for (uint32_t i = p->nglobals; i < n; i++) {
+            const LModule *lm = vm->mods.v[i];
+            global_init(&g[i], lm->m);
+            /* A version that replaced another starts, in this process, with the
+             * globals it carries as this process has them in the old one (made
+             * just before, if this process meets both now). */
+            int j = lm->carry_from;
+            if (j < 0 || (uint32_t)j >= i || !g[j].live || !g[j].data) continue;
+            for (uint32_t c = 0; c < lm->ncarry; c++) {
+                const struct GlobalCarry *k = &lm->carry[c];
+                if (k->from + k->size > g[j].size || k->to + k->size > g[i].size) continue;
+                memcpy(g[i].data + k->to, g[j].data + k->from, k->size);
+                if (k->from % 8 != k->to % 8) continue; /* (a word's tag goes with it only when the words line up) */
+                for (uint32_t w = (k->from + 7) / 8; (w + 1) * 8 <= k->from + k->size; w++)
+                    g[i].tags[w - k->from / 8 + k->to / 8] = g[j].tags[w];
+            }
+        }
         VEC_PUSH(p->old_globals, p->globals);
         p->globals = g;
         p->nglobals = n;

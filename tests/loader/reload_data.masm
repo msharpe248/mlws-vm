@@ -1,0 +1,115 @@
+; What a reload carries over. A global of the new version with the same name
+; and size as one of the old version's carries its value, in each process that
+; has the old version's: that process's copy of the new version's globals
+; starts from its own copy of the old one's, as they are when it first meets
+; the new version. A reference goes with its global. A global that changes its
+; size, or is new, starts as the new version says, and so does every global of a
+; process that starts after the reload. A process that met neither of two
+; reloads carries its values through both.
+;
+; An object of a struct type the reload changed is, to the new code, of
+; another type (E_TYPE); module.upgrade makes it one of the new version's type,
+; each field that keeps its name and type keeping its value, the others empty.
+; An object of a type that has not changed, and anything else, comes back as it
+; is.
+.include "std/test.inc"
+.import _reload.data as data
+
+.func reload_to(ref file)
+    ncall "fs.read_file" (file) -> (R0)
+    strcat R1, R0
+    ncall "module.reload_text" ("_reload.data", R1)
+    ret
+.endf
+
+; Bumps twice, then waits for a message through two reloads, and bumps again.
+.func sleeper(i64 parent)
+    call data.bump -> (I1)
+    call data.bump -> (I1)
+    send parent, I1
+    recv I2
+    call data.bump -> (I1)
+    send parent, I1
+    ret
+.endf
+
+; Bumps once and says what it got.
+.func newcomer(i64 parent)
+    call data.bump -> (I1)
+    send parent, I1
+    ret
+.endf
+
+; x_of an object, or the error code it raises.
+.func x_or_code(ref r) -> ref
+.try h
+    call data.x_of (r) -> (I0)
+.endtry
+    ret null
+h:  catch R1
+    mov R2, R1->Error.code
+    ret R2
+.endf
+
+.func main
+    spawn sleeper (PID) -> (I20)
+    recv I0
+    ASSERT_EQ I0, 2                    ; the sleeper's own count
+    call data.bump -> (I0)
+    ASSERT_EQ I0, 1                    ; main's
+    strcat R0, "kept ", "across"
+    call data.keep (R0)
+    call data.make (5) -> (R1)
+    call data.wide_of -> (I0)
+    ASSERT_EQ I0, 7
+
+    call reload_to ("tests/loader/_reload/data_v2.txt")
+    call data.version -> (I0)
+    ASSERT_EQ I0, 2
+    call data.bump -> (I0)
+    ASSERT_EQ I0, 2                    ; n carried
+    call data.kept -> (R2)
+    strcmp I1, R2, "kept across"
+    ASSERT_EQ I1, 0                    ; and the reference in held
+    call data.wide_of -> (I0)
+    ASSERT_EQ I0, 70                   ; wide changed its size: the new version's
+    spawn newcomer (PID)
+    recv I0
+    ASSERT_EQ I0, 1                    ; a process started since: the file's
+    ncall "gc.collect" ()               ; (the reference in held must survive it)
+
+    ; The old object, to the new code; and upgraded.
+    call x_or_code (R1) -> (R3)
+    strcmp I1, R3, "E_TYPE"
+    ASSERT_EQ I1, 0
+    ncall "module.upgrade" (R1) -> (R4)
+    call data.x_of (R4) -> (I0)
+    ASSERT_EQ I0, 5                    ; kept its name and type
+    call data.y_of (R4) -> (I0)
+    ASSERT_EQ I0, 0                    ; new
+    call data.tag_of (R4) -> (F0)
+    ASSERT_EQ F0, 0.0, f64             ; changed its type
+    ncall "module.upgrade" (R4) -> (R5)
+    beq.r R5, R4, 1f
+    FAIL "upgraded an object of the current type"
+1:  ncall "module.upgrade" (R0) -> (R5)
+    beq.r R5, R0, 2f
+    FAIL "upgraded a string"
+2:
+    ; A second reload: the sleeper met neither, and carries through both.
+    call reload_to ("tests/loader/_reload/data_v3.txt")
+    call data.version -> (I0)
+    ASSERT_EQ I0, 3
+    call data.bump -> (I0)
+    ASSERT_EQ I0, 3
+    call data.make (6) -> (R6)
+    call data.y_of (R6) -> (I0)
+    ASSERT_EQ I0, 1                    ; (Rec is one type in versions 2 and 3)
+    ncall "module.upgrade" (R6) -> (R7)
+    beq.r R7, R6, 3f
+    FAIL "upgraded an object whose type did not change"
+3:  send I20, 0
+    recv I0
+    ASSERT_EQ I0, 3                    ; its 2, through versions 2 and 3
+    ret 0
+.endf

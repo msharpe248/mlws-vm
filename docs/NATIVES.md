@@ -248,3 +248,4 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `module.loaded` | r | b | Whether a module is loaded: the module that name means to the caller, as for module.load. |
 | `module.function` | r, r | r | A closure for a function a loaded module exports, to call with calli (its signature is checked then). |
 | `module.exports` | r | r | The names of the functions a loaded module exports. |
+| `module.upgrade` | r | r | A struct object of a type that a reload changed, as an object of the type its module's current version has under that name: fields that keep their name and type keep their values, new ones start empty. Anything else is returned as it is. |

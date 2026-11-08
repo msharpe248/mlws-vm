@@ -6,7 +6,9 @@
 ; Each round below replaces a version that one thing holds: kept while it
 ; holds it, freed after. What sets a holder up is called through a closure, so
 ; that it is never inlined, and its registers are gone when it returns: only
-; the holder is left.
+; the holder is left. Each version names its global afresh (n2, n3, ...), so
+; that none carries its value from the last (reload_data.masm), and a pointer
+; into one version's data tells which version it is.
 .include "std/test.inc"
 .import _purge.p as p
 
@@ -53,7 +55,7 @@
     ncall "module.function" ("_purge.p", "version") -> (R0)
     call call_many (R0) -> (I0)
     ASSERT_EQ I0, 1
-    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn:  .i64 20\n.func version -> i64\n    ret 2\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (2)\n    ret 2\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
+    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn2:  .i64 20\n.func version -> i64\n    ret 2\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n2\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (2)\n    ret 2\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
     call p.version -> (I0)
     ASSERT_EQ I0, 2
     call purge -> (I0, I1)
@@ -78,7 +80,7 @@
     conew R1, R0
     coresume R1 -> (I0)
     ASSERT_EQ I0, 2
-    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn:  .i64 30\n.func version -> i64\n    ret 3\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (3)\n    ret 3\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
+    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn3:  .i64 30\n.func version -> i64\n    ret 3\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n3\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (3)\n    ret 3\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
     call p.version -> (I0)
     ASSERT_EQ I0, 3
     call purge -> (I0, I1)
@@ -118,7 +120,7 @@
 ; 6: run by p.call_back, with p's sixth version below it on the stack:
 ; replaces that version, and purges.
 .func swap_and_purge -> (i64, i64)
-    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn:  .i64 70\n.func version -> i64\n    ret 7\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (7)\n    ret 7\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
+    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn7:  .i64 70\n.func version -> i64\n    ret 7\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n7\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (7)\n    ret 7\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
     call purge -> (I0, I1)
     ret I0, I1
 .endf
@@ -195,7 +197,7 @@
     closure give_holder -> (R0)
     calli R0 (PID) -> (I12)
     recv I0                             ; it has taken it
-    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn:  .i64 40\n.func version -> i64\n    ret 4\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (4)\n    ret 4\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
+    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn4:  .i64 40\n.func version -> i64\n    ret 4\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n4\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (4)\n    ret 4\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
     call p.version -> (I0)
     ASSERT_EQ I0, 4
     call purge -> (I0, I1)
@@ -210,7 +212,7 @@
     ; 4: in a mailbox.
     closure give_sleeper -> (R0)
     calli R0 () -> (I13)
-    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn:  .i64 50\n.func version -> i64\n    ret 5\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (5)\n    ret 5\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
+    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn5:  .i64 50\n.func version -> i64\n    ret 5\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n5\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (5)\n    ret 5\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
     call p.version -> (I0)
     ASSERT_EQ I0, 5
     call purge -> (I0, I1)
@@ -229,7 +231,7 @@
     calli R0 () -> (R12)
     ncall "gc.collect" ()
     ncall "gc.collect" ()
-    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn:  .i64 60\n.func version -> i64\n    ret 6\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (6)\n    ret 6\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
+    ncall "module.reload_text" ("_purge.p", ".export version, address, gen, make, call_back, noted\n.export Point\n.struct Point\n    x: i64\n.ends\nn6:  .i64 60\n.func version -> i64\n    ret 6\n.endf\n; A pointer into this version's data.\n.func address -> ptr\n    lea P0, @n6\n    ret P0\n.endf\n; A coroutine's body: yields this version, then returns it.\n.func gen -> i64\n    coyield (6)\n    ret 6\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    mov R0->Point.x, v\n    ret R0\n.endf\n; Calls f while this version is on the stack.\n.func call_back(ref f) -> (i64, i64)\n    calli f () -> (I0, I1)\n    ret I0, I1\n.endf\n; A finalizer: notes the object in its log, UP-less (the log is the object's).\n.func noted(ref o)\n    ret\n.endf\n")
     call p.version -> (I0)
     ASSERT_EQ I0, 6
     call purge -> (I0, I1)

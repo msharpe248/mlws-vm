@@ -90,6 +90,7 @@ static void lmodule_free(LModule *lm) {
     free(lm->sdefs); /* field names/types are borrowed from the Module */
     free(lm->structs);
     free(lm->frefs);
+    free(lm->carry);
     free(lm->path);
     free(lm->key);
     free(lm->deps);

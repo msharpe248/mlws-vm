@@ -188,6 +188,15 @@ typedef struct LModule {
     struct FieldRef *frefs;   /* resolved field references, m->nfrefs */
     const NativeDef **natives; /* m->nnatives */
     struct LibArchive *lib;   /* the library archive it came from, or NULL (a plain file) */
+    /* A version that replaced another (vm_reload): the globals it carries from
+     * that one, same name and size in both, as byte ranges. A process copies
+     * them from its segment of the old version as it makes its segment of
+     * this one (proc_grow_globals). */
+    int carry_from;           /* the old version's index, or -1 */
+    uint32_t ncarry;
+    struct GlobalCarry {
+        uint32_t from, to, size;
+    } *carry;
 } LModule;
 
 typedef void (*OutputFn)(void *ctx, const char *s, size_t n);

@@ -2,7 +2,9 @@
 ; place while the program runs. Calls from other modules, and spawns, go to the
 ; new version from then on. Code already running stays on the old one, and so
 ; does a closure made from it, and the old version's calls to itself. A new
-; version starts with fresh data. A struct type the same in both versions is one
+; version's global with the same name and size as one of the old version's
+; carries its value; the rest start as the new version says (more in
+; reload_data.masm). A struct type the same in both versions is one
 ; type, so objects pass between them. A reload that would leave a module using
 ; it unlinked fails with nothing changed: a missing export, a changed signature,
 ; a changed struct, or data others use.
@@ -12,7 +14,7 @@
 
 ; Replaces hot while a function of it is running, below on the stack.
 .func swap
-    ncall "module.reload_text" ("_reload.hot", ".export version, around, make, read, count\n.export Point\n.struct Point\n    x: i64\n.ends\nn:  .i64 100\n.func version -> i64\n    ret 2\n.endf\n.func around(ref f) -> i64\n    ret 0\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    add I1, v, 1\n    mov R0->Point.x, I1\n    ret R0\n.endf\n.func read(ref p) -> i64\n    mov I0, p->Point.x\n    neg I0, I0\n    ret I0\n.endf\n.func count -> i64\n    inc @n\n    mov I0, @n\n    ret I0\n.endf\n")
+    ncall "module.reload_text" ("_reload.hot", ".export version, around, make, read, count\n.export Point\n.struct Point\n    x: i64\n.ends\nn:  .i64 100\nk:  .i64 100\n.func version -> i64\n    ret 2\n.endf\n.func around(ref f) -> i64\n    ret 0\n.endf\n.func make(i64 v) -> ref\n    new R0, Point\n    add I1, v, 1\n    mov R0->Point.x, I1\n    ret R0\n.endf\n.func read(ref p) -> i64\n    mov I0, p->Point.x\n    neg I0, I0\n    ret I0\n.endf\n.func count -> i64\n    inc @n\n    mov I0, @n\n    add I0, I0, @k\n    ret I0\n.endf\n")
     ret
 .endf
 
@@ -69,9 +71,9 @@ h:
     calli R0 () -> (I0)
     ASSERT_EQ I0, 1
 
-    ; Fresh data: the new version's own.
+    ; Data: n carries on from the old version's 1, and k, new, starts at 100.
     call hot.count -> (I0)
-    ASSERT_EQ I0, 101
+    ASSERT_EQ I0, 102
 
     ; One struct type: an old object is read by the new code, and the reverse.
     call hot.read (R1) -> (I0)
@@ -103,9 +105,11 @@ h:
     call user.read_total -> (I0)
     ASSERT_EQ I0, 4
 
-    ; From its file: the first version's code again.
+    ; From its file: the first version's code again, and n carried on again.
     ncall "module.reload" ("_reload.hot")
     call hot.version -> (I0)
     ASSERT_EQ I0, 1
+    call hot.count -> (I0)
+    ASSERT_EQ I0, 3
     ret 0
 .endf

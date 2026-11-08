@@ -4,6 +4,7 @@
  * looks in its directory first). A version a reload replaced stays until
  * module.purge finds nothing that can run it. */
 #include "../heap/heap.h"
+#include "../platform/platform.h"
 
 static const char *name_arg(Process *p, Word a, const char *fn) {
     Obj *o = a.r;
@@ -105,6 +106,46 @@ static void n_exports(Process *p, Word *a, Word *r) {
 }
 
 #define N(name, np, pt, nr, rt, fn, doc) {name, np, pt, nr, rt, fn, doc, 0, NULL, NULL, NULL}
+/* The struct type its module's current version gives def's name, or def if
+ * none (or def is that type): def's own version found among the loaded ones,
+ * then the version its name now means. */
+static const StructDef *current_def(VM *vm, const StructDef *def) {
+    const LModule *owner = NULL;
+    plat_lock(vm->mods_lock);
+    for (size_t i = 0; i < vm->mods.n && !owner; i++) {
+        const LModule *lm = vm->mods.v[i];
+        if (lm->sdefs && def >= lm->sdefs && def < lm->sdefs + lm->m->nstructs) owner = lm;
+    }
+    plat_unlock(vm->mods_lock);
+    if (!owner || !owner->replaced) return def;
+    const LModule *now = vm_module_named(vm, owner->m->name, owner);
+    if (!now || now == owner || now->state != LM_READY) return def;
+    for (uint32_t i = 0; i < now->m->nstructs; i++)
+        if (!(now->m->structs[i].flags & (MSF_IMPORT | MSF_BUILTIN)) && !strcmp(now->structs[i]->name, def->name))
+            return now->structs[i];
+    return def;
+}
+
+/* module.upgrade(v): a struct object of a type that a reload changed, as an
+ * object of the type its module's current version has under that name: each
+ * field that keeps its name and type keeps its value, and the rest start as
+ * new fields do. Anything else comes back as it is. */
+static void n_upgrade(Process *p, Word *a, Word *r) {
+    const ObjStruct *o = a[0].r;
+    r[0] = a[0];
+    if (!o || o->h.kind != OBJ_STRUCT) return;
+    const StructDef *def = o->def, *nd = current_def(p->vm, def);
+    if (nd == def) return;
+    ObjStruct *n = struct_new(p, nd); /* (o is an argument, so live; and objects do not move) */
+    for (uint32_t i = 0; i < nd->nfields; i++)
+        for (uint32_t j = 0; j < def->nfields; j++)
+            if (!strcmp(nd->fields[i], def->fields[j])) {
+                if (nd->types[i] == def->types[j]) n->fields[i] = o->fields[j];
+                break;
+            }
+    r[0].r = n;
+}
+
 #define T(...) {__VA_ARGS__}
 
 static const NativeDef MODULE_NATIVES[] = {
@@ -123,6 +164,8 @@ static const NativeDef MODULE_NATIVES[] = {
     N("module.function", 2, T(T_R, T_R), 1, T(T_R), n_function,
       "A closure for a function a loaded module exports, to call with calli (its signature is checked then)."),
     N("module.exports", 1, T(T_R), 1, T(T_R), n_exports, "The names of the functions a loaded module exports."),
+    N("module.upgrade", 1, T(T_R), 1, T(T_R), n_upgrade,
+      "A struct object of a type that a reload changed, as an object of the type its module's current version has under that name: fields that keep their name and type keep their values, new ones start empty. Anything else is returned as it is."),
 };
 
 void natives_register_modules(VM *vm) {

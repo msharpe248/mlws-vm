@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M70
+## Milestones M11–M72
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -92,6 +92,7 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M68 Finalizers run when the program asks** (done) | `gc.hold_finalizers(1)`: a process's finalizers wait, once their objects are found dead, until it calls `gc.run_finalizers`, which says how many ran. A language's runtime runs them where its own state is whole, so a finalizer in that language never interrupts it halfway through changing a table. `gc.hold_finalizers(0)` runs those waiting and lets the rest run between instructions again | `tests/objects/finalizers_held`: waiting through instructions, collections and slices; each object whole for its call; one that moves the frames and banks, under the native's caller; none inside a finalizer; one that throws; letting go; each fails when its check is taken out (the banks' under AddressSanitizer); in every mode |
 | **M69 The debuggers take the VM options** (done) | `mlwsvm debug` and `mlwsvm dap` take `run`'s VM options (`--max-frames 50000000` for a deep recursion, `--quota`, `--cap`, ...) on their command lines, and a DAP launch takes them as `vmOptions`. Both optimize only for an `--opt` of their own, not for `MLWSVM_OPT`, since a function the optimizer changes loses its names | `make check-tools`: a recursion past the default depth under `debug` and `dap` with the option on the command line and in `vmOptions`, a bad value, a missing value and an unknown option, and names kept under `MLWSVM_OPT=3` while `--opt 3` optimizes |
 | **M70 Links, monitors and calls across nodes** (done) | `link`, `monitor` and `proc.call` take a pid of another node (std.node) as one of this VM: a failure on either side of a link fails the other (`E_LINKED`), a `Down` comes as on one VM, and a `proc.reply` goes back to the caller's reply slot. A process that is not there gets `E_NOPROC` at once from its node. When a connection goes, every tie to that node acts as if its processes had failed with `E_NODE_DOWN`. The scheduler keeps the ties and sends control frames through the connection's writer, in order with messages; `node.monitor` is gone, as `monitor` does it | `make check-tools`: two VMs, a call answered, to no such process, timing out, and to a node not connected; monitors of an ending process, of none, and of a node not connected; links failing each way, ending normally each way, to no such process and to a node not connected; and the node going with a watcher, a linked process and a waiting call. `tests/processes/far_unconnected`, and `tests/native/node_control` (frames that are not one, and ones about nothing here). Each of the exit frame, the node going and the noproc answer, removed, fails them |
+| **M72 Data carried across a reload** (done) | A reloaded module's global with the same name and size in both versions keeps its value, in each process, as that process has it when it first meets the new version; a reference goes with it. New or resized globals start as the file says, and so do those of processes started since. `module.upgrade(obj)` turns an object of a struct type the reload changed into one of the new type, keeping the fields that keep their name and type | `tests/loader/reload_data`: carried, resized, a reference kept through a collection, a process started since, a process that meets two reloads at once, an old object refused by the new code and upgraded, and upgrades that change nothing; `tests/loader/reload` updated. Each of the copy, the tags, the chain and the type check, removed, fails it |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -200,8 +201,9 @@ Capabilities: M60.
   completion-port poller ([DESIGN.md](DESIGN.md) §23).
 
 Not done in distribution (M61, M70): `kill` and `alive` across nodes;
-and a value's cycles, which do not cross. Not done in hot reloading (M55): data
-carried between versions.
+and a value's cycles, which do not cross. Not done in hot reloading (M55, M72): a purge
+that ends the processes still running an old version (Erlang's `code:purge`,
+where `module.purge` keeps it, as `soft_purge` does).
 
 Not done in single executables (M54): signing on macOS. `codesign` signs the
 executable but rejects the program appended to it, so a bundle cannot be

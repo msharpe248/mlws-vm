@@ -566,6 +566,14 @@ the world is stopped only for what cannot race. First, under `mods_lock`, the
 new version loads and links as any module does, with its name freed for the
 moment, and every other module is checked against it (`still_links`); struct
 types the same in both versions are shared as it links (`reload_same_struct`).
+A new version records which of the old version's globals it carries: each data
+symbol with the same name and size in both (`carry_globals`), as byte ranges.
+Globals are copied into each process lazily, so the copy is made there too:
+`proc_grow_globals`, which gives a process its segments of the modules loaded
+since it last looked, starts the new version's from the image and then copies
+the carried ranges from that process's segment of the old version, word tags
+with them where the words line up. Segments are made in the order the modules
+were loaded, so a process that meets two reloads at once carries through both.
 Then the other workers stop at their time slices' ends, and `retarget_users`
 points every call site, `spawn` and `closure` in other modules at the new
 `Function`. Machine code is never patched. A compiled call reads its callee's

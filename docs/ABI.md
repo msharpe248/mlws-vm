@@ -591,13 +591,24 @@ compiler or a deployment that sends code over a socket:
   in a loop moves to the new code when the loop calls through a closure from
   `module.function`, or returns to a caller in another module. This is
   Erlang's rule, in which a local call stays and a qualified call moves.
-* **Data is the new version's own.** Its globals start as the file says, and the
-  old version's stay with the old code. Move what must survive through a
-  function of the old version, or keep it in a process.
+* **A global keeps its value if it keeps its name and size.** Globals are each
+  process's own, so in each process that has the old version's, the new
+  version's start from them, as they are when that process first meets the new
+  version (by calling it, or after a reload of its own). A reference in a global
+  goes with it. A global that is new, or changes its size, starts as the file
+  says, and so do all of a process's that starts after the reload; to start one
+  afresh, rename it. The old version's globals stay with the old code: a write
+  there, by code still running in it, after the process has met the new version
+  is not seen by the new one, and a pointer into them still points there.
 * **A struct type with the same name, fields and types in both versions is one
   type,** so objects pass between old and new code. A struct type that changes
   is a new type, and an old object used with the new code is `E_TYPE`, as for
-  any other struct.
+  any other struct. `module.upgrade(obj)` makes such an object one of the new
+  type: each field that keeps its name and type keeps its value, and the rest
+  start empty (0, 0.0 or null). It is a new object, of the struct type the
+  module's current version has under that name. Anything else, an object whose
+  type has not changed included, comes back as it is. It goes one level deep:
+  the objects in its fields are as they were.
 * **It fails with nothing changed** if a module using the old version would not
   link to the new one: an export it uses has gone (`E_LINK_UNDEF`), or its
   signature or struct has changed, or it uses the old version's exported data

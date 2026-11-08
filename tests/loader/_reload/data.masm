@@ -1,0 +1,48 @@
+; The first version of the module reload_data.masm replaces, twice; the next
+; versions are data_v2.txt and data_v3.txt beside it.
+.export version, bump, wide_of, keep, kept, make, x_of, y_of, tag_of
+.struct Rec
+    x: i64
+    tag: i64
+.ends
+n:     .i64 0                  ; how many times bump was called, in this process
+wide:  .i64 7                  ; one word here; two in the next version
+held:  .i64 0                  ; a reference (from keep)
+.func version -> i64
+    ret 1
+.endf
+.func bump -> i64
+    inc @n
+    mov I0, @n
+    ret I0
+.endf
+.func wide_of -> i64
+    mov I0, @wide
+    ret I0
+.endf
+.func keep(ref v)
+    mov @held, v
+    ret
+.endf
+.func kept -> ref
+    mov R0, @held
+    ret R0
+.endf
+.func make(i64 x) -> ref
+    new R0, Rec
+    mov R0->Rec.x, x
+    mov R0->Rec.tag, 9
+    ret R0
+.endf
+.func x_of(ref r) -> i64
+    mov I0, r->Rec.x
+    ret I0
+.endf
+; (No y here, and the tag is an integer: what the next versions' y_of and
+; tag_of answer, this version answers without.)
+.func y_of(ref r) -> i64
+    ret -1
+.endf
+.func tag_of(ref r) -> f64
+    ret -1.0
+.endf

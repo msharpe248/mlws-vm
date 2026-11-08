@@ -1,0 +1,51 @@
+; The third version of _reload/data.masm (reload_data.masm loads it with
+; module.reload_text): the same as the second, but for its
+; version.
+.export version, bump, wide_of, keep, kept, make, x_of, y_of, tag_of
+.struct Rec
+    x: i64
+    y: i64
+    tag: f64
+.ends
+n:     .i64 0
+wide:  .i64 70, 71
+held:  .i64 0
+.func version -> i64
+    ret 3
+.endf
+.func bump -> i64
+    inc @n
+    mov I0, @n
+    ret I0
+.endf
+.func wide_of -> i64
+    mov I0, @wide
+    ret I0
+.endf
+.func keep(ref v)
+    mov @held, v
+    ret
+.endf
+.func kept -> ref
+    mov R0, @held
+    ret R0
+.endf
+.func make(i64 x) -> ref
+    new R0, Rec
+    mov R0->Rec.x, x
+    mov R0->Rec.y, 1
+    mov R0->Rec.tag, 9.5
+    ret R0
+.endf
+.func x_of(ref r) -> i64
+    mov I0, r->Rec.x
+    ret I0
+.endf
+.func y_of(ref r) -> i64
+    mov I0, r->Rec.y
+    ret I0
+.endf
+.func tag_of(ref r) -> f64
+    mov F0, r->Rec.tag
+    ret F0
+.endf

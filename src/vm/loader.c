@@ -558,6 +558,7 @@ static LModule *register_module(VM *vm, Module *m, const char *path, LibArchive 
     lm->home = home;
     lm->key = key;
     lm->index = (int)vm->mods.n;
+    lm->carry_from = -1;
     lm->state = LM_LOADING;
     lm->deps = xcalloc(m->nimports + 1, sizeof *lm->deps);
     for (size_t i = 0; i < vm->mods.n; i++) { /* another program's util, or the library path's */
@@ -790,6 +791,21 @@ static void retarget_users(VM *vm, const LModule *old, const LModule *nw) {
         if (old->funcs[k].target == &old->funcs[k] && (old->funcs[k].mf->flags & MF_EXPORT)) interp_jit_forget(vm, &old->funcs[k]);
 }
 
+/* The globals a new version carries from the one it replaces: each with the
+ * same name and size in both. (Every data label is a symbol, to the next.) */
+static void carry_globals(const LModule *old, LModule *nw) {
+    const Module *a = old->m, *b = nw->m;
+    nw->carry_from = old->index;
+    for (uint32_t i = 0; i < b->nsyms; i++)
+        for (uint32_t j = 0; j < a->nsyms; j++) {
+            const MSym *x = &b->syms[i], *y = &a->syms[j];
+            if (strcmp(x->name, y->name) || x->size != y->size || !x->size) continue;
+            nw->carry = xrealloc(nw->carry, (nw->ncarry + 1) * sizeof *nw->carry);
+            nw->carry[nw->ncarry++] = (struct GlobalCarry){y->offset, x->offset, x->size};
+            break;
+        }
+}
+
 static LModule *reload_locked(VM *vm, LModule *old, const char *name, const char *text, MlwsError *err) {
     size_t start = vm->mods.n, chain = vm->loading.n, chosen = vm->chosen.n, wants = vm->wants.n;
     smap_put(&vm->modmap, old->key, NULL); /* for its name to load again */
@@ -825,6 +841,7 @@ static LModule *reload_locked(VM *vm, LModule *old, const char *name, const char
         return NULL;
     }
     old->replaced = true;
+    carry_globals(old, nw);
     return nw;
 }
 
