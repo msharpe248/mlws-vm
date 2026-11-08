@@ -105,6 +105,17 @@ static void n_function(Process *p, Word *a, Word *r) {
     r[0].r = &closure_new(p, &lm->funcs[i], 0)->h;
 }
 
+/* module.handle(module, function): a closure that calls the function's current
+ * version, whatever reloads come (vm_handle): to keep, in a global say. */
+static void n_handle(Process *p, Word *a, Word *r) {
+    LModule *lm = loaded(p, a[0], "module.handle");
+    const char *fname = name_arg(p, a[1], "module.handle");
+    MlwsError err = {{0}, {0}};
+    Function *h = vm_handle(p->vm, lm, fname, &err);
+    if (!h) vm_trap(p, err.code, "%s", err.msg);
+    r[0].r = &closure_new(p, h, 0)->h;
+}
+
 static void n_exports(Process *p, Word *a, Word *r) {
     LModule *lm = loaded(p, a[0], "module.exports");
     ObjList *l = list_new(p, 0);
@@ -177,6 +188,8 @@ static const NativeDef MODULE_NATIVES[] = {
     N("module.function", 2, T(T_R, T_R), 1, T(T_R), n_function,
       "A closure for a function a loaded module exports, to call with calli (its signature is checked then)."),
     N("module.exports", 1, T(T_R), 1, T(T_R), n_exports, "The names of the functions a loaded module exports."),
+    N("module.handle", 2, T(T_R, T_R), 1, T(T_R), n_handle,
+      "A closure for a function a loaded module exports that always calls its current version: unlike module.function's, it follows module.reload, so it can be kept. Call it with calli. A reload that would change the function's signature, or remove it, is refused (E_LINK_RELOAD, E_LINK_UNDEF), as for any module calling it."),
     N("module.upgrade", 1, T(T_R), 1, T(T_R), n_upgrade,
       "A struct object of a type that a reload changed, as an object of the type its module's current version has under that name: fields that keep their name and type keep their values, new ones start empty. Anything else is returned as it is."),
 };

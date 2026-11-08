@@ -181,6 +181,7 @@ void vm_free(VM *vm) {
     for (size_t i = 0; i < vm->const_objs.n; i++) free(vm->const_objs.v[i]);
     VEC_FREE(vm->const_objs);
     smap_free(&vm->const_pool);
+    smap_free(&vm->handles); /* (the stubs are their modules') */
     for (size_t i = 0; i < vm->wants.n; i++) {
         free(vm->wants.v[i].lib);
         free(vm->wants.v[i].constraint);

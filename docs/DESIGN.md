@@ -600,6 +600,12 @@ so every version is kept, and so it is while a tool's hook is installed (the
 debugger, profiler and trace hold `Function`s). A version with FFI
 declarations is always kept, since what they bind outlives it.
 
+`module.handle` (`vm_handle`) makes, once per module and function, a module of
+its own whose one function is a tail call to the function, importing its module
+by name from its home; `retarget_users` then moves that call at each reload as it
+moves any module's, and the handle is a closure of that function. No call
+instruction, closure or compiled form knows of handles.
+
 `module.purge_kill` (`vm_purge_kill`) first finds, with the world stopped, the
 processes that hold an old version by the same test, skipping a version the
 caller holds; it lets the world go, kills them as `kill` does, waits until

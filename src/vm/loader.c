@@ -682,6 +682,66 @@ static LModule *require(VM *vm, const char *name, const Home *home, MlwsError *e
     return lm;
 }
 
+/* module.handle: a function whose code is one tail call to lm's exported
+ * function fname, in a module of its own that imports lm's by name, with lm's
+ * home. As every module's calls to lm do, the call moves to each new version
+ * (retarget_users), so a closure of it calls the current version; and a
+ * reload that would change the function's signature, or take it away, is
+ * refused, as for any user. One per module and function, for the VM's life. */
+static const char *handle_type(uint8_t t) { return t == T_R ? "ref" : t == T_P ? "ptr" : type_name((MlwsType)t); }
+
+Function *vm_handle(VM *vm, LModule *lm, const char *fname, MlwsError *err) {
+    int fi = module_find_export_func(lm->m, fname);
+    if (fi < 0 || (lm->m->funcs[fi].flags & MF_IMPORT)) {
+        mlws_err(err, "E_LINK_UNDEF", "module.handle: module %s does not export a function '%s'", lm->m->name, fname);
+        return NULL;
+    }
+    StrBuf key = {0};
+    sb_printf(&key, "%s\x1f%s", lm->key, fname);
+    void *v = NULL;
+    plat_lock(vm->mods_lock);
+    bool have = smap_get(&vm->handles, key.s, &v);
+    plat_unlock(vm->mods_lock);
+    if (have) {
+        sb_free(&key);
+        return v;
+    }
+    const MFunc *f = &lm->m->funcs[fi];
+    StrBuf t = {0}, name = {0};
+    sb_printf(&name, "(handle) %s.%s #%zu", lm->m->name, fname, vm->handles.n);
+    sb_printf(&t, ".import %s as target\n.export h\n.func h(", lm->m->name);
+    for (int i = 0; i < f->nparams; i++) sb_printf(&t, "%s%s a%d", i ? ", " : "", handle_type(f->params[i]), i);
+    sb_puts(&t, ")");
+    if (f->nrets) {
+        sb_puts(&t, " -> (");
+        for (int i = 0; i < f->nrets; i++) sb_printf(&t, "%s%s", i ? ", " : "", handle_type(f->rets[i]));
+        sb_puts(&t, ")");
+    }
+    sb_printf(&t, "\n    tcall target.%s (", fname);
+    for (int i = 0; i < f->nparams; i++) sb_printf(&t, "%sa%d", i ? ", " : "", i);
+    sb_puts(&t, ")\n.endf\n");
+    Module *m = assemble_text(name.s, t.s, name.s, (const char *const *)vm->libpaths.v, vm->libpaths.n, err);
+    Function *h = NULL;
+    if (m) {
+        plat_lock(vm->mods_lock);
+        if (smap_get(&vm->handles, key.s, &v)) { /* (another made it meanwhile) */
+            module_free(m);
+            h = v;
+        } else {
+            LModule *hm = register_module(vm, m, name.s, NULL, lm->home, false, err);
+            if (hm) {
+                h = &hm->funcs[module_find_export_func(hm->m, "h")];
+                smap_put(&vm->handles, key.s, h);
+            }
+        }
+        plat_unlock(vm->mods_lock);
+    }
+    sb_free(&t);
+    sb_free(&name);
+    sb_free(&key);
+    return h;
+}
+
 LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err) {
     Module *m = assemble_text(name, text, name, (const char *const *)vm->libpaths.v, vm->libpaths.n, err);
     if (!m) return NULL;

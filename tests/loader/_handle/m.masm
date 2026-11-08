@@ -1,0 +1,14 @@
+; The first version of the module tests/loader/handle.masm replaces.
+.export version, add, pair
+.func version -> i64
+    ret 1
+.endf
+.func add(i64 a, i64 b) -> i64
+    add I2, a, b
+    ret I2
+.endf
+; Two results, one a reference.
+.func pair(ref s) -> (i64, ref)
+    strcat R1, s, "-1"
+    ret 1, R1
+.endf
