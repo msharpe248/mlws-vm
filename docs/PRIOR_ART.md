@@ -321,6 +321,7 @@ of the instructions in call-heavy code.
 | M81 | Erlang, where an exception a process does not catch is logged as an error, and an exit signal (`exit(Pid, kill)`) ends it without one |
 | M82 | Erlang's export entries, which a new version without the function leaves pointing at a stub that raises `undef`, until a version exports it again |
 | M83 | Erlang's `exit(Pid, kill)` and `exit/2` across nodes, carried by the distribution protocol's exit signals |
+| M84 | Erlang's node names (`name@host`, `node()`, `nodes()`) and the distribution handshake's exchange of names; its refusal of a second node of the same name |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

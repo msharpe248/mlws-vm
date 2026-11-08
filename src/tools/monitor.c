@@ -275,17 +275,23 @@ static void names_json(StrBuf *b, VM *vm) {
     sb_putc(b, ']');
 }
 
-/* This VM's node number (0: none), and the nodes it is connected to, with the
- * process carrying each connection. */
+/* This VM's node number (0: none) and name ("": none), and the nodes it is
+ * connected to, with their names and the process carrying each connection. */
 static void nodes_json(StrBuf *b, VM *vm) {
-    sb_printf(b, "{\"self\":%u,\"connected\":[", vm->node_self);
+    plat_lock(vm->lock); /* (the names) */
+    sb_printf(b, "{\"self\":%u,\"name\":", vm->node_self);
+    json_str(b, vm->node_name ? vm->node_name : "");
+    sb_puts(b, ",\"connected\":[");
     bool first = true;
     for (uint32_t n = 1; vm->node_route && n <= 65535; n++) {
         uint64_t c = __atomic_load_n(&vm->node_route[n], __ATOMIC_ACQUIRE);
         if (!c) continue;
-        sb_printf(b, "%s{\"node\":%u,\"carrier\":%llu}", first ? "" : ",", n, (unsigned long long)c);
+        sb_printf(b, "%s{\"node\":%u,\"name\":", first ? "" : ",", n);
+        json_str(b, vm->node_names && vm->node_names[n] ? vm->node_names[n] : "");
+        sb_printf(b, ",\"carrier\":%llu}", (unsigned long long)c);
         first = false;
     }
+    plat_unlock(vm->lock);
     sb_puts(b, "]}");
 }
 

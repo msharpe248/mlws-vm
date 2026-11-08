@@ -40,6 +40,17 @@ h:
     blt I30, 2, 1f
     mov @tls, 1
 1:
+    call node.name (0) -> (R25)
+    strcmp I3, R25, ""                 ; no name yet
+    ASSERT_EQ I3, 0
+    call node.set_name ("one@test")
+    call node.set_name ("one@test")    ; (again, the same: nothing)
+.try renamed
+    call node.set_name ("other@test")
+.endtry
+    FAIL "a second name"
+renamed:
+    catch R25
     call node.start (1, "the cookie", 0) -> (I1)
     ncall "node.self" () -> (I2)
     ASSERT_EQ I2, 1
@@ -65,6 +76,35 @@ plain_refused:
     ASSERT_EQ I4, 2
     call node.connected (2) -> (I20)
     ASSERT_TRUE I20
+
+    ; Names, each way: node 2's here, and this one's there.
+    call node.name (2) -> (R25)
+    strcmp I3, R25, "two@test"
+    ASSERT_EQ I3, 0
+    call node.number ("two@test") -> (I3)
+    ASSERT_EQ I3, 2
+    call node.number ("one@test") -> (I3)
+    ASSERT_EQ I3, 1
+    call node.name (1) -> (R25)
+    strcmp I3, R25, "one@test"
+    ASSERT_EQ I3, 0
+    call node.number ("nobody@test") -> (I3)
+    ASSERT_EQ I3, 0
+    call node.name (3) -> (R25)
+    strcmp I3, R25, ""
+    ASSERT_EQ I3, 0
+    call node.nodes () -> (R25)
+    len I3, R25
+    ASSERT_EQ I3, 1
+    mov I3, R25[0]
+    ASSERT_EQ I3, 2
+    call node.whereis (2, "namer") -> (I3)
+    ncall "proc.call" (I3, 0, 5000) -> (R25)
+    mov R26, R25[0]
+    strcmp I3, R26, "one@test"
+    ASSERT_EQ I3, 0
+    mov I3, R25[1]
+    ASSERT_EQ I3, 1
 
     ; A registered process there, and a message there and back.
     call node.whereis (2, "doubler") -> (I5)
@@ -231,6 +271,15 @@ not_connected:
     or I1, I1, I4
     bne I1, 15, 1b
     send I5, R3
+    ; Gone, but its name still known; no node connected.
+    call node.name (2) -> (R25)
+    strcmp I3, R25, "two@test"
+    ASSERT_EQ I3, 0
+    call node.number ("two@test") -> (I3)
+    ASSERT_EQ I3, 2
+    call node.nodes () -> (R25)
+    len I3, R25
+    ASSERT_EQ I3, 0
     ret 0
 .endf
 

@@ -295,6 +295,9 @@ node_pair() { # [tls]
         perl -e 'select(undef, undef, undef, 0.25)'
     done
     [ -s "$NODED/port" ] || { kill $TWO 2>/dev/null || true; fail "node ${1:-}: the second VM did not start"; }
+    if [ -z "${1:-}" ]; then # another node with node 2's name: refused, and node 2 unharmed
+        perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_node/clash.masm "$(tr -d '\r\n' < "$NODED/port")" >/dev/null 2>"$NODED/err" || { kill $TWO 2>/dev/null || true; cat "$NODED/err" >&2; fail "node names: clash"; }
+    fi
     perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_node/one.masm "$(tr -d '\r\n' < "$NODED/port")" ${1:-} >/dev/null 2>"$NODED/err" || { kill $TWO 2>/dev/null || true; cat "$NODED/err" >&2; fail "node ${1:-}"; }
     wait $TWO
     rm -f "$NODED/port"
@@ -703,7 +706,7 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
     curl -sf http://127.0.0.1:$PORT/api/modules | grep -q '"name":"workers","path":"[^"]*","version":1,"current":true,"state":"ready"' || fail "/api/modules"
-    curl -sf http://127.0.0.1:$PORT/api/nodes | grep -q '^{"self":0,"connected":\[\]}$' || fail "/api/nodes"
+    curl -sf http://127.0.0.1:$PORT/api/nodes | grep -q '^{"self":0,"name":"","connected":\[\]}$' || fail "/api/nodes"
 fi
 kill $VMPID 2>/dev/null || true
 wait $VMPID 2>/dev/null || true

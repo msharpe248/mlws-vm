@@ -283,6 +283,8 @@ typedef struct VM {
     struct Caps *default_caps; /* --cap: every process's, as default_quota */
     uint32_t node_self;      /* this VM's number among nodes, or 0 (dist.c) */
     uint64_t *node_route;    /* per node: the process that carries its messages, or 0 */
+    char *node_name;         /* [lock] this VM's name among nodes, or NULL (node.set_name) */
+    char **node_names;       /* [lock] per node: the name it gave when it last connected, or NULL */
     struct Bundle *bundle;   /* the program this executable carries, or NULL: modules are found there first */
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
     bool gc_verify;          /* after each minor collection's marking, check it against a walk of the whole heap */

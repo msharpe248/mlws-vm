@@ -1769,8 +1769,8 @@ That process and the rest of the protocol are MLWSVM code, in `lib/std/node.masm
 A connection is a reader, blocked in `net.read_frame`, and a writer, blocked in
 `recv`, on two descriptors of one socket (`net.split`), since a process waits for
 one thing at a time. C provides only what must be C: the routing above, `node.frame`
-and `node.decode`, and the challenge. The handshake sends each side's number and a
-random nonce, then an HMAC-SHA-256 of the peer's nonce, keyed by the cookie and
+and `node.decode`, and the challenge. The handshake sends each side's number, a
+random nonce and its name (`node.set_name`; empty if it has none), then an HMAC-SHA-256 of the peer's nonce, keyed by the cookie and
 marked with the prover's role, so that a proof cannot be reflected back at its
 maker. `node.proof_ok` compares in constant time. With `start_tls` and `connect_tls`
 the connection is TLS before any of that. The reader and the writer then share one
@@ -1786,7 +1786,11 @@ feeds it random, mutated and truncated frames.
 
 A pid does not change when it crosses: `node.global` adds the sender's number, and
 it means the same process everywhere, which is why numbers are given, not assigned
-per connection. Requests to a node go through a process of their own, answering
+per connection. A name is beside the number, not instead of it: `VM.node_names`
+keeps, per number, the name that node gave when it last connected
+(`node.named`, which refuses one that this VM or another connected node has),
+and keeps it after the connection goes, so that a pid of a node that has gone
+still has its node's name. Requests to a node go through a process of their own, answering
 with `proc.call`, so that a caller's mailbox holds only what it was sent.
 
 `link`, `monitor`, `kill` and `proc.call` on another node's pid are the scheduler's

@@ -528,7 +528,10 @@ numbers in a list or struct), deep-copied like any message.
 ```
 
 A pid may name a node: its top 16 bits are the node's number, and `send` to it
-goes there. Messages between two processes keep their order, as on one VM. A
+goes there. A node may also have a name: each node it connects to learns it, and
+keeps it after the connection goes, so that the node of any pid can be named. A
+connection from a node whose name this VM, or another connected node, has is
+refused (`E_NODE`). Messages between two processes keep their order, as on one VM. A
 plain pid (`PID`) means this VM, so give others `node.self(PID)`, the same pid with
 this node's number in it. `node.of(pid)` says which node a pid names.
 
@@ -539,6 +542,10 @@ this node's number in it. `node.of(pid)` says which node a pid names.
 | `connect(host, port, cookie)` | connect to a node, and return its number; `E_NODE`, saying why, if the connection or the cookie fails |
 | `connect_tls(host, port, cookie, ca)` | the same over TLS: the node's certificate must match `host` and come from an authority in `ca` (`""`: the system's) |
 | `connected(number)` | whether a node is connected |
+| `nodes()` | the numbers of the nodes connected now, as a list, in order |
+| `set_name(name)` | name this VM (as Erlang's `name@host`): once, before it connects, at most 255 bytes |
+| `name(number)` | a node's name, as it gave it when it last connected (`""`: none known); this VM's for 0 |
+| `number(name)` | the number of the node with that name: this VM's, a connected node's, or the last that had it; 0 if none |
 | `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
 | `spawn(number, module, function, arg)` | run an exported function of one reference there; its pid, or 0 |
 | `self(pid)` | a pid as other nodes can use it |
