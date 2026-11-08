@@ -1784,7 +1784,14 @@ are checked, and a struct is looked up by module and name and must have the same
 fields. Bytes that are not a value raise `E_PARSE`, and the reader drops that
 frame, not the connection. A string that is immortal where it is sent, a
 literal or `text.intern`'s, is written with a code of its own, and read back
-through `vm_intern`, so that it is that VM's literal of the same text. A closure is written as its module's name, its
+through `vm_intern`, so that it is that VM's literal of the same text; a
+BigInt or decimal literal likewise, through `vm_intern_num`. The constants'
+pool keys numbers by value (the kind and `num_format`'s text), so `007n` and
+`7n` are one object, and a number that comes as that text is found. A module
+a frame names (a struct's, a closure's, a handle's, a spawn's) is found with
+`vm_module_for_node`: the one loaded under that name, or else one loaded then,
+from the one running program's directory that has its file, or the library
+path. A closure is written as its module's name, its
 version's hash (`vm_module_hash`: SHA-256 of the module's `.mlwso` image with
 its files' names left out, kept in `LModule.hash`), its function's name and
 signature, and its captures; it is read back as a closure of that version's

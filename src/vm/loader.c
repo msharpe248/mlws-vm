@@ -244,15 +244,60 @@ Obj *vm_intern(VM *vm, const char *s, size_t n) {
     return v;
 }
 
+/* A BigInt or decimal literal's key in the constants' pool: its kind and its
+ * value's canonical text (num_format), so that every spelling of a value
+ * (007n and 7n, 1e3d and 1000d) is one object, and a number from another
+ * node, which comes as that text, can be found. */
+static void num_pool_key(StrBuf *key, const Obj *o) {
+    sb_putc(key, (char)('0' + (o->kind == OBJ_BIG ? CONST_BIG : CONST_DEC)));
+    num_format(key, o);
+}
+
+/* The literal of this value (text s), made, and kept for the VM's life, if no
+ * module has one: as text.intern for a string, so that a number literal at
+ * one node is a literal at another. The mods_lock is held. */
+static Obj *intern_num_locked(VM *vm, Obj *o) {
+    StrBuf key = {0};
+    num_pool_key(&key, o);
+    void *v = NULL;
+    if (smap_get(&vm->const_pool, key.s, &v)) {
+        free(o); /* (an immortal constant is one allocation, as vm_free frees them) */
+        o = v;
+    } else {
+        VEC_PUSH(vm->const_objs, o);
+        smap_put(&vm->const_pool, key.s, o);
+    }
+    sb_free(&key);
+    return o;
+}
+
+Obj *vm_intern_num(VM *vm, MlwsType t, const char *s, size_t n) {
+    Obj *o = num_const(t, s, n);
+    if (!o) return NULL;
+    plat_lock(vm->mods_lock);
+    o = intern_num_locked(vm, o);
+    plat_unlock(vm->mods_lock);
+    return o;
+}
+
 static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
     Module *m = lm->m;
     lm->consts = xcalloc(m->nconsts + 1, sizeof(Obj *));
     for (uint32_t i = 0; i < m->nconsts; i++) {
         const MConst *c = &m->consts[i];
-        /* One object per kind and text in the whole VM: every module's 3n,
-         * or "name", is the same object, so identity tests (beq.r R0, 3n)
-         * agree across modules. Constants are immutable, so sharing is safe.
-         * (A string with a NUL in it is not a key: it gets its own object.) */
+        /* One object per kind and text in the whole VM, and per value for
+         * numbers: every module's 3n (or 003n), or "name", is the same
+         * object, so identity tests (beq.r R0, 3n) agree across modules.
+         * Constants are immutable, so sharing is safe. (A string with a NUL
+         * in it is not a key: it gets its own object.) */
+        if (c->kind != CONST_STRING) {
+            Obj *o = num_const(c->kind == CONST_BIG ? T_BIG : T_DEC, c->data, c->len);
+            if (!o)
+                return mlws_err(err, "E_LOAD_FORMAT", "module %s: malformed %s literal \"%s\"", m->name,
+                                c->kind == CONST_BIG ? "BigInt" : "decimal", c->data);
+            lm->consts[i] = intern_num_locked(vm, o);
+            continue;
+        }
         bool keyed = !memchr(c->data, 0, c->len);
         StrBuf key = {0};
         void *v;
@@ -265,13 +310,7 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
                 continue;
             }
         }
-        Obj *o = c->kind == CONST_STRING ? &str_new_immortal(c->data, c->len)->h
-                                         : num_const(c->kind == CONST_BIG ? T_BIG : T_DEC, c->data, c->len);
-        if (!o) {
-            sb_free(&key);
-            return mlws_err(err, "E_LOAD_FORMAT", "module %s: malformed %s literal \"%s\"", m->name,
-                            c->kind == CONST_BIG ? "BigInt" : "decimal", c->data);
-        }
+        Obj *o = &str_new_immortal(c->data, c->len)->h;
         VEC_PUSH(vm->const_objs, o);
         if (keyed) smap_put(&vm->const_pool, key.s, o);
         sb_free(&key);
@@ -1357,6 +1396,38 @@ LModule *vm_module_named(VM *vm, const char *name, const LModule *from) {
     LModule *lm = v && ((LModule *)v)->state == LM_READY ? v : NULL;
     plat_unlock(vm->mods_lock);
     return lm;
+}
+
+/* A module another node names (a struct's, a closure's, a spawn's): the one
+ * loaded under that name, as from outside any program; or else loaded now,
+ * as Erlang loads code a message needs, from the one directory among the
+ * running programs' that has a file of that name, or else from the library
+ * path. NULL, with why, if there is none. */
+LModule *vm_module_for_node(VM *vm, const char *name, MlwsError *err) {
+    LModule *lm = vm_module_named(vm, name, NULL);
+    if (lm) return lm;
+    const LModule *from = NULL;
+    int dirs = 0;
+    VEC(const Home *) seen = {0};
+    plat_lock(vm->mods_lock);
+    for (size_t i = 0; i < vm->mods.n; i++) {
+        const LModule *x = vm->mods.v[i];
+        if (!x->home || x->state != LM_READY) continue;
+        bool had = false;
+        for (size_t k = 0; k < seen.n && !had; k++) had = seen.v[k] == x->home;
+        if (had) continue;
+        VEC_PUSH(seen, x->home);
+        char *path = find_in_dir(x->home->dir, name);
+        if (path) from = x, dirs++;
+        free(path);
+    }
+    plat_unlock(vm->mods_lock);
+    VEC_FREE(seen);
+    if (dirs > 1) {
+        mlws_err(err, "E_LOAD_NAME", "module %s is in the directories of more than one program here", name);
+        return NULL;
+    }
+    return vm_load_dynamic(vm, name, from, err);
 }
 
 bool vm_load_roots(VM *vm, const char *const *paths, int n, LModule **out, MlwsError *errs) {

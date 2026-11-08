@@ -13,6 +13,9 @@
  * its own beside the object kinds, so that it is interned where it arrives
  * too, the same object there as that VM's literal of it. */
 #define WIRE_INTERNED 0xF0
+/* The same for a BigInt and a decimal literal (vm_intern_num). */
+#define WIRE_INTERNED_BIG 0xF1
+#define WIRE_INTERNED_DEC 0xF2
 #define MAX_NODE 65535
 
 /* ---- values as bytes ---- *
@@ -92,7 +95,9 @@ static void encode_obj(Process *p, Writer *b, const Obj *o, int depth) {
         put_bytes(b, ((const ObjString *)o)->data, ((const ObjString *)o)->len);
         return;
     }
-    put8(b, o->kind);
+    /* A BigInt or decimal literal goes as one, to be that node's literal of the value. */
+    bool lit = (o->kind == OBJ_BIG || o->kind == OBJ_DEC) && (o->flags & OBJF_IMMORTAL);
+    put8(b, lit ? (o->kind == OBJ_BIG ? WIRE_INTERNED_BIG : WIRE_INTERNED_DEC) : o->kind);
     switch (o->kind) {
     case OBJ_STRING: put_bytes(b, ((const ObjString *)o)->data, ((const ObjString *)o)->len); break;
     case OBJ_BYTES: put_bytes(b, bytes_data((ObjBytes *)o), ((const ObjBytes *)o)->len); break;
@@ -188,9 +193,11 @@ static const StructDef *find_struct(Process *p, const char *module, const char *
         int b = builtin_struct_find(name);
         return b < 0 ? NULL : &VM_BUILTIN_DEFS[b];
     }
-    /* (As from outside any program: the decoding runs in std.node, whose home is
-     * the library path, and a frame names a module of the sending program.) */
-    const LModule *lm = vm_module_named(p->vm, module, NULL);
+    /* (As from outside any program, and loaded if need be: the decoding runs
+     * in std.node, whose home is the library path, and a frame names a module
+     * of the sending program.) */
+    MlwsError err;
+    const LModule *lm = vm_module_for_node(p->vm, module, &err);
     for (uint32_t i = 0; lm && i < lm->m->nstructs; i++)
         if (!(lm->m->structs[i].flags & (MSF_IMPORT | MSF_BUILTIN)) && !strcmp(lm->structs[i]->name, name)) return lm->structs[i];
     return NULL;
@@ -233,12 +240,13 @@ static Obj *decode_closure(Reader *r, int depth) {
     Function *fn = NULL;
     MlwsError err = {{0}, {0}};
     if (kind) { /* a handle: to this node's current version, if it exports the function */
-        LModule *lm = vm_module_named(vm, mod, NULL);
+        LModule *lm = vm_module_for_node(vm, mod, &err);
         int i = lm ? module_find_export_func(lm->m, fname) : -1;
         if (i >= 0 && !(lm->m->funcs[i].flags & MF_IMPORT) && fits(&lm->m->funcs[i], pt, np, rt, nr))
             fn = vm_handle(vm, lm, fname, &err);
     } else {
         LModule *lm = vm_module_version(vm, mod, hash);
+        if (!lm && vm_module_for_node(vm, mod, &err)) lm = vm_module_version(vm, mod, hash); /* (loaded now: that version?) */
         Function *f = lm ? vm_module_func(lm, fname) : NULL;
         if (f && fits(f->mf, pt, np, rt, nr)) fn = f;
     }
@@ -266,6 +274,12 @@ static Obj *decode_obj(Reader *r, int depth) {
     switch (kind) {
     case OBJ_NULL: return NULL;
     case OBJ_CLOSURE: return decode_closure(r, depth);
+    case WIRE_INTERNED_BIG: case WIRE_INTERNED_DEC: {
+        const char *s = get_span(r, &n);
+        Obj *o = vm_intern_num(p->vm, kind == WIRE_INTERNED_BIG ? T_BIG : T_DEC, s, n);
+        if (!o) bad(r);
+        return o;
+    }
     case WIRE_INTERNED: { /* (one with a NUL in it is no literal: a string of its own) */
         const char *s = get_span(r, &n);
         Obj *o = vm_intern(p->vm, s, n);
@@ -582,8 +596,7 @@ static void n_function(Process *p, Word *a, Word *r) {
     if (!mo || mo->kind != OBJ_STRING || !fo || fo->kind != OBJ_STRING) vm_trap(p, "E_TYPE", "node.function: a module and a function");
     const char *name = ((const ObjString *)mo)->data, *fname = ((const ObjString *)fo)->data;
     MlwsError err = {{0}, {0}};
-    LModule *lm = vm_module_named(p->vm, name, NULL);
-    if (!lm) lm = vm_load_dynamic(p->vm, name, NULL, &err);
+    LModule *lm = vm_module_for_node(p->vm, name, &err);
     if (!lm) vm_trap(p, err.code, "%s", err.msg);
     proc_grow_globals(p);
     int i = module_find_export_func(lm->m, fname);

@@ -560,19 +560,22 @@ this node's number in it, which works here too, wherever a plain one does. `node
 | `self(pid)` | a pid as other nodes can use it |
 
 * **What crosses** is what a message can be: numbers, strings, byte buffers,
-  arrays, lists, maps, BigInts, decimals, structs, whose module must be loaded
-  at the other end (a program's own, or the library path's), and closures. A
-  string interned where it is sent (a literal, or `text.intern`'s) is interned
-  where it arrives, the same object there as that VM's literal of it, so that
-  identity tests (`beq.r`) of atoms and symbols hold across nodes; any other
-  string is a new string. Coroutines, handles of `handle` and pointers
+  arrays, lists, maps, BigInts, decimals, structs, whose module the other end
+  must have, and closures. A module a message needs there is the one loaded
+  under that name, or else is loaded for it, as Erlang loads code, from a
+  running program's directory or the library path. A literal where it is sent
+  (a string, BigInt or decimal literal, or a string `text.intern` gave) is that
+  node's literal of the same value where it arrives, the same object, so that
+  identity tests (`beq.r`) of atoms, symbols and other constants hold across
+  nodes; any other value is a new one. Coroutines, handles of `handle` and pointers
   cannot (`E_TYPE`), nor a value with a cycle.
 * **A closure crosses as its code's identity and its captured values:** its
   module's name, the hash of that module's version, its function (exported or
   not) and that function's signature. Where that very version is loaded, as the
   current one or one a reload replaced, it is the same closure there. Where it
-  is not, it arrives as one that raises `E_LINK_CODE` when called, as
-  Erlang's fun of code a node does not have (`badfun`), and that is still the closure it stands for
+  is not, nor in a file it can load (as above) that is that version, it
+  arrives as one that raises `E_LINK_CODE` when called, as Erlang's fun of
+  code a node does not have (`badfun`), and that is still the closure it stands for
   when it is sent on, back or to a node that has the code. Two nodes have the
   same version when the module was built from the same text with the same
   options (the hash leaves out where its files are). A `module.handle` crosses
