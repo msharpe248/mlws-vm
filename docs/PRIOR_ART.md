@@ -317,6 +317,7 @@ of the instructions in call-heavy code.
 | M77 | PM2's and systemd's restart of a service with its arguments; Erlang Observer's per-application views |
 | M78 | Lisp's `intern`, Java's `String.intern`, Ruby's `to_sym`, Erlang's atom table, Lua's interned strings |
 | M79 | Erlang's export entries (a fully qualified call goes to the current version); the JVM's `invokedynamic` call sites and `MethodHandle`s; Lisp's calls through a symbol's function cell |
+| M80 | Erlang's literal areas, which a module's new version replaces whole; Common Lisp's `defvar` (keeps a value when the file is loaded again) against `defparameter` (sets it afresh) |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

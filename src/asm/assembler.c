@@ -115,6 +115,7 @@ typedef struct {
     VEC(MFfiFree) ffrees;   /* .ffi_free */
     VEC(MCallback) callbacks; /* .callback */
     VEC(MRequire) requires; /* .requires */
+    uint16_t mod_flags;     /* .reload fresh: MOD_RELOAD_FRESH */
     VEC(AsmOp) formats;     /* .debug_format, resolved in finish */
     VEC(const PLine *) format_pl;
     char *lib_name, *lib_version; /* .library: this file is a library's manifest */
@@ -1742,6 +1743,17 @@ static bool dir_requires(Asm *A, Cur *c) {
     return expect_eol(A, c);
 }
 
+/* `.reload fresh`: a reload to this version of the module starts every
+ * global as the file says, keeping none of the version it replaces. */
+static bool dir_reload(Asm *A, Cur *c) {
+    if (A->cur) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".reload belongs outside functions");
+    Token *t = cur(c);
+    if (!tok_ident(t, "fresh")) return aerr(A, c->pl, t->col, "E_ASM_SYNTAX", "expected `.reload fresh`");
+    c->pos++;
+    A->mod_flags |= MOD_RELOAD_FRESH;
+    return expect_eol(A, c);
+}
+
 /* `.library name, "version"`: this file is a library's manifest. */
 static bool dir_library(Asm *A, Cur *c) {
     int col = cur(c)->col;
@@ -1811,6 +1823,7 @@ static bool directive(Asm *A, Cur *c) {
     if (IS(".local")) return dir_local(A, c);
     if (IS(".debug_format")) return dir_debug_format(A, c);
     if (IS(".requires")) return dir_requires(A, c);
+    if (IS(".reload")) return dir_reload(A, c);
     if (IS(".library")) return dir_library(A, c);
     if (IS(".public")) return dir_public(A, c);
     if (IS(".ends")) return aerr(A, c->pl, d->col, "E_ASM_SYNTAX", ".ends without .struct");
@@ -2339,6 +2352,7 @@ static Module *finish(Asm *A) {
     Module *m = xcalloc(1, sizeof *m);
     m->name = xstrdup(A->modname);
     m->source = xstrdup(A->pp.files.n ? A->pp.files.v[0] : "");
+    m->flags = A->mod_flags;
     m->nrequires = (uint32_t)A->requires.n;
     m->requires = xcalloc(A->requires.n + 1, sizeof(MRequire));
     for (size_t i = 0; i < A->requires.n; i++) {

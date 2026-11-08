@@ -875,6 +875,7 @@ static void retarget_users(VM *vm, const LModule *old, const LModule *nw) {
  * same name and size in both. (Every data label is a symbol, to the next.) */
 static void carry_globals(const LModule *old, LModule *nw) {
     const Module *a = old->m, *b = nw->m;
+    if (b->flags & MOD_RELOAD_FRESH) return; /* `.reload fresh`: nothing carried */
     nw->carry_from = old->index;
     for (uint32_t i = 0; i < b->nsyms; i++)
         for (uint32_t j = 0; j < a->nsyms; j++) {

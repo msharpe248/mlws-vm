@@ -1,0 +1,6 @@
+; `.reload fresh` is said of a module, outside its functions.
+; expect-error: E_ASM_SYNTAX
+.func main
+.reload fresh
+    ret
+.endf
