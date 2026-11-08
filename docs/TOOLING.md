@@ -449,10 +449,10 @@ modules, names, nodes and graph every five).
 | Endpoint | Returns |
 |---|---|
 | `GET /api/vm` | `vm` (`"mlwsvm"`), `uptime_ns`, `processes` (live), `spawned`, `max_live`, `slices`, `insns` (all processes), `heap_bytes`, `raw_bytes`, `modules`, `main_pid` |
-| `GET /api/procs` | an array, per live process: `pid`, `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors`, and `far_links`, `far_monitors` and `far_watching`, its ties with processes on other nodes (`node` and `pid`: a whole pid can be larger than JavaScript's numbers hold exactly) |
+| `GET /api/procs` | an array, per live process: `pid`, `program` and `program_name` (the program it belongs to: its number, from 0, and file, as `--also` or `mlwsvm serve` started it), `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors`, and `far_links`, `far_monitors` and `far_watching`, its ties with processes on other nodes (`node` and `pid`: a whole pid can be larger than JavaScript's numbers hold exactly) |
 | `GET /api/proc/PID` | the same for one process, plus `quota` (`heap`, `raw`, `mailbox`, `insns`, `foreign`, `os`; `null` = unlimited), `messages` (the first 20 waiting: `type`, and `size` or a short `preview`) and `backtrace` |
-| `GET /api/exits` | the last 64 finished processes, newest first: `pid`, `entry`, `failed`, `code`, `exit`, `insns`, `cpu_ns`, `ago_ns` |
-| `GET /api/log?since=N` | the log's entries after number `N` (0: all it has), oldest first: `seq`, `t_ns` (since the VM started), `pid`, and `level` and `text`, or `event` and `value` (JSON); with `next`, the number to ask from next time, and `lost`, how many were overwritten before being asked for |
+| `GET /api/exits` | the last 64 finished processes, newest first: `pid`, `entry`, `program`, `program_name`, `main` (its program's main), `failed`, `code`, `exit`, `insns`, `cpu_ns`, `ago_ns` |
+| `GET /api/log?since=N` | the log's entries after number `N` (0: all it has), oldest first: `seq`, `t_ns` (since the VM started), `pid`, `program` and `program_name` (null for the monitor's own), and `level` and `text`, or `event` and `value` (JSON); with `next`, the number to ask from next time, and `lost`, how many were overwritten before being asked for |
 | `GET /api/modules` | every module loaded, each version in the order loaded: `name`, `path`, `version` (1, 2, ...), `current`, `state` (`ready`, `failed`, `purged`), `functions`, `globals_bytes` |
 | `GET /api/names` | the registry: `name` and `pid` |
 | `GET /api/nodes` | `self`, this VM's node number (0: none), and `connected`: `node`, and `carrier`, the process carrying that connection |
@@ -514,14 +514,20 @@ of the same module, as with `--also`. Programs share the VM's output, as with
 
 | Endpoint | Does |
 |---|---|
-| `GET /api/programs` | the programs started: `id`, `path` (in the programs' directory), `args`, `pid` (of its main), `state` (`running`, `done` with `exit`, `failed` with `code` and `message`) |
+| `GET /api/programs` | the programs started: `id`, `path` (in the programs' directory), `cap` and `quota` (as started, or null), `args`, `pid` (of its main), `state` (`running`, `done` with `exit`, `failed` with `code` and `message`) |
+| `GET /api/programs/files` | the programs in the directory, for the dashboard's picker: each `.masm` or `.mlwso` file by its path within it, at most four directories down |
 | `POST /api/programs` | start one: `{"path": "app.masm", "args": ["-v"], "cap": "read=/data", "quota": "heap=64M"}` (all but `path` may be left out); answers its `id` and `pid`; 400 for a program that does not load or a bad `cap` or `quota`, 403 for a path not in the directory |
 | `POST /api/programs/ID/stop` | its main fails with `E_KILLED`, and its other processes stop, as when a program's main ends |
+| `POST /api/programs/ID/rerun` | the same file again, with the same arguments, capabilities and quotas, as a new program; answers its `id` and `pid` |
 | `POST /api/shutdown` | every program is stopped, and `mlwsvm serve` exits 0 |
 
 These need the token, as every action does, and each is written to the log
-(`monitor.start`, `monitor.stop`, `monitor.shutdown`). `GET /api/vm` says
-`"serve": true`.
+(`monitor.start`, `monitor.rerun`, `monitor.stop`, `monitor.shutdown`). `GET
+/api/vm` says `"serve": true`. On the dashboard, a program is chosen from the
+directory's, by sub-directory; a program that has ended can be run again from
+the Programs card or from Recent exits; every process, exit and log line names
+its program; and the log can be narrowed to the process selected, or to its
+program.
 
 ## Terminal view: `mlwsvm top`
 

@@ -147,8 +147,10 @@ typedef struct FieldRef {
  * belongs to the program that spawned it; when a program's main ends, its
  * other processes are stopped, and the run ends with the last program. */
 typedef struct Program {
+    uint32_t id;          /* its place in VM.progs, from 0 */
     char *path;
     StrVec args;
+    char *cap, *quota;    /* mlwsvm serve: what it was started with (NULL: the VM's own) */
     struct Process *main; /* kept, not freed, when it ends: its runner reads its results */
 } Program;
 
@@ -211,11 +213,14 @@ typedef struct {
     char code[32];
     int64_t exit_code;
     uint64_t insns, cpu_ns, ended_ns;
+    int32_t prog;            /* its program's id, or -1 */
+    bool main;               /* its program's main */
 } ExitRecord;
 
 /* An entry of the monitor's log channel (monitor.log, monitor.event). */
 typedef struct MLogEntry {
     uint64_t seq, t_ns, pid; /* t_ns: since the VM started */
+    int32_t prog;            /* the writer's program's id, or -1 (the monitor) */
     int level;               /* 0 debug, 1 info, 2 warn, 3 error; -1 for an event */
     char *name;              /* an event's name, or NULL */
     char *text;              /* a log line, or an event's value as JSON */
@@ -824,7 +829,7 @@ bool sched_alive(VM *vm, uint64_t pid);
  * one (text of n bytes, cut to MLOG_TEXT_MAX at a character's start). */
 #define MLOG_TEXT_MAX 4096
 void vm_mlog_enable(VM *vm, uint32_t cap);
-void vm_mlog_put(VM *vm, uint64_t pid, int level, const char *name, const char *text, size_t n);
+void vm_mlog_put(VM *vm, const struct Process *p, int level, const char *name, const char *text, size_t n); /* p NULL: the monitor's */
 void sched_shutdown(VM *vm, Process *keep); /* free every process except `keep` */
 void sched_free(VM *vm);
 bool sched_abandoned(VM *vm); /* a blocking native call never returned: the VM cannot be freed */

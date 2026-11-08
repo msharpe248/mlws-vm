@@ -932,7 +932,7 @@ static void n_monitor_log(Process *p, Word *a, Word *r) {
     if (a[0].i < 0 || a[0].i > 3) vm_trap(p, "E_RANGE", "monitor.log: level %lld is not 0 (debug) to 3 (error)", (long long)a[0].i);
     const ObjString *s = mlog_text(p, a[1], "monitor.log: the text");
     if (atomic_load_explicit(&p->vm->mlog_on, memory_order_relaxed))
-        vm_mlog_put(p->vm, p->pid, (int)a[0].i, NULL, s->data, s->len);
+        vm_mlog_put(p->vm, p, (int)a[0].i, NULL, s->data, s->len);
 }
 
 static void n_monitor_event(Process *p, Word *a, Word *r) {
@@ -941,7 +941,7 @@ static void n_monitor_event(Process *p, Word *a, Word *r) {
     if (!atomic_load_explicit(&p->vm->mlog_on, memory_order_relaxed)) return;
     StrBuf b = {0};
     text_json_append(p, a[1], T_R, &b); /* (E_JSON for a value with no JSON form) */
-    vm_mlog_put(p->vm, p->pid, -1, name->data, b.s ? b.s : "null", b.n ? b.n : 4);
+    vm_mlog_put(p->vm, p, -1, name->data, b.s ? b.s : "null", b.n ? b.n : 4);
     sb_free(&b);
 }
 

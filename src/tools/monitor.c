@@ -29,6 +29,26 @@ typedef struct Monitor {
     uint64_t last_top_ns;
 } Monitor;
 
+static void json_str(StrBuf *b, const char *s);
+
+/* A program's name for the page: its file within mlwsvm serve's programs'
+ * directory, or its file's name. */
+static const char *prog_name(const Monitor *mon, const Program *pr) {
+    size_t n = mon->programs ? strlen(mon->programs) : 0;
+    if (n && !strncmp(pr->path, mon->programs, n) && (pr->path[n] == '/' || pr->path[n] == '\\')) return pr->path + n + 1;
+    return path_basename(pr->path);
+}
+
+/* ,"program":ID,"program_name":NAME for a program's id (none for -1). */
+static void prog_json(StrBuf *b, const Monitor *mon, VM *vm, int32_t id) {
+    if (id < 0 || (size_t)id >= vm->progs.n) {
+        sb_puts(b, ",\"program\":null,\"program_name\":null");
+        return;
+    }
+    sb_printf(b, ",\"program\":%d,\"program_name\":", id);
+    json_str(b, prog_name(mon, vm->progs.v[id]));
+}
+
 static const char *const STATE_NAMES[] = {"ready", "running", "waiting", "sleeping", "done", "failed", "native", "io"};
 
 static void json_str(StrBuf *b, const char *s) {
@@ -121,13 +141,14 @@ static uint32_t stack_bytes(const Process *p) {
     return PTR_SEG(p->sp) == SEG_STACK && PTR_OFF(p->sp) <= p->stack.size ? p->stack.size - PTR_OFF(p->sp) : 0;
 }
 
-static void proc_json(StrBuf *b, const Process *p, bool detail) {
+static void proc_json(StrBuf *b, const Monitor *mon, VM *vm, const Process *p, bool detail) {
     const Frame *fr = p->nframes ? &p->frames[p->nframes - 1] : NULL;
     uint32_t pc = fr ? fr->pc : 0;
     sb_printf(b, "{\"pid\":%llu,\"state\":", (unsigned long long)p->pid);
     json_str(b, STATE_NAMES[p->state]);
     sb_puts(b, ",\"entry\":");
     json_str(b, p->entry ? p->entry->name : "?");
+    prog_json(b, mon, vm, p->prog ? (int32_t)p->prog->id : -1);
     sb_puts(b, ",\"function\":");
     if (fr) {
         StrBuf f = {0};
@@ -298,7 +319,7 @@ static const char *const LOG_LEVELS[] = {"debug", "info", "warn", "error"};
 
 /* The log channel's entries after `since`, oldest first, with the number to
  * ask from next, and how many were lost (overwritten before being asked for). */
-static void log_json(StrBuf *b, VM *vm, uint64_t since) {
+static void log_json(StrBuf *b, const Monitor *mon, VM *vm, uint64_t since) {
     if (!vm->mlog) {
         sb_puts(b, "{\"next\":0,\"lost\":0,\"entries\":[]}");
         return;
@@ -311,8 +332,10 @@ static void log_json(StrBuf *b, VM *vm, uint64_t since) {
               (unsigned long long)(from - (since + 1)));
     for (uint64_t q = from; q <= last; q++) {
         const MLogEntry *e = &vm->mlog[(q - 1) % vm->mlog_cap];
-        sb_printf(b, "%s{\"seq\":%llu,\"t_ns\":%llu,\"pid\":%llu,", q == from ? "" : ",", (unsigned long long)e->seq,
+        sb_printf(b, "%s{\"seq\":%llu,\"t_ns\":%llu,\"pid\":%llu", q == from ? "" : ",", (unsigned long long)e->seq,
                   (unsigned long long)e->t_ns, (unsigned long long)e->pid);
+        prog_json(b, mon, vm, e->prog);
+        sb_putc(b, ',');
         if (e->level < 0) {
             sb_puts(b, "\"event\":");
             json_str(b, e->name);
@@ -329,14 +352,15 @@ static void log_json(StrBuf *b, VM *vm, uint64_t since) {
     plat_unlock(vm->mlog_lock);
 }
 
-static void exits_json(StrBuf *b, VM *vm) {
+static void exits_json(StrBuf *b, const Monitor *mon, VM *vm) {
     sb_putc(b, '[');
     size_t n = vm->exits.n;
     for (size_t k = 0; k < n; k++) { /* newest first */
         const ExitRecord *r = &vm->exits.v[(vm->exits_next + n - 1 - k) % n];
         sb_printf(b, "%s{\"pid\":%llu,\"entry\":", k ? "," : "", (unsigned long long)r->pid);
         json_str(b, r->entry);
-        sb_printf(b, ",\"failed\":%s,\"code\":", r->failed ? "true" : "false");
+        prog_json(b, mon, vm, r->prog);
+        sb_printf(b, ",\"main\":%s,\"failed\":%s,\"code\":", r->main ? "true" : "false", r->failed ? "true" : "false");
         if (r->failed) json_str(b, r->code);
         else sb_puts(b, "null");
         sb_printf(b, ",\"exit\":%lld,\"insns\":%llu,\"cpu_ns\":%llu,\"ago_ns\":%llu}", (long long)r->exit_code,
@@ -578,13 +602,18 @@ static bool read_request(Conn *c, Req *q) {
  * file (from the programs' directory), arguments, main process, and how it is. */
 static void programs_json(StrBuf *b, const Monitor *mon, VM *vm) {
     sb_putc(b, '[');
-    size_t base = mon->programs ? strlen(mon->programs) + 1 : 0;
     plat_lock(vm->lock);
     for (size_t i = 1; mon->programs && i < vm->progs.n; i++) {
         const Program *pr = vm->progs.v[i];
         const Process *m = pr->main;
         sb_printf(b, "%s{\"id\":%zu,\"path\":", i > 1 ? "," : "", i);
-        json_str(b, strlen(pr->path) > base ? pr->path + base : pr->path);
+        json_str(b, prog_name(mon, pr));
+        sb_puts(b, ",\"cap\":");
+        if (pr->cap) json_str(b, pr->cap);
+        else sb_puts(b, "null");
+        sb_puts(b, ",\"quota\":");
+        if (pr->quota) json_str(b, pr->quota);
+        else sb_puts(b, "null");
         sb_puts(b, ",\"args\":[");
         for (size_t k = 0; k < pr->args.n; k++) {
             if (k) sb_putc(b, ',');
@@ -606,6 +635,33 @@ static void programs_json(StrBuf *b, const Monitor *mon, VM *vm) {
     sb_putc(b, ']');
 }
 
+/* The programs in mlwsvm serve's directory, for the page's picker: each .masm
+ * or .mlwso file, by its path within it, at most four directories down and
+ * a thousand files in all. */
+static void list_programs(StrBuf *b, const char *dir, const char *rel, int depth, int *count) {
+    char **names = NULL;
+    size_t n = 0;
+    if (depth > 4 || !plat_list_dir(dir, &names, &n)) return;
+    for (size_t i = 0; i < n; i++) {
+        const char *nm = names[i];
+        char *full = path_join(dir, nm);
+        StrBuf r = {0};
+        sb_printf(&r, "%s%s%s", rel, *rel ? "/" : "", nm);
+        if (nm[0] != '.' && *count < 1000) {
+            if (plat_is_dir(full)) {
+                list_programs(b, full, r.s, depth + 1, count);
+            } else if (str_ends_with(nm, ".masm") || str_ends_with(nm, ".mlwso")) {
+                if ((*count)++) sb_putc(b, ',');
+                json_str(b, r.s);
+            }
+        }
+        sb_free(&r);
+        free(full);
+        free(names[i]);
+    }
+    free(names);
+}
+
 /* The read-only API and the page, with the world stopped. */
 static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q) {
     char *path = q->path;
@@ -623,6 +679,11 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q) {
         sb_printf(&b, ",\"actions\":%s,\"serve\":%s}", mon->token ? "true" : "false", mon->programs ? "true" : "false");
     } else if (!strcmp(path, "/api/programs")) {
         programs_json(&b, mon, vm);
+    } else if (!strcmp(path, "/api/programs/files") && mon->programs) {
+        int count = 0;
+        sb_putc(&b, '[');
+        list_programs(&b, mon->programs, "", 0, &count);
+        sb_putc(&b, ']');
     } else if (!strcmp(path, "/api/procs")) {
         sb_putc(&b, '[');
         bool first = true;
@@ -631,7 +692,7 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q) {
             if (!p) continue;
             if (!first) sb_putc(&b, ',');
             first = false;
-            proc_json(&b, p, false);
+            proc_json(&b, mon, vm, p, false);
         }
         sb_putc(&b, ']');
     } else if (!strncmp(path, "/api/proc/", 10)) {
@@ -641,9 +702,9 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q) {
             respond(k, 404, json, "{\"error\":\"no such process\"}", 27, true);
             return;
         }
-        proc_json(&b, p, true);
+        proc_json(&b, mon, vm, p, true);
     } else if (!strcmp(path, "/api/exits")) {
-        exits_json(&b, vm);
+        exits_json(&b, mon, vm);
     } else if (!strcmp(path, "/api/modules")) {
         modules_json(&b, vm);
     } else if (!strcmp(path, "/api/names")) {
@@ -653,7 +714,7 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q) {
     } else if (!strcmp(path, "/api/graph")) {
         graph_json(&b, vm);
     } else if (!strcmp(path, "/api/log")) {
-        log_json(&b, vm, since ? strtoull(since, NULL, 10) : 0);
+        log_json(&b, mon, vm, since ? strtoull(since, NULL, 10) : 0);
     } else if (!strcmp(path, "/top")) {
         top_text(&b, mon, vm);
         respond(k, 200, "text/plain; charset=utf-8", b.s, b.n, true);
@@ -721,7 +782,7 @@ static void url_decode(char *s) {
 }
 
 static void audit(VM *vm, const char *what, const char *json) {
-    if (vm->mlog) vm_mlog_put(vm, 0, -1, what, json, strlen(json));
+    if (vm->mlog) vm_mlog_put(vm, NULL, -1, what, json, strlen(json));
 }
 
 /* ---- mlwsvm serve: starting programs ---------------------------------------------------- *
@@ -889,6 +950,43 @@ static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q) {
         }
         free(file);
         start_req_free(&r);
+    } else if (sscanf(q->path, "/api/programs/%zu/%15[a-z]", &id, verb) == 2 && !strcmp(verb, "rerun")) {
+        /* the same file, arguments, capabilities and quotas, as a new program */
+        char *file = NULL, *cap = NULL, *quota = NULL;
+        StrVec args = {0};
+        plat_lock(vm->lock);
+        if (id >= 1 && id < vm->progs.n) {
+            const Program *old = vm->progs.v[id];
+            file = xstrdup(old->path);
+            cap = old->cap ? xstrdup(old->cap) : NULL;
+            quota = old->quota ? xstrdup(old->quota) : NULL;
+            for (size_t i = 0; i < old->args.n; i++) VEC_PUSH(args, xstrdup(old->args.v[i]));
+        }
+        plat_unlock(vm->lock);
+        if (!file) {
+            respond_json(k, 404, "{\"error\":\"no such program\"}");
+        } else {
+            MlwsError e = {{0}, {0}};
+            sched_stop_world(vm);
+            Program *pr = vm_start_program(vm, file, &args, cap, quota, &e);
+            sched_start_world(vm);
+            if (pr) {
+                sb_printf(&b, "{\"ok\":true,\"id\":%u,\"pid\":%llu}", pr->id, (unsigned long long)pr->main->pid);
+                sb_printf(&a, "{\"id\":%zu,\"as\":%u,\"pid\":%llu}", id, pr->id, (unsigned long long)pr->main->pid);
+                audit(vm, "monitor.rerun", a.s);
+                respond_json(k, 200, b.s);
+            } else {
+                sb_puts(&b, "{\"error\":");
+                json_str(&b, e.msg);
+                sb_putc(&b, '}');
+                respond_json(k, 400, b.s);
+            }
+        }
+        free(file);
+        free(cap);
+        free(quota);
+        for (size_t i = 0; i < args.n; i++) free(args.v[i]);
+        VEC_FREE(args);
     } else if (sscanf(q->path, "/api/programs/%zu/%15[a-z]", &id, verb) == 2 && !strcmp(verb, "stop")) {
         uint64_t pid = 0;
         plat_lock(vm->lock);

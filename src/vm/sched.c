@@ -552,6 +552,8 @@ static void record_exit(VM *vm, Process *p, bool failed) {
     r.insns = p->insns;
     r.cpu_ns = p->cpu_ns;
     r.ended_ns = plat_now_ns();
+    r.prog = p->prog ? (int32_t)p->prog->id : -1;
+    r.main = p->prog && p->prog->main == p;
     if (vm->exits.n < 64) {
         VEC_PUSH(vm->exits, r);
     } else {

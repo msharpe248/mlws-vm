@@ -106,7 +106,9 @@ void vm_mlog_enable(VM *vm, uint32_t cap) {
     atomic_store(&vm->mlog_on, true);
 }
 
-void vm_mlog_put(VM *vm, uint64_t pid, int level, const char *name, const char *text, size_t n) {
+void vm_mlog_put(VM *vm, const Process *p, int level, const char *name, const char *text, size_t n) {
+    uint64_t pid = p ? p->pid : 0;
+    int32_t prog = p && p->prog ? (int32_t)p->prog->id : -1;
     char note[64];
     if (level < 0 && n > MLOG_TEXT_MAX) { /* an event's JSON, cut, would not be JSON */
         snprintf(note, sizeof note, "\"(%zu bytes of JSON: too long to keep)\"", n);
@@ -123,7 +125,7 @@ void vm_mlog_put(VM *vm, uint64_t pid, int level, const char *name, const char *
     MLogEntry *e = &vm->mlog[vm->mlog_seq % vm->mlog_cap];
     free(e->name);
     free(e->text);
-    *e = (MLogEntry){++vm->mlog_seq, now, pid, level, nm, t};
+    *e = (MLogEntry){++vm->mlog_seq, now, pid, prog, level, nm, t};
     plat_unlock(vm->mlog_lock);
 }
 
