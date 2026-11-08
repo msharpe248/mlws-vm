@@ -23,6 +23,9 @@ typedef struct {
     SOCKET s;      /* for sockets */
     bool nonblock; /* a pipe in PIPE_NOWAIT mode, or a non-blocking socket */
     SOCKET base;   /* a socket's base handle, for the poller (0: not yet asked) */
+    bool ovl;      /* a pipe opened for overlapped I/O (our end of a child's output): read with
+                      an OVERLAPPED, and waited for by a zero-byte read on the poller's port */
+    HANDLE port;   /* an ovl pipe: the completion port it is tied to (once, for its life), or NULL */
 } WFd;
 int wfd_new(int kind, HANDLE h, SOCKET s); /* -1 if the table is full */
 WFd *wfd_get(int fd);                      /* NULL if fd is not open */

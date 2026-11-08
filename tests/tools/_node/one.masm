@@ -5,6 +5,8 @@
 .import std.node as node
 
 tls:    .i64 0                       ; 1: node 2 takes only TLS
+w1: .i64 0                              ; the watchers
+w2: .i64 0
 
 ; Connect, as node 2 wants.
 .func open(i64 port, ref cookie) -> i64
@@ -40,7 +42,23 @@ h:
     blt I30, 2, 1f
     mov @tls, 1
 1:
+    call node.name (0) -> (R25)
+    strcmp I3, R25, ""                 ; no name yet
+    ASSERT_EQ I3, 0
+    call node.set_name ("one@test")
+    call node.set_name ("one@test")    ; (again, the same: nothing)
+.try renamed
+    call node.set_name ("other@test")
+.endtry
+    FAIL "a second name"
+renamed:
+    catch R25
     call node.start (1, "the cookie", 0) -> (I1)
+    spawn watcher (2) -> (I3)          ; NodeEvents, from before connecting
+    mov @w1, I3
+    spawn watcher (0) -> (I3)          ; one that stops watching: none
+    mov @w2, I3
+    sleep 50                           ; (both watching, the second no longer)
     ncall "node.self" () -> (I2)
     ASSERT_EQ I2, 1
 
@@ -65,6 +83,35 @@ plain_refused:
     ASSERT_EQ I4, 2
     call node.connected (2) -> (I20)
     ASSERT_TRUE I20
+
+    ; Names, each way: node 2's here, and this one's there.
+    call node.name (2) -> (R25)
+    strcmp I3, R25, "two@test"
+    ASSERT_EQ I3, 0
+    call node.number ("two@test") -> (I3)
+    ASSERT_EQ I3, 2
+    call node.number ("one@test") -> (I3)
+    ASSERT_EQ I3, 1
+    call node.name (1) -> (R25)
+    strcmp I3, R25, "one@test"
+    ASSERT_EQ I3, 0
+    call node.number ("nobody@test") -> (I3)
+    ASSERT_EQ I3, 0
+    call node.name (3) -> (R25)
+    strcmp I3, R25, ""
+    ASSERT_EQ I3, 0
+    call node.nodes () -> (R25)
+    len I3, R25
+    ASSERT_EQ I3, 1
+    mov I3, R25[0]
+    ASSERT_EQ I3, 2
+    call node.whereis (2, "namer") -> (I3)
+    ncall "proc.call" (I3, 0, 5000) -> (R25)
+    mov R26, R25[0]
+    strcmp I3, R26, "one@test"
+    ASSERT_EQ I3, 0
+    mov I3, R25[1]
+    ASSERT_EQ I3, 1
 
     ; A registered process there, and a message there and back.
     call node.whereis (2, "doubler") -> (I5)
@@ -185,6 +232,18 @@ not_connected:
     mov R18, R17->Error.code
     call expect (R18, "E_NODE_DOWN")
 
+    ; kill there: the process is killed, and its watcher here hears E_KILLED;
+    ; a kill of one not there, or on a node not connected, does nothing.
+    call node.spawn (2, "worker", "ignore", R4) -> (I23)
+    monitor I23
+    kill I23
+    call down_code (I23) -> (R16)
+    call expect (R16, "E_KILLED")
+    kill I16
+    kill I18
+    alive I22, I23
+    ASSERT_FALSE I22                   ; (alive: this VM's pids only)
+
     ; The node goes: a watcher hears, a linked process goes, a call waiting
     ; for an answer fails, and a send goes nowhere.
     monitor I5
@@ -219,6 +278,30 @@ not_connected:
     or I1, I1, I4
     bne I1, 15, 1b
     send I5, R3
+    ; The watchers saw node 2 come and go.
+    mov I3, @w1
+    send I3, PID
+    recv R25
+    len I3, R25
+    ASSERT_EQ I3, 2
+    mov R26, R25[0]
+    call event_is (R26, 1)
+    mov R26, R25[1]
+    call event_is (R26, 0)
+    mov I3, @w2
+    send I3, PID
+    recv R25
+    len I3, R25
+    ASSERT_EQ I3, 0
+    ; Gone, but its name still known; no node connected.
+    call node.name (2) -> (R25)
+    strcmp I3, R25, "two@test"
+    ASSERT_EQ I3, 0
+    call node.number ("two@test") -> (I3)
+    ASSERT_EQ I3, 2
+    call node.nodes () -> (R25)
+    len I3, R25
+    ASSERT_EQ I3, 0
     ret 0
 .endf
 
@@ -298,4 +381,35 @@ h:  catch R3
     mov R0->Error.code, "E_TOLD"
     mov R0->Error.message, "told to fail"
     throw R0
+.endf
+
+; Watch nodes (and, if n is 0, stop at once), keep the first n NodeEvents, and
+; send them as a list to the pid that asks.
+.func watcher(i64 n)
+    call node.watch ()
+    bnz n, 1f
+    call node.unwatch ()
+1:  lnew R0
+3:  len I1, R0
+    bge I1, n, 2f
+    recv R1
+    isa I2, R1, NodeEvent
+    ASSERT_TRUE I2
+    lpush R0, R1
+    jmp 3b
+2:  recv I3
+    send I3, R0
+    ret
+.endf
+
+; Fail unless e is a NodeEvent of node 2, two@test, coming (up 1) or going.
+.func event_is(ref e, i64 up)
+    mov I3, e->NodeEvent.node
+    ASSERT_EQ I3, 2
+    mov R1, e->NodeEvent.name
+    strcmp I4, R1, "two@test"
+    ASSERT_EQ I4, 0
+    mov I5, e->NodeEvent.up
+    ASSERT_EQ I5, up
+    ret
 .endf

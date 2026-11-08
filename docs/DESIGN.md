@@ -603,9 +603,14 @@ debugger, profiler and trace hold `Function`s). A version with FFI
 declarations is always kept, since what they bind outlives it.
 
 `module.handle` (`vm_handle`) makes, once per module and function, a module of
-its own whose one function is a tail call to the function, importing its module
-by name from its home; `retarget_users` then moves that call at each reload as it
-moves any module's, and the handle is a closure of that function. No call
+its own (`LModule.handle`) whose function `h` is a tail call to the function,
+importing its module by name from its home, beside `gone`, a function of the
+same signature that raises `E_LINK_UNDEF`; the handle is a closure of `h`.
+`still_links` passes such a module whatever the new version has, and
+`retarget_users` hands it to `retarget_handle`, which points `h`'s call (and
+the import, so that the old version is not held) at the new version's
+function of that name if it has `h`'s signature, and at `gone` if not, at each
+reload; so a later version that has it again is called again. No call
 instruction, closure or compiled form knows of handles.
 
 `module.purge_kill` (`vm_purge_kill`) first finds, with the world stopped, the
@@ -1764,8 +1769,8 @@ That process and the rest of the protocol are MLWSVM code, in `lib/std/node.masm
 A connection is a reader, blocked in `net.read_frame`, and a writer, blocked in
 `recv`, on two descriptors of one socket (`net.split`), since a process waits for
 one thing at a time. C provides only what must be C: the routing above, `node.frame`
-and `node.decode`, and the challenge. The handshake sends each side's number and a
-random nonce, then an HMAC-SHA-256 of the peer's nonce, keyed by the cookie and
+and `node.decode`, and the challenge. The handshake sends each side's number, a
+random nonce and its name (`node.set_name`; empty if it has none), then an HMAC-SHA-256 of the peer's nonce, keyed by the cookie and
 marked with the prover's role, so that a proof cannot be reflected back at its
 maker. `node.proof_ok` compares in constant time. With `start_tls` and `connect_tls`
 the connection is TLS before any of that. The reader and the writer then share one
@@ -1781,25 +1786,33 @@ feeds it random, mutated and truncated frames.
 
 A pid does not change when it crosses: `node.global` adds the sender's number, and
 it means the same process everywhere, which is why numbers are given, not assigned
-per connection. Requests to a node go through a process of their own, answering
+per connection. A name is beside the number, not instead of it: `VM.node_names`
+keeps, per number, the name that node gave when it last connected
+(`node.named`, which refuses one that this VM or another connected node has),
+and keeps it after the connection goes, so that a pid of a node that has gone
+still has its node's name. Requests to a node go through a process of their own, answering
 with `proc.call`, so that a caller's mailbox holds only what it was sent.
 
-`link`, `monitor` and `proc.call` on another node's pid are the scheduler's
+`link`, `monitor`, `kill` and `proc.call` on another node's pid are the scheduler's
 (`sched.c`, "across nodes"), so they behave as on one VM. Each side keeps the
 other's pids as the wire names them: a process's `rlinks` (linked across), its
 `rmonitors` (watching it from elsewhere) and its `rwatch` (what it watches
 elsewhere). What one side must tell the other is a control frame, `[null, kind,
 ...]`, sent to the connection's writer like a message, so it keeps its order
 with the sender's messages: a link, an unlink (a normal end), an exit (a failure),
-a monitor, a down, a reply, or noproc (a `Call` for a process that is not there,
-answered at once). The reader at the far end hands it to `node.control`. A
+a monitor, a down, a reply, noproc (a `Call` for a process that is not there,
+answered at once), or a kill, which the far node carries out as its own `kill`
+would. The reader at the far end hands it to `node.control`. A
 `proc.call` to another node sends its `Call` as an ordinary message there, with
 the caller's pid as that node names it, and remembers which node it called; the
 `proc.reply` comes back as a reply frame, into the reply slot. When a reader
 loses its connection it clears the route (`node.attach(n, 0)`), and
 `sched_node_down` walks the processes once: it drops their ties to that node,
 fails the linked ones with `E_LINKED`, gives each watcher a `Down` with
-`E_NODE_DOWN`, and ends each call waiting there.
+`E_NODE_DOWN`, and ends each call waiting there. Then `sched_node_event` sends a
+`NodeEvent` to each process in `VM.node_watchers` (`node.watch`), as it does
+when `node.attach` gives a node its first route; a watcher that has ended is
+dropped from the list then.
 
 ## 15. Input and output
 
@@ -2392,8 +2405,14 @@ runtime):
   many there are. A wait forgotten or replaced first is cancelled, and its
   request is freed only when its completion is taken, since until then the
   kernel may still write to it. A wake-up is a completion posted to the port.
-  An anonymous pipe has no readiness to wait for, so while a process waits
-  for one, the poller looks at it every millisecond (`PeekNamedPipe`).
+  Our end of a child's stdout or stderr is a named pipe opened for
+  overlapped I/O, as libuv's `uv_spawn` makes it (the child's end is a plain
+  handle): a wait for it to be read is a zero-byte read on the port, which
+  completes once there is data or the child has closed it, and a read that
+  must not wait looks first (`PeekNamedPipe`). An anonymous pipe (a child's
+  stdin, or a stdin given to this process) has no readiness to wait for, nor
+  does a pipe waited for writing, so while a process waits for one of those
+  the poller looks at it every millisecond.
 * A child is started with `CreateProcessW`, inheriting only its three
   standard handles (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`); its arguments are
   quoted as the C runtime parses them. A signal ends it

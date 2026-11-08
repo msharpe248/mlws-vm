@@ -16,6 +16,9 @@ static const char *const DATE_FIELDS[] = {"year", "month", "day", "hour", "minut
                                           "yday", "offset"};
 static const uint8_t DATE_TYPES[] = {T_I64, T_I64, T_I64, T_I64, T_I64, T_I64, T_I64, T_I64, T_I64, T_I64};
 
+static const char *const NODEEVENT_FIELDS[] = {"node", "name", "up"};
+static const uint8_t NODEEVENT_TYPES[] = {T_I64, T_R, T_B};
+
 const BuiltinStruct BUILTIN_STRUCTS[BUILTIN__COUNT] = {
     {"Error", 3, ERROR_FIELDS, ERROR_TYPES},
     {"Down", 4, DOWN_FIELDS, DOWN_TYPES},
@@ -23,6 +26,7 @@ const BuiltinStruct BUILTIN_STRUCTS[BUILTIN__COUNT] = {
     {"Call", 3, CALL_FIELDS, CALL_TYPES},
     {"Callback", 2, CALLBACK_FIELDS, CALLBACK_TYPES},
     {"Date", 10, DATE_FIELDS, DATE_TYPES},
+    {"NodeEvent", 3, NODEEVENT_FIELDS, NODEEVENT_TYPES},
 };
 
 int builtin_struct_find(const char *name) {

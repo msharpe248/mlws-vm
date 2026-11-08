@@ -9,9 +9,11 @@
 ;     call node.whereis (I1, "logger") -> (I3)
 ;     monitor I2                                      ; a Down when it ends
 ;     call node.self (PID) -> (I4)                    ; a pid others can use
+;     call node.set_name ("db@host")                  ; (before connecting) a name too:
+;     call node.name (I1) -> (R1)                     ; each node learns the other's
 ;
-; A pid with a node's number in its top 16 bits works with send, link, monitor
-; and proc.call anywhere in the cluster; a plain pid means this VM. A VM has one number, from 1 to 65535,
+; A pid with a node's number in its top 16 bits works with send, link, monitor,
+; kill and proc.call anywhere in the cluster; a plain pid means this VM. A VM has one number, from 1 to 65535,
 ; unique in its cluster. Two nodes are connected by one TCP connection, once
 ; each has proved it knows the cookie: each sends a nonce and answers the other's
 ; with an HMAC of it, marked with which end it is. Plain connections are not
@@ -29,15 +31,17 @@
 ;     [0, pid, value]                      a message
 ;     [1, reply_to, module, function, args]  spawn function(args), args one value
 ;     [2, reply_to, name]                  the pid registered as name, or 0
-;     [3 to 9, pid, ...]                   link, unlink, exit, monitor, down,
-;                                          reply and noproc: the VM's, for link,
-;                                          monitor and proc.call across nodes
+;     [3 to 10, pid, ...]                  link, unlink, exit, monitor, down,
+;                                          reply, noproc and kill: the VM's, for
+;                                          link, monitor, proc.call and kill
+;                                          across nodes
 ;                                          (node.control)
 ; When the connection goes, the reader clears its route (node.attach), and the
 ; VM acts as if every process over there had failed with E_NODE_DOWN.
 
 .module std.node
 .export start, start_tls, connect, connect_tls, spawn, whereis, self, node_of, connected
+.export set_name, name, number, nodes, watch, unwatch
 
 .const CONNECT_TIMEOUT = 5000
 
@@ -86,6 +90,45 @@
     bz I1, 1f
     ret 1
 1:  ret 0
+.endf
+
+; The numbers of the nodes connected now, as a list, in order.
+.func nodes -> ref
+    ncall "node.nodes" () -> (R0)
+    ret R0
+.endf
+
+; From now on, a NodeEvent {node, name, up} comes to this process for each
+; connection to another node that comes (up true) or goes (false); when one
+; goes, after the Downs and failures it causes. unwatch stops them.
+.func watch
+    ncall "node.watch" (1)
+    ret
+.endf
+.func unwatch
+    ncall "node.watch" (0)
+    ret
+.endf
+
+; Name this VM (as Erlang's name@host), once, before it connects: each node it
+; connects to learns the name.
+.func set_name(ref name)
+    ncall "node.set_name" (name)
+    ret
+.endf
+
+; A node's name, as it gave it when it last connected; this VM's for 0; "" if
+; none is known.
+.func name(i64 number) -> ref
+    ncall "node.name" (number) -> (R1)
+    ret R1
+.endf
+
+; The number of the node with this name (this VM's, a connected node's, or the
+; last that had it), or 0.
+.func number(ref name) -> i64
+    ncall "node.number" (name) -> (I1)
+    ret I1
 .endf
 
 ; ---- connecting ----
@@ -146,14 +189,18 @@ failed:
     ret
 .endf
 
-; Each end sends [number, nonce], then proves the cookie against the other's
-; nonce in its own role. Returns the peer's number.
+; Each end sends [number, nonce, name], then proves the cookie against the
+; other's nonce in its own role. Returns the peer's number, whose name is then
+; known here; E_NODE if another node connected now, or this one, has that name.
+; (A peer that sends no name, as before names, has none.)
 .func handshake(ref conn, ref cookie, ref me, ref them) -> i64
     ncall "random.bytes" (32) -> (R4)
     ncall "node.self" () -> (I0)
+    ncall "node.name" (0) -> (R17)
     lnew R5
     lpush R5, I0
     lpush R5, R4
+    lpush R5, R17
     ncall "node.frame" (R5) -> (R6)
     ncall "fs.write" (conn, R6)
     ncall "net.read_frame" (conn) -> (R7)
@@ -172,6 +219,12 @@ failed:
     mov R15, R14[0]
     ncall "node.proof_ok" (cookie, them, R4, R15) -> (I2)
     bz I2, refused
+    mov R18, ""
+    len I3, R8
+    blt I3, 3, 1f
+    mov R18, R8[2]
+1:  ncall "node.named" (I1, R18) -> (I4)
+    bz I4, taken
     ret I1
 gone:
     new R16, Error
@@ -182,6 +235,12 @@ refused:
     new R16, Error
     mov R16->Error.code, "E_NODE"
     mov R16->Error.message, "the peer does not know the cookie"
+    throw R16
+taken:
+    strcat R19, "the peer's name, ", R18, ", is this node's or a connected node's"
+    new R16, Error
+    mov R16->Error.code, "E_NODE"
+    mov R16->Error.message, R19
     throw R16
 .endf
 
@@ -233,7 +292,7 @@ ended:
     jmp 1b
 2:  beq I2, 1, 3f
     beq I2, 2, 4f
-    ncall "node.control" (R3)          ; 3 to 9
+    ncall "node.control" (R3)          ; 3 to 10
     jmp 1b
 3:  spawn do_spawn (R3)
     jmp 1b

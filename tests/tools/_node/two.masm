@@ -24,6 +24,18 @@
     ncall "proc.reply" (R0, R2)
     jmp 1b
 .endf
+; Answers a call with the name node 1 gave, and the number of that name.
+.func namer
+    ncall "proc.register" ("namer", PID)
+1:  recv R0
+    call node.name (1) -> (R1)
+    call node.number (R1) -> (I1)
+    lnew R2
+    lpush R2, R1
+    lpush R2, I1
+    ncall "proc.reply" (R0, R2)
+    jmp 1b
+.endf
 .func stopper
     ncall "proc.register" ("stopper", PID)
     recv I0
@@ -31,6 +43,7 @@
     ret
 .endf
 .func main
+    call node.set_name ("two@test")
     ncall "os.args" () -> (R0)
     len I0, R0
     bz I0, 2f
@@ -40,6 +53,7 @@
 3:
     spawn doubler
     spawn tripler
+    spawn namer
     spawn stopper
     sleep 100                          ; (all registered by now)
     ncall "io.print_i" (I1)

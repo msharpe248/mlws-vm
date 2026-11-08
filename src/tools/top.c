@@ -1,57 +1,134 @@
-/* top.c - `mlwsvm top [HOST:PORT]`: a terminal view of a running VM's
- * processes. It fetches the plain-text table the monitor renders at /top (the
- * server computes %CPU between samples), so the client stays tiny and needs no
- * JSON parser. */
+/* top.c - `mlwsvm top [http[s]://]HOST:PORT [--ca FILE]`: a terminal view of a
+ * running VM's processes. It fetches the plain-text table the monitor renders
+ * at /top (the server computes %CPU between samples), so the client stays tiny
+ * and needs no JSON parser. Over HTTPS (a monitor with --monitor-cert) it
+ * checks the monitor's certificate against the host, with the authorities in
+ * --ca's file or else the system's, as std.tls does. */
+#include "../native/tls.h"
 #include "../platform/platform.h"
 #include "tools.h"
 
-static bool fetch(const char *host, int port, const char *path, StrBuf *body) {
-    int fd = plat_tcp_connect(host, port);
+typedef struct {
+    char host[256];
+    int port;
+    bool tls;
+    const char *ca;
+} Target;
+
+#define TOP_WAIT_NS 2000000000ull
+
+/* A TLS call's wait: true to call again. */
+static bool tls_again(int fd, long r) {
+    if (r == TLS_WANT_READ) return plat_wait_readable(fd, TOP_WAIT_NS);
+    if (r == TLS_WANT_WRITE) return plat_sleep_ns(1000000), true;
+    return false;
+}
+
+/* GET path into body. False with why ("": the monitor could not be reached). */
+static bool fetch(const Target *t, const char *path, StrBuf *body, char *why, size_t whylen) {
+    why[0] = 0;
+    int fd = plat_tcp_connect(t->host, t->port);
     if (fd < 0) return false;
-    StrBuf req = {0};
-    sb_printf(&req, "GET %s HTTP/1.0\r\nHost: %s\r\n\r\n", path, host);
-    bool ok = plat_sock_write_all(fd, req.s, req.n);
-    sb_free(&req);
-    StrBuf resp = {0};
+    StrBuf req = {0}, resp = {0};
+    sb_printf(&req, "GET %s HTTP/1.0\r\nHost: %s\r\n\r\n", path, t->host);
+    bool ok;
     char buf[8192];
     long n;
-    while (ok && (n = plat_sock_read(fd, buf, sizeof buf, 2000000000ull)) > 0) sb_putn(&resp, buf, (size_t)n);
-    plat_sock_close(fd);
+    if (t->tls) {
+        Tls *s = tls_client(fd, t->host, t->ca ? t->ca : "", why, whylen);
+        if (!s) {
+            plat_sock_close(fd);
+            sb_free(&req);
+            if (!why[0]) snprintf(why, whylen, "TLS failed");
+            return false;
+        }
+        long r;
+        while ((r = tls_handshake(s, why, whylen)) != TLS_OK && tls_again(fd, r)) {}
+        ok = r == TLS_OK;
+        for (size_t off = 0; ok && off < req.n;) {
+            r = tls_write(s, req.s + off, req.n - off, why, whylen);
+            if (r > 0) off += (size_t)r;
+            else ok = tls_again(fd, r);
+        }
+        while (ok) {
+            r = tls_read(s, buf, sizeof buf, why, whylen);
+            if (r > 0) sb_putn(&resp, buf, (size_t)r);
+            else if (!r || !tls_again(fd, r)) break;
+        }
+        if (ok && !why[0] && !resp.n) snprintf(why, whylen, "the monitor sent nothing");
+        tls_release(s); /* (and the socket) */
+        if (!ok && !why[0]) snprintf(why, whylen, "TLS failed");
+    } else {
+        ok = plat_sock_write_all(fd, req.s, req.n);
+        while (ok && (n = plat_sock_read(fd, buf, sizeof buf, TOP_WAIT_NS)) > 0) sb_putn(&resp, buf, (size_t)n);
+        plat_sock_close(fd);
+    }
+    sb_free(&req);
     const char *start = resp.s ? strstr(resp.s, "\r\n\r\n") : NULL;
-    ok = ok && start && !strncmp(resp.s, "HTTP/1.0 200", 12);
-    if (ok) sb_puts(body, start + 4);
+    bool good = ok && start && !strncmp(resp.s, "HTTP/1.0 200", 12);
+    if (good) sb_puts(body, start + 4);
+    else if (ok && !why[0])
+        snprintf(why, whylen, "the monitor did not answer /top%s",
+                 !t->tls && (!resp.s || strncmp(resp.s, "HTTP/", 5)) ? " (one over TLS is https://HOST:PORT)" : "");
     sb_free(&resp);
-    return ok;
+    return good;
+}
+
+/* [http[s]://]HOST:PORT[/...][#...], or PORT; [::1]:PORT for an IPv6 address. */
+static bool parse_target(const char *addr, Target *t) {
+    if (!strncmp(addr, "https://", 8)) t->tls = true, addr += 8;
+    else if (!strncmp(addr, "http://", 7)) addr += 7;
+    size_t len = strcspn(addr, "/#?");
+    char a[300];
+    if (len >= sizeof a) return false;
+    memcpy(a, addr, len);
+    a[len] = 0;
+    char *colon = strrchr(a, ':');
+    if (colon && strchr(a, ']') > colon) colon = NULL; /* ([::1] with no port) */
+    t->port = atoi(colon ? colon + 1 : a);
+    if (colon && colon != a) {
+        *colon = 0;
+        char *h = a;
+        size_t hl = strlen(h);
+        if (h[0] == '[' && hl > 1 && h[hl - 1] == ']') h[hl - 1] = 0, h++;
+        snprintf(t->host, sizeof t->host, "%s", h);
+    }
+    return t->port > 0 && t->port <= 65535;
 }
 
 int tool_top(int argc, char **argv) {
     const char *addr = "127.0.0.1:7070";
     bool once = false;
     long interval_ms = 1000;
+    Target t = {.host = "127.0.0.1"};
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--once")) once = true;
         else if (!strcmp(argv[i], "--interval") && i + 1 < argc) interval_ms = atol(argv[++i]);
+        else if (!strcmp(argv[i], "--ca") && i + 1 < argc) t.ca = argv[++i];
         else addr = argv[i];
     }
-    char host[64] = "127.0.0.1";
-    const char *colon = strrchr(addr, ':');
-    int port = atoi(colon ? colon + 1 : addr);
-    if (colon && colon != addr) snprintf(host, sizeof host, "%.*s", (int)(colon - addr), addr);
-    if (port <= 0) {
-        fprintf(stderr, "mlwsvm top: bad address '%s' (expected HOST:PORT)\n", addr);
+    if (!parse_target(addr, &t)) {
+        fprintf(stderr, "mlwsvm top: bad address '%s' (expected [https://]HOST:PORT)\n", addr);
         return 2;
+    }
+    if (t.tls && !tls_available()) {
+        fprintf(stderr, "mlwsvm top: HTTPS needs OpenSSL or LibreSSL, and neither was found\n");
+        return 1;
     }
     bool tty = plat_is_tty() && !once, seen = false;
     for (;;) {
         StrBuf body = {0};
-        if (!fetch(host, port, "/top", &body)) {
+        char why[256];
+        if (!fetch(&t, "/top", &body, why, sizeof why)) {
             sb_free(&body);
-            if (seen) {
+            if (seen && !why[0]) {
                 printf("\nThe program has finished.\n");
                 return 0;
             }
-            fprintf(stderr, "mlwsvm top: cannot connect to %s:%d (start a program with `mlwsvm run --monitor %s:%d ...`)\n",
-                    host, port, host, port);
+            if (why[0]) fprintf(stderr, "mlwsvm top: %s%s:%d: %s\n", t.tls ? "https://" : "", t.host, t.port, why);
+            else
+                fprintf(stderr, "mlwsvm top: cannot connect to %s:%d (start a program with `mlwsvm run --monitor %s:%d ...`)\n",
+                        t.host, t.port, t.host, t.port);
             return 1;
         }
         seen = true;

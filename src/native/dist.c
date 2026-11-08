@@ -296,7 +296,136 @@ static void n_attach(Process *p, Word *a, Word *r) {
     if (!vm->node_route) vm->node_route = xcalloc(MAX_NODE + 1, sizeof *vm->node_route);
     plat_unlock(vm->lock);
     uint64_t old = __atomic_exchange_n(&vm->node_route[a[0].i], a[1].u, __ATOMIC_ACQ_REL);
-    if (old && !a[1].u) sched_node_down(vm, (uint32_t)a[0].i); /* the connection has gone */
+    if (old && !a[1].u) { /* the connection has gone */
+        sched_node_down(vm, (uint32_t)a[0].i);
+        sched_node_event(vm, (uint32_t)a[0].i, false);
+    } else if (!old && a[1].u) {
+        sched_node_event(vm, (uint32_t)a[0].i, true);
+    }
+}
+
+/* ---- names ----
+ * A node may have a name besides its number (Erlang's name@host), given once
+ * with node.set_name and sent to each node it connects to (std.node's
+ * handshake), which keeps it, as the name of that number, after the
+ * connection goes. */
+
+#define MAX_NODE_NAME 255
+
+static const char *name_arg(Process *p, Word a, const char *fn, uint32_t *n) {
+    const Obj *o = a.r;
+    if (!o || o->kind != OBJ_STRING) vm_trap(p, "E_TYPE", "%s: expected a name (a string)", fn);
+    const ObjString *s = (const ObjString *)o;
+    if (s->len > MAX_NODE_NAME || memchr(s->data, 0, s->len))
+        vm_trap(p, "E_RANGE", "%s: a node's name is at most %d bytes, with no NUL", fn, MAX_NODE_NAME);
+    *n = s->len;
+    return s->data;
+}
+
+static bool connected_now(const VM *vm, uint32_t n) {
+    return vm->node_route && __atomic_load_n(&vm->node_route[n], __ATOMIC_ACQUIRE);
+}
+
+/* The number of the node by this name: this VM's, or a connected node's if
+ * one has it, or else the last that had it; 0 if none. (Under vm->lock.) */
+static uint32_t number_named(const VM *vm, const char *s, uint32_t len) {
+    if (vm->node_name && strlen(vm->node_name) == len && !memcmp(vm->node_name, s, len))
+        return __atomic_load_n(&vm->node_self, __ATOMIC_ACQUIRE);
+    uint32_t found = 0;
+    for (uint32_t n = 1; vm->node_names && n <= MAX_NODE; n++) {
+        const char *x = vm->node_names[n];
+        if (!x || strlen(x) != len || memcmp(x, s, len)) continue;
+        if (connected_now(vm, n)) return n;
+        found = n;
+    }
+    return found;
+}
+
+static void n_set_name(Process *p, Word *a, Word *r) {
+    (void)r;
+    no_caps(p, "node.set_name");
+    uint32_t len;
+    const char *s = name_arg(p, a[0], "node.set_name", &len);
+    if (!len) vm_trap(p, "E_RANGE", "node.set_name: a node's name is not empty");
+    VM *vm = p->vm;
+    char had[MAX_NODE_NAME + 1] = "";
+    plat_lock(vm->lock);
+    if (!vm->node_name) vm->node_name = xstrndup(s, len);
+    bool ok = strlen(vm->node_name) == len && !memcmp(vm->node_name, s, len); /* (once; again the same is no change) */
+    if (!ok) snprintf(had, sizeof had, "%s", vm->node_name);
+    plat_unlock(vm->lock);
+    if (!ok) vm_trap(p, "E_EXISTS", "node.set_name: this VM is named %s", had);
+}
+
+/* A node's name: this VM's for 0 or its own number; "" if it has none. */
+static void n_name(Process *p, Word *a, Word *r) {
+    if (a[0].i < 0 || a[0].i > MAX_NODE) vm_trap(p, "E_RANGE", "node.name: a node's number is 0 to %d", MAX_NODE);
+    VM *vm = p->vm;
+    uint32_t n = (uint32_t)a[0].i;
+    char s[MAX_NODE_NAME + 1] = "";
+    plat_lock(vm->lock);
+    const char *x = !n || n == __atomic_load_n(&vm->node_self, __ATOMIC_ACQUIRE) ? vm->node_name
+                    : vm->node_names                                         ? vm->node_names[n]
+                                                                             : NULL;
+    if (x) snprintf(s, sizeof s, "%s", x);
+    plat_unlock(vm->lock);
+    r[0].r = &str_new(p, s, strlen(s))->h;
+}
+
+static void n_number(Process *p, Word *a, Word *r) {
+    uint32_t len;
+    const char *s = name_arg(p, a[0], "node.number", &len);
+    plat_lock(p->vm->lock);
+    r[0].i = len ? number_named(p->vm, s, len) : 0;
+    plat_unlock(p->vm->lock);
+}
+
+/* For std.node's handshake: node n calls itself this. False, keeping nothing,
+ * if another node connected now, or this VM, has the name. */
+static void n_named(Process *p, Word *a, Word *r) {
+    no_caps(p, "node.named");
+    if (a[0].i < 1 || a[0].i > MAX_NODE) vm_trap(p, "E_RANGE", "node.named: a node's number is 1 to %d", MAX_NODE);
+    uint32_t len, n = (uint32_t)a[0].i;
+    const char *s = name_arg(p, a[1], "node.named", &len);
+    VM *vm = p->vm;
+    plat_lock(vm->lock);
+    uint32_t has = len ? number_named(vm, s, len) : 0;
+    bool ok = !has || has == n || (has != __atomic_load_n(&vm->node_self, __ATOMIC_ACQUIRE) && !connected_now(vm, has));
+    if (vm->node_name && strlen(vm->node_name) == len && !memcmp(vm->node_name, s, len)) ok = false;
+    if (ok) {
+        if (!vm->node_names) vm->node_names = xcalloc(MAX_NODE + 1, sizeof *vm->node_names);
+        free(vm->node_names[n]);
+        vm->node_names[n] = len ? xstrndup(s, len) : NULL;
+    }
+    plat_unlock(vm->lock);
+    r[0].i = ok;
+}
+
+/* node.watch(on): whether this process is told, by a NodeEvent, of each
+ * connection to another node that comes or goes. */
+static void n_watch(Process *p, Word *a, Word *r) {
+    (void)r;
+    VM *vm = p->vm;
+    plat_lock(vm->lock);
+    bool had = false;
+    for (size_t i = 0; i < vm->node_watchers.n && !had; i++) had = vm->node_watchers.v[i] == p->pid;
+    if (a[0].i && !had) VEC_PUSH(vm->node_watchers, p->pid);
+    if (!a[0].i && had)
+        for (size_t i = 0; i < vm->node_watchers.n; i++)
+            if (vm->node_watchers.v[i] == p->pid) vm->node_watchers.v[i] = vm->node_watchers.v[--vm->node_watchers.n];
+    plat_unlock(vm->lock);
+}
+
+/* The numbers of the nodes connected now, in order. */
+static void n_connected_nodes(Process *p, Word *a, Word *r) {
+    (void)a;
+    VM *vm = p->vm;
+    uint32_t count = 0;
+    for (uint32_t n = 1; vm->node_route && n <= MAX_NODE; n++) count += connected_now(vm, n);
+    ObjList *l = list_new(p, count);
+    for (uint32_t n = 1; vm->node_route && n <= MAX_NODE && l->len < count; n++)
+        if (connected_now(vm, n)) list_push(p, l, (Word){.i = n}, T_I64);
+    r[0].r = &l->h;
 }
 
 static void n_route(Process *p, Word *a, Word *r) {
@@ -360,7 +489,7 @@ static void n_deliver(Process *p, Word *a, Word *r) {
     sched_node_deliver(p, l->items[0].u, l->items[1], l->tags[1]);
 }
 
-/* A control frame from a node, for link, monitor and proc.call across nodes:
+/* A control frame from a node, for link, monitor, proc.call and kill across nodes:
  * [kind, pid, ...] (sched.c, "across nodes"). */
 static void n_control(Process *p, Word *a, Word *r) {
     (void)r;
@@ -420,6 +549,17 @@ static const NativeDef NODE_NATIVES[] = {
     N("node.global", 1, T(T_I64), 1, T(T_I64), n_global, "A pid as other nodes can use it, naming this node."),
     N("node.of", 1, T(T_I64), 1, T(T_I64), n_node_of, "The node a pid names, or 0 for a plain local one."),
     N("node.attach", 2, T(T_I64, T_I64), 0, T(0), n_attach, "Messages for a node go to this process, as [pid, value] (0: nowhere). For std.node."),
+    N("node.set_name", 1, T(T_R), 0, T(0), n_set_name,
+      "Give this VM its name among nodes (as Erlang's name@host): once, not empty, at most 255 bytes. Sent to each node it connects to."),
+    N("node.name", 1, T(T_I64), 1, T(T_R), n_name,
+      "A node's name, as it gave it when it last connected; this VM's for 0 or its own number; \"\" if none is known."),
+    N("node.number", 1, T(T_R), 1, T(T_I64), n_number,
+      "The number of the node with this name: this VM's, a connected node's, or else the last node that had it; 0 if none."),
+    N("node.named", 2, T(T_I64, T_R), 1, T(T_B), n_named,
+      "Record the name a node gave; false if this VM or another connected node has it. For std.node."),
+    N("node.watch", 1, T(T_B), 0, T(0), n_watch,
+      "Whether this process gets a NodeEvent {node, name, up} for each connection to another node that comes (up) or goes, from now on."),
+    N("node.nodes", 0, T(0), 1, T(T_R), n_connected_nodes, "The numbers of the nodes connected now, as a list, in order."),
     N("node.route", 1, T(T_I64), 1, T(T_I64), n_route, "The process messages for a node go to, or 0. For std.node."),
     N("node.function", 2, T(T_R, T_R), 1, T(T_R), n_function, "A closure for a module's exported function, as a peer names it. For std.node."),
     N("node.frame", 1, T(T_R), 1, T(T_R), n_frame, "A value as bytes for a connection, with its length. For std.node."),
@@ -427,7 +567,7 @@ static const NativeDef NODE_NATIVES[] = {
     N("node.decode", 1, T(T_R), 1, T(T_R), n_decode, "A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node."),
     N("node.deliver", 1, T(T_R), 0, T(0), n_deliver, "Send [pid, value] to its process here. For std.node."),
     N("node.control", 1, T(T_R), 0, T(0), n_control,
-      "Act on a control frame from a node: link, unlink, exit, monitor, down, reply or noproc. For std.node."),
+      "Act on a control frame from a node: link, unlink, exit, monitor, down, reply, noproc or kill. For std.node."),
     N("node.proof", 3, T(T_R, T_R, T_R), 1, T(T_R), n_proof, "HMAC-SHA-256 of a role and a nonce, keyed by a cookie. For std.node."),
     N("node.proof_ok", 4, T(T_R, T_R, T_R, T_R), 1, T(T_B), n_proof_ok, "Whether a proof is right, in constant time. For std.node."),
 };

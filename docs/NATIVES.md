@@ -64,13 +64,19 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `node.global` | i64 | i64 | A pid as other nodes can use it, naming this node. |
 | `node.of` | i64 | i64 | The node a pid names, or 0 for a plain local one. |
 | `node.attach` | i64, i64 | - | Messages for a node go to this process, as [pid, value] (0: nowhere). For std.node. |
+| `node.set_name` | r | - | Give this VM its name among nodes (as Erlang's name@host): once, not empty, at most 255 bytes. Sent to each node it connects to. |
+| `node.name` | i64 | r | A node's name, as it gave it when it last connected; this VM's for 0 or its own number; "" if none is known. |
+| `node.number` | r | i64 | The number of the node with this name: this VM's, a connected node's, or else the last node that had it; 0 if none. |
+| `node.named` | i64, r | b | Record the name a node gave; false if this VM or another connected node has it. For std.node. |
+| `node.watch` | b | - | Whether this process gets a NodeEvent {node, name, up} for each connection to another node that comes (up) or goes, from now on. |
+| `node.nodes` | - | r | The numbers of the nodes connected now, as a list, in order. |
 | `node.route` | i64 | i64 | The process messages for a node go to, or 0. For std.node. |
 | `node.function` | r, r | r | A closure for a module's exported function, as a peer names it. For std.node. |
 | `node.frame` | r | r | A value as bytes for a connection, with its length. For std.node. |
 | `node.frame_value` | r, r | r | A frame of a list with the second item of [pid, value] added. For std.node. |
 | `node.decode` | r | r | A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node. |
 | `node.deliver` | r | - | Send [pid, value] to its process here. For std.node. |
-| `node.control` | r | - | Act on a control frame from a node: link, unlink, exit, monitor, down, reply or noproc. For std.node. |
+| `node.control` | r | - | Act on a control frame from a node: link, unlink, exit, monitor, down, reply, noproc or kill. For std.node. |
 | `node.proof` | r, r, r | r | HMAC-SHA-256 of a role and a nonce, keyed by a cookie. For std.node. |
 | `node.proof_ok` | r, r, r, r | b | Whether a proof is right, in constant time. For std.node. |
 
@@ -253,5 +259,5 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `module.loaded` | r | b | Whether a module is loaded: the module that name means to the caller, as for module.load. |
 | `module.function` | r, r | r | A closure for a function a loaded module exports, to call with calli (its signature is checked then). |
 | `module.exports` | r | r | The names of the functions a loaded module exports. |
-| `module.handle` | r, r | r | A closure for a function a loaded module exports that always calls its current version: unlike module.function's, it follows module.reload, so it can be kept. Call it with calli. A reload that would change the function's signature, or remove it, is refused (E_LINK_RELOAD, E_LINK_UNDEF), as for any module calling it. |
+| `module.handle` | r, r | r | A closure for a function a loaded module exports that always calls its current version: unlike module.function's, it follows module.reload, so it can be kept. Call it with calli. A reload may remove the function or change its signature, which it may not for a module calling it: the handle then raises E_LINK_UNDEF when called, and calls the function again once a later version has it with the handle's signature. |
 | `module.upgrade` | r | r | A struct object of a type that a reload changed, as an object of the type its module's current version has under that name: fields that keep their name and type keep their values, new ones start empty. Anything else is returned as it is. |

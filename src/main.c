@@ -46,7 +46,7 @@ static void usage(FILE *f) {
           "        --jit-hot N                     calls or loop iterations before compiling (1000)\n"
           "        --jit-report FILE|-             what the JIT did, written when the run ends\n"
           "  debug [-L dir] [VM options] file.(masm|mlwso)   interactive debugger (type 'help')\n"
-          "  top   [HOST:PORT] [--once]            live process table of a VM run with --monitor\n"
+          "  top   [https://]HOST:PORT [--ca FILE] [--once]   live process table of a VM run with --monitor\n"
           "  serve --programs DIR [--monitor [HOST:]PORT] [--monitor-cert F --monitor-key F] [VM options]\n"
           "                                        a VM that stays up, starting programs from DIR when its\n"
           "                                        monitor is asked to (the token printed; 127.0.0.1:7070)\n"

@@ -685,9 +685,12 @@ static LModule *require(VM *vm, const char *name, const Home *home, MlwsError *e
 /* module.handle: a function whose code is one tail call to lm's exported
  * function fname, in a module of its own that imports lm's by name, with lm's
  * home. As every module's calls to lm do, the call moves to each new version
- * (retarget_users), so a closure of it calls the current version; and a
- * reload that would change the function's signature, or take it away, is
- * refused, as for any user. One per module and function, for the VM's life. */
+ * (retarget_users), so a closure of it calls the current version. A new
+ * version without the function, or with another signature, is no reason to
+ * refuse the reload, as it is for other users: the call goes to `gone`, a
+ * function of the same signature that raises E_LINK_UNDEF, until a version
+ * has the function again (retarget_handle). One per module and function,
+ * for the VM's life. */
 static const char *handle_type(uint8_t t) { return t == T_R ? "ref" : t == T_P ? "ptr" : type_name((MlwsType)t); }
 
 Function *vm_handle(VM *vm, LModule *lm, const char *fname, MlwsError *err) {
@@ -709,7 +712,7 @@ Function *vm_handle(VM *vm, LModule *lm, const char *fname, MlwsError *err) {
     const MFunc *f = &lm->m->funcs[fi];
     StrBuf t = {0}, name = {0};
     sb_printf(&name, "(handle) %s.%s #%zu", lm->m->name, fname, vm->handles.n);
-    sb_printf(&t, ".import %s as target\n.export h\n.func h(", lm->m->name);
+    sb_printf(&t, ".import %s as target\n.export h, gone\n.func h(", lm->m->name); /* (gone exported: kept by --opt) */
     for (int i = 0; i < f->nparams; i++) sb_printf(&t, "%s%s a%d", i ? ", " : "", handle_type(f->params[i]), i);
     sb_puts(&t, ")");
     if (f->nrets) {
@@ -717,9 +720,17 @@ Function *vm_handle(VM *vm, LModule *lm, const char *fname, MlwsError *err) {
         for (int i = 0; i < f->nrets; i++) sb_printf(&t, "%s%s", i ? ", " : "", handle_type(f->rets[i]));
         sb_puts(&t, ")");
     }
+    size_t sig = t.n; /* (the signature, from its "(") */
     sb_printf(&t, "\n    tcall target.%s (", fname);
     for (int i = 0; i < f->nparams; i++) sb_printf(&t, "%sa%d", i ? ", " : "", i);
     sb_puts(&t, ")\n.endf\n");
+    size_t open = (size_t)(strchr(t.s, '(') - t.s);
+    char *sigtext = xstrndup(t.s + open, sig - open); /* (t moves as it grows) */
+    sb_printf(&t, ".func gone%s\n    new R0, Error\n    mov R0->Error.code, \"E_LINK_UNDEF\"\n"
+                  "    mov R0->Error.message, \"module %s's current version has no function '%s' of the signature the "
+                  "handle was made for\"\n    throw R0\n.endf\n",
+              sigtext, lm->m->name, fname);
+    free(sigtext);
     Module *m = assemble_text(name.s, t.s, name.s, (const char *const *)vm->libpaths.v, vm->libpaths.n, err);
     Function *h = NULL;
     if (m) {
@@ -730,6 +741,7 @@ Function *vm_handle(VM *vm, LModule *lm, const char *fname, MlwsError *err) {
         } else {
             LModule *hm = register_module(vm, m, name.s, NULL, lm->home, false, err);
             if (hm) {
+                hm->handle = true;
                 h = &hm->funcs[module_find_export_func(hm->m, "h")];
                 smap_put(&vm->handles, key.s, h);
             }
@@ -808,9 +820,11 @@ static bool same_signature(const MFunc *a, const MFunc *b) {
 }
 
 /* Whether module x, which may use old, links to its new version as it is:
- * its compiled operands stay, but for the functions. */
+ * its compiled operands stay, but for the functions. (A handle's module
+ * always does: retarget_handle.) */
 static bool still_links(const LModule *x, const LModule *old, const LModule *nw, MlwsError *err) {
     const Module *m = x->m;
+    if (x->handle) return true;
     for (uint32_t i = 0; i < m->nfuncs; i++) {
         const Function *f = &x->funcs[i];
         if (!(f->mf->flags & MF_IMPORT) || f->target->mod != old) continue;
@@ -836,12 +850,40 @@ static bool still_links(const LModule *x, const LModule *old, const LModule *nw,
     return true;
 }
 
+/* A handle's module x, whose target's version old a reload replaced with nw:
+ * h's call goes to nw's function of that name, if it has one with h's
+ * signature, or else to gone. (Its import follows, so old is not held.) */
+static void retarget_handle(VM *vm, LModule *x, const LModule *nw) {
+    x->deps[0] = (LModule *)nw;
+    Function *imp = NULL, *h = &x->funcs[module_find_export_func(x->m, "h")], *to = NULL;
+    for (uint32_t k = 0; k < x->m->nfuncs && !imp; k++)
+        if (x->funcs[k].mf->flags & MF_IMPORT) imp = &x->funcs[k];
+    to = &x->funcs[module_find_export_func(x->m, "gone")];
+    int fi = module_find_export_func(nw->m, imp->name);
+    if (fi >= 0 && !(nw->m->funcs[fi].flags & MF_IMPORT)) {
+        const MFunc *a = h->mf, *b = &nw->m->funcs[fi];
+        if (a->nparams == b->nparams && a->nrets == b->nrets && !memcmp(a->params, b->params, a->nparams) &&
+            !memcmp(a->rets, b->rets, a->nrets))
+            to = &nw->funcs[fi];
+    }
+    imp->target = to;
+    interp_jit_forget(vm, h);
+    for (uint32_t pc = 0; pc < h->ncode; pc++)
+        for (int o = 0; o < h->code[pc].nops; o++)
+            if (h->code[pc].ops[o].mode == OM_FUNC) interp_retarget(vm, &h->code[pc], o, to);
+    interp_jit_again(vm, h);
+}
+
 /* With the world stopped: every use of old's functions in other modules, of
  * every version, is a use of the new ones. */
 static void retarget_users(VM *vm, const LModule *old, const LModule *nw) {
     for (size_t i = 0; i < vm->mods.n; i++) {
         LModule *x = vm->mods.v[i];
         if (x == old || x == nw || x->state != LM_READY) continue;
+        if (x->handle) {
+            if (x->deps[0] == old) retarget_handle(vm, x, nw);
+            continue;
+        }
         for (uint32_t d = 0; d < x->m->nimports; d++)
             if (x->deps[d] == old) x->deps[d] = (LModule *)nw;
         for (uint32_t k = 0; k < x->m->nfuncs; k++) {

@@ -179,6 +179,7 @@ typedef struct LModule {
     char *key;
     atomic_bool shared_name;
     bool replaced;            /* a newer version took its name (vm_reload) */
+    bool handle;              /* a module.handle's own module (vm_handle): h, and gone in its place */
     struct LModule **deps;    /* m->nimports: the module each import resolved to */
     int index;
     int state;
@@ -282,6 +283,9 @@ typedef struct VM {
     struct Caps *default_caps; /* --cap: every process's, as default_quota */
     uint32_t node_self;      /* this VM's number among nodes, or 0 (dist.c) */
     uint64_t *node_route;    /* per node: the process that carries its messages, or 0 */
+    char *node_name;         /* [lock] this VM's name among nodes, or NULL (node.set_name) */
+    char **node_names;       /* [lock] per node: the name it gave when it last connected, or NULL */
+    VEC(uint64_t) node_watchers; /* [lock] processes told of each connection that comes or goes (node.watch) */
     struct Bundle *bundle;   /* the program this executable carries, or NULL: modules are found there first */
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
     bool gc_verify;          /* after each minor collection's marking, check it against a walk of the whole heap */
@@ -827,6 +831,7 @@ void sched_monitor(Process *p, uint64_t pid);
 void sched_node_control(Process *p, const ObjList *frame);
 void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag);
 void sched_node_down(VM *vm, uint32_t node);
+void sched_node_event(VM *vm, uint32_t node, bool up); /* a NodeEvent to each watcher */
 void sched_set_quota(Process *p, int kind, uint64_t limit);
 bool sched_alive(VM *vm, uint64_t pid);
 /* The monitor's log channel (vm.c): keep the last cap entries from now on; add

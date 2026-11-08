@@ -295,6 +295,9 @@ node_pair() { # [tls]
         perl -e 'select(undef, undef, undef, 0.25)'
     done
     [ -s "$NODED/port" ] || { kill $TWO 2>/dev/null || true; fail "node ${1:-}: the second VM did not start"; }
+    if [ -z "${1:-}" ]; then # another node with node 2's name: refused, and node 2 unharmed
+        perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_node/clash.masm "$(tr -d '\r\n' < "$NODED/port")" >/dev/null 2>"$NODED/err" || { kill $TWO 2>/dev/null || true; cat "$NODED/err" >&2; fail "node names: clash"; }
+    fi
     perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_node/one.masm "$(tr -d '\r\n' < "$NODED/port")" ${1:-} >/dev/null 2>"$NODED/err" || { kill $TWO 2>/dev/null || true; cat "$NODED/err" >&2; fail "node ${1:-}"; }
     wait $TWO
     rm -f "$NODED/port"
@@ -703,7 +706,7 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf http://127.0.0.1:$PORT/ | grep -q "MLWSVM monitor" || fail "dashboard"
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" = 404 ] || fail "404"
     curl -sf http://127.0.0.1:$PORT/api/modules | grep -q '"name":"workers","path":"[^"]*","version":1,"current":true,"state":"ready"' || fail "/api/modules"
-    curl -sf http://127.0.0.1:$PORT/api/nodes | grep -q '^{"self":0,"connected":\[\]}$' || fail "/api/nodes"
+    curl -sf http://127.0.0.1:$PORT/api/nodes | grep -q '^{"self":0,"name":"","connected":\[\]}$' || fail "/api/nodes"
 fi
 kill $VMPID 2>/dev/null || true
 wait $VMPID 2>/dev/null || true
@@ -783,6 +786,14 @@ if command -v curl >/dev/null 2>&1; then
         grep -q "^mlwsvm: monitor at https://" "$MOND/acted.err" || fail "TLS: https printed"
         [ "$(curl -s -o /dev/null -w '%{http_code}' --cacert tests/net/_tls/cert.pem -X POST -H "$A" https://localhost:$PORT/api/proc/2/kill)" = 200 ] || fail "TLS: an action"
         [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/api/vm)" != 200 ] || fail "TLS: plain HTTP answered"
+        # mlwsvm top over HTTPS: with the authority, from the address the run
+        # printed too; without it, the certificate is refused.
+        $BIN top --once --ca tests/net/_tls/cert.pem https://localhost:$PORT | grep -q "recent exits" || fail "TLS: top"
+        $BIN top --once --ca tests/net/_tls/cert.pem "https://localhost:$PORT/#token=s3cret" | grep -q "PID" || fail "TLS: top from the printed address"
+        set +e
+        TOPERR=$($BIN top --once https://localhost:$PORT 2>&1 >/dev/null); RC=$?
+        set -e
+        [ $RC = 1 ] && echo "$TOPERR" | grep -q "^mlwsvm top: https://localhost:$PORT: " || fail "TLS: top without the authority (exit $RC): $TOPERR"
         kill $VMPID 2>/dev/null || true
         wait $VMPID 2>/dev/null || true
     fi
@@ -840,6 +851,33 @@ if command -v curl >/dev/null 2>&1; then
     wait $VMPID; RC=$?
     set -e
     [ $RC = 0 ] || fail "serve: exit after shutdown ($RC)"
+
+    # examples/serve/echo.masm, as its comment says to run it: two messages
+    # sent, each in the log, then goodbye.
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN serve --programs examples/serve --monitor 127.0.0.1:$PORT >/dev/null 2>"$MOND/echo.err" &
+    VMPID=$!
+    i=0
+    until curl -sf $U/api/vm 2>/dev/null | grep -q '"serve":true'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "echo: serve did not start"; sleep 0.1
+    done
+    [ "$(code -H "$A" --data '{"path":"echo.masm","args":["2"]}' $U/api/programs)" = 200 ] || fail "echo: start ($(cat "$MOND/r"))"
+    i=0
+    until curl -sf "$U/api/log" | grep -q 'hello: echo is listening for 2 messages'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "echo: hello ($(curl -sf $U/api/log))"; sleep 0.1
+    done
+    EP=$(curl -sf $U/api/programs | sed 's/.*"path":"echo.masm"[^}]*"pid":\([0-9]*\).*/\1/')
+    [ "$(code -H "$A" --data '7' $U/api/proc/$EP/send)" = 200 ] || fail "echo: send ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"n":[1,"x"]}' $U/api/proc/$EP/send)" = 200 ] || fail "echo: send a map"
+    i=0
+    until curl -sf "$U/api/log" | grep -q 'echo: that was the last one; goodbye'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "echo: goodbye ($(curl -sf $U/api/log))"; sleep 0.1
+    done
+    L=$(curl -sf "$U/api/log")
+    echo "$L" | grep -q '"text":"echo 1/2: 7"' || fail "echo: the first message ($L)"
+    echo "$L" | grep -q '"text":"echo 2/2: {\\"n\\":\[1,\\"x\\"\]}"' || fail "echo: the second message ($L)"
+    curl -sf $U/api/programs | grep -q '"path":"echo.masm","cap":null,"quota":null,"args":\["2"\],"pid":[0-9]*,"state":"done","exit":0' || fail "echo: done ($(curl -sf $U/api/programs))"
+    [ "$(code -H "$A" $U/api/shutdown)" = 200 ] || fail "echo: shutdown"
+    wait $VMPID || fail "echo: serve's exit"
     rm -rf "${MOND:?}"
 fi
 echo "check-tools: profile, .loc, bundle, dap, node, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"

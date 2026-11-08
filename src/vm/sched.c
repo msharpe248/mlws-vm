@@ -578,7 +578,7 @@ static bool has_pid(const PidVec *v, uint64_t pid) {
  * far end the reader gives it to sched_node_control. When a connection goes,
  * sched_node_down treats every process over there as failed with E_NODE_DOWN. */
 
-enum { NC_LINK = 3, NC_UNLINK, NC_EXIT, NC_MONITOR, NC_DOWN, NC_REPLY, NC_NOPROC };
+enum { NC_LINK = 3, NC_UNLINK, NC_EXIT, NC_MONITOR, NC_DOWN, NC_REPLY, NC_NOPROC, NC_KILL };
 
 static uint32_t self_node(VM *vm) { return __atomic_load_n(&vm->node_self, __ATOMIC_ACQUIRE); }
 
@@ -611,7 +611,7 @@ static void ctl_send(VM *vm, Process *f, uint32_t node, int kind, int n, const W
     deliver(vm->sched, carrier, &m);
 }
 
-/* [kind, to, a]: link, unlink and monitor (a: the asker), noproc (a: the call's id) */
+/* [kind, to, a]: link, unlink, monitor and kill (a: the asker), noproc (a: the call's id) */
 static void ctl_pair(VM *vm, int kind, uint64_t to, uint64_t a) {
     Process *f = my_frag(vm->sched);
     frag_reset(f);
@@ -736,6 +736,10 @@ static void finish(Sched *s, Process *p, bool failed) {
 
 void sched_kill(Process *p, uint64_t pid, const char *code, const char *msg) {
     Sched *s = p->vm->sched;
+    if (far_node(p->vm, &pid)) { /* its node kills it (as E_KILLED); dropped if that node is not connected */
+        ctl_pair(p->vm, NC_KILL, pid, global_pid(p->vm, p->pid));
+        return;
+    }
     Process *t = pin(s, pid);
     if (!t) return;
     bool claimed = is_live(t) && kill_locked(t, code, msg);
@@ -908,6 +912,41 @@ void sched_node_down(VM *vm, uint32_t node) {
     }
 }
 
+/* A connection to node came or went: a NodeEvent {node, name, up} to each
+ * process watching (node.watch), after what the connection's going does to
+ * the processes tied to it (sched_node_down). Watchers that have ended are
+ * dropped from the list. */
+void sched_node_event(VM *vm, uint32_t node, bool up) {
+    Sched *s = vm->sched;
+    PidVec to = {0};
+    char name[256] = "";
+    plat_lock(vm->lock);
+    for (size_t i = 0; i < vm->node_watchers.n; i++) VEC_PUSH(to, vm->node_watchers.v[i]);
+    if (vm->node_names && vm->node_names[node]) snprintf(name, sizeof name, "%s", vm->node_names[node]);
+    plat_unlock(vm->lock);
+    for (size_t i = 0; i < to.n; i++) {
+        Process *t = pin(s, to.v[i]);
+        bool live = t && accepts(t);
+        if (t) plat_unlock(t->lock);
+        if (!live) {
+            plat_lock(vm->lock);
+            for (size_t k = 0; k < vm->node_watchers.n; k++)
+                if (vm->node_watchers.v[k] == to.v[i]) vm->node_watchers.v[k--] = vm->node_watchers.v[--vm->node_watchers.n];
+            plat_unlock(vm->lock);
+            continue;
+        }
+        Process *f = my_frag(s);
+        frag_reset(f);
+        ObjStruct *e = struct_new(f, &VM_BUILTIN_DEFS[BUILTIN_NODEEVENT]);
+        e->fields[NEF_NODE].i = node;
+        e->fields[NEF_NAME].r = str_new(f, name, strlen(name));
+        e->fields[NEF_UP].i = up;
+        InMsg m = frag_take(f, (Word){.r = e}, T_R);
+        deliver(s, to.v[i], &m);
+    }
+    VEC_FREE(to);
+}
+
 /* A string field of a control frame, or NULL. */
 static const ObjString *frame_str(const ObjList *l, uint32_t i) {
     const Obj *o = l->items[i].r;
@@ -918,12 +957,12 @@ void sched_node_control(Process *p, const ObjList *l) {
     VM *vm = p->vm;
     Sched *s = vm->sched;
     static const uint32_t LEN[] = {[NC_LINK] = 3, [NC_UNLINK] = 3, [NC_EXIT] = 6, [NC_MONITOR] = 3,
-                                   [NC_DOWN] = 6, [NC_REPLY] = 4, [NC_NOPROC] = 3};
+                                   [NC_DOWN] = 6, [NC_REPLY] = 4, [NC_NOPROC] = 3, [NC_KILL] = 3};
     if (!l || l->h.kind != OBJ_LIST || l->len < 3 || !type_is_int((MlwsType)l->tags[0]) ||
         !type_is_int((MlwsType)l->tags[1]) || !type_is_int((MlwsType)l->tags[2]))
         vm_trap(p, "E_PARSE", "node.control: expected [kind, pid, pid or id, ...]");
     int64_t kind = l->items[0].i;
-    if (kind < NC_LINK || kind > NC_NOPROC || l->len != LEN[kind] ||
+    if (kind < NC_LINK || kind > NC_KILL || l->len != LEN[kind] ||
         ((kind == NC_EXIT || kind == NC_DOWN) && !type_is_int((MlwsType)l->tags[3])))
         vm_trap(p, "E_PARSE", "node.control: a frame of kind %lld that is not one", (long long)kind);
     uint64_t to = l->items[1].u, a = l->items[2].u;
@@ -987,6 +1026,18 @@ void sched_node_control(Process *p, const ObjList *l) {
         }
         if (t) plat_unlock(t->lock);
         gc_free_list(m.objs);
+        return;
+    }
+    case NC_KILL: { /* a, on another node, kills `to` */
+        bool claimed = false;
+        if (t && is_live(t) && !t->kill_req) {
+            char msg[96];
+            snprintf(msg, sizeof msg, "killed by process %llu on node %u", (unsigned long long)(a & PID_LOCAL),
+                     (unsigned)(a >> NODE_SHIFT));
+            claimed = kill_locked(t, "E_KILLED", msg);
+        }
+        if (t) plat_unlock(t->lock);
+        if (claimed) finish(s, t, true);
         return;
     }
     case NC_NOPROC: /* call a of `to` went to a process that is not there */

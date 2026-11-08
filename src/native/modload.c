@@ -189,7 +189,7 @@ static const NativeDef MODULE_NATIVES[] = {
       "A closure for a function a loaded module exports, to call with calli (its signature is checked then)."),
     N("module.exports", 1, T(T_R), 1, T(T_R), n_exports, "The names of the functions a loaded module exports."),
     N("module.handle", 2, T(T_R, T_R), 1, T(T_R), n_handle,
-      "A closure for a function a loaded module exports that always calls its current version: unlike module.function's, it follows module.reload, so it can be kept. Call it with calli. A reload that would change the function's signature, or remove it, is refused (E_LINK_RELOAD, E_LINK_UNDEF), as for any module calling it."),
+      "A closure for a function a loaded module exports that always calls its current version: unlike module.function's, it follows module.reload, so it can be kept. Call it with calli. A reload may remove the function or change its signature, which it may not for a module calling it: the handle then raises E_LINK_UNDEF when called, and calls the function again once a later version has it with the handle's signature."),
     N("module.upgrade", 1, T(T_R), 1, T(T_R), n_upgrade,
       "A struct object of a type that a reload changed, as an object of the type its module's current version has under that name: fields that keep their name and type keep their values, new ones start empty. Anything else is returned as it is."),
 };

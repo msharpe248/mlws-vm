@@ -4,10 +4,14 @@
  * plat_err_code names for MLWSVM.
  *
  * Non-blocking pipes use PIPE_NOWAIT: a read of an empty pipe fails with
- * ERROR_NO_DATA, and a write takes what fits. The poller waits for sockets on
- * an I/O completion port, through the AFD driver's poll requests, and looks at
- * the pipes it waits for every millisecond (an anonymous pipe has no readiness
- * to wait for). */
+ * ERROR_NO_DATA, and a write takes what fits. Our end of a child's output is
+ * instead a named pipe opened for overlapped I/O (WFd.ovl), as libuv makes
+ * them: a read looks first (PeekNamedPipe) if it must not wait. The poller
+ * waits for sockets on an I/O completion port, through the AFD driver's poll
+ * requests, and for overlapped pipes there too, by a zero-byte read, which
+ * completes once there is data or the other end has closed; it looks at
+ * other pipes (an anonymous pipe, such as a stdin given to us, has no
+ * readiness to wait for), and pipes waited for writing, every millisecond. */
 #ifdef _WIN32
 #include "win32.h"
 
@@ -152,10 +156,51 @@ int plat_fd_socket(int fd) {
     return e ? (int)e->s : -1;
 }
 
+/* An event for this thread's overlapped reads, made once. Its handle's low
+ * bit, set in an OVERLAPPED, keeps a read's completion off a port. */
+static HANDLE read_event(void) {
+    static MLWS_THREAD_LOCAL HANDLE ev;
+    if (!ev) ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+    return ev;
+}
+
+static bool pipe_gone(DWORD x) { return x == ERROR_BROKEN_PIPE || x == ERROR_HANDLE_EOF || x == ERROR_PIPE_NOT_CONNECTED; }
+
+/* A read of an overlapped pipe: one that must not wait reads only what is
+ * there. */
+static long ovl_read(WFd *e, void *buf, size_t n, int *err) {
+    if (e->nonblock) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(e->h, NULL, 0, NULL, &avail, NULL)) {
+            DWORD x = GetLastError();
+            return pipe_gone(x) ? 0 : set_err(err, x);
+        }
+        if (!avail) return PLAT_IO_AGAIN;
+        if (n > avail) n = avail;
+    }
+    HANDLE ev = read_event();
+    if (!ev) return set_err(err, GetLastError());
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof ov);
+    ov.hEvent = (HANDLE)((uintptr_t)ev | 1);
+    DWORD got = 0;
+    if (!ReadFile(e->h, buf, (DWORD)n, NULL, &ov)) {
+        DWORD x = GetLastError();
+        if (x != ERROR_IO_PENDING) return pipe_gone(x) ? 0 : set_err(err, x);
+        WaitForSingleObject(ev, INFINITE);
+    }
+    if (!GetOverlappedResult(e->h, &ov, &got, FALSE)) {
+        DWORD x = GetLastError();
+        return pipe_gone(x) ? 0 : set_err(err, x);
+    }
+    return (long)got;
+}
+
 long plat_fd_read(int fd, void *buf, size_t n, int *err) {
     WFd *e = wfd_get(fd);
     if (!e) return set_err(err, ERROR_INVALID_HANDLE);
     if (n > 0x7fffffff) n = 0x7fffffff;
+    if (e->kind == WFD_PIPE && e->ovl) return ovl_read(e, buf, n, err);
     if (e->kind == WFD_SOCKET) {
         int r = recv(e->s, buf, (int)n, 0);
         if (r >= 0) return r;
@@ -167,7 +212,7 @@ long plat_fd_read(int fd, void *buf, size_t n, int *err) {
     if (ReadFile(e->h, buf, (DWORD)n, &got, NULL)) return (long)got;
     DWORD x = GetLastError();
     if (e->kind == WFD_PIPE && x == ERROR_NO_DATA) return PLAT_IO_AGAIN; /* empty, PIPE_NOWAIT */
-    if (x == ERROR_BROKEN_PIPE || x == ERROR_HANDLE_EOF || x == ERROR_PIPE_NOT_CONNECTED) return 0;
+    if (pipe_gone(x)) return 0;
     return set_err(err, x);
 }
 
@@ -216,6 +261,8 @@ bool plat_fd_set_nonblocking(int fd, bool on) {
     if (e->kind == WFD_SOCKET) {
         u_long nb = on;
         if (ioctlsocket(e->s, FIONBIO, &nb) != 0) return false;
+    } else if (e->kind == WFD_PIPE && e->ovl) {
+        /* (an overlapped pipe stays PIPE_WAIT: a read that must not wait looks first) */
     } else if (e->kind == WFD_PIPE) {
         DWORD m = PIPE_READMODE_BYTE | (on ? PIPE_NOWAIT : PIPE_WAIT);
         if (!SetNamedPipeHandleState(e->h, &m, NULL, NULL)) return false;
@@ -370,6 +417,53 @@ static HANDLE inheritable(HANDLE h) {
     return d;
 }
 
+/* A pipe for a child's output: our end, read, a named pipe opened for
+ * overlapped I/O; the child's, written, a plain handle (as libuv's
+ * uv_spawn makes them). The name is ours alone (FILE_FLAG_FIRST_PIPE_INSTANCE),
+ * and the pipe takes no other client. */
+static bool output_pipe(HANDLE *ours, HANDLE *theirs) {
+    static volatile LONG serial;
+    for (int tries = 0; tries < 8; tries++) {
+        char narrow[96];
+        snprintf(narrow, sizeof narrow, "\\\\.\\pipe\\mlwsvm-%lu-%ld", (unsigned long)GetCurrentProcessId(),
+                 (long)InterlockedIncrement(&serial));
+        wchar_t *name = w_str(narrow);
+        HANDLE s = CreateNamedPipeW(name, PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 65536,
+                                    65536, 0, NULL);
+        if (s == INVALID_HANDLE_VALUE) {
+            DWORD x = GetLastError();
+            free(name);
+            if (x == ERROR_ACCESS_DENIED || x == ERROR_PIPE_BUSY) continue; /* (the name is taken) */
+            SetLastError(x);
+            return false;
+        }
+        HANDLE c = CreateFileW(name, GENERIC_WRITE | FILE_READ_ATTRIBUTES, 0, NULL, OPEN_EXISTING, 0, NULL);
+        free(name);
+        if (c == INVALID_HANDLE_VALUE) {
+            DWORD x = GetLastError();
+            CloseHandle(s);
+            SetLastError(x);
+            return false;
+        }
+        OVERLAPPED ov;
+        memset(&ov, 0, sizeof ov);
+        ov.hEvent = (HANDLE)((uintptr_t)read_event() | 1);
+        if (!ConnectNamedPipe(s, &ov) && GetLastError() != ERROR_PIPE_CONNECTED) { /* (connected already: the client is there) */
+            DWORD x = GetLastError();
+            if (x == ERROR_IO_PENDING) CancelIoEx(s, &ov), GetOverlappedResult(s, &ov, &(DWORD){0}, TRUE);
+            CloseHandle(c);
+            CloseHandle(s);
+            SetLastError(x);
+            return false;
+        }
+        *ours = s;
+        *theirs = c;
+        return true;
+    }
+    return false;
+}
+
 bool plat_spawn(char *const argv[], int pipes, PlatChild *c, int *err) {
     /* The child's three handles (inheritable copies) and our ends of its pipes. */
     HANDLE child[3] = {NULL, NULL, NULL}, ours[3] = {NULL, NULL, NULL};
@@ -385,7 +479,7 @@ bool plat_spawn(char *const argv[], int pipes, PlatChild *c, int *err) {
             continue;
         }
         HANDLE r, w;
-        ok = CreatePipe(&r, &w, NULL, 65536);
+        ok = k == 0 ? CreatePipe(&r, &w, NULL, 65536) : output_pipe(&r, &w);
         if (!ok) break;
         child[k] = inheritable(k == 0 ? r : w);
         ours[k] = k == 0 ? w : r;
@@ -433,6 +527,8 @@ bool plat_spawn(char *const argv[], int pipes, PlatChild *c, int *err) {
         if (!ours[k]) continue;
         if (ok) fds[k] = handle_fd(WFD_PIPE, ours[k]);
         else CloseHandle(ours[k]);
+        WFd *pe = fds[k] >= 0 ? wfd_get(fds[k]) : NULL;
+        if (pe && k > 0) pe->ovl = true;
     }
     if (!ok) {
         *err = (int)e;
@@ -760,12 +856,16 @@ bool plat_random_bytes(void *buf, size_t n) {
  * socket is ready: what libuv's uv_poll, wepoll and Rust's mio do, through
  * ntdll's NtDeviceIoControlFile, which Windows does not document but has kept
  * since NT. So a socket waited for costs nothing until it is ready, however
- * many there are. plat_poller_wake posts a completion of its own. A pipe has
- * no readiness to wait for (an anonymous pipe cannot be overlapped), so while
- * one is waited for, the wait wakes every millisecond to look at it.
+ * many there are. plat_poller_wake posts a completion of its own. An
+ * overlapped pipe (our end of a child's output) waited for reading is a
+ * zero-byte read on the port (PipeReq), which completes once there is data or
+ * the other end has closed, as libuv waits for its pipes. Other pipes have no
+ * readiness to wait for (an anonymous pipe cannot be overlapped), and a pipe
+ * waited for writing is ready after one look: while one is waited for, the
+ * wait wakes every millisecond to look at it.
  *
  * The waits armed (one-shot) are kept under a lock, with an index from
- * descriptor to wait. A socket's request (SockPoll) lives until its
+ * descriptor to wait. A request (SockPoll, PipeReq) lives until its
  * completion is taken from the port, even if its wait is forgotten or replaced
  * first: then it is cancelled, and freed when that completion comes. */
 
@@ -774,6 +874,7 @@ bool plat_random_bytes(void *buf, size_t n) {
 #define PIPE_LOOK_MS 1
 #define WAKE_KEY 1
 #define AFD_KEY 2
+#define PIPE_KEY 3
 #ifndef FILE_OPEN
 #define FILE_OPEN 0x00000001
 #endif
@@ -831,12 +932,20 @@ typedef struct {
 } SockPoll;
 
 typedef struct {
+    OVERLAPPED ov; /* the zero-byte read's: its completion's lpOverlapped is &ov */
+    HANDLE h;
+    int fd;
+    bool live; /* still its wait's */
+} PipeReq;
+
+typedef struct {
     int fd;
     int events;
     uint64_t token;
-    bool pipe;
-    bool seen;    /* a pipe: looked at once already (one waited for writing is ready after one look) */
+    bool pipe;    /* a pipe looked at every millisecond */
+    bool seen;    /* such a pipe: looked at once already (one waited for writing is ready after one look) */
     SockPoll *sp; /* a socket: its request, until its completion is taken */
+    PipeReq *pr;  /* an overlapped pipe: its zero-byte read, until its completion is taken */
 } Arm;
 
 struct PlatPoller {
@@ -844,7 +953,7 @@ struct PlatPoller {
     VEC(Arm) arms;
     VEC(uint32_t) at; /* by descriptor: 1 + its wait's index in arms, or 0 */
     size_t pipes;     /* how many of the waits are for pipes */
-    size_t pending;   /* socket requests not yet taken from the port */
+    size_t pending;   /* requests not yet taken from the port */
     HANDLE iocp, afd;
     volatile LONG woken;
 };
@@ -898,6 +1007,11 @@ PlatPoller *plat_poller_new(void) {
 /* Stop a socket's request (the lock is held): its completion still comes, and
  * frees it. */
 static void drop_request(PlatPoller *p, Arm *a) {
+    if (a->pr) {
+        a->pr->live = false;
+        CancelIoEx(a->pr->h, &a->pr->ov); /* (not found: it has completed already) */
+        a->pr = NULL;
+    }
     if (!a->sp) return;
     IO_STATUS_BLOCK cancel;
     a->sp->live = false;
@@ -919,6 +1033,42 @@ static long completed(PlatPoller *p, SockPoll *sp) {
     return i;
 }
 
+static long pipe_completed(PlatPoller *p, PipeReq *pr) {
+    long i = -1;
+    p->pending--;
+    if (pr->live && pr->fd >= 0 && (size_t)pr->fd < p->at.n) {
+        i = (long)p->at.v[pr->fd] - 1;
+        if (i >= 0 && p->arms.v[i].pr != pr) i = -1;
+    }
+    if (i >= 0) p->arms.v[i].pr = NULL;
+    free(pr);
+    return i;
+}
+
+/* Wait for an overlapped pipe to have data, or to be closed at the other end:
+ * a zero-byte read, its completion on the port. False if the pipe is tied to
+ * another poller's port, or the read fails at once: then it is looked at. The
+ * lock is held. */
+static bool pipe_request(PlatPoller *p, WFd *e, Arm *a) {
+    if (!e->port) {
+        if (!CreateIoCompletionPort(e->h, p->iocp, PIPE_KEY, 0)) return false;
+        e->port = p->iocp;
+    }
+    if (e->port != p->iocp) return false;
+    PipeReq *pr = xcalloc(1, sizeof *pr);
+    pr->h = e->h;
+    pr->fd = a->fd;
+    pr->live = true;
+    static char none;
+    if (!ReadFile(e->h, &none, 0, NULL, &pr->ov) && GetLastError() != ERROR_IO_PENDING) {
+        free(pr); /* (failed at once: no completion comes) */
+        return false;
+    }
+    a->pr = pr; /* (done at once or pending: its completion comes) */
+    p->pending++;
+    return true;
+}
+
 void plat_poller_free(PlatPoller *p) {
     if (!p) return;
     AcquireSRWLockExclusive(&p->lock);
@@ -933,6 +1083,7 @@ void plat_poller_free(PlatPoller *p) {
         if (!GetQueuedCompletionStatusEx(p->iocp, ev, 64, &n, 100, FALSE)) continue;
         for (ULONG j = 0; j < n; j++)
             if (ev[j].lpCompletionKey == AFD_KEY) completed(p, (SockPoll *)ev[j].lpOverlapped);
+            else if (ev[j].lpCompletionKey == PIPE_KEY) pipe_completed(p, (PipeReq *)ev[j].lpOverlapped);
     }
     if (p->pending) return; /* (the kernel still has some: never freed) */
     CloseHandle(p->afd);
@@ -978,8 +1129,11 @@ bool plat_poller_arm(PlatPoller *p, int fd, int events, uint64_t token) {
         i = (long)p->arms.n - 1;
         p->at.v[fd] = (uint32_t)i + 1;
     }
-    p->arms.v[i] = (Arm){fd, events, token, pipe, false, NULL};
-    if (pipe) {
+    p->arms.v[i] = (Arm){fd, events, token, pipe, false, NULL, NULL};
+    if (pipe && e->ovl && events == PLAT_POLL_READ && pipe_request(p, e, &p->arms.v[i])) {
+        p->arms.v[i].pipe = false;
+        pipe = false; /* (no look needed) */
+    } else if (pipe) {
         p->pipes++;
     } else {
         SockPoll *sp = xcalloc(1, sizeof *sp);
@@ -1044,7 +1198,8 @@ int plat_poller_wait(PlatPoller *p, uint64_t *tokens, int max, int64_t timeout_n
                 woken = true;
                 continue;
             }
-            long i = completed(p, (SockPoll *)ev[j].lpOverlapped);
+            long i = ev[j].lpCompletionKey == PIPE_KEY ? pipe_completed(p, (PipeReq *)ev[j].lpOverlapped)
+                                                       : completed(p, (SockPoll *)ev[j].lpOverlapped);
             if (i < 0) continue; /* (forgotten or replaced: cancelled) */
             tokens[k++] = p->arms.v[i].token;
             arm_remove(p, (size_t)i);

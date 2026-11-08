@@ -15,7 +15,7 @@ run before a release.
 | Debugger for editors | `mlwsvm dap` (Debug Adapter Protocol) | — |
 | Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] [--monitor-actions] prog.masm` | none |
 | A VM that stays up | `mlwsvm serve --programs DIR [--monitor [HOST:]PORT]` | — |
-| Terminal view | `mlwsvm top [HOST:PORT] [--once] [--interval MS]` | — |
+| Terminal view | `mlwsvm top [https://]HOST:PORT [--ca FILE] [--once] [--interval MS]` | — |
 | VM options | `mlwsvm run --max-frames N --quota heap=64M --cap read=/data ... prog.masm` | — |
 | Several programs | `mlwsvm run a.masm args --also b.masm args ...` | — |
 | Native code | `mlwsvm ext list\|install\|remove\|allow-ffi\|deny-ffi` ([EXTENDING.md](EXTENDING.md)) | — |
@@ -430,7 +430,7 @@ $ mlwsvm run --monitor 0.0.0.0:7443 --monitor-cert cert.pem --monitor-key key.pe
   `monitor.reload`, `monitor.purge`). Reads still need no token.
 * **TLS** (`--monitor-cert FILE --monitor-key FILE`, PEM): the dashboard and the
   API over HTTPS, and nothing over plain HTTP. It needs OpenSSL or LibreSSL at
-  run time, as `std.tls` does. `mlwsvm top` speaks plain HTTP only.
+  run time, as `std.tls` does; so does `mlwsvm top https://HOST:PORT`.
 
 ### Web dashboard: `GET /`
 
@@ -455,7 +455,7 @@ modules, names, nodes and graph every five).
 | `GET /api/log?since=N` | the log's entries after number `N` (0: all it has), oldest first: `seq`, `t_ns` (since the VM started), `pid`, `program` and `program_name` (null for the monitor's own), and `level` and `text`, or `event` and `value` (JSON); with `next`, the number to ask from next time, and `lost`, how many were overwritten before being asked for |
 | `GET /api/modules` | every module loaded, each version in the order loaded: `name`, `path`, `version` (1, 2, ...), `current`, `state` (`ready`, `failed`, `purged`), `functions`, `globals_bytes` |
 | `GET /api/names` | the registry: `name` and `pid` |
-| `GET /api/nodes` | `self`, this VM's node number (0: none), and `connected`: `node`, and `carrier`, the process carrying that connection |
+| `GET /api/nodes` | `self`, this VM's node number (0: none), its `name` (`""`: none), and `connected`: `node`, its `name`, and `carrier`, the process carrying that connection |
 | `GET /api/graph` | `links` (`[a, b]`, each once), `monitors` (`[watcher, watched]`), and `far`: ties with other nodes, `pid`, `kind` (`link`, `watched_by`, `watches`) and `other` |
 | `GET /top` | the plain-text table that `mlwsvm top` shows |
 
@@ -508,7 +508,9 @@ program is a file in the `--programs` directory: a path that leads out of it,
 through `..` or a link, is refused. The same file started again is another main
 of the same module, as with `--also`. Programs share the VM's output, as with
 `--also`; what one wants to show in the dashboard it writes to the monitor's log
-(`monitor.log`). VM options apply to all of them. `--monitor-cert` and
+(`monitor.log`): [examples/serve/echo.masm](../examples/serve/echo.masm) is
+one to try, which writes there each message the dashboard sends it. VM options
+apply to all of them. `--monitor-cert` and
 `--monitor-key` serve the monitor over HTTPS, as for `run`; it listens on
 127.0.0.1:7070 unless told otherwise.
 
@@ -546,7 +548,11 @@ recent exits:
 every second (`--interval MS`) and sorts processes by CPU. `--once`
 prints one snapshot and exits; there, %CPU is measured over the VM's whole uptime.
 It fetches `/top` from the monitor, so it works against any VM started with
-`--monitor`.
+`--monitor`. A monitor over TLS is `https://HOST:PORT` (the address the run
+prints, whose path and `#token` part `top` leaves alone, will do): `top`
+checks its certificate against the host, with the authorities in `--ca FILE`
+(for a certificate of your own making) or else the system's, and never
+without checking.
 
 ## Bindings generator: `mlwsvm bindgen`
 

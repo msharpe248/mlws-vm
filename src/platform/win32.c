@@ -261,20 +261,24 @@ int plat_tcp_accept(int listen_fd) {
     return socket_fd(c);
 }
 
+/* A blocking connection to host (an address or a name: each of its addresses
+ * in turn) and port, or -1. */
 int plat_tcp_connect(const char *host, int port) {
     wsa_init();
-    struct sockaddr_in a;
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_port = htons((u_short)port);
-    if (inet_pton(AF_INET, host, &a.sin_addr) != 1) return -1;
-    SOCKET s = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
-    if (s == INVALID_SOCKET) return -1;
-    if (connect(s, (struct sockaddr *)&a, sizeof a) != 0) {
-        closesocket(s);
-        return -1;
+    char ps[16];
+    snprintf(ps, sizeof ps, "%d", port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, ps, &hints, &res) != 0) return -1;
+    SOCKET s = INVALID_SOCKET;
+    for (struct addrinfo *a = res; a && s == INVALID_SOCKET; a = a->ai_next) {
+        s = WSASocketW(a->ai_family, a->ai_socktype, a->ai_protocol, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+        if (s != INVALID_SOCKET && connect(s, a->ai_addr, (int)a->ai_addrlen) != 0) closesocket(s), s = INVALID_SOCKET;
     }
-    return socket_fd(s);
+    freeaddrinfo(res);
+    return s == INVALID_SOCKET ? -1 : socket_fd(s);
 }
 
 /* A pipe has no readiness to wait for: look at it every millisecond. */
