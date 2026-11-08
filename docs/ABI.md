@@ -587,7 +587,16 @@ compiler or a deployment that sends code over a socket:
   in them, go to the new version** from then on, as does `module.function`.
   Compiled code goes back to the interpreter and is compiled again when hot.
 * **What is running stays on the old version:** frames already in it, closures
-  made from it, and the old version's calls to its own functions. So a process
+  made from it (`module.function`'s too), and the old version's calls to its own
+  functions.
+* **A handle follows the reloads.** `module.handle(module, function)` returns a
+  closure that always calls the function's current version: one to keep, in a
+  global say, for calls that must reach the newest code without looking it up
+  each time (a language's fully qualified calls, as Erlang's `M:f()`). It is a
+  closure of a small function, in a module of its own named `(handle) M.f #N`,
+  whose code is one tail call to the function; as for any module calling it, a
+  reload moves that call to the new version, and is refused if it would change
+  the function's signature or remove it. The cost is that tail call. So a process
   in a loop moves to the new code when the loop calls through a closure from
   `module.function`, or returns to a caller in another module. This is
   Erlang's rule, in which a local call stays and a qualified call moves.

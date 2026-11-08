@@ -267,6 +267,7 @@ typedef struct VM {
     /* every module's constants (strings, BigInts, decimals), one object per
      * kind and text, shared by all modules: owned here, freed with the VM */
     StrMap const_pool;
+    StrMap handles;      /* module.handle: "module key\x1f function" -> its stub Function (vm_handle) */
     VEC(Obj *) const_objs;
     VEC(struct LibWant) wants;
     StrMap natives;      /* name -> const NativeDef* */
@@ -688,6 +689,7 @@ LModule *vm_load_root(VM *vm, const char *path, MlwsError *err);
 bool vm_load_roots(VM *vm, const char *const *paths, int n, LModule **out, MlwsError *errs);
 LModule *vm_load_text(VM *vm, const char *name, const char *text, MlwsError *err); /* source in memory */
 Obj *vm_intern(VM *vm, const char *s, size_t n); /* text.intern: the literals' one string of this text; NULL for a NUL in it */
+Function *vm_handle(VM *vm, LModule *lm, const char *fname, MlwsError *err); /* module.handle's function */
 /* Load a module while the program runs (module.load), as an import of `from`
  * (which directory it is looked for in first, and privacy; NULL: the
  * library path only), under mods_lock. A load that fails leaves the modules
