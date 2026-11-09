@@ -342,6 +342,8 @@ of the instructions in call-heavy code.
 | M101 | Erlang's auto-connect (`dist_auto_connect`), in which a send to a node not connected blocks while it connects; its handshake's status message (`ok`, `nok`, `alive`), with which the answering node settles two nodes connecting at once by comparing their names; `erlang:disconnect_node/1` |
 | M102 | Erlang's `global`: names registered across connected nodes under a lock, kept as the nodes connect and go, and a name clash on connecting settled by a resolve function (`random_exit_name` by default, which kills one) |
 | M103 | Erlang's application environment (`application:get_env`, `set_env`, `sys.config`); `.env` files (dotenv) with `${VAR}` expansion; the Unix environment, inherited at `fork` |
+| M104 | API keys stored only as hashes (GitHub's and Stripe's tokens, shown once at creation), with scopes; Unix's `authorized_keys` and `.htpasswd`, files of credentials an administrator edits that the server rereads; Prometheus' and Grafana's read and admin roles |
+| M105 | Erlang's `observer`, whose application view shows each application's environment; Kubernetes' ConfigMaps and Secrets, the latter shown masked by dashboards; HashiCorp Vault's and the 12-factor app's separation of configuration from code |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

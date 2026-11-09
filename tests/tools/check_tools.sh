@@ -944,6 +944,116 @@ if command -v curl >/dev/null 2>&1; then
         wait $VMPID 2>/dev/null || true
     fi
 
+    # Keys (--monitor-tokens, mlwsvm token): a tokens file holds each key's
+    # hash; with one, every request but the page's needs a key; a read key
+    # reads, an admin's acts and manages keys, each action in the log by its
+    # key's label; the file is read again when it changes.
+    KF="$MOND/tokens"
+    RK=$($BIN token new --label ops --file "$KF" 2>/dev/null)
+    grep -q '^read ops [0-9a-f]\{64\}$' "$KF" || fail "token new: the file ($(cat "$KF"))"
+    grep -q "$RK" "$KF" && fail "token new: the token itself in the file"
+    [ "$($BIN token list --file "$KF")" = "read   ops" ] || fail "token list"
+    set +e
+    $BIN token new --label ops --file "$KF" >/dev/null 2>&1; RC=$?
+    set -e
+    [ $RC = 1 ] || fail "token new: a label used twice (exit $RC)"
+    printf 'read bad\n' > "$MOND/badtokens"
+    set +e
+    BADERR=$($BIN run --monitor 127.0.0.1:$PORT --monitor-tokens "$MOND/badtokens" examples/hello.masm 2>&1 >/dev/null); RC=$?
+    set -e
+    [ $RC = 1 ] && echo "$BADERR" | grep -q 'badtokens:1: expected SCOPE LABEL SHA256' || fail "a tokens file that is not one (exit $RC): $BADERR"
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions --monitor-tokens "$KF" tests/tools/_monitor/acted.masm >/dev/null 2>"$MOND/keys.err" &
+    VMPID=$!
+    i=0
+    until curl -sf -H "$A" $U/api/names 2>/dev/null | grep -q '"receiver"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "keys: the monitor did not start"; sleep 0.1
+    done
+    get() { curl -s -o "$MOND/r" -w '%{http_code}' "$@"; }
+    [ "$(get $U/api/procs)" = 401 ] || fail "keys: a read without a key"
+    [ "$(get $U/)" = 200 ] || fail "keys: the page without a key"
+    [ "$(get -H 'Authorization: Bearer nope' $U/api/procs)" = 401 ] || fail "keys: a read with no such key"
+    R="Authorization: Bearer $RK"
+    [ "$(get -H "$R" $U/api/procs)" = 200 ] || fail "keys: a read with a read key"
+    [ "$(get -H "$R" $U/api/vm)" = 200 ] && grep -q '"keys":true,"you":{"label":"ops","scope":"read"}' "$MOND/r" || fail "keys: /api/vm says whose ($(cat "$MOND/r"))"
+    [ "$(get -H "$R" $U/api/keys)" = 403 ] || fail "keys: the keys to a read key"
+    [ "$(code -H "$R" $U/api/proc/2/kill)" = 403 ] || fail "keys: an action with a read key"
+    [ "$(get -H "$A" $U/api/keys)" = 200 ] && grep -q '"label":"ops","scope":"read","from":"file","used_ago_ms":[0-9]' "$MOND/r" \
+        && grep -q '"label":"(start)","scope":"admin","from":"start"' "$MOND/r" || fail "keys: the list ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"label":"ci","scope":"admin"}' $U/api/keys)" = 200 ] || fail "keys: make one ($(cat "$MOND/r"))"
+    CK=$(sed 's/.*"token":"\([0-9a-f]*\)".*/\1/' "$MOND/r")
+    grep -q '^admin ci [0-9a-f]\{64\}$' "$KF" || fail "keys: a key made, into the file"
+    [ "$(code -H "$A" --data '{"label":"ci"}' $U/api/keys)" = 409 ] || fail "keys: a label used twice"
+    [ "$(code -H "$A" --data '{"label":"no spaces"}' $U/api/keys)" = 400 ] || fail "keys: a bad label"
+    [ "$(code -H "Authorization: Bearer $CK" $U/api/keys/ops/revoke)" = 200 ] || fail "keys: revoke ($(cat "$MOND/r"))"
+    [ "$(get -H "$R" $U/api/procs)" = 401 ] || fail "keys: a revoked key"
+    grep -q ' ops ' "$KF" && fail "keys: a revoked key still in the file"
+    [ "$(code -H "Authorization: Bearer $CK" $U/api/keys/ci/revoke)" = 409 ] || fail "keys: a key revoking itself"
+    LK=$($BIN token new --label late --file "$KF" 2>/dev/null)
+    [ "$(get -H "Authorization: Bearer $LK" $U/api/procs)" = 200 ] || fail "keys: one added to the file while it runs"
+    $BIN top --once --token "$LK" $U | grep -q "PID" || fail "keys: top --token"
+    $BIN top --once "$U/#token=$LK" | grep -q "PID" || fail "keys: top from an address with the key"
+    set +e
+    TOPERR=$($BIN top --once $U 2>&1 >/dev/null); RC=$?
+    set -e
+    [ $RC = 1 ] && echo "$TOPERR" | grep -q 'needs a key' || fail "keys: top without a key (exit $RC): $TOPERR"
+    [ "$(code -H "Authorization: Bearer $CK" $U/api/proc/2/kill)" = 200 ] || fail "keys: an action with a key made"
+    LOG=$(curl -sf -H "$A" "$U/api/log")
+    echo "$LOG" | grep -q '"event":"monitor.key_new","value":{"by":"(start)","label":"ci","scope":"admin"}' || fail "keys: key_new in the log ($LOG)"
+    echo "$LOG" | grep -q '"event":"monitor.key_revoke","value":{"by":"ci","label":"ops"}' || fail "keys: key_revoke in the log"
+    echo "$LOG" | grep -q '"event":"monitor.kill","value":{"by":"ci","pid":2}' || fail "keys: an action's key in the log"
+    $BIN token revoke --label late --file "$KF" || fail "token revoke"
+    [ "$($BIN token list --file "$KF")" = "admin  ci" ] || fail "token revoke: the file ($(cat "$KF"))"
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
+
+    # Environments in the monitor: each one's names to a read key, values to
+    # an admin's (never a secret's); an admin sets and deletes one, which its
+    # watcher hears of, each in the log by name and never by value.
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions --monitor-tokens "$KF" \
+        --env tests/tools/_monitor/envs.env tests/tools/_monitor/envs.masm >/dev/null 2>"$MOND/envs.err" &
+    VMPID=$!
+    RK=$($BIN token new --label viewer --file "$KF" 2>/dev/null)
+    R="Authorization: Bearer $RK"
+    i=0
+    until curl -sf -H "$A" $U/api/names 2>/dev/null | grep -q '"watcher"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "envs: the monitor did not start"; sleep 0.1
+    done
+    [ "$(get $U/api/envs)" = 401 ] || fail "envs: without a key"
+    [ "$(get -H "$R" $U/api/envs)" = 200 ] || fail "envs: a read key"
+    grep -q '^\[{"env":null,"program":0,"program_name":"envs.masm","processes":1,"watchers":0,"values":\[{"key":"db_password","secret":true},{"key":"port","secret":false},{"key":"servers","secret":false}\]},{"env":"billing","program":null,"program_name":null,"processes":1,"watchers":1,"values":\[{"key":"odd","secret":false},{"key":"rate","secret":false}\]}\]$' "$MOND/r" \
+        || fail "envs: to a read key ($(cat "$MOND/r"))"
+    [ "$(get -H "$A" $U/api/envs)" = 200 ] || fail "envs: an admin's key"
+    grep -q '{"key":"db_password","secret":true,"value":null},{"key":"port","secret":false,"value":8080},{"key":"servers","secret":false,"value":\["a","b"\]}' "$MOND/r" \
+        && grep -q '"values":\[{"key":"odd","secret":false,"value":null,"note":"json.stringify: map keys must be strings or integers"},{"key":"rate","secret":false,"value":3}\]' "$MOND/r" \
+        || fail "envs: to an admin ($(cat "$MOND/r"))"
+    grep -q hunter2 "$MOND/r" && fail "envs: a secret shown"
+    curl -sf -H "$R" $U/api/proc/2 | grep -q '"entry":"watcher","program":0,"program_name":"envs.masm","env":"billing"' || fail "envs: a process's environment"
+    [ "$(code -H "$R" --data '{"env":"billing","key":"rate","value":4}' $U/api/envs/set)" = 403 ] || fail "envs: a set with a read key"
+    [ "$(code -H "$A" --data '{"env":"billing","key":"rate","value":4.5}' $U/api/envs/set)" = 200 ] || fail "envs: set ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"program":0,"key":"db_password","value":"swordfish"}' $U/api/envs/set)" = 200 ] || fail "envs: set a secret"
+    [ "$(code -H "$A" --data '{"program":0,"key":"api_token","value":"t0k","secret":true}' $U/api/envs/set)" = 200 ] || fail "envs: set one secret"
+    [ "$(code -H "$A" --data '{"env":"nobody","key":"x","value":1}' $U/api/envs/set)" = 404 ] || fail "envs: no such environment"
+    [ "$(code -H "$A" --data '{"env":"billing","key":"bad key","value":1}' $U/api/envs/set)" = 400 ] || fail "envs: a bad name"
+    [ "$(code -H "$A" --data '{"env":"billing","key":"x"}' $U/api/envs/set)" = 400 ] || fail "envs: a set with no value"
+    [ "$(code -H "$A" --data '{"env":"billing","key":"x"' $U/api/envs/set)" = 400 ] || fail "envs: not JSON"
+    [ "$(code -H "$A" --data '{"env":"billing","key":"nope"}' $U/api/envs/delete)" = 404 ] || fail "envs: delete no such value"
+    i=0
+    until curl -sf -H "$A" "$U/api/log" | grep -q '"text":"changed rate \[4.5\]"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "envs: the watcher did not hear ($(curl -sf -H "$A" $U/api/log))"; sleep 0.1
+    done
+    [ "$(code -H "$A" --data '{"env":"billing","key":"rate"}' $U/api/envs/delete)" = 200 ] || fail "envs: delete"
+    i=0
+    until curl -sf -H "$A" "$U/api/log" | grep -q '"text":"changed rate \[\]"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "envs: the watcher did not hear of the delete"; sleep 0.1
+    done
+    curl -sf -H "$A" $U/api/envs | grep -q '{"key":"api_token","secret":true,"value":null},{"key":"db_password","secret":true,"value":null}' || fail "envs: secrets after a set"
+    LOG=$(curl -sf -H "$A" "$U/api/log")
+    echo "$LOG" | grep -q '"event":"monitor.env_set","value":{"by":"(start)","env":"billing","program":null,"key":"rate"}' || fail "envs: env_set in the log ($LOG)"
+    echo "$LOG" | grep -q '"event":"monitor.env_delete","value":{"by":"(start)","env":"billing","program":null,"key":"rate"}' || fail "envs: env_delete in the log"
+    echo "$LOG" | grep -q 'swordfish\|t0k' && fail "envs: a value in the log"
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
+
     # mlwsvm serve: programs started, listed, stopped, kept within their
     # capabilities, only from their directory; then shut down.
     set +e

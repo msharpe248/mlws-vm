@@ -9,13 +9,16 @@
  * the reader its own copy, as a message is: processes still share nothing.
  * `mlwsvm run --env FILE` fills each program's from a file of `name = JSON`
  * lines (vm_env_load_file), and `mlwsvm serve` a program's from the
- * NAME.mlws.env beside it. */
+ * NAME.mlws.env beside it. A value marked secret (`secret name = ...` in a
+ * file) the monitor never shows; the monitor lists and changes values here
+ * too (env_values_json, env_monitor_change). */
 #include "../heap/heap.h"
 #include "../platform/platform.h"
 #include <ctype.h>
 
 typedef struct EnvVal {
     size_t n;
+    bool secret; /* the monitor never shows it (until the name is deleted) */
     uint8_t b[];
 } EnvVal;
 
@@ -50,11 +53,13 @@ void env_release(Env *e) {
     free(e);
 }
 
-static void put_locked(Env *e, const char *key, const uint8_t *b, size_t n) {
+/* A value set: secret if it is marked so, or the one it replaces was. */
+static void put_locked(Env *e, const char *key, const uint8_t *b, size_t n, bool secret) {
     void *old = NULL;
-    if (smap_get(&e->vals, key, &old)) free(old);
+    if (smap_get(&e->vals, key, &old) && old) secret = secret || ((EnvVal *)old)->secret, free(old);
     EnvVal *v = xmalloc(sizeof *v + n);
     v->n = n;
+    v->secret = secret;
     if (n) memcpy(v->b, b, n);
     smap_put(&e->vals, key, v);
 }
@@ -66,7 +71,7 @@ void env_copy_into(Env *to, Env *from) {
     for (size_t i = 0; i < from->vals.cap; i++)
         if (from->vals.keys && from->vals.keys[i] && from->vals.vals[i]) {
             const EnvVal *v = from->vals.vals[i];
-            put_locked(to, from->vals.keys[i], v->b, v->n);
+            put_locked(to, from->vals.keys[i], v->b, v->n, v->secret);
         }
     plat_unlock(to->lock);
     plat_unlock(from->lock);
@@ -87,6 +92,7 @@ static Process *scratch_new(VM *vm) {
 
 static void scratch_free(Process *f) {
     heap_free_all(f);
+    sb_free(&f->backtrace); /* (a trap caught in it: env_values_json) */
     free(f);
 }
 
@@ -97,7 +103,8 @@ static bool name_ok(const char *s, size_t n) {
     return true;
 }
 
-/* A file's text into e: `name = value` lines, the value JSON after each
+/* A file's text into e: `name = value` lines (`secret name = value`: one the
+ * monitor never shows), the value JSON after each
  * ${VAR} is replaced by the operating system's environment variable VAR (empty
  * if it has none; escaped as JSON within a string, as a Windows path needs);
  * `#` lines and blank ones are skipped. Parsed and encoded in
@@ -113,6 +120,12 @@ static bool load_text(Process *heap, Env *e, const char *text, size_t len, const
         while (s < z && isspace((unsigned char)*s)) s++;
         while (z > s && isspace((unsigned char)z[-1])) z--;
         if (s == z || *s == '#') continue;
+        bool secret = false;
+        if (z - s > 7 && !memcmp(s, "secret", 6) && isspace((unsigned char)s[6])) { /* (not "secret = ...": a name) */
+            const char *n = s + 7;
+            while (n < z && isspace((unsigned char)*n)) n++;
+            if (n < z && *n != '=') secret = true, s = n;
+        }
         const char *eq = memchr(s, '=', (size_t)(z - s));
         if (!eq) return snprintf(err, errlen, "%s:%zu: expected name = value", path, line), false;
         const char *ne = eq;
@@ -161,7 +174,7 @@ static bool load_text(Process *heap, Env *e, const char *text, size_t len, const
         sb_free(&json);
         ObjBytes *b = node_encode_value(heap, heap, w, tag);
         plat_lock(e->lock);
-        put_locked(e, key, bytes_data(b), b->len);
+        put_locked(e, key, bytes_data(b), b->len, secret);
         plat_unlock(e->lock);
         free(key);
     }
@@ -272,7 +285,7 @@ static void set(Process *p, const char *fn, Word key, Word v, uint8_t tag) {
     ObjBytes *b = node_encode_value(p, p, v, tag); /* (E_TYPE for what cannot be sent) */
     Env *e = env_of(p);
     plat_lock(e->lock);
-    put_locked(e, k, bytes_data(b), b->len);
+    put_locked(e, k, bytes_data(b), b->len, false);
     plat_unlock(e->lock);
     tell(p, e, k);
 }
@@ -315,6 +328,18 @@ static void n_get_f(Process *p, Word *a, Word *r) {
     }
     if (!type_is_float((MlwsType)t)) wrong(p, "env.get_f", k, t, type_is_int((MlwsType)t) ? "env.get_i" : "env.get");
     r[0] = w;
+}
+
+/* env.get_any(name): any value, as the only element of a list (so that a
+ * number or boolean keeps its type, for tagof); an empty list if there is
+ * none (as json.parse_any). */
+static void n_get_any(Process *p, Word *a, Word *r) {
+    const char *k = key_arg(p, a[0], "env.get_any");
+    Word w;
+    uint8_t t = get(p, k, &w);
+    ObjList *l = list_new(p, t ? 1 : 0);
+    if (t) list_push(p, l, w, t);
+    r[0].r = &l->h;
 }
 
 static void n_set(Process *p, Word *a, Word *r) {
@@ -437,6 +462,218 @@ static void n_load(Process *p, Word *a, Word *r) {
     if (!ok) vm_trap(p, "E_ENV", "env.load: %s", why);
 }
 
+/* ---- for the monitor (tools/monitor.c) ---- */
+
+const char *env_name(const Env *e) { return e->name; }
+
+size_t env_watchers(Env *e) {
+    plat_lock(e->lock);
+    size_t n = e->watchers.n;
+    plat_unlock(e->lock);
+    return n;
+}
+
+static void jstr(StrBuf *b, const char *s) {
+    sb_putc(b, '"');
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c == '"' || c == '\\') sb_printf(b, "\\%c", c);
+        else if (c < 0x20) sb_printf(b, "\\u%04x", c);
+        else sb_putc(b, (char)c);
+    }
+    sb_putc(b, '"');
+}
+
+/* A trap's message in a scratch heap, into err. */
+static void trap_text(Process *f, char *err, size_t errlen) {
+    const ObjStruct *x = (const ObjStruct *)f->exception;
+    const ObjString *m = x && x->h.kind == OBJ_STRUCT ? (const ObjString *)x->fields[ERRF_MESSAGE].r : NULL;
+    snprintf(err, errlen, "%s", m ? m->data : "failed");
+}
+
+#define ENV_JSON_MAX 16384 /* a value's JSON longer than this is not shown */
+
+/* A value as JSON, decoded into a scratch heap; false, with why, for one that
+ * has no JSON form (a pid, a closure...) or is too long to show. */
+static bool value_json(VM *vm, const uint8_t *bytes, size_t n, StrBuf *out, char *why, size_t whylen) {
+    Process *f = scratch_new(vm);
+    jmp_buf jb;
+    f->jb = &jb;
+    volatile bool ok = false;
+    if (!VM_SETJMP(jb)) {
+        ObjBytes *b = bytes_new(f, (int64_t)n);
+        if (n) memcpy(b->data, bytes, n);
+        Word w;
+        uint8_t t = node_decode_value(f, bytes_data(b), b->len, &w);
+        StrBuf j = {0};
+        text_json_append(f, w, t, &j);
+        if (j.n > ENV_JSON_MAX) {
+            snprintf(why, whylen, "%zu bytes of JSON: too long to show", j.n);
+        } else {
+            sb_putn(out, j.s, j.n);
+            ok = true;
+        }
+        sb_free(&j);
+    } else {
+        trap_text(f, why, whylen);
+    }
+    scratch_free(f);
+    return ok;
+}
+
+typedef struct {
+    char *key;
+    bool secret;
+    EnvVal *v; /* a copy; NULL when values are not shown */
+} Shown;
+
+static int shown_cmp(const void *a, const void *b) { return strcmp(((const Shown *)a)->key, ((const Shown *)b)->key); }
+
+/* An environment's names, by name, as a JSON array: each one's "key" and
+ * "secret", and, if values, its "value" (null for a secret, or with "note"
+ * saying why it is not shown). */
+void env_values_json(VM *vm, Env *e, bool values, StrBuf *b) {
+    VEC(Shown) all = {0};
+    plat_lock(e->lock);
+    for (size_t i = 0; i < e->vals.cap; i++) {
+        if (!e->vals.keys || !e->vals.keys[i] || !e->vals.vals[i]) continue;
+        const EnvVal *v = e->vals.vals[i];
+        Shown s = {xstrdup(e->vals.keys[i]), v->secret, NULL};
+        if (values && !v->secret) {
+            s.v = xmalloc(sizeof *s.v + v->n);
+            memcpy(s.v, v, sizeof *v + v->n);
+        }
+        VEC_PUSH(all, s);
+    }
+    plat_unlock(e->lock);
+    if (all.n) qsort(all.v, all.n, sizeof all.v[0], shown_cmp);
+    sb_putc(b, '[');
+    for (size_t i = 0; i < all.n; i++) {
+        Shown *s = &all.v[i];
+        sb_puts(b, i ? ",{\"key\":" : "{\"key\":");
+        jstr(b, s->key);
+        sb_printf(b, ",\"secret\":%s", s->secret ? "true" : "false");
+        if (values) {
+            char why[300];
+            sb_puts(b, ",\"value\":");
+            if (s->secret) {
+                sb_puts(b, "null");
+            } else if (!value_json(vm, s->v->b, s->v->n, b, why, sizeof why)) {
+                sb_puts(b, "null,\"note\":");
+                jstr(b, why);
+            }
+        }
+        sb_putc(b, '}');
+        free(s->key);
+        free(s->v);
+    }
+    sb_putc(b, ']');
+    VEC_FREE(all);
+}
+
+static Word envchange(Process *heap, void *key) {
+    ObjStruct *c = struct_new(heap, &VM_BUILTIN_DEFS[BUILTIN_ENVCHANGE]);
+    c->fields[ECF_KEY].r = &str_new(heap, key, strlen(key))->h;
+    return (Word){.r = &c->h};
+}
+
+/* Tell e's watchers that key changed, from outside any process. */
+static void tell_outside(VM *vm, Env *e, const char *key) {
+    plat_lock(e->lock);
+    PidVec to = {0};
+    for (size_t i = 0; i < e->watchers.n; i++) VEC_PUSH(to, e->watchers.v[i]);
+    plat_unlock(e->lock);
+    for (size_t i = 0; i < to.n; i++) sched_post_build(vm, to.v[i], envchange, (void *)key);
+    VEC_FREE(to);
+}
+
+static MapEntry *field(ObjMap *m, Process *f, const char *name) {
+    MapEntry *x = map_find(m, (Word){.r = &str_new(f, name, strlen(name))->h}, T_R);
+    return x && x->live ? x : NULL;
+}
+
+static const char *field_str(MapEntry *x) {
+    const Obj *o = x && x->vtag == T_R ? x->val.r : NULL;
+    return o && o->kind == OBJ_STRING ? ((const ObjString *)o)->data : NULL;
+}
+
+/* The monitor's POST /api/envs/set or /delete: a JSON object naming the
+ * environment ("env": a named one's name, or "program": a program's number),
+ * "key", and for a set, "value" (and "secret": true to mark it so). Its HTTP
+ * status: with err for one that is not 200, and audit, for the log (never
+ * the value). Watchers hear of it, as of env.set. */
+int env_monitor_change(VM *vm, bool del, const char *body, size_t n, StrBuf *audit, char *err, size_t errlen) {
+    Process *f = scratch_new(vm);
+    jmp_buf jb;
+    f->jb = &jb;
+    Env *volatile e = NULL;
+    volatile int status = 400;
+    if (VM_SETJMP(jb)) {
+        trap_text(f, err, errlen);
+        goto done;
+    }
+    Word w;
+    uint8_t t;
+    char why[200];
+    if (!text_json_parse(f, body, n, &w, &t, why, sizeof why)) {
+        snprintf(err, errlen, "the body is not JSON: %s", why);
+        goto done;
+    }
+    ObjMap *m = t == T_R && w.r && ((Obj *)w.r)->kind == OBJ_MAP ? (ObjMap *)w.r : NULL;
+    MapEntry *ek = m ? field(m, f, "env") : NULL, *pk = m ? field(m, f, "program") : NULL;
+    const char *key = m ? field_str(field(m, f, "key")) : NULL, *name = field_str(ek);
+    MapEntry *vk = m ? field(m, f, "value") : NULL, *sk = m ? field(m, f, "secret") : NULL;
+    if (!key || !name_ok(key, strlen(key)) || (!name && !(pk && type_is_int((MlwsType)pk->vtag))) || (!del && !vk)) {
+        snprintf(err, errlen, "expected {\"env\": NAME or \"program\": NUMBER, \"key\": NAME%s}", del ? "" : ", \"value\": JSON");
+        goto done;
+    }
+    plat_lock(vm->lock);
+    void *found = NULL;
+    if (name) {
+        if (smap_get(&vm->env_named, name, &found)) e = found;
+    } else if (pk->val.i >= 0 && (uint64_t)pk->val.i < vm->progs.n) {
+        e = vm->progs.v[pk->val.i]->env;
+    }
+    if (e) env_retain(e);
+    plat_unlock(vm->lock);
+    if (!e) {
+        status = 404;
+        snprintf(err, errlen, "no such environment");
+        goto done;
+    }
+    if (del) {
+        void *v = NULL;
+        plat_lock(e->lock);
+        bool had = smap_get(&e->vals, key, &v) && v;
+        if (had) free(v), smap_put(&e->vals, key, NULL);
+        plat_unlock(e->lock);
+        if (!had) {
+            status = 404;
+            snprintf(err, errlen, "no value of that name");
+            goto done;
+        }
+    } else {
+        ObjBytes *b = node_encode_value(f, f, vk->val, vk->vtag);
+        plat_lock(e->lock);
+        put_locked(e, key, bytes_data(b), b->len, sk && sk->vtag == T_B && sk->val.i);
+        plat_unlock(e->lock);
+    }
+    tell_outside(vm, e, key);
+    sb_puts(audit, "{\"env\":");
+    if (name) jstr(audit, name);
+    else sb_puts(audit, "null");
+    if (name) sb_puts(audit, ",\"program\":null");
+    else sb_printf(audit, ",\"program\":%lld", (long long)pk->val.i);
+    sb_puts(audit, ",\"key\":");
+    jstr(audit, key);
+    sb_putc(audit, '}');
+    status = 200;
+done:
+    env_release(e);
+    scratch_free(f);
+    return status;
+}
+
 #define N(name, np, pt, nr, rt, fn, doc) {name, np, pt, nr, rt, fn, doc, 0, NULL, NULL, NULL}
 #define T(...) {__VA_ARGS__}
 
@@ -445,6 +682,8 @@ static const NativeDef ENV_NATIVES[] = {
       "A value of this process's environment that is a reference, as a copy of its own; the second argument if there is none (E_TYPE for a number: env.get_i, env.get_f)."),
     N("env.get_i", 2, T(T_R, T_I64), 1, T(T_I64), n_get_i, "An integer value of the environment, or the second argument if there is none."),
     N("env.get_f", 2, T(T_R, T_F64), 1, T(T_F64), n_get_f, "A float value of the environment, or the second argument if there is none."),
+    N("env.get_any", 1, T(T_R), 1, T(T_R), n_get_any,
+      "Any value of the environment, as the only element of a list, keeping its type (tagof tells it); an empty list if there is none."),
     N("env.set", 2, T(T_R, T_R), 0, T(0), n_set,
       "Set a value of the environment: any value a message can be, copied in; every process of the environment sees it at once. Not in a restricted process (E_PERMISSION)."),
     N("env.set_i", 2, T(T_R, T_I64), 0, T(0), n_set_i, "Set an integer value of the environment."),

@@ -28,6 +28,7 @@ int tool_dap(int argc, char **argv, const ToolEnv *env);    /* `mlwsvm dap` (dap
 int tool_test(int argc, char **argv, const ToolEnv *env);
 int tool_doc(int argc, char **argv);
 int tool_top(int argc, char **argv);
+int tool_token(int argc, char **argv); /* `mlwsvm token` (keys.c) */
 int tool_bindgen(int argc, char **argv); /* `mlwsvm bindgen` */
 int tool_fuzz(int argc, char **argv);    /* `mlwsvm fuzz` (fuzz.c) */
 
@@ -39,8 +40,15 @@ void tools_profile_report(VM *vm, FILE *out, const char *flame_path);
 /* --monitor (monitor.c): serve stats over HTTP while the program runs. */
 bool tools_monitor(VM *vm, const char *addr, char *err, size_t errlen);
 const char *tools_monitor_addr(VM *vm); /* "HOST:PORT" actually listened on */
-/* Allow actions, with a token (NULL or "": a random one); returns it. */
-const char *tools_monitor_actions(VM *vm, const char *token);
+/* Allow actions (kill, send, reload, ...), to an admin's key. */
+void tools_monitor_actions(VM *vm);
+/* --monitor-tokens FILE: the keys in it, read again whenever it changes; and
+ * every request but the page's needs one. False, with why, for a file that is
+ * not one. */
+bool tools_monitor_tokens(VM *vm, const char *path, char *err, size_t errlen);
+/* The admin's key printed at the start, if actions are on or there is a
+ * tokens file (token, or NULL or "": a random one); NULL if there is none. */
+const char *tools_monitor_key(VM *vm, const char *token);
 bool tools_monitor_tls(VM *vm, const char *cert, const char *key, char *err, size_t errlen); /* HTTPS */
 const char *tools_monitor_scheme(VM *vm); /* "http" or "https" */
 /* mlwsvm serve: programs may be started from dir (POST /api/programs). */

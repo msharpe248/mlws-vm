@@ -1928,7 +1928,13 @@ its file; its main belongs to it, and a spawned process to its parent's
 the VM's life. A value is kept as the bytes `std.node` sends it as
 (`node_encode_value`), so anything a message can be may be one, and `env.get`
 decodes a copy into the reader's heap (`node_decode_value`): processes still
-share no objects. A set or delete sends each watcher an `EnvChange`.
+share no objects. A set or delete sends each watcher an `EnvChange`. A value
+may be marked secret, which stays with its name until it is deleted. The
+monitor lists an environment's names (`env_values_json`), decoding each value
+it shows into a scratch heap and writing it as JSON there, with the heap's
+`jb` set so that a value with no JSON form is a note, not a trap; and it sets
+and deletes values from outside any process (`env_monitor_change`, the
+`EnvChange` posted with `sched_post_build`).
 
 ## 15. Input and output
 
@@ -2459,8 +2465,12 @@ a kill claims the process as `kill` does, a message is parsed from JSON into
 the scratch heap that embedding hosts post from (`sched_post_json`, with the
 JSON reader's errors returned rather than raised, since no process is there to
 raise them in), and reload and purge are the natives' own `vm_reload` and
-`vm_purge`. The token is compared in time that does not depend on how much of it
-matches. With `--monitor-cert`, each connection is a TLS session first
+`vm_purge`. A key (`tools/keys.c`) is kept as its token's SHA-256, with a
+scope and a label; the tokens file holds the same, and is read again when its
+size or time changes, checked at each request (`keys_refresh`). A request's
+token is hashed and compared with every key's hash whole, so the time taken
+says nothing of it, and the key found is copied, since revoking one may move
+the others. `audit` writes each action with the label of the key that did it. With `--monitor-cert`, each connection is a TLS session first
 (`native/tls.c`'s, as `std.tls` uses), on the same non-blocking socket.
 
 `mlwsvm serve` (`vm_serve`, `vm/run.c`) runs a program of its own that only

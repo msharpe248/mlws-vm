@@ -902,6 +902,12 @@ void env_retain(Env *e);
 void env_release(Env *e);
 bool vm_env_load_file(VM *vm, const char *path, char *err, size_t errlen); /* --env */
 bool vm_program_env(VM *vm, Program *pr, bool own_file, MlwsError *err); /* a program's: own_file, NAME.mlws.env */
+/* For the monitor: a named environment's name (NULL: a program's own), its
+ * watchers, its names (and values) as JSON, and a change from outside. */
+const char *env_name(const Env *e);
+size_t env_watchers(Env *e);
+void env_values_json(VM *vm, Env *e, bool values, StrBuf *b);
+int env_monitor_change(VM *vm, bool del, const char *body, size_t n, StrBuf *audit, char *err, size_t errlen);
 void natives_register_env(VM *vm);
 const NativeDef *natives_env_table(size_t *n);
 /* A value as bytes, in f's heap (p's error if it cannot be), and back, into p's (dist.c). */
