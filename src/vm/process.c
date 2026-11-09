@@ -107,6 +107,7 @@ void proc_free(Process *p) {
     if (!p) return;
     VM *vm = p->vm;
     caps_release(p->caps);
+    env_release(p->env);
     proc_write_line_out(p); /* stopped by os.exit, say, in the middle of a line */
     if (p->published) sched_unpublish(p);
     if (p->state != PROC_DONE && p->state != PROC_FAILED) vm->live--;

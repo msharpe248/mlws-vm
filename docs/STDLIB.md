@@ -15,6 +15,7 @@ restricts them.
 | `text`, `json`, `regex` | formatting, string utilities, UTF-8, JSON, regular expressions |
 | `proc`, `std.supervisor`, `std.server` | the process count, a name registry, request/reply calls, supervisors, generic servers |
 | `std.node` | processes on other VMs |
+| `env` | environments: values a set of processes shares, from `.mlws.env` files |
 | `weak` | weak references and weak maps (and `gc.finalize`) |
 | `cap` | limiting what a process may reach |
 | `module` | loading modules while the program runs ([ABI.md §9](ABI.md#9-loading-modules-at-run-time)) |
@@ -762,6 +763,56 @@ connections, and keeps doing so while handlers are made to fail
 generator: a process per connection, each making keep-alive requests and
 timing them.
 
+## Environments (`env.*`)
+
+```
+# app.mlws.env: name = JSON, one to a line
+greeting = "hello"
+port = 8080
+servers = ["db1", "db2"]
+home = "${HOME}/app"
+```
+
+```asm
+    ncall "env.get" ("greeting", "hi") -> (R0)      ; "hello" (the second: if there is none)
+    ncall "env.get_i" ("port", 80) -> (I0)          ; 8080
+    ncall "env.set" ("mode", "maintenance")         ; seen at once by every process of it
+```
+
+An environment is a set of named values in the VM that a set of processes
+shares, as Erlang's application environment: configuration, and settings a
+running system changes. It is not the operating system's environment, which
+`os.env` reads.
+
+* **Whose.** Each program has an environment of its own, and its processes
+  belong to it, as they spawn one another. A process may join a named one
+  instead, `env.join("billing")`, which lasts as long as the VM, and so do the
+  processes it spawns from then on; `env.join("")` is its program's again.
+  `env.name()` says which it is in. So programs in one VM (`--also`,
+  `mlwsvm serve`) do not see each other's, and services may share one.
+* **Values** are any value a message can be, and each read is a copy of the
+  reader's own, as a message is: processes still share nothing. `env.get`
+  reads a reference (a string, a list, a map...), `env.get_i` an integer and
+  `env.get_f` a float; each takes what to return if there is no such value,
+  and raises `E_TYPE` for one of another kind. `env.set`, `env.set_i` and
+  `env.set_f` set one, `env.delete` removes one, `env.has` and `env.keys` look.
+* **Watching.** After `env.watch(true)`, a process gets a built-in
+  `EnvChange {key}` for each value set or deleted in its environment, so a
+  server can reconfigure itself as it runs.
+* **Files.** A file of `name = value` lines, each value JSON (an object is a
+  map, an array a list, as in [JSON](#json)), in which `${VAR}` is replaced by
+  the operating system's environment variable `VAR` first (nothing if it has
+  none), fills an environment: `mlwsvm run --env FILE` each program's, before
+  it starts (`--env` again for more files; a file that is not one stops the run,
+  saying where); `mlwsvm serve` a program's from the `NAME.mlws.env` beside its
+  `NAME.masm`, if there is one; and `env.load(path)` the caller's. A file is
+  never read unless asked for: one beside a program `mlwsvm run` runs is not.
+  A name is a letter or `_`, then letters, digits, `_`, `.` or `-`. Lines that
+  start with `#`, and blank ones, are skipped.
+* **Restricted processes** (`cap.restrict`, `--cap`) read their environment,
+  and change nothing (`E_PERMISSION` for `env.set` and the rest, and for
+  `env.join` and `env.load`).
+
 ## Errors
 
 Every failure raises an ordinary, catchable `Error`. The message names the call
@@ -808,8 +859,10 @@ when MLWSVM exits.
 
 * `os.args()`: the arguments after the program file:
   `mlwsvm run prog.masm a b` gives `["a", "b"]`.
-* `os.env(name)` and `os.environ()`: the environment. There is no `setenv`:
-  the environment is shared by every process and thread, so it is read-only.
+* `os.env(name)` and `os.environ()`: the operating system's environment.
+  There is no `setenv`: it is shared by every process and thread, so it is
+  read-only. Values a program sets and its processes share are its
+  [environment](#environments-env).
 * `os.exit(code)`: ends the whole program from any process, with that exit
   code.
 * There is no `chdir`, for the same reason: the current directory is shared.

@@ -980,6 +980,12 @@ if command -v curl >/dev/null 2>&1; then
         i=$((i + 1)); [ $i -lt 50 ] || fail "serve: rerun, the same again ($(curl -sf $U/api/programs))"; sleep 0.1
     done
     curl -sf $U/api/programs | grep -q '"id":5,"path":"hello.masm","cap":null,"quota":null,"args":\["a","b"\],"pid":[0-9]*,"state":"done","exit":2' || fail "serve: rerun with its arguments"
+    # A program's environment, from the NAME.mlws.env beside it.
+    [ "$(code -H "$A" --data '{"path":"envy.masm"}' $U/api/programs)" = 200 ] || fail "serve: start envy"
+    i=0
+    until curl -sf "$U/api/log" | grep -q 'envy: from its file'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "serve: a program's environment ($(curl -sf $U/api/log))"; sleep 0.1
+    done
     [ "$(code -H "$A" $U/api/shutdown)" = 200 ] || fail "serve: shutdown"
     set +e
     wait $VMPID; RC=$?

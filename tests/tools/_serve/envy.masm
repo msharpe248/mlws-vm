@@ -1,0 +1,8 @@
+; Started by check_tools.sh through mlwsvm serve: logs the greeting its
+; environment has from envy.mlws.env, the file beside it.
+.func main
+    ncall "env.get" ("greeting", "none") -> (R0)
+    strcat R1, "envy: ", R0
+    ncall "monitor.log" (1, R1)
+    ret 0
+.endf

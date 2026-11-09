@@ -76,6 +76,10 @@ base:
   A message keeps its sharing and cycles, and is encoded once, where it is
   sent: between two VMs on one machine, about 4 million small messages a
   second.
+* **Environments**: named values in the VM that a program's processes share
+  (and named ones that services join), any value a message can be, loaded from
+  `.mlws.env` files and watched for changes, as Erlang's application
+  environment.
 * **Files, commands, the OS and the network** (`std.fs`, `std.os`, `std.net`,
   and TLS through the system's OpenSSL, loaded when asked for): a
   process waiting on a pipe or socket waits in the poller (kqueue/epoll) like it
@@ -330,7 +334,7 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 
 ## Status
 
-The current release is 0.25.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
+The current release is 0.26.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
 on GitHub. Everything described in `docs/` is implemented and tested on macOS, Linux and
 Windows ([Platforms](#platforms) has the details).
 [docs/ROADMAP.md](docs/ROADMAP.md) lists the milestones and what remains.

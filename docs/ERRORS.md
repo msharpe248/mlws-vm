@@ -83,6 +83,7 @@ status 70.
 | `E_OVERFLOW` | A BigInt or decimal does not fit the target of `cvt`, a float that is infinite or NaN was converted to one, or a result such as `math.lcm`'s does not fit an `i64` |
 | `E_RANGE` | A native's argument is out of range: a time-zone offset beyond a day, `random.int` with lo > hi, `random.bytes` of a negative count or more than 16 MiB, a SipHash key that is not 16 bytes, `math.powmod` with e < 0 or m <= 0, a time or `Date` outside the years 1678 to 2261; a message to another node of more than 64 MiB, encoded |
 | `E_CALLBACK` | Code called back from C (or from `list.sort` and `list.bsearch`) tried to wait (`recv`, `sleep`, waiting I/O, `proc.call`), `halt`, `coresume` or `coyield`, or was stopped before it returned (killed, or `os.exit`), or C called a callback from another thread, or re-entered a `serial` library ([EXTENDING.md](EXTENDING.md#callbacks)) |
+| `E_ENV` | `env.load`: a file that is not `name = JSON` lines (with where and why) |
 | `E_KEY` | `mget` without a default for a key that is not in the map |
 | `E_PARSE` | `parse` input is not a valid number of the requested type, or malformed text for `time.parse`, `hex.decode`, `base64.decode`, `url.decode` or `csv.parse` |
 | `E_BAD_HANDLE` | `hget`/`hfree` of an unknown or freed handle |

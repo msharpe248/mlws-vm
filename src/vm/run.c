@@ -86,6 +86,8 @@ Program *vm_program_add(VM *vm, Process *main, const char *path, const StrVec *a
     for (size_t i = 0; args && i < args->n; i++) VEC_PUSH(pr->args, xstrdup(args->v[i]));
     pr->main = main;
     main->prog = pr;
+    MlwsError ignored;
+    vm_program_env(vm, pr, false, &ignored); /* (--env's values, read and checked already) */
     VEC_PUSH(vm->progs, pr);
     atomic_fetch_add(&vm->progs_live, 1);
     return pr;
@@ -99,6 +101,7 @@ void vm_programs_free(VM *vm) {
         free(pr->path);
         free(pr->cap);
         free(pr->quota);
+        env_release(pr->env);
         free(pr);
     }
     vm->progs.n = 0;
@@ -167,6 +170,10 @@ Program *vm_start_program(VM *vm, const char *path, const StrVec *args, const ch
     pr->cap = cap && *cap ? xstrdup(cap) : NULL;
     pr->quota = quota && *quota ? xstrdup(quota) : NULL;
     plat_unlock(vm->lock);
+    MlwsError eerr = {{0}, {0}};
+    env_release(pr->env); /* (again, with NAME.mlws.env beside it) */
+    pr->env = NULL;
+    if (!vm_program_env(vm, pr, true, &eerr)) fprintf(stderr, "mlwsvm serve: %s (its environment starts without it)\n", eerr.msg);
     proc_start(p, fn, NULL, NULL, 0); /* (and in the table, ready) */
     return pr;
 }

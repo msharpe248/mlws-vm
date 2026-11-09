@@ -744,6 +744,9 @@
             caps_release(child->caps);
             child->caps = p->caps;
             caps_retain(child->caps);
+            env_release(child->env);
+            child->env = p->env;
+            env_retain(child->env);
             p->pending_spawn = child;
             Word clw = msg_copy(p, child, (Word){.r = cl}, T_R);
             for (int k = 0; k < argc; k++) args[k] = msg_copy(p, child, args[k], mf->params[k]);
@@ -780,6 +783,9 @@
             caps_release(child->caps);
             child->caps = p->caps;
             caps_retain(child->caps);
+            env_release(child->env);
+            child->env = p->env;
+            env_retain(child->env);
             p->pending_spawn = child; /* freed by proc_run_slice if a copy traps */
             for (int k = 0; k < argc; k++) args[k] = msg_copy(p, child, args[k], fn->mf->params[k]);
             p->pending_spawn = NULL;

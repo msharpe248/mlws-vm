@@ -340,6 +340,13 @@ ObjBytes *node_named_frame(Process *p, Process *f, const char *name, Word v, uin
     return frame_end(p, &b);
 }
 
+/* A value as bytes, without a frame's length, in f's heap (env.c). */
+ObjBytes *node_encode_value(Process *p, Process *f, Word v, uint8_t tag) {
+    Writer b = {f, bytes_new(f, 0)};
+    encode(p, &b, 1, &v, &tag, 0);
+    return b.out;
+}
+
 /* [kind, w...], in f; p's error (or f's, for what the VM sends, which is
  * always sendable). */
 ObjBytes *node_control_frame(Process *p, Process *f, int kind, int n, const Word *w, const uint8_t *t) {
@@ -605,6 +612,14 @@ static uint8_t decode(Reader *r, Word *out, uint32_t first) {
         }
     }
     return tag;
+}
+
+/* A value as bytes, from node_encode_value, back, into p's heap: its tag. */
+uint8_t node_decode_value(Process *p, const uint8_t *s, size_t n, Word *out) {
+    Reader rd = {p, p, s, n, 0};
+    uint8_t t = decode(&rd, out, 0);
+    if (rd.i != n) bad(&rd);
+    return t;
 }
 
 /* ---- natives ---- */

@@ -152,6 +152,7 @@ typedef struct Program {
     StrVec args;
     char *cap, *quota;    /* mlwsvm serve: what it was started with (NULL: the VM's own) */
     struct Process *main; /* kept, not freed, when it ends: its runner reads its results */
+    struct Env *env;      /* its environment (env.c), which its processes join */
 } Program;
 
 typedef struct LibWant {
@@ -380,6 +381,8 @@ typedef struct VM {
     _Atomic int64_t exit_code;
     VEC(FdTicket) tickets;       /* handles given away with fs.give, not yet taken (under `lock`) */
     StrMap registry;             /* proc.register: name -> pid (0 once released), under `lock` */
+    struct Env *env_init;        /* what every program's environment starts with (--env), or NULL */
+    StrMap env_named;            /* [lock] env.join's environments: name -> Env */
     VEC(char *) pid_names;       /* [lock] the names node.name_pid has made pids for, numbered from 1 */
     StrMap pid_name_ids;         /* [lock] and back */
     bool external_input;         /* the host may send messages (mlws_start): never a deadlock */
@@ -707,6 +710,7 @@ struct Process {
     uint64_t shared_seen;  /* the major collection marking now, or 0 */
     bool is_frag;          /* a fragment heap, whose objects go to a process with a message (sched.c) */
     struct Caps *caps;     /* what it may reach (caps.c), or NULL: anything */
+    struct Env *env;       /* the environment it belongs to (env.c), or NULL: none yet */
 };
 
 /* vm.c */
@@ -891,6 +895,18 @@ Process *sched_frag(VM *vm); /* this thread's scratch heap, emptied, to make a m
 void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag); /* v made in sched_frag's heap */
 void sched_node_written(Process *p, uint64_t n); /* a connection's carrier wrote n bytes of frames */
 void sched_set_carries(VM *vm, uint64_t carrier, uint32_t node); /* (node.attach) */
+/* Environments (env.c). */
+typedef struct Env Env;
+Env *env_new(const char *name);
+void env_retain(Env *e);
+void env_release(Env *e);
+bool vm_env_load_file(VM *vm, const char *path, char *err, size_t errlen); /* --env */
+bool vm_program_env(VM *vm, Program *pr, bool own_file, MlwsError *err); /* a program's: own_file, NAME.mlws.env */
+void natives_register_env(VM *vm);
+const NativeDef *natives_env_table(size_t *n);
+/* A value as bytes, in f's heap (p's error if it cannot be), and back, into p's (dist.c). */
+ObjBytes *node_encode_value(Process *p, Process *f, Word v, uint8_t tag);
+uint8_t node_decode_value(Process *p, const uint8_t *s, size_t n, Word *out);
 uint64_t sched_whereis(VM *vm, const char *name); /* the registry: the pid with a name, or 0 */
 void sched_dial_done(VM *vm, uint32_t node, bool ok); /* a connection came, or a try to make one failed */
 ObjBytes *node_named_frame(Process *p, Process *f, const char *name, Word v, uint8_t tag); /* dist.c: [12, name, value] */

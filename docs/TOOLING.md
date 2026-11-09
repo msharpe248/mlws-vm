@@ -166,6 +166,7 @@ a test file's own lines override both.
 | `--max-frames N` | 100000 | call depth limit (`E_CALL_DEPTH`) |
 | `--slice N` | 2000 | time slice, in instructions, before another process gets a turn |
 | `--gc-min BYTES` | 64K | the young generation's starting size: what a process allocates between minor collections (it grows while too much of it survives) |
+| `--env FILE` | (none) | a file of `name = JSON` lines that every program's environment starts with; again for more ([STDLIB.md](STDLIB.md#environments-env)) |
 | `--cap LIST` | everything | what every process may reach, e.g. `read=/data,connect=example.org:443`, or `none` ([STDLIB.md](STDLIB.md#sandboxing)) |
 | `--quota LIST` | unlimited | starting limits for every process, e.g. `heap=64M,raw=1G,mailbox=1000,insns=5000000,foreign=0,os=0`; any subset, `unlimited` resets one |
 | `--ext-path DIR[:DIR]` | (none) | trusted native-extension directories, searched before `lib/ext` ([EXTENDING.md](EXTENDING.md)) |
@@ -505,7 +506,10 @@ mlwsvm: serving at http://127.0.0.1:7070/#token=9a3e...  (programs from ./servic
 its own, and its monitor with actions on (the token is printed, or
 `MLWSVM_MONITOR_TOKEN`). Programs are started from the dashboard's Programs
 card, or the API, each with its own `os.args` and, if given, capabilities and
-quotas of its own in `--cap`'s and `--quota`'s syntax, within the VM's. A
+quotas of its own in `--cap`'s and `--quota`'s syntax, within the VM's. Each
+has an [environment](STDLIB.md#environments-env) of its own, with `--env`'s
+values and those of the `NAME.mlws.env` beside its file, if there is one (one
+that is not right is reported, and left out). A
 program is a file in the `--programs` directory: a path that leads out of it,
 through `..` or a link, is refused. The same file started again is another main
 of the same module, as with `--also`. Programs share the VM's output, as with
