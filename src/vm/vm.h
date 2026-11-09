@@ -293,6 +293,7 @@ typedef struct VM {
     struct Caps *default_caps; /* --cap: every process's, as default_quota */
     uint32_t node_self;      /* this VM's number among nodes, or 0 (dist.c) */
     uint64_t *node_route;    /* per node: the process that carries its messages, or 0 */
+    struct NodeStats **node_stats; /* per node: its connection's traffic, since it last came (made by node.attach) */
     char *node_name;         /* [lock] this VM's name among nodes, or NULL (node.set_name) */
     char **node_names;       /* [lock] per node: the name it gave when it last connected, or NULL */
     VEC(uint64_t) node_watchers; /* [lock] processes told of each connection that comes or goes (node.watch) */
@@ -511,6 +512,14 @@ typedef struct {
 
 typedef VEC(uint64_t) PidVec;
 
+/* A connection to another node, counted for the monitor: messages sent there
+ * (send_far) and received from there (node.take), the frames' bytes written
+ * and read, and how many times a sender waited for room (back-pressure). */
+typedef struct NodeStats {
+    _Atomic uint64_t sent, received, bytes_out, bytes_in, waits;
+    uint64_t up_ns; /* when it came */
+} NodeStats;
+
 /* Why a process stopped: a runtime trap's or an uncaught exception's code
  * and message (longer messages are cut). Smaller than an MlwsError, whose
  * message carries the assembler's source excerpts: every process has one. */
@@ -599,6 +608,7 @@ struct Process {
      * and who waits for them to go down; for a sender, which carrier it waits
      * for after a send (0: none). */
     uint64_t qbytes;             /* [L] */
+    uint32_t carries;            /* [L] the node whose connection it carries (node.attach), or 0 */
     PidVec busy_senders;         /* [L] */
     _Atomic uint64_t busy_on;
     bool busy_woken;             /* [L] told to go on before it slept */
@@ -860,6 +870,8 @@ void sched_node_control(Process *p, const ObjList *frame);
 Process *sched_frag(VM *vm); /* this thread's scratch heap, emptied, to make a message from a node in */
 void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag); /* v made in sched_frag's heap */
 void sched_node_written(Process *p, uint64_t n); /* a connection's carrier wrote n bytes of frames */
+void sched_set_carries(VM *vm, uint64_t carrier, uint32_t node); /* (node.attach) */
+NodeStats *node_stats_of(VM *vm, uint32_t node); /* dist.c: NULL before its first connection */
 void sched_node_down(VM *vm, uint32_t node);
 void sched_node_event(VM *vm, uint32_t node, bool up); /* a NodeEvent to each watcher */
 void sched_module_event(VM *vm, const char *name);     /* a Reloaded to each watcher of the module */

@@ -465,8 +465,17 @@ static void busy_wake(Sched *s, PidVec *v, uint64_t carrier) {
     VEC_FREE(*v);
 }
 
+void sched_set_carries(VM *vm, uint64_t carrier, uint32_t node) {
+    Process *t = pin(vm->sched, carrier);
+    if (!t) return;
+    t->carries = node;
+    plat_unlock(t->lock);
+}
+
 void sched_node_written(Process *p, uint64_t n) {
     plat_lock(p->lock);
+    NodeStats *st = node_stats_of(p->vm, p->carries);
+    if (st) atomic_fetch_add(&st->bytes_out, n);
     p->qbytes = p->qbytes > n ? p->qbytes - n : 0;
     PidVec v = {0};
     if (p->qbytes <= NODE_FREE && p->busy_senders.n) {
@@ -514,9 +523,12 @@ static void send_far(Process *p, uint64_t carrier, uint64_t pid, Word v, uint8_t
     }
     push_locked(s, to, &m);
     to->qbytes += len;
+    NodeStats *st = node_stats_of(p->vm, (uint32_t)(pid >> NODE_SHIFT));
+    if (st) atomic_fetch_add(&st->sent, 1);
     if (to->qbytes > NODE_BUSY && !p->cb_base) { /* (the store is seen by whoever takes the list, under the lock) */
         atomic_store(&p->busy_on, carrier);
         if (!has_pid(&to->busy_senders, p->pid)) VEC_PUSH(to->busy_senders, p->pid);
+        if (st) atomic_fetch_add(&st->waits, 1);
     }
     plat_unlock(to->lock);
 }

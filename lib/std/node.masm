@@ -312,7 +312,7 @@ ended:
 ; connection goes on, since frames come one by one.
 .func read_one(ref bytes, i64 peer) -> ref
 .try bad
-    ncall "node.take" (bytes) -> (R2)
+    ncall "node.take" (bytes, peer) -> (R2)
 .endtry
     ret R2
 bad:

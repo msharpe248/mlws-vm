@@ -275,9 +275,31 @@ static void names_json(StrBuf *b, VM *vm) {
     sb_putc(b, ']');
 }
 
+/* A connection's traffic, since it came: the counts (NodeStats), and what its
+ * carrier has yet to write and who waits for it to (back-pressure). */
+typedef struct {
+    uint64_t up_ms, sent, received, bytes_out, bytes_in, waits, queued, waiting;
+} NodeTraffic;
+
+static NodeTraffic node_traffic(VM *vm, uint32_t n, uint64_t carrier, uint64_t now) {
+    NodeTraffic t = {0};
+    const NodeStats *st = node_stats_of(vm, n);
+    if (st) {
+        t.up_ms = (now - st->up_ns) / 1000000;
+        t.sent = atomic_load(&st->sent), t.received = atomic_load(&st->received);
+        t.bytes_out = atomic_load(&st->bytes_out), t.bytes_in = atomic_load(&st->bytes_in);
+        t.waits = atomic_load(&st->waits);
+    }
+    const Process *c = vm_proc_at(vm, carrier); /* (the world is paused for the monitor) */
+    if (c) t.queued = c->qbytes, t.waiting = c->busy_senders.n;
+    return t;
+}
+
 /* This VM's node number (0: none) and name ("": none), and the nodes it is
- * connected to, with their names and the process carrying each connection. */
+ * connected to, with their names, the process carrying each connection, and
+ * its traffic. */
 static void nodes_json(StrBuf *b, VM *vm) {
+    uint64_t now = plat_now_ns();
     plat_lock(vm->lock); /* (the names) */
     sb_printf(b, "{\"self\":%u,\"name\":", vm->node_self);
     json_str(b, vm->node_name ? vm->node_name : "");
@@ -288,7 +310,13 @@ static void nodes_json(StrBuf *b, VM *vm) {
         if (!c) continue;
         sb_printf(b, "%s{\"node\":%u,\"name\":", first ? "" : ",", n);
         json_str(b, vm->node_names && vm->node_names[n] ? vm->node_names[n] : "");
-        sb_printf(b, ",\"carrier\":%llu}", (unsigned long long)c);
+        NodeTraffic t = node_traffic(vm, n, c, now);
+        sb_printf(b,
+                  ",\"carrier\":%llu,\"up_ms\":%llu,\"sent\":%llu,\"received\":%llu,\"bytes_out\":%llu,\"bytes_in\":%llu,"
+                  "\"queued\":%llu,\"waiting\":%llu,\"waits\":%llu}",
+                  (unsigned long long)c, (unsigned long long)t.up_ms, (unsigned long long)t.sent,
+                  (unsigned long long)t.received, (unsigned long long)t.bytes_out, (unsigned long long)t.bytes_in,
+                  (unsigned long long)t.queued, (unsigned long long)t.waiting, (unsigned long long)t.waits);
         first = false;
     }
     plat_unlock(vm->lock);
@@ -442,6 +470,33 @@ static void top_text(StrBuf *b, Monitor *mon, VM *vm) {
     mon->last_cpu.n = end - 1;
     for (size_t i = 0; i < ps.n; i++) mon->last_cpu.v[ps.v[i]->pid - 1] = ps.v[i]->cpu_ns;
     mon->last_top_ns = now;
+    /* The nodes this VM is connected to: each connection's traffic. */
+    bool head = false;
+    for (uint32_t n = 1; vm->node_route && n <= 65535; n++) {
+        uint64_t c = __atomic_load_n(&vm->node_route[n], __ATOMIC_ACQUIRE);
+        if (!c) continue;
+        if (!head) {
+            plat_lock(vm->lock);
+            sb_printf(b, "\nnodes (this VM: node %u%s%s):\n", vm->node_self, vm->node_name ? ", " : "",
+                      vm->node_name ? vm->node_name : "");
+            plat_unlock(vm->lock);
+            sb_printf(b, "%6s %-20s %8s %8s %8s %8s %8s %8s %4s %6s\n", "NODE", "NAME", "UP", "SENT", "RECEIVED", "OUT",
+                      "IN", "QUEUED", "WAIT", "WAITS");
+            head = true;
+        }
+        NodeTraffic t = node_traffic(vm, n, c, now);
+        char nm[21] = "", sent[16], recv[16], out[16], in[16], q[16];
+        plat_lock(vm->lock);
+        if (vm->node_names && vm->node_names[n]) snprintf(nm, sizeof nm, "%s", vm->node_names[n]);
+        plat_unlock(vm->lock);
+        human(sent, sizeof sent, (double)t.sent);
+        human(recv, sizeof recv, (double)t.received);
+        human(out, sizeof out, (double)t.bytes_out);
+        human(in, sizeof in, (double)t.bytes_in);
+        human(q, sizeof q, (double)t.queued);
+        sb_printf(b, "%6u %-20s %7.1fs %8s %8s %7sB %7sB %7sB %4llu %6llu\n", n, nm[0] ? nm : "-", (double)t.up_ms / 1000,
+                  sent, recv, out, in, q, (unsigned long long)t.waiting, (unsigned long long)t.waits);
+    }
     if (vm->exits.n) {
         sb_puts(b, "\nrecent exits:\n");
         size_t n = vm->exits.n;

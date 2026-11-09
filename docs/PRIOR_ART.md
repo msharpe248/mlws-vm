@@ -336,6 +336,7 @@ of the instructions in call-heavy code.
 | M95 | Erlang's distribution, which encodes a message in the sending process (`erts_dsig_send`) into the connection's output queue, written by the port in as few writes as it can, `writev` batching in network servers |
 | M96 | Erlang's `busy_dist_port`: a process sending on a distribution channel whose output queue is past `dist_buf_busy_limit` (1 MiB by default) is suspended until the queue drains |
 | M97 | Erlang/OTP's schedulers, which poll for I/O themselves when they run out of work (`erts_check_io`), and Go's runtime, whose idle Ps call the network poller (`netpoll`) in `findrunnable` and whose `sysmon` looks when every P is busy |
+| M98 | Erlang's `net_kernel:node_info/1`, whose `in` and `out` count a connection's messages, `inet:getstat/1` on its socket for bytes, and `observer`'s view of nodes |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References
