@@ -499,6 +499,22 @@ static void deliver_frame(Sched *s, uint64_t carrier, InMsg *m) {
     if (to) plat_unlock(to->lock);
 }
 
+/* The name a PID_NAMED pid stands for, into buf; false if it is no such pid. */
+static bool pid_name(VM *vm, uint64_t pid, char *buf) {
+    uint64_t id = pid & (PID_NAMED - 1);
+    plat_lock(vm->lock);
+    bool ok = id && id <= vm->pid_names.n;
+    if (ok) snprintf(buf, PID_NAME_MAX + 1, "%s", vm->pid_names.v[id - 1]);
+    plat_unlock(vm->lock);
+    return ok;
+}
+
+/* The process here that has the name a PID_NAMED pid of this VM stands for, or 0. */
+static uint64_t named_here(VM *vm, uint64_t pid) {
+    char name[PID_NAME_MAX + 1];
+    return pid_name(vm, pid, name) ? sched_whereis(vm, name) : 0;
+}
+
 /* A message for another node goes to its carrier as the frame for the wire,
  * made here: so it is copied once, as bytes, and what cannot be sent is the
  * sender's error. The carrier's mailbox limit holds as for any send. */
@@ -506,7 +522,14 @@ static void send_far(Process *p, uint64_t carrier, uint64_t pid, Word v, uint8_t
     Sched *s = p->vm->sched;
     Process *f = my_frag(s);
     frag_reset(f);
-    ObjBytes *fr = node_message_frame(p, f, pid, v, tag);
+    ObjBytes *fr;
+    if (pid & PID_NAMED) { /* (to a name there: resolved where it arrives) */
+        char name[PID_NAME_MAX + 1];
+        if (!pid_name(p->vm, pid, name)) return;
+        fr = node_named_frame(p, f, name, v, tag);
+    } else {
+        fr = node_message_frame(p, f, pid, v, tag);
+    }
     uint64_t len = fr->len;
     InMsg m = frag_take(f, (Word){.r = &fr->h}, T_R);
     Process *to = pin(s, carrier);
@@ -548,6 +571,7 @@ void sched_send(Process *p, uint64_t pid, Word v, uint8_t tag) {
             return;
         }
     }
+    if (pid & PID_NAMED && !(pid = named_here(p->vm, pid))) return; /* a name nobody has here: dropped */
     InMsg m = {v, tag, NULL, 0, 0};
     Process *to = pin(s, pid);
     if (to && accepts(to) && to->mcount < to->quota[QUOTA_MAILBOX] && type_is_ref(tag) && v.r) {
@@ -1303,6 +1327,14 @@ static void n_unregister(Process *p, Word *a, Word *r) {
 }
 
 /* proc.whereis(name) -> pid, or 0 */
+uint64_t sched_whereis(VM *vm, const char *name) {
+    void *v = NULL;
+    plat_lock(vm->lock);
+    smap_get(&vm->registry, name, &v);
+    plat_unlock(vm->lock);
+    return (uint64_t)(uintptr_t)v;
+}
+
 static void n_whereis(Process *p, Word *a, Word *r) {
     const char *name;
     reg_name_arg(p, a[0], &name);
@@ -1378,6 +1410,7 @@ static void n_call(Process *p, Word *a, Word *r) {
         VM *vm = p->vm;
         uint64_t pid = a[0].u;
         uint32_t node = far_node(vm, &pid); /* another node's: the Call goes to its carrier as [pid, Call] */
+        if (!node && pid & PID_NAMED) pid = named_here(vm, pid); /* (0: nobody has the name, E_NOPROC below) */
         if (pid == p->pid && !node) {
             native_fail(p, "E_DEADLOCK", "proc.call: a process cannot call itself");
             return;
@@ -1398,7 +1431,12 @@ static void n_call(Process *p, Word *a, Word *r) {
         c->fields[CALLF_ID].u = ++p->call_seq;
         c->fields[CALLF_BODY] = body;
         Word root = {.r = c};
-        if (node) root.r = node_message_frame(p, f, pid, root, T_R);
+        if (node) {
+            char name[PID_NAME_MAX + 1];
+            if (!(pid & PID_NAMED)) root.r = node_message_frame(p, f, pid, root, T_R);
+            else if (pid_name(vm, pid, name)) root.r = node_named_frame(p, f, name, root, T_R);
+            else vm_trap(p, "E_TYPE", "proc.call: no such pid (%llu)", (unsigned long long)a[0].u);
+        }
         InMsg m = frag_take(f, root, T_R);
         plat_lock(p->lock);
         p->call_id = p->call_seq;

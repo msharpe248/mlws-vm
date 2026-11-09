@@ -222,6 +222,9 @@ void vm_free(VM *vm) {
     for (size_t i = 0; i < vm->tickets.n; i++) plat_fd_close(vm->tickets.v[i].fd); /* given, never taken */
     VEC_FREE(vm->tickets);
     smap_free(&vm->registry);
+    for (size_t i = 0; i < vm->pid_names.n; i++) free(vm->pid_names.v[i]);
+    VEC_FREE(vm->pid_names);
+    smap_free(&vm->pid_name_ids);
     copy_state_free();
     node_wire_free();
     smap_free(&vm->natives);

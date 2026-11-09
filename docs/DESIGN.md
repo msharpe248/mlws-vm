@@ -1868,7 +1868,12 @@ own `alive` would. The reader at the far end hands it to `node.control`. A
 the caller's pid as that node names it, and remembers which node it called; the
 `proc.reply` comes back as a reply frame, encoded from the replier's value, into
 the reply slot. `proc.alive` waits in the same slot (`reply_wait`, shared with
-`proc.call`). A message for a process whose mailbox is full here is dropped,
+`proc.call`). A pid with `PID_NAMED` set (`node.name_pid`) numbers a name in
+`VM.pid_names`: a message to it from another node is the frame `[12, name,
+value]` (`node_named_frame`), which the reader resolves in its registry
+(`node.take`, `sched_whereis`) and delivers, or drops; on this VM `sched_send`
+and `proc.call` resolve it at once. A reader drops frames of kinds it does
+not know, so that later kinds do not end a connection. A message for a process whose mailbox is full here is dropped,
 with a warning in the monitor's log, since its sender cannot be told. When a reader
 loses its connection it clears the route (`node.attach(n, 0)`), and
 `sched_node_down` walks the processes once: it drops their ties to that node,

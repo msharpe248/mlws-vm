@@ -563,6 +563,7 @@ this node's number in it, which works here too, wherever a plain one does. `node
 | `names(host)` | what a host's name service knows: a list of `[name, port]` |
 | `watch()`, `unwatch()` | from now on, a `NodeEvent` comes to this process for each connection that comes or goes; or no more |
 | `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
+| `ncall "node.name_pid" (number, name)` | a pid that stands for whichever process has the name there when a message arrives (below) |
 | `spawn(number, module, function, arg)` | run an exported function of one reference there; its pid, or 0 |
 | `self(pid)` | a pid as other nodes can use it |
 
@@ -596,6 +597,16 @@ this node's number in it, which works here too, wherever a plain one does. `node
   that node does not have), or that comes for a process whose mailbox is full
   there, is dropped there, with a warning in its monitor's log, and the
   connection goes on.
+* **A message to a name.** `node.name_pid(number, name)` gives a pid for
+  whichever process has `name` registered on that node (0: this VM) when a
+  message arrives there, as Erlang's `{Name, Node} ! Msg`. `send` and
+  `proc.call` to it go in one direction, as to any pid: the name is looked up
+  where the message arrives, and a message for a name nobody has is dropped (a
+  `proc.call`'s is answered `E_NOPROC`). The pid is the same for the same name,
+  so it can be kept while the name passes from process to process. Names are 1
+  to 255 bytes. `link`, `monitor`, `kill` and `alive` take a process's own pid
+  (`whereis`), and see no process in a name's. Both nodes must be 0.24 or
+  later: an earlier one ends the connection at such a message.
 * **A sender waits for a busy connection.** When a connection has more than
   1 MiB of messages it has not yet written (a slow network, or a node that
   does not read), a process that sends to that node waits after its `send`

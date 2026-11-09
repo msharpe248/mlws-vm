@@ -335,7 +335,8 @@ bad:
     bz I2, 1b                          ; (a message node.take could not see as one: malformed)
     beq I2, 1, 3f
     beq I2, 2, 4f
-    ncall "node.control" (R3)          ; 3 to 10
+    bgt I2, 11, 1b                     ; (a kind of a later version: dropped)
+    ncall "node.control" (R3)          ; 3 to 11
     jmp 1b
 3:  spawn do_spawn (R3)
     jmp 1b

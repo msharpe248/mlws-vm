@@ -325,6 +325,21 @@ ObjBytes *node_message_frame(Process *p, Process *f, uint64_t pid, Word v, uint8
     return frame_end(p, &b);
 }
 
+/* [12, name, value], in f: a message for whichever process has the name where
+ * it arrives (node.take resolves it, as Erlang's REG_SEND). The name is
+ * written as a literal, which the reader reads without interning. */
+ObjBytes *node_named_frame(Process *p, Process *f, const char *name, Word v, uint8_t tag) {
+    Writer b = {f, bytes_new(f, 0)};
+    frame_list(&b, 3);
+    put8(&b, T_I64);
+    put_word(&b, (Word){.i = 12});
+    put8(&b, T_R);
+    put8(&b, WIRE_INTERNED);
+    put_str(&b, name);
+    encode(p, &b, 1, &v, &tag, 1);
+    return frame_end(p, &b);
+}
+
 /* [kind, w...], in f; p's error (or f's, for what the VM sends, which is
  * always sendable). */
 ObjBytes *node_control_frame(Process *p, Process *f, int kind, int n, const Word *w, const uint8_t *t) {
@@ -776,6 +791,29 @@ static void n_watch(Process *p, Word *a, Word *r) {
     plat_unlock(vm->lock);
 }
 
+/* node.name_pid(number, name): a pid that stands for whichever process has
+ * the name registered on node number (0: this VM) when a message arrives
+ * there, for send and proc.call: fixed, so it can be kept, while the name may
+ * pass from process to process. */
+static void n_name_pid(Process *p, Word *a, Word *r) {
+    if (a[0].i < 0 || a[0].i > MAX_NODE) vm_trap(p, "E_RANGE", "node.name_pid: a node's number is 0 to %d", MAX_NODE);
+    const Obj *o = a[1].r;
+    if (!o || o->kind != OBJ_STRING) vm_trap(p, "E_TYPE", "node.name_pid: the name is a string");
+    const ObjString *s = (const ObjString *)o;
+    if (!s->len || s->len > PID_NAME_MAX || memchr(s->data, 0, s->len))
+        vm_trap(p, "E_RANGE", "node.name_pid: a name is 1 to %d bytes, without NUL", PID_NAME_MAX);
+    VM *vm = p->vm;
+    plat_lock(vm->lock);
+    void *v = NULL;
+    if (!smap_get(&vm->pid_name_ids, s->data, &v)) {
+        VEC_PUSH(vm->pid_names, xstrdup(s->data));
+        v = (void *)(uintptr_t)vm->pid_names.n;
+        smap_put(&vm->pid_name_ids, s->data, v);
+    }
+    plat_unlock(vm->lock);
+    r[0].u = (uint64_t)a[0].i << NODE_SHIFT | PID_NAMED | (uint64_t)(uintptr_t)v;
+}
+
 /* A node's number made from its name, 1 to 65535 (FNV-1a), for nodes that
  * have names but no numbers of their own choosing: two names may give one
  * number, and then the second node to connect is refused (node.named). */
@@ -855,6 +893,23 @@ static void n_take(Process *p, Word *a, Word *r) {
     NodeStats *st = node_stats_of(p->vm, (uint32_t)a[1].i);
     if (st) atomic_fetch_add(&st->bytes_in, (uint64_t)n + 4);
     static const uint8_t head[] = {T_R, OBJ_LIST, 3, 0, 0, 0, T_I64, 0, 0, 0, 0, 0, 0, 0, 0, T_I64};
+    static const uint8_t named[] = {T_R, OBJ_LIST, 3, 0, 0, 0, T_I64, 12, 0, 0, 0, 0, 0, 0, 0, T_R, WIRE_INTERNED};
+    if (n >= sizeof named + 4 && !memcmp(s, named, sizeof named)) { /* [12, name, value]: to whoever has the name here */
+        Reader rd = {sched_frag(p->vm), p, s, n, sizeof named};
+        uint32_t len;
+        const char *at = get_span(&rd, &len);
+        char name[PID_NAME_MAX + 1];
+        if (!len || len > PID_NAME_MAX || memchr(at, 0, len)) bad(&rd);
+        memcpy(name, at, len);
+        name[len] = 0;
+        Word w;
+        uint8_t t = decode(&rd, &w, 1);
+        if (rd.i != n) bad(&rd);
+        if (st) atomic_fetch_add(&st->received, 1);
+        sched_node_deliver(p, sched_whereis(p->vm, name), w, t); /* (0: nobody has it: dropped, a Call answered) */
+        r[0].r = NULL;
+        return;
+    }
     if (n < sizeof head + 8 || memcmp(s, head, sizeof head)) {
         n_decode(p, a, r);
         return;
@@ -955,6 +1010,7 @@ static const NativeDef NODE_NATIVES[] = {
     N("node.function", 2, T(T_R, T_R), 1, T(T_R), n_function, "A closure for a module's exported function, as a peer names it. For std.node."),
     N("node.frame", 1, T(T_R), 1, T(T_R), n_frame, "A value as bytes for a connection, with its length. For std.node."),
     N("node.decode", 1, T(T_R), 1, T(T_R), n_decode, "A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node."),
+    N("node.name_pid", 2, T(T_I64, T_R), 1, T(T_I64), n_name_pid, "A pid for whichever process has a name registered on a node (0: this VM) when a message arrives there: for send and proc.call, and to keep."),
     N("node.written", 1, T(T_I64), 0, T(0), n_written, "The bytes of frames this connection's writer has written, for senders waiting for room. For std.node."),
     N("node.take", 2, T(T_R, T_I64), 1, T(T_R), n_take, "A frame from a node (the second argument): a message, [0, pid, value], delivered to its process here (null returned), else the frame's value, as node.decode gives it. For std.node."),
     N("node.control", 1, T(T_R), 0, T(0), n_control,

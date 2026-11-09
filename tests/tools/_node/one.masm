@@ -210,6 +210,26 @@ plain_refused:
     send I5, R3
     recv I9
     ASSERT_EQ I9, 42
+    ; The same by the name's pid (node.name_pid), resolved there at each
+    ; message: a send, a call, and a call to a name nobody has there.
+    ncall "node.name_pid" (2, "doubler") -> (I12)
+    call node.node_of (I12) -> (I13)
+    ASSERT_EQ I13, 2
+    lnew R3
+    lpush R3, I7, 50
+    send I12, R3
+    recv I9
+    ASSERT_EQ I9, 100
+    ncall "node.name_pid" (2, "tripler") -> (I12)
+    lnew R3
+    lpush R3, 5
+    ncall "proc.call" (I12, R3, 5000) -> (R3)
+    mov I9, R3[0]
+    ASSERT_EQ I9, 15
+    ncall "node.name_pid" (2, "nobody") -> (I12)
+    send I12, 1                        ; (dropped there)
+    call named_call_code (I12) -> (R3)
+    call expect (R3, "E_NOPROC")
 
     ; A spawn there, with what a message can carry; and a Down when it ends.
     lnew R4
@@ -398,6 +418,18 @@ not_connected:
     ncall "proc.alive" (I30, 5000) -> (I3) ; (its node gone: it runs nowhere)
     ASSERT_FALSE I3
     ret 0
+.endf
+
+; What proc.call to pid raises, or null.
+.func named_call_code(i64 pid) -> ref
+.try h
+    ncall "proc.call" (pid, "hello", 5000) -> (R1)
+.endtry
+    ret null
+h:
+    catch R2
+    mov R3, R2->Error.code
+    ret R3
 .endf
 
 ; Fail if a value is not this error code: a code, or a list [_, code].
