@@ -563,6 +563,9 @@ this node's number in it, which works here too, wherever a plain one does. `node
 | `names(host)` | what a host's name service knows: a list of `[name, port]` |
 | `watch()`, `unwatch()` | from now on, a `NodeEvent` comes to this process for each connection that comes or goes; or no more |
 | `set_ticktime(ms)`, `ticktime()` | how long a connection may hear nothing before its node is taken as down (60000 at first; 0: never) |
+| `disconnect(number)` | close the connection to a node, as if it had gone |
+| `auto_connect(on)` | whether a message to a node not connected, but reached before, connects to it again (true at first) |
+| `set_ca(ca)` | for a TLS node, the authorities checked when it connects for a message to a node only known by name (`""`: the system's) |
 | `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
 | `ncall "node.name_pid" (number, name)` | a pid that stands for whichever process has the name there when a message arrives (below) |
 | `spawn(number, module, function, arg)` | run an exported function of one reference there; its pid, or 0 |
@@ -615,8 +618,17 @@ this node's number in it, which works here too, wherever a plain one does. `node
   distribution port. So a fast sender cannot fill this VM's memory with what
   it has not sent. Only the `send` instruction waits; a reply, and a send
   from a callback from C, go on at once.
-* **A message to a node that is not connected is dropped,** as one to a finished
-  process is. So is one that does not arrive because the connection fails. Use
+* **A message to a node that is not connected connects to it, if it can.** A
+  `send` or `proc.call` to a node this VM has been connected to (so it knows
+  where: the address it connected to, with TLS if it did, or the node's name,
+  through its host's name service) waits while it connects again, then goes,
+  as Erlang auto-connects; so it keeps its order with the sender's other
+  messages. If that fails, a send is dropped and a call raises `E_NODE_DOWN`,
+  and no new try is made for a second. `auto_connect(false)` turns it off;
+  `link`, `monitor`, `kill` and `proc.alive` never connect. If two nodes connect
+  to each other at once, both keep the connection the lower-numbered one made.
+* **A message to a node that is not connected, and cannot be, is dropped,** as
+  one to a finished process is. So is one that does not arrive because the connection fails. Use
   `monitor`, and replies, for what must be known.
 * **Security.** Two nodes connect once each proves it knows the cookie, with an
   HMAC over the other's random nonce, marked with which end it is. After that, a

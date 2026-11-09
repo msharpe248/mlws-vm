@@ -1,0 +1,35 @@
+; Both nodes connect at once (check_tools.sh, with rb.masm and a name
+; service): ra drops its connection to rb, then at one wall time T each sends
+; to the other, so each connects to the other for it. Both ends must keep the
+; same one connection, and both messages arrive: rb's 7 and the echo of 99.
+.import std.node as node
+.func main
+    call node.start_named ("ra@127.0.0.1", 1, "race", 0) -> (I2)
+    call node.connect_named ("rb@127.0.0.1", "race") -> (I3)
+    call node.whereis (2, "rb") -> (I5)
+    call node.self (PID) -> (I6)
+    ncall "time.now" () -> (I7)
+    add I7, I7, 300000000          ; T: 300 ms from now
+    lnew R2
+    lpush R2, I6, I7
+    send I5, R2
+    sleep 150
+    call node.disconnect (2)       ; both will find it gone, and both send at T
+1:  ncall "time.now" () -> (I4)
+    blt I4, I7, 1b
+    send I5, 99
+    mov I8, 0
+2:  recvt I9, 5000, 9f
+    add I8, I8, I9
+    blt I8, 106, 2b
+    call node.nodes () -> (R3)
+    len I10, R3
+    ncall "io.print_s" ("ok, nodes connected: ")
+    ncall "io.print_i" (I10)
+    ncall "io.nl" ()
+    ret 0
+9:  ncall "io.print_s" ("missing, got ")
+    ncall "io.print_i" (I8)
+    ncall "io.nl" ()
+    ret 1
+.endf

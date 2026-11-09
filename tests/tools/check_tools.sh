@@ -357,6 +357,17 @@ MINGW* | MSYS* | CYGWIN*) ;;
     ;;
 esac
 
+# Connecting when a message needs it: node a drops its connection to b, and a
+# send, then a call by name, connect again; with auto_connect off they do
+# not; once b has ended, they fail without hanging.
+AUTOD=$(mktemp -d)
+$BIN run tests/tools/_auto/b.masm > "$AUTOD/port" 2>/dev/null &
+NODEB=$!
+for _ in $(seq 1 80); do grep -q '^[0-9][0-9]*$' "$AUTOD/port" && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+perl -e 'alarm 60; exec @ARGV' $BIN run tests/tools/_auto/a.masm "$(cat "$AUTOD/port")" > "$AUTOD/out" 2>&1 || { kill $NODEB 2>/dev/null; fail "node auto-connect: $(cat "$AUTOD/out")"; }
+wait $NODEB 2>/dev/null || true
+rm -rf "${AUTOD:?}"
+
 # Ticks: two nodes with a ticktime of a second stay connected while idle,
 # and once the far one is stopped, the near one takes it as down in about a
 # second. (No SIGSTOP on Windows.)
@@ -402,6 +413,15 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
 done
 perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_names/a.masm >/dev/null 2>"$NAMESD/err" || { kill $B_PID $NAMES_PID 2>/dev/null || true; cat "$NAMESD/err" >&2; fail "names: connecting by name"; }
 wait $B_PID 2>/dev/null || true
+# Two nodes connecting to each other at once, for messages: one connection
+# stays at both ends, and both messages arrive.
+$BIN run tests/tools/_race/rb.masm > "$NAMESD/rb.port" 2>/dev/null &
+RB_PID=$!
+for _ in $(seq 1 40); do [ -s "$NAMESD/rb.port" ] && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+OUT=$(perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_race/ra.masm 2>&1) || { kill $RB_PID $NAMES_PID 2>/dev/null || true; fail "nodes connecting at once: $OUT"; }
+echo "$OUT" | grep -q '^ok, nodes connected: 1$' || { kill $RB_PID $NAMES_PID 2>/dev/null || true; fail "nodes connecting at once: $OUT"; }
+kill $RB_PID 2>/dev/null || true
+wait $RB_PID 2>/dev/null || true
 kill $NAMES_PID 2>/dev/null || true
 wait $NAMES_PID 2>/dev/null || true
 unset MLWSVM_NAMES_PORT

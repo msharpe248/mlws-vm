@@ -486,6 +486,72 @@ void sched_node_written(Process *p, uint64_t n) {
     busy_wake(p->vm->sched, &v, p->pid);
 }
 
+/* ---- connecting when a message needs it ----
+ * A send or proc.call to a node that is not connected, but has been (its
+ * address or name is known), waits while std.node's dialer connects to it, and
+ * then runs again, as a send waits for an Erlang auto-connect: so it keeps its
+ * order with the sender's other messages. The sender waits as for a busy
+ * connection (SLICE_BUSY), its busy_on a DIAL_TOKEN, and goes on when the
+ * connection comes or the try fails (sched_dial_done), or after BUSY_WAIT_NS,
+ * when it simply looks again. A try that failed is not made again for
+ * DIAL_AGAIN_NS: a send meanwhile is dropped, as to a node not connected. */
+#define DIAL_TOKEN(n) ((uint64_t)1 << 63 | (n))
+#define DIAL_AGAIN_NS 1000000000ull
+
+static uint32_t self_node(VM *vm); /* (below) */
+
+static bool dialable_locked(VM *vm, uint32_t n) {
+    return (vm->node_addrs && vm->node_addrs[n].host) || (vm->node_names && vm->node_names[n]);
+}
+
+/* Whether p, sending to node n, which is not connected, is to wait for it to be
+ * (and the dialer is asked to, if nobody has). */
+static bool dial_wait(Process *p, uint32_t n) {
+    VM *vm = p->vm;
+    uint64_t dialer = atomic_load(&vm->node_dialer);
+    if (p->cb_base || !dialer || !atomic_load(&vm->node_autoconnect) || !n || n > 65535 || n == self_node(vm)) return false;
+    bool start = false, wait = false;
+    plat_lock(vm->lock);
+    if (!vm->node_dial) vm->node_dial = xcalloc(65536, sizeof *vm->node_dial);
+    if (dialable_locked(vm, n)) {
+        uint64_t st = vm->node_dial[n];
+        if (st == NODE_DIALING) wait = true;
+        else if (!st || plat_now_ns() - st >= DIAL_AGAIN_NS) vm->node_dial[n] = NODE_DIALING, start = wait = true;
+    }
+    if (wait) {
+        atomic_store(&p->busy_on, DIAL_TOKEN(n));
+        struct DialWait w = {n, p->pid};
+        VEC_PUSH(vm->dial_waiters, w);
+    }
+    plat_unlock(vm->lock);
+    if (start) { /* [n] to the dialer */
+        Process *f = my_frag(vm->sched);
+        frag_reset(f);
+        ObjList *l = list_new(f, 1);
+        list_push(f, l, (Word){.i = n}, T_I64);
+        InMsg m = frag_take(f, (Word){.r = &l->h}, T_R);
+        deliver(vm->sched, dialer, &m);
+    }
+    return wait;
+}
+
+static void busy_wake(Sched *s, PidVec *v, uint64_t carrier);
+
+void sched_dial_done(VM *vm, uint32_t n, bool ok) {
+    if (!n || n > 65535) return;
+    PidVec v = {0};
+    plat_lock(vm->lock);
+    if (vm->node_dial) vm->node_dial[n] = ok ? 0 : (plat_now_ns() | 2);
+    for (size_t i = 0; i < vm->dial_waiters.n; i++)
+        if (vm->dial_waiters.v[i].node == n) {
+            VEC_PUSH(v, vm->dial_waiters.v[i].pid);
+            vm->dial_waiters.v[i--] = vm->dial_waiters.v[--vm->dial_waiters.n];
+        }
+    plat_unlock(vm->lock);
+    if (vm->sched) busy_wake(vm->sched, &v, DIAL_TOKEN(n));
+    else VEC_FREE(v);
+}
+
 /* A frame for a node's carrier, counted in what it has to write. */
 static void deliver_frame(Sched *s, uint64_t carrier, InMsg *m) {
     uint64_t len = ((const ObjBytes *)m->v.r)->len;
@@ -566,7 +632,10 @@ void sched_send(Process *p, uint64_t pid, Word v, uint8_t tag) {
             pid &= ((uint64_t)1 << NODE_SHIFT) - 1;
         } else {
             uint64_t carrier = vm->node_route && node <= 65535 ? __atomic_load_n(&vm->node_route[node], __ATOMIC_ACQUIRE) : 0;
-            if (!carrier) return; /* no such node, as no such process: dropped */
+            if (!carrier) { /* not connected: dropped, as to no such process; or sent once it is */
+                dial_wait(p, (uint32_t)node);
+                return;
+            }
             send_far(p, carrier, pid, v, tag);
             return;
         }
@@ -1416,6 +1485,10 @@ static void n_call(Process *p, Word *a, Word *r) {
             return;
         }
         uint64_t carrier = node ? carrier_of(vm, node) : 0;
+        if (node && self_node(vm) && !carrier && dial_wait(p, node)) { /* connected first; then the call runs again */
+            p->native_req = NREQ_DIAL;
+            return;
+        }
         if (node && (!self_node(vm) || !carrier)) {
             native_fail(p, "E_NODE_DOWN", "proc.call: node %u is not connected", node);
             return;

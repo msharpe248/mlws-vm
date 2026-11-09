@@ -1,0 +1,111 @@
+; Connecting when a message needs it (check_tools.sh, with b.masm). Node a
+; connects to b, then:
+;   1. drops the connection (disconnect): a send to a pid there connects
+;      again, and is answered; the connection's NodeEvent comes up again;
+;   2. drops it again: proc.call to a name there (node.name_pid) connects;
+;   3. with auto_connect off, drops it: a send goes nowhere, a call raises
+;      E_NODE_DOWN at once;
+;   4. on again, with b ended: a send and a call try to connect, fail, and do
+;      not hang (the call raises E_NODE_DOWN).
+.include "std/test.inc"
+.import std.node as node
+
+; The next NodeEvent, of node 2; whether it is up.
+.func event -> i64
+1:  recv R0
+    isa I1, R0, NodeEvent
+    bz I1, 1b
+    mov I2, R0->NodeEvent.node
+    ASSERT_EQ I2, 2
+    mov I3, R0->NodeEvent.up
+    ret I3
+.endf
+
+; What proc.call raises, or null.
+.func call_code(i64 pid, ref body) -> ref
+.try h
+    ncall "proc.call" (pid, body, 5000) -> (R2)
+.endtry
+    ret null
+h:
+    catch R3
+    mov R4, R3->Error.code
+    ret R4
+.endf
+
+.func main
+    ncall "os.args" () -> (R0)
+    mov R1, R0[0]
+    parse.i64 I1, R1
+    call node.start (1, "auto", 0) -> (I2)
+    call node.connect ("127.0.0.1", I1, "auto") -> (I3)
+    ASSERT_EQ I3, 2
+    call node.whereis (2, "echo") -> (I5)
+    ASSERT_NE I5, 0
+    ncall "node.name_pid" (2, "echo") -> (I6)
+    call node.self (PID) -> (I7)
+    call node.watch ()
+
+    ; 1.
+    call node.disconnect (2)
+    call event () -> (I8)
+    ASSERT_FALSE I8
+    lnew R2
+    lpush R2, I7, 41
+    send I5, R2                        ; (waits while it connects)
+    call event () -> (I8)
+    ASSERT_TRUE I8
+    recv I9
+    ASSERT_EQ I9, 41
+
+    ; 2.
+    call node.disconnect (2)
+    call event () -> (I8)
+    ASSERT_FALSE I8
+    lnew R3
+    lpush R3, "by name"
+    ncall "proc.call" (I6, R3, 5000) -> (R4)
+    mov R5, R4[0]
+    strcmp I10, R5, "by name"
+    ASSERT_EQ I10, 0
+    call event () -> (I8)
+    ASSERT_TRUE I8
+
+    ; 3.
+    call node.auto_connect (0)
+    call node.disconnect (2)
+    call event () -> (I8)
+    ASSERT_FALSE I8
+    lnew R2
+    lpush R2, I7, 42
+    send I5, R2                        ; (nowhere)
+    call call_code (I5, R3) -> (R6)
+    strcmp I10, R6, "E_NODE_DOWN"
+    ASSERT_EQ I10, 0
+    call node.connected (2) -> (I11)
+    ASSERT_FALSE I11
+    recvt I9, 300, 1f
+    FAIL "a message came with auto_connect off"
+1:
+
+    ; 4.
+    call node.auto_connect (1)
+    send I5, R2                        ; (connects for it)
+    call event () -> (I8)
+    ASSERT_TRUE I8
+    recv I9
+    ASSERT_EQ I9, 42
+    send I5, "stop"                    ; b ends
+    call event () -> (I8)
+    ASSERT_FALSE I8
+    ncall "time.monotonic" () -> (I12)
+    send I5, R2                        ; tries, fails: dropped
+    call call_code (I5, R3) -> (R6)
+    strcmp I10, R6, "E_NODE_DOWN"
+    ASSERT_EQ I10, 0
+    ncall "time.monotonic" () -> (I13)
+    sub I13, I13, I12
+    div I13, I13, 1000000
+    ASSERT_LT I13, 5000
+    ret 0
+.endf

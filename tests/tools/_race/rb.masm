@@ -1,0 +1,21 @@
+; Node rb of check_tools.sh's race of two nodes connecting to each other at
+; once: told [a_pid, T] by ra, it sends 7 to a_pid at wall time T, which, as
+; ra drops their connection just before, needs a connection, while ra's own
+; send at T needs one too; then it echoes what it gets. It prints its port.
+.import std.node as node
+.func main
+    call node.start_named ("rb@127.0.0.1", 2, "race", 0) -> (I1)
+    ncall "proc.register" ("rb", PID)
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+    recv R0
+    mov I2, R0[0]
+    mov I3, R0[1]
+1:  ncall "time.now" () -> (I4)
+    blt I4, I3, 1b
+    send I2, 7
+2:  recv I5
+    send I2, I5
+    jmp 2b
+.endf
