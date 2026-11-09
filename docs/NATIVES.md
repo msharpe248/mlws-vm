@@ -76,6 +76,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `node.function` | r, r | r | A closure for a module's exported function, as a peer names it. For std.node. |
 | `node.frame` | r | r | A value as bytes for a connection, with its length. For std.node. |
 | `node.decode` | r | r | A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node. |
+| `node.written` | i64 | - | The bytes of frames this connection's writer has written, for senders waiting for room. For std.node. |
 | `node.take` | r | r | A frame from a node: a message, [0, pid, value], delivered to its process here (null returned), else the frame's value, as node.decode gives it. For std.node. |
 | `node.control` | r | - | Act on a control frame from a node: link, unlink, exit, monitor, down, reply, noproc or kill. For std.node. |
 | `node.proof` | r, r, r | r | HMAC-SHA-256 of a role and a nonce, keyed by a cookie. For std.node. |

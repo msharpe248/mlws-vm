@@ -299,6 +299,7 @@ static void wake_one(Sched *s) {
  * usually best run right here, after the sender blocks. */
 static void ready_locked(Sched *s, Process *p) {
     p->state = PROC_READY;
+    p->busy_sleep = false;
     if (p->in_runq) return;
     p->in_runq = true;
     Worker *w = my_worker(s);
@@ -428,6 +429,57 @@ static void deliver(Sched *s, uint64_t pid, InMsg *m) {
     if (to) plat_unlock(to->lock);
 }
 
+/* Back-pressure: a connection's carrier with more than NODE_BUSY bytes of
+ * frames to write makes a process sending to it wait after its send (as
+ * Erlang's busy_dist_port), until it has written all but NODE_FREE: then
+ * sched_node_written wakes the senders. BUSY_WAIT_NS bounds a wait no one
+ * ends (a carrier stuck on a slow network wakes them as it writes). */
+#define NODE_BUSY ((uint64_t)1 << 20)
+#define NODE_FREE (NODE_BUSY / 2)
+#define BUSY_WAIT_NS (100 * (uint64_t)1000000)
+
+static bool has_pid(const PidVec *v, uint64_t pid); /* (below) */
+
+/* Tell senders waiting for carrier that it has room. */
+static void busy_wake(Sched *s, PidVec *v, uint64_t carrier) {
+    for (size_t i = 0; i < v->n; i++) {
+        Process *t = pin(s, v->v[i]);
+        if (!t) continue;
+        uint64_t want = carrier;
+        if (atomic_compare_exchange_strong(&t->busy_on, &want, 0)) {
+            if (t->busy_sleep) ready_locked(s, t);
+            else t->busy_woken = true; /* (it has not slept yet: SLICE_BUSY goes on) */
+        }
+        plat_unlock(t->lock);
+    }
+    VEC_FREE(*v);
+}
+
+void sched_node_written(Process *p, uint64_t n) {
+    plat_lock(p->lock);
+    p->qbytes = p->qbytes > n ? p->qbytes - n : 0;
+    PidVec v = {0};
+    if (p->qbytes <= NODE_FREE && p->busy_senders.n) {
+        v = p->busy_senders;
+        memset(&p->busy_senders, 0, sizeof v);
+    }
+    plat_unlock(p->lock);
+    busy_wake(p->vm->sched, &v, p->pid);
+}
+
+/* A frame for a node's carrier, counted in what it has to write. */
+static void deliver_frame(Sched *s, uint64_t carrier, InMsg *m) {
+    uint64_t len = ((const ObjBytes *)m->v.r)->len;
+    Process *to = pin(s, carrier);
+    if (to && accepts(to)) {
+        push_locked(s, to, m);
+        to->qbytes += len;
+    } else {
+        gc_free_list(m->objs);
+    }
+    if (to) plat_unlock(to->lock);
+}
+
 /* A message for another node goes to its carrier as the frame for the wire,
  * made here: so it is copied once, as bytes, and what cannot be sent is the
  * sender's error. The carrier's mailbox limit holds as for any send. */
@@ -436,6 +488,7 @@ static void send_far(Process *p, uint64_t carrier, uint64_t pid, Word v, uint8_t
     Process *f = my_frag(s);
     frag_reset(f);
     ObjBytes *fr = node_message_frame(p, f, pid, v, tag);
+    uint64_t len = fr->len;
     InMsg m = frag_take(f, (Word){.r = &fr->h}, T_R);
     Process *to = pin(s, carrier);
     if (!to || !accepts(to)) {
@@ -450,6 +503,11 @@ static void send_far(Process *p, uint64_t carrier, uint64_t pid, Word v, uint8_t
                 (unsigned)(pid >> NODE_SHIFT));
     }
     push_locked(s, to, &m);
+    to->qbytes += len;
+    if (to->qbytes > NODE_BUSY && !p->cb_base) { /* (the store is seen by whoever takes the list, under the lock) */
+        atomic_store(&p->busy_on, carrier);
+        if (!has_pid(&to->busy_senders, p->pid)) VEC_PUSH(to->busy_senders, p->pid);
+    }
     plat_unlock(to->lock);
 }
 
@@ -631,7 +689,7 @@ static void ctl_send_by(VM *vm, Process *who, Process *f, uint32_t node, int kin
     if (!carrier) return; /* (f is reset by its next user) */
     ObjBytes *fr = node_control_frame(who, f, kind, n, w, t);
     InMsg m = frag_take(f, (Word){.r = &fr->h}, T_R);
-    deliver(vm->sched, carrier, &m);
+    deliver_frame(vm->sched, carrier, &m);
 }
 
 /* The VM's own, which are always sendable. */
@@ -699,7 +757,8 @@ static void finish(Sched *s, Process *p, bool failed) {
     proc_write_line_out(p); /* (it is not running: this thread may) */
     plat_lock(p->lock);
     p->state = failed ? PROC_FAILED : PROC_DONE;
-    PidVec links = p->links, mons = p->monitors, rlinks = p->rlinks, rmons = p->rmonitors;
+    PidVec links = p->links, mons = p->monitors, rlinks = p->rlinks, rmons = p->rmonitors, busy = p->busy_senders;
+    memset(&p->busy_senders, 0, sizeof p->busy_senders);
     memset(&p->links, 0, sizeof p->links);
     memset(&p->monitors, 0, sizeof p->monitors);
     memset(&p->rlinks, 0, sizeof p->rlinks);
@@ -712,6 +771,7 @@ static void finish(Sched *s, Process *p, bool failed) {
     /* Before the Downs: whoever restarts a service can open its port and files
      * again at once, so close the dead process's now, not when it is freed. */
     heap_release_foreign(p);
+    busy_wake(s, &busy, p->pid); /* a connection's carrier that ends: its senders go on */
     if (p->names.n) unregister_all(vm, p); /* before the Downs: a restarted service can take its name again */
     for (size_t i = 0; i < mons.n; i++) send_down(s, mons.v[i], p, failed);
     /* On other nodes: a Down for each watcher; linked processes are told to
@@ -1335,7 +1395,7 @@ static void n_call(Process *p, Word *a, Word *r) {
                 }
                 plat_unlock(p->lock);
             } else {
-                deliver(s, carrier, &m);
+                deliver_frame(s, carrier, &m);
             }
             goto wait;
         }
@@ -1781,6 +1841,17 @@ static bool after_slice(Worker *w, Process *p, int r) {
         stop = true;
         break;
     case SLICE_IOWAIT: wait_for_fd(s, p); break;
+    case SLICE_BUSY: /* after a send to a node whose connection is busy (send_far) */
+        if (p->busy_woken || !atomic_load(&p->busy_on)) {
+            p->busy_woken = false;
+            ready_locked(s, p);
+            break;
+        }
+        p->busy_sleep = true;
+        p->state = PROC_SLEEPING;
+        p->wake_at = plat_now_ns() + BUSY_WAIT_NS;
+        timer_add(s, p);
+        break;
     case SLICE_NATIVE: /* a blocking native call: the I/O pool makes it */
         p->state = PROC_NATIVE;
         s->io_inflight++;

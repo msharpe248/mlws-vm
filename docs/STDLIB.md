@@ -596,6 +596,13 @@ this node's number in it, which works here too, wherever a plain one does. `node
   that node does not have), or that comes for a process whose mailbox is full
   there, is dropped there, with a warning in its monitor's log, and the
   connection goes on.
+* **A sender waits for a busy connection.** When a connection has more than
+  1 MiB of messages it has not yet written (a slow network, or a node that
+  does not read), a process that sends to that node waits after its `send`
+  until it has written all but 512 KiB, as Erlang suspends a sender on a busy
+  distribution port. So a fast sender cannot fill this VM's memory with what
+  it has not sent. Only the `send` instruction waits; a reply, and a send
+  from a callback from C, go on at once.
 * **A message to a node that is not connected is dropped,** as one to a finished
   process is. So is one that does not arrive because the connection fails. Use
   `monitor`, and replies, for what must be known.

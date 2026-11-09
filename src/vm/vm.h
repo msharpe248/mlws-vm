@@ -456,8 +456,9 @@ typedef struct ObjCoro {
 enum { PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED, PROC_NATIVE, PROC_IOWAIT };
 
 /* How a time slice ended. SLICE_NATIVE: a blocking native call is to be made
- * on the I/O thread pool (Process.bcall). SLICE_IOWAIT: wait for Process.fdwait. */
-enum { SLICE_YIELD = 0, SLICE_BLOCK, SLICE_SLEEP, SLICE_DONE, SLICE_FAILED, SLICE_BREAK, SLICE_NATIVE, SLICE_IOWAIT };
+ * on the I/O thread pool (Process.bcall). SLICE_IOWAIT: wait for Process.fdwait.
+ * SLICE_BUSY: a send to another node found its connection busy (send_far). */
+enum { SLICE_YIELD = 0, SLICE_BLOCK, SLICE_SLEEP, SLICE_DONE, SLICE_FAILED, SLICE_BREAK, SLICE_NATIVE, SLICE_IOWAIT, SLICE_BUSY };
 
 /* A wait for a descriptor that a native asked for (native_wait_fd). The native
  * runs again when the descriptor is ready, or with timed_out set. */
@@ -593,6 +594,15 @@ struct Process {
     PidVec rlinks;               /* [L] linked with this process */
     PidVec rmonitors;            /* [L] watching this process */
     PidVec rwatch;               /* [L] watched by this process: told if their node goes */
+    /* Back-pressure between nodes (sched.c, send_far): for a process carrying a
+     * node's connection, the bytes of frames sent to it and not yet written,
+     * and who waits for them to go down; for a sender, which carrier it waits
+     * for after a send (0: none). */
+    uint64_t qbytes;             /* [L] */
+    PidVec busy_senders;         /* [L] */
+    _Atomic uint64_t busy_on;
+    bool busy_woken;             /* [L] told to go on before it slept */
+    bool busy_sleep;             /* [L] sleeping for it (SLICE_BUSY) */
     struct Process *pending_spawn; /* child being set up by spawn (freed if that traps) */
     uint64_t quota[QUOTA__COUNT]; /* the mailbox quota is [L] */
     /* native calls (extapi.c) */
@@ -849,6 +859,7 @@ void sched_monitor(Process *p, uint64_t pid);
 void sched_node_control(Process *p, const ObjList *frame);
 Process *sched_frag(VM *vm); /* this thread's scratch heap, emptied, to make a message from a node in */
 void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag); /* v made in sched_frag's heap */
+void sched_node_written(Process *p, uint64_t n); /* a connection's carrier wrote n bytes of frames */
 void sched_node_down(VM *vm, uint32_t node);
 void sched_node_event(VM *vm, uint32_t node, bool up); /* a NodeEvent to each watcher */
 void sched_module_event(VM *vm, const char *name);     /* a Reloaded to each watcher of the module */

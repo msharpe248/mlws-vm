@@ -692,10 +692,6 @@ for each request it serves.
   run could wait in the poller itself, as Erlang's and Go's do, but that
   changes how workers sleep and wake on each of kqueue, epoll and Windows'
   completion ports.
-* **Back-pressure between nodes.** A process sending to another node faster
-  than the connection writes fills that connection's mailbox, without limit
-  unless a mailbox quota is set (`E_QUOTA` then, in the sender); Erlang
-  suspends such a sender (`busy_dist_port`).
 * **Lock-free run queues** (Chase–Lev deques). Each queue's lock is almost
   always uncontended, because a thread mostly uses its own queue. Spawning a
   million processes from one is still twice as slow on 18 threads as on one,

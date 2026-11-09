@@ -1,0 +1,60 @@
+; Back-pressure between nodes (check_tools.sh): a process sends 2,000
+; messages of 64 KiB to far.masm's sink, 125 MiB, while the far node is
+; stopped. Its connection cannot write, so the sender must wait once more
+; than 1 MiB is queued for it: it prints how many it sent in 2 s (a few MiB's
+; worth, not all 2,000). Then the far node goes on, and all of them arrive.
+; The shell says when the far node is stopped, and when it goes on, by lines
+; on standard input.
+.import std.node as node
+
+; Every tenth send, the count so far to parent; -1 when all are sent.
+.func sender(i64 parent, i64 sink, ref v)
+    mov I3, 0
+1:  send sink, v
+    inc I3
+    rem I4, I3, 10
+    bnz I4, 2f
+    send parent, I3
+2:  blt I3, 2000, 1b
+    send parent, -1
+    ret
+.endf
+
+.func main
+    ncall "os.args" () -> (R0)
+    mov R1, R0[0]
+    parse.i64 I1, R1
+    call node.start (1, "busy", 0) -> (I2)
+    call node.connect ("127.0.0.1", I1, "busy") -> (I3)
+    call node.whereis (2, "sink") -> (I10)
+    bufnew R2, 65536
+    ncall "io.print_s" ("ready")
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+    ncall "fs.stdin" () -> (R5)
+    ncall "fs.read_line" (R5) -> (R6)  ; (the far node is stopped now)
+    spawn sender (PID, I10, R2) -> (I11)
+    mov I12, 0
+    mov I14, 0
+    ncall "time.monotonic" () -> (I13)
+    add I13, I13, 2000000000
+1:  recvt I14, 100, 2f
+    blt I14, 0, 3f
+    mov I12, I14
+2:  ncall "time.monotonic" () -> (I15)
+    blt I15, I13, 1b
+3:  ncall "io.print_s" ("sent while stopped: ")
+    ncall "io.print_i" (I12)
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+    ncall "fs.read_line" (R5) -> (R6)  ; (it goes on now)
+4:  blt I14, 0, 5f
+    recv I14
+    jmp 4b
+5:  ncall "proc.call" (I10, "count", 60000) -> (R7)
+    mov I16, R7[0]
+    ncall "io.print_s" ("arrived: ")
+    ncall "io.print_i" (I16)
+    ncall "io.nl" ()
+    ret 0
+.endf

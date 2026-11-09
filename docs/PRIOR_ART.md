@@ -333,7 +333,8 @@ of the instructions in call-heavy code.
 | M92 | Java's object serialization, which numbers each object it writes and refers back to it (`TC_REFERENCE`), and Python's `pickle` memo; Erlang's external term format, which keeps no sharing (a term shared twice is sent twice) and has no cycles to keep |
 | M93 | Erlang's `is_process_alive/1`, which takes only a local pid (`rpc:call` asks another node), and its distribution's request and reply over the connection |
 | M94 | Erlang/OTP's `gen_server` and `code_change/3`, with `sys:suspend` and `sys:change_code` from the release handler |
-| M95 | Erlang's distribution, which encodes a message in the sending process (`erts_dsig_send`) into the connection's output queue, written by the port in as few writes as it can, and its `busy_dist_port` back-pressure (not done here); `writev` batching in network servers |
+| M95 | Erlang's distribution, which encodes a message in the sending process (`erts_dsig_send`) into the connection's output queue, written by the port in as few writes as it can, `writev` batching in network servers |
+| M96 | Erlang's `busy_dist_port`: a process sending on a distribution channel whose output queue is past `dist_buf_busy_limit` (1 MiB by default) is suspended until the queue drains |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

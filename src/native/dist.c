@@ -853,6 +853,13 @@ static void n_take(Process *p, Word *a, Word *r) {
 }
 
 /* Give the message a frame carries, [to, value], to its process here. */
+/* node.written(n): the carrier of a connection wrote n bytes of the frames
+ * sent to it, so that senders waiting for it to have room go on. */
+static void n_written(Process *p, Word *a, Word *r) {
+    (void)r;
+    if (a[0].i > 0) sched_node_written(p, (uint64_t)a[0].i);
+}
+
 /* A control frame from a node, for link, monitor, proc.call and kill across nodes:
  * [kind, pid, ...] (sched.c, "across nodes"). */
 static void n_control(Process *p, Word *a, Word *r) {
@@ -930,6 +937,7 @@ static const NativeDef NODE_NATIVES[] = {
     N("node.function", 2, T(T_R, T_R), 1, T(T_R), n_function, "A closure for a module's exported function, as a peer names it. For std.node."),
     N("node.frame", 1, T(T_R), 1, T(T_R), n_frame, "A value as bytes for a connection, with its length. For std.node."),
     N("node.decode", 1, T(T_R), 1, T(T_R), n_decode, "A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node."),
+    N("node.written", 1, T(T_I64), 0, T(0), n_written, "The bytes of frames this connection's writer has written, for senders waiting for room. For std.node."),
     N("node.take", 1, T(T_R), 1, T(T_R), n_take, "A frame from a node: a message, [0, pid, value], delivered to its process here (null returned), else the frame's value, as node.decode gives it. For std.node."),
     N("node.control", 1, T(T_R), 0, T(0), n_control,
       "Act on a control frame from a node: link, unlink, exit, monitor, down, reply, noproc or kill. For std.node."),

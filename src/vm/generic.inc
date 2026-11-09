@@ -789,7 +789,10 @@
             Word v = rdn(CX, &ops[1], &t);
             if (t == T_P) vm_trap(p, "E_TYPE", "pointers cannot be sent to another process (they are process-local)");
             p->msgs_sent++;
+            atomic_store_explicit(&p->busy_on, 0, memory_order_relaxed);
             sched_send(p, (uint64_t)pid, v, (uint8_t)t); /* to a finished or unknown process: dropped */
+            /* Its node's connection has more than it can write: wait, after the send, until it has less. */
+            if (atomic_load_explicit(&p->busy_on, memory_order_relaxed) && !p->cb_base) return SLICE_BUSY;
             break;
         }
         case OP_RECV:

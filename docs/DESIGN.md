@@ -1777,6 +1777,14 @@ carrying that connection, as the frame for the wire: `send_far` encodes
 sending thread's scratch heap, and sends the bytes. So a message is copied once,
 as bytes, not as objects for the writer to encode, and what cannot be sent is the
 sender's error, at the `send`. The carrier's mailbox limit holds as for any send.
+The carrier counts the bytes of frames it has to write (`Process.qbytes`); above
+1 MiB, `send_far` puts the sender on its `busy_senders` and sets the sender's
+`busy_on`, and the `send` instruction ends the slice with `SLICE_BUSY`, which
+sleeps it (`busy_sleep`, for at most 100 ms). The writer reports what it writes
+(`node.written`, `sched_node_written`); at 512 KiB or less, `busy_wake` takes
+each sender's `busy_on` back by a compare-and-swap and readies it, or, if it
+has not slept yet, tells it not to (`busy_woken`). A carrier that ends wakes its
+senders too.
 
 That process and the rest of the protocol are MLWSVM code, in `lib/std/node.masm`.
 A connection is a reader, blocked in `net.read_frame`, and a writer, blocked in
