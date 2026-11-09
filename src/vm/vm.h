@@ -151,7 +151,14 @@ typedef struct Program {
     char *path;
     StrVec args;
     char *cap, *quota;    /* mlwsvm serve: what it was started with (NULL: the VM's own) */
-    struct Process *main; /* kept, not freed, when it ends: its runner reads its results */
+    struct Process *main; /* kept when it ends, for its runner to read its results; but see free_main */
+    uint64_t main_pid;    /* main's pid, which outlasts it */
+    /* mlwsvm serve's programs: main is freed as it ends (NULL from then on),
+     * and how it ended kept here [VM.lock], since such a VM may run for ever. */
+    bool free_main;
+    int ended;            /* 0: running; PROC_DONE or PROC_FAILED */
+    int64_t exit_code;
+    char err_code[32], err_msg[512]; /* (PROC_FAILED: as its ProcError) */
     struct Env *env;      /* its environment (env.c), which its processes join */
 } Program;
 

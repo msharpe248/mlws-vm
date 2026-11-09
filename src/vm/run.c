@@ -85,6 +85,7 @@ Program *vm_program_add(VM *vm, Process *main, const char *path, const StrVec *a
     pr->path = xstrdup(path ? path : "");
     for (size_t i = 0; args && i < args->n; i++) VEC_PUSH(pr->args, xstrdup(args->v[i]));
     pr->main = main;
+    pr->main_pid = main->pid;
     main->prog = pr;
     MlwsError ignored;
     vm_program_env(vm, pr, false, &ignored); /* (--env's values, read and checked already) */
@@ -167,6 +168,7 @@ Program *vm_start_program(VM *vm, const char *path, const StrVec *args, const ch
     memcpy(p->quota, q, sizeof q);
     plat_lock(vm->lock); /* (vm->progs: the monitor reads it) */
     Program *pr = vm_program_add(vm, p, path, args);
+    pr->free_main = true; /* (its result is kept; the VM may run for ever) */
     pr->cap = cap && *cap ? xstrdup(cap) : NULL;
     pr->quota = quota && *quota ? xstrdup(quota) : NULL;
     plat_unlock(vm->lock);
@@ -198,7 +200,7 @@ void vm_serve(VM *vm) {
     while (sched_run(vm, keeper)) {}
     sched_shutdown(vm, NULL);
     proc_free(keeper);
-    for (size_t i = 1; i < vm->progs.n; i++) /* (each program's main was kept for its results) */
+    for (size_t i = 1; i < vm->progs.n; i++) /* (one still running when it was stopped) */
         if (vm->progs.v[i]->main) proc_free(vm->progs.v[i]->main);
     vm_programs_free(vm);
 }
@@ -207,7 +209,7 @@ void vm_serve_stop(VM *vm) {
     plat_lock(vm->lock);
     size_t n = vm->progs.n;
     uint64_t *pids = xcalloc(n + 1, sizeof *pids);
-    for (size_t i = 0; i < n; i++) pids[i] = vm->progs.v[i]->main->pid;
+    for (size_t i = 0; i < n; i++) pids[i] = vm->progs.v[i]->main_pid;
     plat_unlock(vm->lock);
     for (size_t i = n; i-- > 0;) sched_kill_from_outside(vm, pids[i], "E_KILLED", "mlwsvm serve was stopped");
     free(pids);

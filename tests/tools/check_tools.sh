@@ -1085,13 +1085,17 @@ if command -v curl >/dev/null 2>&1; then
     echo "$P" | grep -q '"id":1,"path":"hello.masm","cap":null,"quota":null,"args":\["a","b"\],"pid":[0-9]*,"state":"done","exit":2' || fail "serve: hello ($P)"
     echo "$P" | grep -q '"id":2,"path":"hello.masm","cap":null,"quota":null,"args":\["c"\],"pid":[0-9]*,"state":"done","exit":1' || fail "serve: hello again ($P)"
     echo "$P" | grep -q '"id":3,"path":"long.masm","cap":null,"quota":null,"args":\[\],"pid":[0-9]*,"state":"running"' || fail "serve: long ($P)"
+    # A program's main is freed when it ends (its result kept): gone from the
+    # processes, its heap with it.
+    curl -sf $U/api/procs | grep -q '"program_name":"hello.masm"' && fail "serve: an ended program's main still a process ($(curl -sf $U/api/procs))"
+    [ "$(get $U/api/proc/$(echo "$P" | sed 's/.*"id":1,[^}]*"pid":\([0-9]*\).*/\1/'))" = 404 ] || fail "serve: an ended program's main still found"
+    curl -sf $U/api/procs | grep -q '"entry":"main","program":3,"program_name":"long.masm"' || fail "serve: a process's program"
     [ "$(code -H "$A" $U/api/programs/3/stop)" = 200 ] || fail "serve: stop"
     curl -sf $U/api/programs | grep -q '"id":3,"path":"long.masm","cap":null,"quota":null,"args":\[\],"pid":[0-9]*,"state":"failed","code":"E_KILLED"' || fail "serve: stopped"
     [ "$(code -H "$A" $U/api/programs/3/stop)" = 404 ] || fail "serve: stop a program that has ended"
     curl -sf "$U/api/log" | grep -q '"pid":[0-9]*,"program":3,"program_name":"long.masm","level":"info","text":"long started"' || fail "serve: a program's log, with its program"
     F=$(curl -sf $U/api/programs/files)
     for f in hello.masm long.masm reader.masm; do echo "$F" | grep -q "\"$f\"" || fail "serve: $f not listed ($F)"; done
-    curl -sf $U/api/procs | grep -q '"entry":"main","program":3,"program_name":"long.masm"' || fail "serve: a process's program"
     curl -sf $U/api/exits | grep -q '"entry":"main","program":1,"program_name":"hello.masm","main":true' || fail "serve: an exit's program"
     [ "$(code -H "$A" $U/api/programs/1/rerun)" = 200 ] || fail "serve: rerun ($(cat "$MOND/r"))"
     grep -q '"id":5' "$MOND/r" || fail "serve: rerun's id ($(cat "$MOND/r"))"

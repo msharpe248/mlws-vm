@@ -2479,8 +2479,13 @@ sleeps, so that the run, which ends with its last program, never ends of itself.
 module of that file, gives its main the capabilities and quotas asked for
 (`vm_parse_caps` and `vm_parse_quota`, `--cap`'s and `--quota`'s parsers), and
 starts it; the monitor does this with the world stopped. A program is a file
-whose real path is inside the programs' directory's real path. A shutdown kills
-every program's main, the keeper's last, and `vm_serve` returns.
+whose real path is inside the programs' directory's real path. Such a program's
+main is freed as it ends (`Program.free_main`), unlike a run's, which its
+runner reads once the run is over: `finish` keeps how it ended (`ended`,
+`exit_code`, `err_code`, `err_msg`) in its `Program`, under `VM.lock`, which
+is what `/api/programs` shows, and `Program.main_pid` outlasts it. So a VM that
+stays up holds nothing of the programs that have ended but that. A shutdown
+kills every program's main, the keeper's last, and `vm_serve` returns.
 
 **Source positions.** Each instruction's assembly line is in
 `MFunc.lines`; a translated program's line comes from the `.loc` runs

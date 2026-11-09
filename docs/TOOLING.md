@@ -575,7 +575,9 @@ values and those of the `NAME.mlws.env` beside its file, if there is one (one
 that is not right is reported, and left out). A
 program is a file in the `--programs` directory: a path that leads out of it,
 through `..` or a link, is refused. The same file started again is another main
-of the same module, as with `--also`. Programs share the VM's output, as with
+of the same module, as with `--also`. When a program's main ends, its other
+processes are stopped and it is freed, heap and all: only how it ended stays,
+in `/api/programs` and Recent exits. Programs share the VM's output, as with
 `--also`; what one wants to show in the dashboard it writes to the monitor's log
 (`monitor.log`): [examples/serve/echo.masm](../examples/serve/echo.masm) is
 one to try, which writes there each message the dashboard sends it. VM options
