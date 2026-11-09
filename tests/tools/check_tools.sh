@@ -368,6 +368,18 @@ perl -e 'alarm 60; exec @ARGV' $BIN run tests/tools/_auto/a.masm "$(cat "$AUTOD/
 wait $NODEB 2>/dev/null || true
 rm -rf "${AUTOD:?}"
 
+# Environments from a file (--env): a variable's text within a JSON string is
+# escaped (a backslash, a quote), and outside one is the JSON itself; a file
+# that is not right stops the run, saying where.
+OUT=$(MLWSVM_ENV_TEST='C:\Windows "q"' MLWSVM_ENV_NUM=42 $BIN run --env tests/tools/_env/esc.mlws.env tests/tools/_env/esc.masm 2>&1) || fail "--env: $OUT"
+[ "$OUT" = "$(printf 'C:\\Windows "q"\\x\n42\na"C:\\Windows "q"')" ] || fail "--env: the values ($OUT)"
+printf 'oops\n' > "$TMPD/bad.env"
+set +e
+OUT=$($BIN run --env "$TMPD/bad.env" tests/tools/_env/esc.masm 2>&1); RC=$?
+set -e
+[ $RC = 2 ] && echo "$OUT" | grep -q 'bad.env:1: expected name = value' || fail "--env: a bad file ($RC: $OUT)"
+rm -f "$TMPD/bad.env"
+
 # Names across the cluster: registered at one node, seen and taken at the
 # other; gone everywhere when the process ends or is unregistered; dropped
 # when the nodes part; and settled when both registered one name apart.
