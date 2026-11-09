@@ -47,6 +47,7 @@ typedef struct Worker {
     Process *current; /* the process this worker is running, or NULL */
     PlatThread *thread;
     uint64_t last_poll;
+    uint64_t last_io; /* when it last looked in the poller between slices (io_look) */
 } Worker;
 
 typedef struct Sched {
@@ -79,10 +80,11 @@ typedef struct Sched {
     int io_idle, io_busy;
     bool io_stop, io_abandoned;
     _Atomic int io_inflight; /* queued or running: other work that can still wake processes */
-    /* the poller thread: processes waiting for descriptors (PROC_IOWAIT) */
-    PlatPoller *poller;
-    PlatThread *poll_thread;
-    _Atomic bool poll_stop;
+    /* the poller: processes waiting for descriptors (PROC_IOWAIT); see "the poller" below */
+    PlatPoller *_Atomic poller; /* made on first use */
+    _Atomic bool in_poller;     /* a thread waits in it or looks in it: one at a time */
+    bool wpolling;              /* [lock] an idle worker waits in it */
+    _Atomic bool look_missed;   /* an idle worker found it taken by a look (io_look), and waits on work_cv */
     _Atomic int io_waiting;
     /* messages sent from outside the VM (sched_post): its own scratch heap */
     PlatLock *host_lock;
@@ -290,8 +292,15 @@ static uint64_t steal(Worker *w) {
 static void wake_one(Sched *s) {
     plat_mutex_lock(s->lock);
     if (s->nwaiting) plat_cond_signal(s->work_cv);
+    else if (s->wpolling) plat_poller_wake(atomic_load(&s->poller)); /* the idle worker waits in the poller */
     else atomic_store(&s->waking, false); /* nobody to wake (an idle worker polling): no one is on the way */
     plat_mutex_unlock(s->lock);
+}
+
+/* Every idle worker: to stop the world, or at the end. s->lock is held. */
+static void wake_idle_locked(Sched *s) {
+    plat_cond_broadcast(s->work_cv);
+    if (s->wpolling) plat_poller_wake(atomic_load(&s->poller));
 }
 
 /* Make a locked process ready, on the calling worker's queue. Another worker
@@ -347,6 +356,7 @@ static void timer_add(Sched *s, Process *p) {
     }
     timers_changed(s);
     if (i == 0 && s->nidle > 0) plat_cond_signal(s->work_cv); /* a new earliest: an idle worker re-arms */
+    if (i == 0 && s->wpolling) plat_poller_wake(atomic_load(&s->poller));
     plat_mutex_unlock(s->lock);
 }
 
@@ -813,7 +823,7 @@ static void finish(Sched *s, Process *p, bool failed) {
     } else if (atomic_fetch_sub(&vm->progs_live, 1) == 1) { /* the last program has ended: so does the run */
         plat_mutex_lock(s->lock);
         s->done = true;
-        plat_cond_broadcast(s->work_cv);
+        wake_idle_locked(s);
         plat_cond_broadcast(s->resume_cv);
         plat_cond_broadcast(s->stw_cv);
         plat_mutex_unlock(s->lock);
@@ -1540,6 +1550,7 @@ void sched_stop_world(VM *vm) {
     while (s->stw && !s->done && s->stw_owner != tls_worker) park_locked(s, s->resume_cv, 0); /* another's turn */
     s->stw = true;
     s->stw_owner = tls_worker;
+    if (s->wpolling) plat_poller_wake(atomic_load(&s->poller)); /* (to park) */
     while (!s->done && s->nparked + s->nexited < s->nrun - 1) plat_cond_wait(s->stw_cv, s->lock, 0);
     plat_mutex_unlock(s->lock);
 }
@@ -1557,6 +1568,12 @@ void sched_start_world(VM *vm) {
 }
 
 /* ---- the worker loop ---------------------------------------------------------- */
+
+/* The poller, below. */
+#define IO_CHECK_NS 1000000u
+#define IO_WAIT_MAX_NS 1000000000 /* a worker waiting there looks around at least this often */
+static void io_take(Sched *s, PlatPoller *pl, int64_t timeout_ns);
+static void io_look(Sched *s);
 
 static bool work_available(Sched *s) {
     for (int i = 0; i < s->nworkers; i++)
@@ -1617,6 +1634,20 @@ static void idle(Worker *w) {
             if (s->nrun > 1 && poll_wait > 1000000) poll_wait = 1000000;
             break;
         }
+        PlatPoller *pl = s->io_waiting && !s->wpolling ? atomic_load(&s->poller) : NULL;
+        bool no = false;
+        if (pl && atomic_compare_exchange_strong(&s->in_poller, &no, true)) { /* wait in the poller */
+            s->wpolling = true;
+            plat_mutex_unlock(s->lock);
+            int64_t wait = nt ? (int64_t)(nt - now) : IO_WAIT_MAX_NS;
+            io_take(s, pl, wait < IO_WAIT_MAX_NS ? wait : IO_WAIT_MAX_NS);
+            plat_mutex_lock(s->lock);
+            s->wpolling = false;
+            atomic_store(&s->in_poller, false);
+            atomic_store(&s->waking, false); /* back: the next ready process may wake another */
+            continue;
+        }
+        if (pl) atomic_store(&s->look_missed, true); /* (a busy worker looks in it: it calls one back) */
         s->nwaiting++;
         park_locked(s, s->work_cv, nt ? nt - now : 0);
         s->nwaiting--;
@@ -1638,6 +1669,7 @@ static void idle(Worker *w) {
     if (poll_wait) {
         vm->poll(vm, poll_wait);
         w->last_poll = plat_now_ns();
+        if (s->io_waiting) io_look(s); /* (worker 0 serves the tool: it never waits in the poller) */
     }
 }
 
@@ -1731,54 +1763,65 @@ static void io_shutdown(Sched *s) {
 
 bool sched_abandoned(VM *vm) { return vm->sched && vm->sched->io_abandoned; }
 
-/* ---- the poller ------------------------------------------------------------------- */
+/* ---- the poller ------------------------------------------------------------------- *
+ * Processes waiting for descriptors (PROC_IOWAIT) are armed in one poller, which
+ * one thread at a time waits in or looks in (Sched.in_poller), so that a wake-up
+ * meant for a worker waiting there is never taken by another. A worker with
+ * nothing to run waits there (idle), instead of on work_cv, and runs what it
+ * wakes itself, with no handoff to another thread, as Erlang's schedulers and
+ * Go's do; whoever makes work for an idle worker, adds an earlier timer, stops
+ * the world or ends the run wakes it (plat_poller_wake). A busy worker looks
+ * there, without waiting, at most every IO_CHECK_NS between slices (io_look),
+ * so that a descriptor is seen while every worker runs. */
 
-/* Wakes processes whose descriptors are ready. A token is pid << 16 | the wait's
- * generation, so a wake-up for a wait that has since timed out (or a process
- * that has gone) is ignored. */
-static void poll_main(void *arg) {
-    Sched *s = arg;
+/* Make ready the processes whose descriptors are; the caller holds in_poller. */
+static void io_take(Sched *s, PlatPoller *pl, int64_t timeout_ns) {
     uint64_t tokens[64];
-    while (!s->poll_stop) {
-        int n = plat_poller_wait(s->poller, tokens, 64, -1);
-        for (int i = 0; i < n; i++) {
-            Process *p = pin(s, tokens[i] >> 16);
-            if (!p) continue;
-            if (p->state == PROC_IOWAIT && (p->fdwait.gen & 0xFFFFu) == (tokens[i] & 0xFFFFu)) {
-                ready_locked(s, p);
-                s->io_waiting--; /* only once it is queued: see idle() */
-            }
-            plat_unlock(p->lock);
+    int n = plat_poller_wait(pl, tokens, 64, timeout_ns);
+    for (int i = 0; i < n; i++) {
+        Process *p = pin(s, tokens[i] >> 16);
+        if (!p) continue;
+        if (p->state == PROC_IOWAIT && (p->fdwait.gen & 0xFFFFu) == (tokens[i] & 0xFFFFu)) {
+            ready_locked(s, p);
+            s->io_waiting--; /* only once it is queued: see idle() */
         }
+        plat_unlock(p->lock);
     }
 }
 
-/* Start the poller on first use. Called with a process lock held (leaf locks only). */
-static bool poller_ready(Sched *s) {
-    plat_mutex_lock(s->lock);
-    if (!s->poller) s->poller = plat_poller_new();
-    if (s->poller && !s->poll_thread) s->poll_thread = plat_thread_start(poll_main, s); /* (again, after a shutdown) */
-    bool ok = s->poller && s->poll_thread;
-    plat_mutex_unlock(s->lock);
-    return ok;
+/* A busy worker's look, between slices. */
+static void io_look(Sched *s) {
+    PlatPoller *pl = atomic_load(&s->poller);
+    bool no = false;
+    if (!pl || !atomic_compare_exchange_strong(&s->in_poller, &no, true)) return;
+    io_take(s, pl, 0);
+    atomic_store(&s->in_poller, false);
+    /* An idle worker that found the poller taken meanwhile waits on work_cv:
+     * call it back to wait in the poller. */
+    if (atomic_exchange(&s->look_missed, false)) {
+        plat_mutex_lock(s->lock);
+        if (s->nwaiting && !s->wpolling) plat_cond_signal(s->work_cv);
+        plat_mutex_unlock(s->lock);
+    }
 }
 
-static void poller_shutdown(Sched *s) {
-    if (!s->poll_thread) return;
-    s->poll_stop = true;
-    plat_poller_wake(s->poller);
-    plat_thread_join(s->poll_thread);
-    s->poll_thread = NULL;
-    s->poll_stop = false; /* the VM may run again (embedding) */
+/* Make the poller on first use. Called with a process lock held (leaf locks only). */
+static bool poller_ready(Sched *s) {
+    if (atomic_load(&s->poller)) return true;
+    plat_mutex_lock(s->lock);
+    if (!atomic_load(&s->poller)) atomic_store(&s->poller, plat_poller_new());
+    bool ok = atomic_load(&s->poller) != NULL;
+    plat_mutex_unlock(s->lock);
+    return ok;
 }
 
 /* A process asked to wait for a descriptor (SLICE_IOWAIT); p is locked. */
 static void wait_for_fd(Sched *s, Process *p) {
     p->state = PROC_IOWAIT;
-    s->io_waiting++;
+    bool first = atomic_fetch_add(&s->io_waiting, 1) == 0;
     p->fdwait.gen++;
     uint64_t token = p->pid << 16 | (p->fdwait.gen & 0xFFFFu);
-    if (!poller_ready(s) || !plat_poller_arm(s->poller, p->fdwait.fd, p->fdwait.events, token)) {
+    if (!poller_ready(s) || !plat_poller_arm(atomic_load(&s->poller), p->fdwait.fd, p->fdwait.events, token)) {
         ready_locked(s, p); /* cannot wait: run again now, and the operation reports the error */
         s->io_waiting--;
         return;
@@ -1786,6 +1829,14 @@ static void wait_for_fd(Sched *s, Process *p) {
     if (p->fdwait.deadline) {
         p->wake_at = p->fdwait.deadline;
         timer_add(s, p);
+    }
+    /* The first to wait: idle workers had nothing to wait for in the poller,
+     * so one goes there now. (Later ones find one there, or a busy worker
+     * looks, or the next to be idle goes.) */
+    if (first) {
+        plat_mutex_lock(s->lock);
+        if (!s->wpolling && s->nwaiting) plat_cond_signal(s->work_cv);
+        plat_mutex_unlock(s->lock);
     }
 }
 
@@ -1795,7 +1846,7 @@ void sched_request_exit(VM *vm, int64_t code) {
     vm->exit_requested = true;
     plat_mutex_lock(s->lock);
     s->done = true;
-    plat_cond_broadcast(s->work_cv);
+    wake_idle_locked(s);
     plat_cond_broadcast(s->resume_cv);
     plat_cond_broadcast(s->stw_cv);
     plat_mutex_unlock(s->lock);
@@ -1883,6 +1934,11 @@ static bool worker_loop(Worker *w) {
             vm->poll(vm, 0);
             now = w->last_poll = plat_now_ns();
         }
+        if (atomic_load_explicit(&s->io_waiting, memory_order_relaxed) && !atomic_load_explicit(&s->in_poller, memory_order_relaxed) &&
+            now - w->last_io >= IO_CHECK_NS) {
+            w->last_io = now; /* nobody waits in the poller: someone must look */
+            io_look(s);
+        }
         uint64_t nt = s->next_timer;
         if (nt && nt <= now) timers_service(s, now);
         Process *p = NULL;
@@ -1953,7 +2009,7 @@ bool sched_run(VM *vm, Process *main) {
         if (!s->workers[i]->thread) { /* run with the threads we have */
             plat_mutex_lock(s->lock);
             s->nrun = i;
-            plat_cond_broadcast(s->work_cv);
+            wake_idle_locked(s);
             plat_mutex_unlock(s->lock);
             n = i;
             break;
@@ -1975,7 +2031,6 @@ bool sched_run(VM *vm, Process *main) {
 void sched_shutdown(VM *vm, Process *keep) {
     Sched *s = vm->sched;
     if (!s) return;
-    poller_shutdown(s); /* it looks processes up: stop it before any is freed */
     if (!s->io_stop) io_shutdown(s);
     if (s->io_abandoned) return; /* a blocking call still uses its process: free nothing */
     for (uint32_t c = 0; c < PT_CHUNKS; c++) {
@@ -2086,7 +2141,7 @@ void sched_free(VM *vm) {
     plat_cond_free(s->work_cv);
     plat_cond_free(s->stw_cv);
     plat_cond_free(s->resume_cv);
-    plat_poller_free(s->poller);
+    plat_poller_free(atomic_load(&s->poller));
     heap_free_all(s->host_frag);
     free(s->host_frag);
     plat_lock_free(s->host_lock);

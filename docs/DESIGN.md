@@ -91,7 +91,7 @@ These goals decide the trade-offs everywhere else.
                                           │
        processes ──► scheduler: N worker threads, run queues, stealing
                      │   └─ the interpreter runs a time slice of one process
-                     ├─ poller thread: processes waiting for sockets and pipes
+                     ├─ poller: processes waiting for sockets and pipes, waited in by an idle worker
                      └─ I/O thread pool: blocking native calls
 ```
 
@@ -1569,7 +1569,8 @@ Sched
   timers (min-heap of {at, pid}), next_timer
   nidle, nwaiting, waking              who is idle, and the wake-one protocol
   io_queue, io_threads, io_inflight    the I/O pool (§15)
-  poller, poll_thread, io_waiting      the poller (§15)
+  poller, in_poller, wpolling,         the poller (§15)
+  look_missed, io_waiting
   host_frag, host_lock                 messages from outside the VM (§14)
 ```
 
@@ -1645,8 +1646,9 @@ turn, starting after itself, and takes half of the first non-empty queue
 
 **Where a woken process goes.** `ready_locked` puts a woken process on the
 queue of the thread that woke it: a receiver on its sender's worker, a
-sleeper on the worker that serviced its timer, and anything woken by the
-poller, an I/O thread or the host on worker 0. So a pair of processes
+sleeper on the worker that serviced its timer, anything woken by the poller
+on the worker that waited in it or looked, and anything woken by an I/O
+thread or the host on worker 0. So a pair of processes
 talking to each other stays on one thread, where a message costs no
 cross-thread wake-up.
 
@@ -1889,7 +1891,7 @@ write remembers how far it got).
 ncall ─► native returns with native_req =
    NONE         results written; done
    WAIT_FD      ─► IOWAIT: arm the poller with token = pid<<16 | gen  [+ a timer for a timeout]
-                   poller thread: event → pin(pid) → state and gen still match → ready
+                   a worker in the poller: event → pin(pid) → state and gen still match → ready
                    timer: timed_out = true → ready                     ─► ncall runs again
    BLOCKING     ─► NATIVE: the call goes to the I/O pool
    (or an NF_BLOCKING native)  I/O thread: run the native (it may block) → bcall DONE → ready
@@ -1898,9 +1900,23 @@ ncall ─► native returns with native_req =
    EXIT         ─► os.exit: the run ends
 ```
 
-* **The poller** is one thread (kqueue on macOS and the BSDs, epoll on
-  Linux), started at first need. Registrations are one-shot. The generation
-  in the token makes an event for an earlier wait harmless. Pipes and
+* **The poller** (kqueue on macOS and the BSDs, epoll on Linux, an I/O
+  completion port on Windows) is made at first need, and has no thread of
+  its own. One thread at a time is in it (`in_poller`), so that a wake-up meant
+  for a worker waiting there is not taken by another. A worker with nothing to
+  run waits there (`idle`, `wpolling`), for at most a second or until its next
+  timer, instead of on `work_cv`, and runs what it wakes itself, as Erlang's
+  schedulers and Go's do: a process woken by its socket costs no handoff from
+  one thread to another. Whoever would wake an idle worker wakes that one with
+  `plat_poller_wake` (`wake_one`, an earlier timer, stopping the world, the
+  end). While nobody waits there, a busy worker looks, without waiting, at most
+  once a millisecond between slices (`io_look`), so a descriptor is seen while
+  every worker runs; an idle worker that found it taken by a look waits on
+  `work_cv` and is called back (`look_missed`). The first process to wait for
+  a descriptor calls an idle worker to the poller. Worker 0 serving a tool
+  (`vm->poll`) never waits there, and looks instead. Registrations are
+  one-shot. The generation in the token makes an event for an earlier wait
+  harmless. Pipes and
   sockets the VM created are non-blocking, so a process waiting on one
   holds no thread: 10,000 open connections are 10,000 small processes.
 * **The I/O pool** runs calls that cannot be polled: regular files,

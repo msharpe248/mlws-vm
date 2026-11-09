@@ -202,12 +202,10 @@ message is encoded where it is sent and written by the connection's process,
 with those waiting behind it, in one write; it is decoded where it arrives
 straight into the message the receiver gets. Nanoseconds a call or a message,
 the better of two runs; `nodes.erl` is the same for Erlang/OTP 29's
-distribution:
+distribution. Messages, in 0.21.0 and 0.22.0:
 
-| | M5: 0.21.0 | M5: now | M5: Erlang | i7: 0.21.0 | i7: now | Ryzen: 0.21.0 | Ryzen: now |
+| | M5: 0.21.0 | M5: 0.22.0 | M5: Erlang | i7: 0.21.0 | i7: 0.22.0 | Ryzen: 0.21.0 | Ryzen: 0.22.0 |
 |---|---|---|---|---|---|---|---|
-| call `[1]` | 25,200 | 24,200 | 20,200 | 24,700 | 24,300 | 43,900 | 43,000 |
-| call 100 integers | 33,600 | 29,400 | 19,700 | 38,500 | 32,500 | 54,700 | 48,500 |
 | send `[1]` | 1,740 | 241 | 1,820 | 2,440 | 657 | 4,460 | 677 |
 | send 100 integers | 4,380 | 948 | 1,820 | 7,460 | 2,010 | 9,760 | 1,890 |
 | send a map of 20 | 2,970 | 763 | 1,800 | 6,330 | 1,930 | 8,550 | 2,350 |
@@ -215,13 +213,26 @@ distribution:
 
 Messages are 3 to 7 times faster than in 0.21.0, in which each was copied as
 objects to the connection's process, encoded there and written alone, and
-copied again where it arrived. A call is a round trip over TCP: on the M5, a
-bare ping-pong over the loopback interface, in C, takes 13,100 ns, so Erlang
-adds 7,100 ns to it and MLWSVM 11,100, with one worker thread or many. The
-difference is most likely a handoff at each end (inferred, not measured
-apart): MLWSVM's poller is a thread of its own, which wakes a worker to run
-the connection's reader, where Erlang's schedulers poll themselves (below,
-under what is not done).
+copied again where it arrived.
+
+A call is a round trip over TCP: on the M5, a bare ping-pong over the
+loopback interface, in C, takes 13,100 ns, and Erlang's call 20,200. In
+0.22.0 MLWSVM's took about 23,000, since its poller was a thread of its own,
+which woke a worker to run the connection's reader at each end. Now an idle
+worker waits in the poller itself, as Erlang's schedulers do, and runs the
+reader it wakes. Calls, against 0.22.0, the better of two runs, both in one
+session:
+
+| | M5: 0.22.0 | M5: now | i7: 0.22.0 | i7: now | Ryzen: 0.22.0 | Ryzen: now |
+|---|---|---|---|---|---|---|
+| call `[1]` | 22,800 | 18,800 | 22,300 | 12,900 | 42,800 | 19,700 |
+| call 100 integers | 28,900 | 22,000 | 33,200 | 18,000 | 50,100 | 25,200 |
+
+On the M5 a call now adds 5,700 ns to the round trip, where Erlang adds
+7,100. Messages are as they were, within the runs' noise (on the i7, small
+sends' medians of four runs were 5% slower, within a spread of ±15%).
+`bench/connections` is 6% faster on the i7 and 13% on the Ryzen, and
+`pingpong` and `parallel`, which wait for no descriptor, are unchanged.
 
 ## The JIT
 
@@ -685,13 +696,6 @@ for each request it serves.
   list of instructions on the general path shows them, as it showed the ones
   added for compiled Lox. What remains there for Lox is allocation (`new`,
   `mnew`, `mset`), which a fast form must not do.
-* **Workers that poll.** A process waiting for a socket waits in the poller,
-  a thread of its own, which wakes a worker to run it: a handoff, most
-  likely what makes a call between nodes 4 µs slower than Erlang's (whose
-  schedulers poll when idle). A worker with nothing to
-  run could wait in the poller itself, as Erlang's and Go's do, but that
-  changes how workers sleep and wake on each of kqueue, epoll and Windows'
-  completion ports.
 * **Lock-free run queues** (Chase–Lev deques). Each queue's lock is almost
   always uncontended, because a thread mostly uses its own queue. Spawning a
   million processes from one is still twice as slow on 18 threads as on one,
