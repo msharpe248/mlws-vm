@@ -64,7 +64,10 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `node.self` | - | i64 | This VM's node number, or 0. |
 | `node.global` | i64 | i64 | A pid as other nodes can use it, naming this node. |
 | `node.of` | i64 | i64 | The node a pid names, or 0 for a plain local one. |
-| `node.attach` | i64, i64 | - | Messages for a node go to this process, as [pid, value] (0: nowhere). For std.node. |
+| `node.may_attach` | i64, i64 | b | Whether a connection to a node, which the node of the second number dialed, stays (both dialed at once: the lower's). For std.node. |
+| `node.disconnect` | i64 | - | Close the connection to a node, as if it had gone. |
+| `node.detach` | i64, i64 | - | The connection a writer carried to a node has gone. For std.node. |
+| `node.attach` | i64, i64, i64 | b | Messages for a node go to this writer, of a connection the node of the third number dialed; false if another connection to it stays instead. For std.node. |
 | `node.set_name` | r | - | Give this VM its name among nodes (as Erlang's name@host): once, not empty, at most 255 bytes. Sent to each node it connects to. |
 | `node.name` | i64 | r | A node's name, as it gave it when it last connected; this VM's for 0 or its own number; "" if none is known. |
 | `node.number` | r | i64 | The number of the node with this name: this VM's, a connected node's, or else the last node that had it; 0 if none. |
@@ -77,6 +80,14 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `node.frame` | r | r | A value as bytes for a connection, with its length. For std.node. |
 | `node.decode` | r | r | A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node. |
 | `node.name_pid` | i64, r | i64 | A pid for whichever process has a name registered on a node (0: this VM) when a message arrives there: for send and proc.call, and to keep. |
+| `node.set_dialer` | i64 | - | std.node's dialer, asked [n] to connect to node n when a message needs it. For std.node. |
+| `node.dialer` | - | i64 | std.node's dialer, or 0. For std.node. |
+| `node.auto_connect` | b | - | Whether a send or proc.call to a node not connected, but reached before, waits while it is connected again (true at first). |
+| `node.set_addr` | i64, r, i64, r | - | Where a node was reached (host, port) and how (TLS's authorities, or null: plain), to reach it again. For std.node. |
+| `node.dial_info` | i64 | r | How to reach a node: [name, host or null, port, ca or null], or null. For std.node. |
+| `node.dialed` | i64, b | - | The dialer's try to connect to a node is over (ok or not). For std.node. |
+| `node.set_ticktime` | i64 | - | How long, in ms, a connection may hear nothing before it is taken as down; idle ones tick every quarter of it (0: no ticks). 60000 at first. |
+| `node.ticktime` | - | i64 | node.set_ticktime's value. |
 | `node.written` | i64 | - | The bytes of frames this connection's writer has written, for senders waiting for room. For std.node. |
 | `node.take` | r, i64 | r | A frame from a node (the second argument): a message, [0, pid, value], delivered to its process here (null returned), else the frame's value, as node.decode gives it. For std.node. |
 | `node.control` | r | - | Act on a control frame from a node: link, unlink, exit, monitor, down, reply, noproc or kill. For std.node. |

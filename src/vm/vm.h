@@ -52,7 +52,7 @@ typedef void (*NativeFn)(Process *p, Word *args, Word *rets);
 
 /* What a checked native may ask for instead of finishing (Process.native_req):
  * wait for a descriptor and run again, or run again on the I/O thread pool. */
-enum { NREQ_NONE = 0, NREQ_WAIT_FD, NREQ_BLOCKING, NREQ_EXIT, NREQ_WAIT_REPLY };
+enum { NREQ_NONE = 0, NREQ_WAIT_FD, NREQ_BLOCKING, NREQ_EXIT, NREQ_WAIT_REPLY, NREQ_DIAL };
 
 struct ExtLib;
 
@@ -292,11 +292,22 @@ typedef struct VM {
     VEC(void *) retired;     /* what reloads replaced and another thread may still read: freed with the VM */
     struct Caps *default_caps; /* --cap: every process's, as default_quota */
     uint32_t node_self;      /* this VM's number among nodes, or 0 (dist.c) */
+    _Atomic int64_t node_ticktime; /* ms: a connection that hears nothing this long is down (0: never); node.set_ticktime */
     uint64_t *node_route;    /* per node: the process that carries its messages, or 0 */
+    uint32_t *node_route_by; /* [lock] per node: which node dialed the connection routed */
+    uint64_t *node_reader;   /* [lock] per node: the routed connection's reader (who attached it) */
     struct NodeStats **node_stats; /* per node: its connection's traffic, since it last came (made by node.attach) */
     char *node_name;         /* [lock] this VM's name among nodes, or NULL (node.set_name) */
     char **node_names;       /* [lock] per node: the name it gave when it last connected, or NULL */
     StrMap node_numbers;     /* [lock] and back: name -> the numbers that have it (NodeNums) */
+    /* Connecting when a message needs it (sched.c, dial_wait): std.node's dialer
+     * process, whether it is on, where each node was reached, each node's
+     * state (0, DIALING, or when a try failed), and who waits for it. */
+    _Atomic uint64_t node_dialer;
+    _Atomic bool node_autoconnect;
+    struct NodeAddr { char *host; int64_t port; char *ca; } *node_addrs; /* [lock] (ca: TLS's authorities, or NULL: plain) */
+    uint64_t *node_dial;     /* [lock] (NODE_DIALING while the dialer tries) */
+    VEC(struct DialWait { uint32_t node; uint64_t pid; }) dial_waiters; /* [lock] */
     VEC(uint64_t) node_watchers; /* [lock] processes told of each connection that comes or goes (node.watch) */
     VEC(struct ModWatch { char *name; uint64_t pid; }) mod_watchers; /* [lock] processes told of each reload of a module (module.watch) */
     struct Bundle *bundle;   /* the program this executable carries, or NULL: modules are found there first */
@@ -881,6 +892,7 @@ void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag); /* v mad
 void sched_node_written(Process *p, uint64_t n); /* a connection's carrier wrote n bytes of frames */
 void sched_set_carries(VM *vm, uint64_t carrier, uint32_t node); /* (node.attach) */
 uint64_t sched_whereis(VM *vm, const char *name); /* the registry: the pid with a name, or 0 */
+void sched_dial_done(VM *vm, uint32_t node, bool ok); /* a connection came, or a try to make one failed */
 ObjBytes *node_named_frame(Process *p, Process *f, const char *name, Word v, uint8_t tag); /* dist.c: [12, name, value] */
 NodeStats *node_stats_of(VM *vm, uint32_t node); /* dist.c: NULL before its first connection */
 void sched_node_down(VM *vm, uint32_t node);
@@ -959,6 +971,7 @@ void natives_register_caps(VM *vm);
  * in VM.pid_names. No process has this bit. */
 #define PID_NAMED (((uint64_t)1) << 47)
 #define PID_NAME_MAX 255
+#define NODE_DIALING 1 /* VM.node_dial: the dialer is connecting to the node */
 void natives_register_node(VM *vm);
 const NativeDef *natives_node_table(size_t *n);
 const NativeDef *natives_caps_table(size_t *n);

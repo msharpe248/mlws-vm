@@ -51,6 +51,8 @@ VM *vm_new(void) {
     vm->gc_stress = stress && *stress && strcmp(stress, "0") != 0;
     const char *verify = getenv("MLWSVM_GC_VERIFY");
     vm->gc_verify = verify && *verify && strcmp(verify, "0") != 0;
+    vm->node_ticktime = 60000; /* (as Erlang's net_ticktime) */
+    vm->node_autoconnect = true;
     vm_options_from_env(vm); /* MLWSVM_THREADS, MLWSVM_MAX_FRAMES, ... */
     plat_ignore_sigpipe();   /* writes to a closed pipe or socket fail with E_RESET */
     plat_raise_fd_limit();   /* many connections need many descriptors */
@@ -178,6 +180,12 @@ void vm_free(VM *vm) {
     VEC_FREE(vm->chosen);
     caps_release(vm->default_caps);
     free(vm->node_route);
+    free(vm->node_route_by);
+    free(vm->node_reader);
+    for (uint32_t n = 0; vm->node_addrs && n <= 65535; n++) free(vm->node_addrs[n].host), free(vm->node_addrs[n].ca);
+    free(vm->node_addrs);
+    free(vm->node_dial);
+    VEC_FREE(vm->dial_waiters);
     for (uint32_t n = 0; vm->node_stats && n <= 65535; n++) free(vm->node_stats[n]);
     free(vm->node_stats);
     free(vm->node_name);

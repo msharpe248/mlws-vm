@@ -1792,7 +1792,11 @@ That process and the rest of the protocol are MLWSVM code, in `lib/std/node.masm
 A connection is a reader, blocked in `net.read_frame`, and a writer, blocked in
 `recv`, on two descriptors of one socket (`net.split`), since a process waits for
 one thing at a time. The writer writes the frames it is sent, and those waiting
-behind one, up to 64 KiB, in one write. The reader gives each frame to
+behind one, up to 64 KiB, in one write; idle for a quarter of the ticktime
+(`node.set_ticktime`, sent in the handshake), it writes a tick, `[13]`. The
+reader reads with a timeout of the longer of the two ends' ticktimes
+(`fs.set_timeout`), and one that passes ends the connection as one that closes
+does. The reader gives each frame to
 `node.take`, which decodes a message straight into the thread's scratch heap
 (`sched_frag`) and delivers that as the message (`sched_node_deliver`), with no
 second copy; any other frame comes back to it as a list. C provides only what
@@ -1839,6 +1843,35 @@ stands for, so that it is written as that closure again. A `module.handle` is
 written as its module and function, and read back as that node's handle. `tests/native/node_values`
 feeds it random, mutated and truncated frames.
 
+A send or `proc.call` to a node that is not connected, but whose address
+(`node.set_addr`, kept by `dial`, with its TLS authorities) or name is known,
+waits while `std.node`'s dialer connects to it (`dial_wait`, `sched.c`): its
+`busy_on` is a `DIAL_TOKEN`, the `send` instruction ends the slice with
+`SLICE_BUSY` and its pc on itself, and `proc.call` asks `NREQ_DIAL`, which does
+the same with the native run afresh; `VM.node_dial` says the dialer is at it,
+or when its last try failed (none again for a second, meanwhile dropped).
+`sched_dial_done`, from `node.attach` or the dialer's `node.dialed`, wakes the
+senders, who send again. Handshakes are bounded (10 s), and when both nodes
+dial each other at once, the answering end decides, before anything goes
+over the connection, by a rule both ends compute alike (`stays_locked`: the
+connection the lower-numbered node dialed stays, or a newer one from the same
+dialer), and tells the dialing end (`node.may_attach`, a verdict frame in the
+handshake, for peers that send a ticktime); a dialer turned down so waits for
+the other connection. `node.attach` applies the same rule, and ends the
+replaced connection's reader and writer (`VM.node_reader`), as
+`node.disconnect` does.
+
+Names across the cluster are MLWSVM code too (`std.node`'s `global_server`,
+one per node, registered as `std.node.global`): a table of name to pid, the
+reservations of registrations under way (which expire after 10 s), and
+monitors of this node's registered processes. A registration is reserved here,
+then a process of its own (`gl_registrar`) asks each connected node's server to
+reserve it, by `proc.call` to `node.name_pid(n, "std.node.global")`, and commits or
+releases it everywhere; so the server itself never waits. On a `NodeEvent`, a
+server sends a node that came its own processes' names (`gl_send_sync`), and
+drops the names of one that went; a clash is settled by the lower pid, which
+every node computes alike.
+
 A pid does not change when it crosses: `node.global` adds the sender's number, and
 it means the same process everywhere, which is why numbers are given, not assigned
 per connection. A name is beside the number, not instead of it: `VM.node_names`
@@ -1875,7 +1908,8 @@ value]` (`node_named_frame`), which the reader resolves in its registry
 and `proc.call` resolve it at once. A reader drops frames of kinds it does
 not know, so that later kinds do not end a connection. A message for a process whose mailbox is full here is dropped,
 with a warning in the monitor's log, since its sender cannot be told. When a reader
-loses its connection it clears the route (`node.attach(n, 0)`), and
+loses its connection it clears the route, if it is still its own (`node.detach`:
+another may have replaced it), and
 `sched_node_down` walks the processes once: it drops their ties to that node,
 fails the linked ones with `E_LINKED`, gives each watcher a `Down` with
 `E_NODE_DOWN`, and ends each call waiting there. Then `sched_node_event` sends a

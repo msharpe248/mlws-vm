@@ -1,0 +1,33 @@
+; Node b of check_tools.sh's test of connecting when a message needs it: an
+; "echo" that answers a Call with its body and [pid, x] by sending x to pid,
+; and ends the VM at "stop". It prints its port.
+.import std.node as node
+
+.func echo
+    ncall "proc.register" ("echo", PID)
+1:  recv R0
+    isa I1, R0, Call
+    bz I1, 2f
+    mov R1, R0->Call.body
+    ncall "proc.reply" (R0, R1)
+    jmp 1b
+2:  typeof I1, R0
+    bne I1, 5, 3f                      ; (5: a list, [pid, x])
+    mov I2, R0[0]
+    mov I3, R0[1]
+    send I2, I3
+    jmp 1b
+3:  ncall "os.exit" (0)
+    ret
+.endf
+
+.func main
+    call node.start (2, "auto", 0) -> (I1)
+    spawn echo
+    sleep 50
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+1:  sleep 1000
+    jmp 1b
+.endf

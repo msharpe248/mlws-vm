@@ -1,0 +1,41 @@
+; Ticks between nodes (check_tools.sh): with a ticktime of a second at both
+; ends, a connection idle for three seconds stays up, since each end ticks;
+; then, with the far node stopped (SIGSTOP) once this one prints "idle ok",
+; it is taken as down within a few seconds: a NodeEvent comes, and a Down
+; for a process there with E_NODE_DOWN.
+.import std.node as node
+.func main
+    ncall "os.args" () -> (R0)
+    mov R1, R0[0]
+    parse.i64 I1, R1
+    call node.set_ticktime (1000)
+    call node.start (1, "tick", 0) -> (I2)
+    call node.connect ("127.0.0.1", I1, "tick") -> (I3)
+    call node.watch ()                 ; (after the connection came: only its going will come)
+    sleep 3000                         ; idle: only ticks go either way
+    call node.connected (2) -> (I4)
+    bnz I4, 1f
+    ncall "io.print_s" ("dropped while idle")
+    ncall "io.nl" ()
+    ret 1
+1:  ncall "io.print_s" ("idle ok")
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+    ncall "time.monotonic" () -> (I5)
+    recvt R3, 20000, 2f                ; the NodeEvent: down
+    isa I6, R3, NodeEvent
+    bz I6, 2f
+    mov I7, R3->NodeEvent.up
+    bnz I7, 2f
+    ncall "time.monotonic" () -> (I8)
+    sub I8, I8, I5
+    div I8, I8, 1000000
+    ncall "io.print_s" ("down after ")
+    ncall "io.print_i" (I8)
+    ncall "io.print_s" (" ms")
+    ncall "io.nl" ()
+    ret 0
+2:  ncall "io.print_s" ("never taken as down")
+    ncall "io.nl" ()
+    ret 1
+.endf

@@ -562,6 +562,12 @@ this node's number in it, which works here too, wherever a plain one does. `node
 | `connect_tls_named(full, cookie, ca)` | the same over TLS |
 | `names(host)` | what a host's name service knows: a list of `[name, port]` |
 | `watch()`, `unwatch()` | from now on, a `NodeEvent` comes to this process for each connection that comes or goes; or no more |
+| `set_ticktime(ms)`, `ticktime()` | how long a connection may hear nothing before its node is taken as down (60000 at first; 0: never) |
+| `disconnect(number)` | close the connection to a node, as if it had gone |
+| `register_global(name, pid)` | give a process a name across the cluster: 1, or 0 if it is taken (or being taken) |
+| `unregister_global(name)`, `whereis_global(name)`, `globals()` | drop such a name; the pid with it (0: none); all of them, as `[name, pid]` |
+| `auto_connect(on)` | whether a message to a node not connected, but reached before, connects to it again (true at first) |
+| `set_ca(ca)` | for a TLS node, the authorities checked when it connects for a message to a node only known by name (`""`: the system's) |
 | `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
 | `ncall "node.name_pid" (number, name)` | a pid that stands for whichever process has the name there when a message arrives (below) |
 | `spawn(number, module, function, arg)` | run an exported function of one reference there; its pid, or 0 |
@@ -597,6 +603,16 @@ this node's number in it, which works here too, wherever a plain one does. `node
   that node does not have), or that comes for a process whose mailbox is full
   there, is dropped there, with a warning in its monitor's log, and the
   connection goes on.
+* **Names across the cluster** (as Erlang's `global`). Each node runs a
+  server, registered as `std.node.global`, that keeps them. A registration
+  reserves the name at every node connected and is made only if each agrees
+  (a node that does not answer in 5 s says no), so two at once of one name
+  both fail, and can be tried again. A name goes, everywhere, when its process
+  ends or it is unregistered; when a node goes, the others drop its processes'
+  names. When two nodes connect, each sends the other its processes' names: a
+  name both have for different processes stays with the lower pid, at every
+  node alike, and the other process is killed by its own node, as `global`'s
+  default does. `whereis_global` asks this node's server only.
 * **A message to a name.** `node.name_pid(number, name)` gives a pid for
   whichever process has `name` registered on that node (0: this VM) when a
   message arrives there, as Erlang's `{Name, Node} ! Msg`. `send` and
@@ -614,8 +630,17 @@ this node's number in it, which works here too, wherever a plain one does. `node
   distribution port. So a fast sender cannot fill this VM's memory with what
   it has not sent. Only the `send` instruction waits; a reply, and a send
   from a callback from C, go on at once.
-* **A message to a node that is not connected is dropped,** as one to a finished
-  process is. So is one that does not arrive because the connection fails. Use
+* **A message to a node that is not connected connects to it, if it can.** A
+  `send` or `proc.call` to a node this VM has been connected to (so it knows
+  where: the address it connected to, with TLS if it did, or the node's name,
+  through its host's name service) waits while it connects again, then goes,
+  as Erlang auto-connects; so it keeps its order with the sender's other
+  messages. If that fails, a send is dropped and a call raises `E_NODE_DOWN`,
+  and no new try is made for a second. `auto_connect(false)` turns it off;
+  `link`, `monitor`, `kill` and `proc.alive` never connect. If two nodes connect
+  to each other at once, both keep the connection the lower-numbered one made.
+* **A message to a node that is not connected, and cannot be, is dropped,** as
+  one to a finished process is. So is one that does not arrive because the connection fails. Use
   `monitor`, and replies, for what must be known.
 * **Security.** Two nodes connect once each proves it knows the cookie, with an
   HMAC over the other's random nonce, marked with which end it is. After that, a
@@ -633,6 +658,13 @@ this node's number in it, which works here too, wherever a plain one does. `node
   For a process that is not there, `monitor` gives a `Down` with `E_NOPROC`, a
   linked process fails with `E_LINKED`, and `proc.call` raises `E_NOPROC`, all
   as soon as that node says so.
+* **A node that falls silent is taken as down.** An idle connection sends a
+  tick every quarter of the ticktime, and one that hears nothing, not even a
+  tick, for the whole ticktime (60 s at first, `set_ticktime`) ends, as if the
+  connection had gone, as Erlang's `net_ticktime` does: so a node that hangs,
+  or a network that drops a connection without closing it, is noticed. Each
+  connection uses the longer of its two nodes' ticktimes (set it alike across a
+  cluster), and none if either is 0 or is a 0.24 node, which does not tick.
 * **When a connection goes,** this VM acts as if every process over there had
   failed with `E_NODE_DOWN`: each monitor of one gets a `Down` with that code,
   each process linked to one fails with `E_LINKED`, and each `proc.call`

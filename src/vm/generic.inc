@@ -311,6 +311,12 @@
                         p->insns--;
                         return SLICE_IOWAIT;
                     }
+                    if (req == NREQ_DIAL) { /* proc.call to a node being connected: wait; then it runs again, afresh */
+                        p->resumed = false;
+                        fr->pc--;
+                        p->insns--;
+                        return SLICE_BUSY;
+                    }
                     if (req == NREQ_WAIT_REPLY) { /* proc.call: wait like recv; then this instruction runs again */
                         p->resumed = true;
                         fr->pc--;
@@ -791,8 +797,17 @@
             p->msgs_sent++;
             atomic_store_explicit(&p->busy_on, 0, memory_order_relaxed);
             sched_send(p, (uint64_t)pid, v, (uint8_t)t); /* to a finished or unknown process: dropped */
-            /* Its node's connection has more than it can write: wait, after the send, until it has less. */
-            if (atomic_load_explicit(&p->busy_on, memory_order_relaxed) && !p->cb_base) return SLICE_BUSY;
+            /* Its node's connection has more than it can write: wait, after the send, until it has less.
+             * Or its node is not connected, and is being: wait, and send again (DIAL_TOKEN). */
+            uint64_t bo = atomic_load_explicit(&p->busy_on, memory_order_relaxed);
+            if (bo && !p->cb_base) {
+                if (bo >> 63) {
+                    fr->pc--;
+                    p->insns--;
+                    p->msgs_sent--;
+                }
+                return SLICE_BUSY;
+            }
             break;
         }
         case OP_RECV:

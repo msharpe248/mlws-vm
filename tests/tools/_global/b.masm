@@ -1,0 +1,78 @@
+; Node b of check_tools.sh's test of names across the cluster: an "agent"
+; that does what node a asks, answering each Call: ["whereis", name] (the
+; pid, or 0), ["register", name] (registers a process of b's of its own, which
+; waits: 1 or 0, and its pid), ["watch", pid] (the code of its Down, when it
+; ends), ["local", name] (the pid registered here under name, or 0). When its
+; connection to a goes, it registers "both" across the cluster, alone, for a
+; process of its own, registered here as "both holder" (and, if that worked,
+; another as "both ok"). It prints its port.
+.import std.node as node
+
+.func idle
+1:  recv R0
+    jmp 1b
+.endf
+
+.func agent
+    ncall "proc.register" ("agent", PID)
+1:  recv R0
+    mov R1, R0->Call.body
+    mov R2, R1[0]
+    strcmp I1, R2, "whereis"
+    bnz I1, 2f
+    mov R3, R1[1]
+    call node.whereis_global (R3) -> (I2)
+    lnew R4
+    lpush R4, I2
+    ncall "proc.reply" (R0, R4)
+    jmp 1b
+2:  strcmp I1, R2, "register"
+    bnz I1, 3f
+    mov R3, R1[1]
+    spawn idle -> (I3)
+    call node.register_global (R3, I3) -> (I2)
+    call node.self (I3) -> (I3)
+    lnew R4
+    lpush R4, I2, I3
+    ncall "proc.reply" (R0, R4)
+    jmp 1b
+3:  strcmp I1, R2, "local"
+    bnz I1, 4f
+    mov R3, R1[1]
+    ncall "proc.whereis" (R3) -> (I2)
+    lnew R4
+    lpush R4, I2
+    ncall "proc.reply" (R0, R4)
+    jmp 1b
+4:  mov I3, R1[1]                      ; "watch"
+    monitor I3
+    recv R5
+    mov R6, R5->Down.code
+    lnew R4
+    lpush R4, R6
+    ncall "proc.reply" (R0, R4)
+    jmp 1b
+.endf
+
+.func main
+    call node.start (2, "global", 0) -> (I1)
+    spawn agent
+    sleep 50
+    call node.watch ()
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+1:  recv R0
+    isa I2, R0, NodeEvent
+    bz I2, 1b
+    mov I3, R0->NodeEvent.up
+    bnz I3, 1b
+    spawn idle -> (I4)                 ; apart: "both", alone
+    ncall "proc.register" ("both holder", I4)
+    call node.register_global ("both", I4) -> (I5)
+    bz I5, 1b
+    spawn idle -> (I6)                 ; (a record that it was: "both ok")
+    ncall "proc.register" ("both ok", I6)
+2:  sleep 1000                         ; (once)
+    jmp 2b
+.endf

@@ -1,0 +1,19 @@
+; The far node of check_tools.sh's tick test: a ticktime of a second (or the
+; first argument's), and nothing else to do. It prints its port; the shell
+; stops it (SIGSTOP) to make it fall silent.
+.import std.node as node
+.func main
+    ncall "os.args" () -> (R0)
+    mov I5, 1000
+    len I0, R0
+    bz I0, 1f
+    mov R1, R0[0]
+    parse.i64 I5, R1
+1:  call node.set_ticktime (I5)
+    call node.start (2, "tick", 0) -> (I1)
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+2:  sleep 1000
+    jmp 2b
+.endf

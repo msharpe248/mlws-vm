@@ -648,30 +648,103 @@ static void n_node_of(Process *p, Word *a, Word *r) {
     r[0].i = (int64_t)(a[0].u >> NODE_SHIFT);
 }
 
+/* Two connections to one node (both nodes dialed at once, or the node came
+ * back before the old connection was noticed gone): both ends keep the one
+ * the lower-numbered node dialed, or, if one node dialed both, the newer, so
+ * that they agree. Whether a connection node `by` dialed to node n stays here
+ * (vm->lock held): against the one routed, or this node's own try to dial n. */
+static bool stays_locked(const VM *vm, uint32_t n, uint32_t by) {
+    uint64_t old = vm->node_route ? __atomic_load_n(&vm->node_route[n], __ATOMIC_ACQUIRE) : 0;
+    if (old) return by <= vm->node_route_by[n];
+    if (by == n && vm->node_dial && vm->node_dial[n] == NODE_DIALING) return n < __atomic_load_n(&vm->node_self, __ATOMIC_ACQUIRE);
+    return true;
+}
+
+/* node.may_attach(n, by) -> b: for the handshake's answering end, before
+ * anything goes over a connection node `by` dialed: whether it stays
+ * (stays_locked). The dialing end attaches only if told so. */
+static void n_may_attach(Process *p, Word *a, Word *r) {
+    no_caps(p, "node.may_attach");
+    if (a[0].i < 1 || a[0].i > MAX_NODE) vm_trap(p, "E_RANGE", "node.may_attach: a node's number is 1 to %d", MAX_NODE);
+    plat_lock(p->vm->lock);
+    r[0].i = stays_locked(p->vm, (uint32_t)a[0].i, (uint32_t)a[1].i);
+    plat_unlock(p->vm->lock);
+}
+
+/* node.attach(n, writer, dialed_by) -> b: a connection to node n is up, carried
+ * by process writer, made by node dialed_by (this one's number, or n's): false
+ * if another connection to n stays instead (stays_locked), which the caller
+ * closes; else the older one, if any, ends. */
 static void n_attach(Process *p, Word *a, Word *r) {
-    (void)r;
     no_caps(p, "node.attach");
-    if (a[0].i < 1 || a[0].i > MAX_NODE) vm_trap(p, "E_RANGE", "node.attach: a node's number is 1 to %d", MAX_NODE);
+    if (a[0].i < 1 || a[0].i > MAX_NODE || !a[1].u) vm_trap(p, "E_RANGE", "node.attach: a node 1 to %d, and a writer", MAX_NODE);
     VM *vm = p->vm;
+    uint32_t n = (uint32_t)a[0].i, by = (uint32_t)a[2].i;
     plat_lock(vm->lock);
     if (!vm->node_route) vm->node_route = xcalloc(MAX_NODE + 1, sizeof *vm->node_route);
+    if (!vm->node_route_by) vm->node_route_by = xcalloc(MAX_NODE + 1, sizeof *vm->node_route_by);
+    if (!vm->node_reader) vm->node_reader = xcalloc(MAX_NODE + 1, sizeof *vm->node_reader);
     if (!vm->node_stats) vm->node_stats = xcalloc(MAX_NODE + 1, sizeof *vm->node_stats);
-    if (a[1].u) { /* a connection comes: its counts start again */
-        NodeStats *st = vm->node_stats[a[0].i];
-        if (!st) st = vm->node_stats[a[0].i] = xcalloc(1, sizeof *st);
-        atomic_store(&st->sent, 0), atomic_store(&st->received, 0), atomic_store(&st->bytes_out, 0);
-        atomic_store(&st->bytes_in, 0), atomic_store(&st->waits, 0);
-        st->up_ns = plat_now_ns();
+    uint64_t old = __atomic_load_n(&vm->node_route[n], __ATOMIC_ACQUIRE);
+    if (old && by > vm->node_route_by[n]) { /* the one that stays is the other */
+        plat_unlock(vm->lock);
+        r[0].i = 0;
+        return;
     }
+    NodeStats *st = vm->node_stats[n]; /* its counts start again */
+    if (!st) st = vm->node_stats[n] = xcalloc(1, sizeof *st);
+    atomic_store(&st->sent, 0), atomic_store(&st->received, 0), atomic_store(&st->bytes_out, 0);
+    atomic_store(&st->bytes_in, 0), atomic_store(&st->waits, 0);
+    st->up_ns = plat_now_ns();
+    uint64_t old_reader = vm->node_reader[n];
+    vm->node_route_by[n] = by;
+    vm->node_reader[n] = p->pid;
+    __atomic_store_n(&vm->node_route[n], a[1].u, __ATOMIC_RELEASE);
     plat_unlock(vm->lock);
-    if (a[1].u) sched_set_carries(vm, a[1].u, (uint32_t)a[0].i);
-    uint64_t old = __atomic_exchange_n(&vm->node_route[a[0].i], a[1].u, __ATOMIC_ACQ_REL);
-    if (old && !a[1].u) { /* the connection has gone */
-        sched_node_down(vm, (uint32_t)a[0].i);
-        sched_node_event(vm, (uint32_t)a[0].i, false);
-    } else if (!old && a[1].u) {
-        sched_node_event(vm, (uint32_t)a[0].i, true);
+    sched_set_carries(vm, a[1].u, n);
+    if (old) { /* the older connection ends: both its processes, so that its socket closes */
+        sched_kill(p, old, "E_KILLED", "replaced by another connection to its node");
+        if (old_reader && old_reader != p->pid) sched_kill(p, old_reader, "E_KILLED", "replaced by another connection to its node");
+    } else {
+        sched_node_event(vm, n, true);
     }
+    sched_dial_done(vm, n, true); /* (senders waiting for it go on: it is routed now) */
+    r[0].i = 1;
+}
+
+/* node.disconnect(n): close the connection to node n, as if it had gone: its
+ * writer and reader end, so that its socket closes and the other end sees it
+ * go too. */
+static void n_disconnect(Process *p, Word *a, Word *r) {
+    (void)r;
+    no_caps(p, "node.disconnect");
+    if (a[0].i < 1 || a[0].i > MAX_NODE) vm_trap(p, "E_RANGE", "node.disconnect: a node's number is 1 to %d", MAX_NODE);
+    VM *vm = p->vm;
+    uint32_t n = (uint32_t)a[0].i;
+    plat_lock(vm->lock);
+    uint64_t w = vm->node_route ? __atomic_exchange_n(&vm->node_route[n], 0, __ATOMIC_ACQ_REL) : 0;
+    uint64_t rd = w && vm->node_reader ? vm->node_reader[n] : 0;
+    plat_unlock(vm->lock);
+    if (!w) return;
+    sched_node_down(vm, n);
+    sched_node_event(vm, n, false);
+    sched_kill(p, w, "E_KILLED", "disconnected");
+    if (rd && rd != p->pid) sched_kill(p, rd, "E_KILLED", "disconnected");
+}
+
+/* node.detach(n, writer): the connection writer carried to node n has gone:
+ * node n is down, unless another connection carries it now. */
+static void n_detach(Process *p, Word *a, Word *r) {
+    (void)r;
+    no_caps(p, "node.detach");
+    if (a[0].i < 1 || a[0].i > MAX_NODE) vm_trap(p, "E_RANGE", "node.detach: a node's number is 1 to %d", MAX_NODE);
+    VM *vm = p->vm;
+    uint32_t n = (uint32_t)a[0].i;
+    uint64_t want = a[1].u;
+    if (!vm->node_route || !__atomic_compare_exchange_n(&vm->node_route[n], &want, 0, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return; /* (not routed by it) */
+    sched_node_down(vm, n);
+    sched_node_event(vm, n, false);
 }
 
 /* ---- names ----
@@ -803,6 +876,100 @@ static void n_named(Process *p, Word *a, Word *r) {
     }
     plat_unlock(vm->lock);
     r[0].i = ok;
+}
+
+/* ---- connecting when a message needs it (sched.c, dial_wait) ---- */
+
+/* node.set_dialer(pid): std.node's dialer, asked [n] to connect to node n. */
+static void n_set_dialer(Process *p, Word *a, Word *r) {
+    (void)r;
+    no_caps(p, "node.set_dialer");
+    atomic_store(&p->vm->node_dialer, a[0].u);
+}
+
+static void n_dialer(Process *p, Word *a, Word *r) {
+    (void)a;
+    r[0].u = atomic_load(&p->vm->node_dialer);
+}
+
+/* node.auto_connect(on): whether a message to a node not connected waits while
+ * the dialer connects to it (true at first). */
+static void n_auto_connect(Process *p, Word *a, Word *r) {
+    (void)r;
+    atomic_store(&p->vm->node_autoconnect, a[0].i != 0);
+}
+
+/* node.set_addr(n, host, port, ca): where node n was reached, and how (ca:
+ * the TLS authorities' file, "" for the system's, null for plain), to reach it
+ * again the same way. */
+static void n_set_addr(Process *p, Word *a, Word *r) {
+    (void)r;
+    no_caps(p, "node.set_addr");
+    if (a[0].i < 1 || a[0].i > MAX_NODE) vm_trap(p, "E_RANGE", "node.set_addr: a node's number is 1 to %d", MAX_NODE);
+    uint32_t len, clen = 0;
+    const char *host = name_arg(p, a[1], "node.set_addr", &len);
+    const ObjString *ca = a[3].r && ((const Obj *)a[3].r)->kind == OBJ_STRING ? a[3].r : NULL;
+    if (ca) clen = ca->len;
+    VM *vm = p->vm;
+    plat_lock(vm->lock);
+    if (!vm->node_addrs) vm->node_addrs = xcalloc(MAX_NODE + 1, sizeof *vm->node_addrs);
+    struct NodeAddr *na = &vm->node_addrs[a[0].i];
+    free(na->host);
+    free(na->ca);
+    na->host = xstrndup(host, len);
+    na->port = a[2].i;
+    na->ca = ca ? xstrndup(ca->data, clen) : NULL;
+    plat_unlock(vm->lock);
+}
+
+/* node.dial_info(n): how to reach node n: [name ("": none), host (null: not
+ * known), port, ca (null: plain, or not known)]; null if neither is known. */
+static void n_dial_info(Process *p, Word *a, Word *r) {
+    r[0].r = NULL;
+    if (a[0].i < 1 || a[0].i > MAX_NODE) return;
+    VM *vm = p->vm;
+    char name[MAX_NODE_NAME + 1] = "", host[300] = "", ca[4096] = "";
+    int64_t port = 0;
+    bool known, tls = false;
+    plat_lock(vm->lock);
+    if (vm->node_names && vm->node_names[a[0].i]) snprintf(name, sizeof name, "%s", vm->node_names[a[0].i]);
+    const struct NodeAddr *na = vm->node_addrs ? &vm->node_addrs[a[0].i] : NULL;
+    if (na && na->host) {
+        snprintf(host, sizeof host, "%s", na->host), port = na->port;
+        if (na->ca) snprintf(ca, sizeof ca, "%s", na->ca), tls = true;
+    }
+    known = name[0] || host[0];
+    plat_unlock(vm->lock);
+    if (!known) return;
+    ObjList *l = list_new(p, 4);
+    r[0].r = &l->h;
+    list_push(p, l, (Word){.r = &str_new(p, name, strlen(name))->h}, T_R);
+    list_push(p, l, (Word){.r = host[0] ? &str_new(p, host, strlen(host))->h : NULL}, T_R);
+    list_push(p, l, (Word){.i = port}, T_I64);
+    list_push(p, l, (Word){.r = tls ? &str_new(p, ca, strlen(ca))->h : NULL}, T_R);
+}
+
+/* node.dialed(n, ok): the dialer's try to connect to node n is over. */
+static void n_dialed(Process *p, Word *a, Word *r) {
+    (void)r;
+    no_caps(p, "node.dialed");
+    sched_dial_done(p->vm, (uint32_t)a[0].i, a[1].i != 0);
+}
+
+/* node.set_ticktime(ms): a connection that hears nothing for this long is
+ * taken as down, and an idle one sends a tick every quarter of it (0: no
+ * ticks, and never down for silence). For connections made from now on; each
+ * end uses the longer of its own and the other's. */
+static void n_set_ticktime(Process *p, Word *a, Word *r) {
+    (void)r;
+    if (a[0].i < 0 || (a[0].i > 0 && a[0].i < 400) || a[0].i > 86400000)
+        vm_trap(p, "E_RANGE", "node.set_ticktime: 0 (none), or 400 ms to a day");
+    atomic_store(&p->vm->node_ticktime, a[0].i);
+}
+
+static void n_ticktime(Process *p, Word *a, Word *r) {
+    (void)a;
+    r[0].i = atomic_load(&p->vm->node_ticktime);
 }
 
 /* node.watch(on): whether this process is told, by a NodeEvent, of each
@@ -1021,7 +1188,10 @@ static const NativeDef NODE_NATIVES[] = {
     N("node.self", 0, T(0), 1, T(T_I64), n_self, "This VM's node number, or 0."),
     N("node.global", 1, T(T_I64), 1, T(T_I64), n_global, "A pid as other nodes can use it, naming this node."),
     N("node.of", 1, T(T_I64), 1, T(T_I64), n_node_of, "The node a pid names, or 0 for a plain local one."),
-    N("node.attach", 2, T(T_I64, T_I64), 0, T(0), n_attach, "Messages for a node go to this process, as [pid, value] (0: nowhere). For std.node."),
+    N("node.may_attach", 2, T(T_I64, T_I64), 1, T(T_B), n_may_attach, "Whether a connection to a node, which the node of the second number dialed, stays (both dialed at once: the lower's). For std.node."),
+    N("node.disconnect", 1, T(T_I64), 0, T(0), n_disconnect, "Close the connection to a node, as if it had gone."),
+    N("node.detach", 2, T(T_I64, T_I64), 0, T(0), n_detach, "The connection a writer carried to a node has gone. For std.node."),
+    N("node.attach", 3, T(T_I64, T_I64, T_I64), 1, T(T_B), n_attach, "Messages for a node go to this writer, of a connection the node of the third number dialed; false if another connection to it stays instead. For std.node."),
     N("node.set_name", 1, T(T_R), 0, T(0), n_set_name,
       "Give this VM its name among nodes (as Erlang's name@host): once, not empty, at most 255 bytes. Sent to each node it connects to."),
     N("node.name", 1, T(T_I64), 1, T(T_R), n_name,
@@ -1040,6 +1210,14 @@ static const NativeDef NODE_NATIVES[] = {
     N("node.frame", 1, T(T_R), 1, T(T_R), n_frame, "A value as bytes for a connection, with its length. For std.node."),
     N("node.decode", 1, T(T_R), 1, T(T_R), n_decode, "A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node."),
     N("node.name_pid", 2, T(T_I64, T_R), 1, T(T_I64), n_name_pid, "A pid for whichever process has a name registered on a node (0: this VM) when a message arrives there: for send and proc.call, and to keep."),
+    N("node.set_dialer", 1, T(T_I64), 0, T(0), n_set_dialer, "std.node's dialer, asked [n] to connect to node n when a message needs it. For std.node."),
+    N("node.dialer", 0, T(0), 1, T(T_I64), n_dialer, "std.node's dialer, or 0. For std.node."),
+    N("node.auto_connect", 1, T(T_B), 0, T(0), n_auto_connect, "Whether a send or proc.call to a node not connected, but reached before, waits while it is connected again (true at first)."),
+    N("node.set_addr", 4, T(T_I64, T_R, T_I64, T_R), 0, T(0), n_set_addr, "Where a node was reached (host, port) and how (TLS's authorities, or null: plain), to reach it again. For std.node."),
+    N("node.dial_info", 1, T(T_I64), 1, T(T_R), n_dial_info, "How to reach a node: [name, host or null, port, ca or null], or null. For std.node."),
+    N("node.dialed", 2, T(T_I64, T_B), 0, T(0), n_dialed, "The dialer's try to connect to a node is over (ok or not). For std.node."),
+    N("node.set_ticktime", 1, T(T_I64), 0, T(0), n_set_ticktime, "How long, in ms, a connection may hear nothing before it is taken as down; idle ones tick every quarter of it (0: no ticks). 60000 at first."),
+    N("node.ticktime", 0, T(0), 1, T(T_I64), n_ticktime, "node.set_ticktime's value."),
     N("node.written", 1, T(T_I64), 0, T(0), n_written, "The bytes of frames this connection's writer has written, for senders waiting for room. For std.node."),
     N("node.take", 2, T(T_R, T_I64), 1, T(T_R), n_take, "A frame from a node (the second argument): a message, [0, pid, value], delivered to its process here (null returned), else the frame's value, as node.decode gives it. For std.node."),
     N("node.control", 1, T(T_R), 0, T(0), n_control,

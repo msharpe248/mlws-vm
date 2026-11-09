@@ -357,6 +357,53 @@ MINGW* | MSYS* | CYGWIN*) ;;
     ;;
 esac
 
+# Connecting when a message needs it: node a drops its connection to b, and a
+# send, then a call by name, connect again; with auto_connect off they do
+# not; once b has ended, they fail without hanging.
+AUTOD=$(mktemp -d)
+$BIN run tests/tools/_auto/b.masm > "$AUTOD/port" 2>/dev/null &
+NODEB=$!
+for _ in $(seq 1 80); do grep -q '^[0-9][0-9]*$' "$AUTOD/port" && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+perl -e 'alarm 60; exec @ARGV' $BIN run tests/tools/_auto/a.masm "$(cat "$AUTOD/port")" > "$AUTOD/out" 2>&1 || { kill $NODEB 2>/dev/null; fail "node auto-connect: $(cat "$AUTOD/out")"; }
+wait $NODEB 2>/dev/null || true
+rm -rf "${AUTOD:?}"
+
+# Names across the cluster: registered at one node, seen and taken at the
+# other; gone everywhere when the process ends or is unregistered; dropped
+# when the nodes part; and settled when both registered one name apart.
+GLOBD=$(mktemp -d)
+$BIN run tests/tools/_global/b.masm > "$GLOBD/port" 2>"$GLOBD/b.err" &
+NODEB=$!
+for _ in $(seq 1 80); do grep -q '^[0-9][0-9]*$' "$GLOBD/port" && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+perl -e 'alarm 60; exec @ARGV' $BIN run tests/tools/_global/a.masm "$(cat "$GLOBD/port")" > "$GLOBD/out" 2>&1 || { kill $NODEB 2>/dev/null; fail "names across the cluster: $(cat "$GLOBD/out") $(cat "$GLOBD/b.err")"; }
+kill $NODEB 2>/dev/null || true
+wait $NODEB 2>/dev/null || true
+[ ! -s "$GLOBD/b.err" ] || fail "names across the cluster: node b: $(cat "$GLOBD/b.err")"
+rm -rf "${GLOBD:?}"
+
+# Ticks: two nodes with a ticktime of a second stay connected while idle,
+# and once the far one is stopped, the near one takes it as down in about a
+# second. (No SIGSTOP on Windows.)
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*) ;;
+*)
+    TICKD=$(mktemp -d)
+    $BIN run tests/tools/_tick/far.masm > "$TICKD/port" 2>/dev/null &
+    FAR=$!
+    for _ in $(seq 1 80); do grep -q '^[0-9][0-9]*$' "$TICKD/port" && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+    perl -e 'alarm 60; exec @ARGV' $BIN run tests/tools/_tick/near.masm "$(cat "$TICKD/port")" > "$TICKD/out" 2>&1 &
+    NEAR=$!
+    for _ in $(seq 1 80); do grep -q 'idle ok\|dropped' "$TICKD/out" && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+    kill -STOP $FAR
+    wait $NEAR || { kill -CONT $FAR; kill $FAR 2>/dev/null; fail "node ticks: $(cat "$TICKD/out")"; }
+    kill -CONT $FAR
+    kill $FAR 2>/dev/null; wait $FAR 2>/dev/null || true
+    DOWN=$(sed -n 's/^down after \([0-9]*\) ms$/\1/p' "$TICKD/out")
+    [ -n "$DOWN" ] && [ "$DOWN" -lt 5000 ] || fail "node ticks: $(cat "$TICKD/out")"
+    rm -rf "${TICKD:?}"
+    ;;
+esac
+
 # mlwsvm names, and nodes that register with it and connect by name: node b
 # registers and waits, node a registers too, connects to b by name, checks the
 # service's answers, and tells b to end. The service takes any free port (0),
@@ -379,6 +426,15 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
 done
 perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_names/a.masm >/dev/null 2>"$NAMESD/err" || { kill $B_PID $NAMES_PID 2>/dev/null || true; cat "$NAMESD/err" >&2; fail "names: connecting by name"; }
 wait $B_PID 2>/dev/null || true
+# Two nodes connecting to each other at once, for messages: one connection
+# stays at both ends, and both messages arrive.
+$BIN run tests/tools/_race/rb.masm > "$NAMESD/rb.port" 2>/dev/null &
+RB_PID=$!
+for _ in $(seq 1 40); do [ -s "$NAMESD/rb.port" ] && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+OUT=$(perl -e 'alarm 30; exec @ARGV' $BIN run tests/tools/_race/ra.masm 2>&1) || { kill $RB_PID $NAMES_PID 2>/dev/null || true; fail "nodes connecting at once: $OUT"; }
+echo "$OUT" | grep -q '^ok, nodes connected: 1$' || { kill $RB_PID $NAMES_PID 2>/dev/null || true; fail "nodes connecting at once: $OUT"; }
+kill $RB_PID 2>/dev/null || true
+wait $RB_PID 2>/dev/null || true
 kill $NAMES_PID 2>/dev/null || true
 wait $NAMES_PID 2>/dev/null || true
 unset MLWSVM_NAMES_PORT
