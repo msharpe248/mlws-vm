@@ -357,6 +357,29 @@ MINGW* | MSYS* | CYGWIN*) ;;
     ;;
 esac
 
+# Ticks: two nodes with a ticktime of a second stay connected while idle,
+# and once the far one is stopped, the near one takes it as down in about a
+# second. (No SIGSTOP on Windows.)
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*) ;;
+*)
+    TICKD=$(mktemp -d)
+    $BIN run tests/tools/_tick/far.masm > "$TICKD/port" 2>/dev/null &
+    FAR=$!
+    for _ in $(seq 1 80); do grep -q '^[0-9][0-9]*$' "$TICKD/port" && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+    perl -e 'alarm 60; exec @ARGV' $BIN run tests/tools/_tick/near.masm "$(cat "$TICKD/port")" > "$TICKD/out" 2>&1 &
+    NEAR=$!
+    for _ in $(seq 1 80); do grep -q 'idle ok\|dropped' "$TICKD/out" && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+    kill -STOP $FAR
+    wait $NEAR || { kill -CONT $FAR; kill $FAR 2>/dev/null; fail "node ticks: $(cat "$TICKD/out")"; }
+    kill -CONT $FAR
+    kill $FAR 2>/dev/null; wait $FAR 2>/dev/null || true
+    DOWN=$(sed -n 's/^down after \([0-9]*\) ms$/\1/p' "$TICKD/out")
+    [ -n "$DOWN" ] && [ "$DOWN" -lt 5000 ] || fail "node ticks: $(cat "$TICKD/out")"
+    rm -rf "${TICKD:?}"
+    ;;
+esac
+
 # mlwsvm names, and nodes that register with it and connect by name: node b
 # registers and waits, node a registers too, connects to b by name, checks the
 # service's answers, and tells b to end. The service takes any free port (0),

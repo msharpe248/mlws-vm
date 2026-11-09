@@ -1792,7 +1792,11 @@ That process and the rest of the protocol are MLWSVM code, in `lib/std/node.masm
 A connection is a reader, blocked in `net.read_frame`, and a writer, blocked in
 `recv`, on two descriptors of one socket (`net.split`), since a process waits for
 one thing at a time. The writer writes the frames it is sent, and those waiting
-behind one, up to 64 KiB, in one write. The reader gives each frame to
+behind one, up to 64 KiB, in one write; idle for a quarter of the ticktime
+(`node.set_ticktime`, sent in the handshake), it writes a tick, `[13]`. The
+reader reads with a timeout of the longer of the two ends' ticktimes
+(`fs.set_timeout`), and one that passes ends the connection as one that closes
+does. The reader gives each frame to
 `node.take`, which decodes a message straight into the thread's scratch heap
 (`sched_frag`) and delivers that as the message (`sched_node_deliver`), with no
 second copy; any other frame comes back to it as a list. C provides only what

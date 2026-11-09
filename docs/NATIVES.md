@@ -77,6 +77,8 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `node.frame` | r | r | A value as bytes for a connection, with its length. For std.node. |
 | `node.decode` | r | r | A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node. |
 | `node.name_pid` | i64, r | i64 | A pid for whichever process has a name registered on a node (0: this VM) when a message arrives there: for send and proc.call, and to keep. |
+| `node.set_ticktime` | i64 | - | How long, in ms, a connection may hear nothing before it is taken as down; idle ones tick every quarter of it (0: no ticks). 60000 at first. |
+| `node.ticktime` | - | i64 | node.set_ticktime's value. |
 | `node.written` | i64 | - | The bytes of frames this connection's writer has written, for senders waiting for room. For std.node. |
 | `node.take` | r, i64 | r | A frame from a node (the second argument): a message, [0, pid, value], delivered to its process here (null returned), else the frame's value, as node.decode gives it. For std.node. |
 | `node.control` | r | - | Act on a control frame from a node: link, unlink, exit, monitor, down, reply, noproc or kill. For std.node. |

@@ -562,6 +562,7 @@ this node's number in it, which works here too, wherever a plain one does. `node
 | `connect_tls_named(full, cookie, ca)` | the same over TLS |
 | `names(host)` | what a host's name service knows: a list of `[name, port]` |
 | `watch()`, `unwatch()` | from now on, a `NodeEvent` comes to this process for each connection that comes or goes; or no more |
+| `set_ticktime(ms)`, `ticktime()` | how long a connection may hear nothing before its node is taken as down (60000 at first; 0: never) |
 | `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
 | `ncall "node.name_pid" (number, name)` | a pid that stands for whichever process has the name there when a message arrives (below) |
 | `spawn(number, module, function, arg)` | run an exported function of one reference there; its pid, or 0 |
@@ -633,6 +634,13 @@ this node's number in it, which works here too, wherever a plain one does. `node
   For a process that is not there, `monitor` gives a `Down` with `E_NOPROC`, a
   linked process fails with `E_LINKED`, and `proc.call` raises `E_NOPROC`, all
   as soon as that node says so.
+* **A node that falls silent is taken as down.** An idle connection sends a
+  tick every quarter of the ticktime, and one that hears nothing, not even a
+  tick, for the whole ticktime (60 s at first, `set_ticktime`) ends, as if the
+  connection had gone, as Erlang's `net_ticktime` does: so a node that hangs,
+  or a network that drops a connection without closing it, is noticed. Each
+  connection uses the longer of its two nodes' ticktimes (set it alike across a
+  cluster), and none if either is 0 or is a 0.24 node, which does not tick.
 * **When a connection goes,** this VM acts as if every process over there had
   failed with `E_NODE_DOWN`: each monitor of one gets a `Down` with that code,
   each process linked to one fails with `E_LINKED`, and each `proc.call`

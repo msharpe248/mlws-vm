@@ -338,6 +338,7 @@ of the instructions in call-heavy code.
 | M97 | Erlang/OTP's schedulers, which poll for I/O themselves when they run out of work (`erts_check_io`), and Go's runtime, whose idle Ps call the network poller (`netpoll`) in `findrunnable` and whose `sysmon` looks when every P is busy |
 | M98 | Erlang's `net_kernel:node_info/1`, whose `in` and `out` count a connection's messages, `inet:getstat/1` on its socket for bytes, and `observer`'s view of nodes |
 | M99 | Erlang's `{Name, Node} ! Msg`, sent as a `REG_SEND` control message that the receiving node resolves in its registry |
+| M100 | Erlang's distribution ticks (`net_ticktime`, a tick each quarter of it, a connection down after it passes in silence), and TCP keepalive, which the same job needs too slowly by default |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

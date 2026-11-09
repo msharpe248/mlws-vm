@@ -31,11 +31,13 @@
 ;     [0, pid, value]                      a message
 ;     [1, reply_to, module, function, args]  spawn function(args), args one value
 ;     [2, reply_to, name]                  the pid registered as name, or 0
-;     [3 to 10, pid, ...]                  link, unlink, exit, monitor, down,
-;                                          reply, noproc and kill: the VM's, for
-;                                          link, monitor, proc.call and kill
-;                                          across nodes
+;     [3 to 11, pid, ...]                  link, unlink, exit, monitor, down,
+;                                          reply, noproc, kill and alive: the
+;                                          VM's, for link, monitor, proc.call,
+;                                          kill and proc.alive across nodes
 ;                                          (node.control)
+;     [12, name, value]                    a message to whoever has the name
+;     [13]                                 a tick: an idle connection's
 ; When the connection goes, the reader clears its route (node.attach), and the
 ; VM acts as if every process over there had failed with E_NODE_DOWN.
 
@@ -43,6 +45,7 @@
 .export start, start_tls, connect, connect_tls, spawn, whereis, self, node_of, connected
 .export set_name, name, number, nodes, watch, unwatch
 .export start_named, start_tls_named, connect_named, connect_tls_named, names
+.export set_ticktime, ticktime
 
 .const NAMES_PORT = 4368
 
@@ -134,6 +137,21 @@
     ret I1
 .endf
 
+; How long, in ms, a connection may hear nothing before the node at its other
+; end is taken as down (as if it had gone: E_NODE_DOWN), as Erlang's
+; net_ticktime: an idle connection ticks every quarter of it. 60000 at first;
+; 0: no ticks, and never down for silence. For connections made from now on;
+; each uses the longer of its two ends' (none if either sends none, as 0.24
+; nodes do).
+.func set_ticktime(i64 ms)
+    ncall "node.set_ticktime" (ms)
+    ret
+.endf
+.func ticktime -> i64
+    ncall "node.ticktime" () -> (I0)
+    ret I0
+.endf
+
 ; ---- connecting ----
 
 ; Connect to a node. Returns its number; E_NODE if it could not be done. The
@@ -166,12 +184,12 @@
     ncall "net.connect" (host, port, CONNECT_TIMEOUT) -> (R6)
     bz ca, 1f
     ncall "tls.connect" (R6, host, ca)
-1:  call handshake (R6, cookie, "client", "server") -> (I2)
+1:  call handshake (R6, cookie, "client", "server") -> (I2, I3)
     call carry (R6, I2)
 .endtry
     lpush R5, I2
     ncall "proc.reply" (R4, R5)
-    call read_frames (R6, I2)
+    call read_frames (R6, I2, I3)
     ret
 failed:
     catch R7
@@ -186,24 +204,28 @@ failed:
     ncall "fs.take" (ticket) -> (R3)
     bz cert, 1f
     ncall "tls.accept" (R3, cert, key)
-1:  call handshake (R3, cookie, "server", "client") -> (I2)
+1:  call handshake (R3, cookie, "server", "client") -> (I2, I3)
     call carry (R3, I2)
-    call read_frames (R3, I2)
+    call read_frames (R3, I2, I3)
     ret
 .endf
 
-; Each end sends [number, nonce, name], then proves the cookie against the
-; other's nonce in its own role. Returns the peer's number, whose name is then
-; known here; E_NODE if another node connected now, or this one, has that name.
-; (A peer that sends no name, as before names, has none.)
-.func handshake(ref conn, ref cookie, ref me, ref them) -> i64
+; Each end sends [number, nonce, name, ticktime], then proves the cookie
+; against the other's nonce in its own role. Returns the peer's number, whose
+; name is then known here, and how long the connection may hear nothing (the
+; longer ticktime; 0 if either has none). E_NODE if another node connected now,
+; or this one, has that name. (A peer that sends no name, as before names, has
+; none; one that sends no ticktime, as before ticks, ticks never.)
+.func handshake(ref conn, ref cookie, ref me, ref them) -> (i64, i64)
     ncall "random.bytes" (32) -> (R4)
     ncall "node.self" () -> (I0)
     ncall "node.name" (0) -> (R17)
+    ncall "node.ticktime" () -> (I5)
     lnew R5
     lpush R5, I0
     lpush R5, R4
     lpush R5, R17
+    lpush R5, I5
     ncall "node.frame" (R5) -> (R6)
     ncall "fs.write" (conn, R6)
     ncall "net.read_frame" (conn) -> (R7)
@@ -228,7 +250,16 @@ failed:
     mov R18, R8[2]
 1:  ncall "node.named" (I1, R18) -> (I4)
     bz I4, taken
-    ret I1
+    mov I6, 0                          ; (the peer's ticktime; none from one before ticks)
+    blt I3, 4, 2f
+    mov I6, R8[3]
+2:  bz I6, 3f
+    bz I5, 3f
+    bge I6, I5, 4f
+    mov I6, I5
+    jmp 4f
+3:  mov I6, 0
+4:  ret I1, I6
 gone:
     new R16, Error
     mov R16->Error.code, "E_NODE"
@@ -251,7 +282,9 @@ taken:
 .func carry(ref conn, i64 peer)
     ncall "net.split" (conn) -> (R2)
     ncall "fs.give" (R2) -> (I2)
-    spawn writer (I2, PID) -> (I3)
+    ncall "node.ticktime" () -> (I4)
+    div I4, I4, 4                      ; (a tick each quarter of this node's ticktime; 0: none)
+    spawn writer (I2, PID, I4) -> (I3)
     ncall "node.attach" (peer, I3)
     ret
 .endf
@@ -260,11 +293,20 @@ taken:
 ; where they were sent (messages, and what the VM asks for), and this module's
 ; own requests, as [null, kind, ...]. Frames waiting behind one go with it, up
 ; to 64 KiB, in one write, and what it writes is room for senders that wait
-; while it has more than 1 MiB to write (node.written). Ends with the reader.
-.func writer(i64 ticket, i64 reader)
+; while it has more than 1 MiB to write (node.written). Idle for tick ms, it
+; writes a tick, [13], so that the other end hears it is there (0: never).
+; Ends with the reader.
+.func writer(i64 ticket, i64 reader, i64 tick)
     ncall "fs.take" (ticket) -> (R0)
     monitor reader
-1:  recv R2
+    mov I8, tick                       ; (I2, tick's register, is the loop's)
+    lnew R9
+    lpush R9, 13
+    ncall "node.frame" (R9) -> (R9)
+1:  bz I8, 7f
+    recvt R2, I8, ticked
+    jmp 2f
+7:  recv R2
 2:  typeof I2, R2
     beq I2, 2, frame                   ; (2: bytes)
     isa I2, R2, Down
@@ -293,6 +335,9 @@ frame:
     jmp 2b
 5:  ncall "fs.write" (R0, R2)
     call written (R2)
+    jmp 1b
+ticked:
+    ncall "fs.write" (R0, R9)
     jmp 1b
 ended:
     ncall "fs.close" (R0)
@@ -325,7 +370,12 @@ bad:
     ret null
 .endf
 
-.func read_frames(ref conn, i64 peer)
+; The frames from node peer, until the connection goes, or, with a quiet of
+; quiet ms (0: none), until it has heard nothing for that long: then the node
+; is taken as down (a tick, [13], is something).
+.func read_frames(ref conn, i64 peer, i64 quiet)
+    bz quiet, 1f
+    ncall "fs.set_timeout" (conn, quiet)
 .try lost
 1:  ncall "net.read_frame" (conn) -> (R2)
     bz R2, closed
@@ -355,8 +405,15 @@ closed:
     ret
 lost:
     catch R5
-    ncall "node.attach" (peer, 0)
-    ret
+    mov R6, R5->Error.code
+    strcmp I7, R6, "E_TIMEOUT"
+    bnz I7, 2f
+    tostr R7, peer
+    tostr R8, quiet
+    strcat R9, "std.node: node ", R7, " sent nothing for ", R8, " ms: taken as down"
+    ncall "monitor.log" (2, R9)
+2:  ncall "node.attach" (peer, 0)
+    ret                                ; (its handle closes as it ends; the writer's, after)
 .endf
 
 ; [1, reply_to, module, function, args]: spawned here, its pid sent back.

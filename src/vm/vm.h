@@ -292,6 +292,7 @@ typedef struct VM {
     VEC(void *) retired;     /* what reloads replaced and another thread may still read: freed with the VM */
     struct Caps *default_caps; /* --cap: every process's, as default_quota */
     uint32_t node_self;      /* this VM's number among nodes, or 0 (dist.c) */
+    _Atomic int64_t node_ticktime; /* ms: a connection that hears nothing this long is down (0: never); node.set_ticktime */
     uint64_t *node_route;    /* per node: the process that carries its messages, or 0 */
     struct NodeStats **node_stats; /* per node: its connection's traffic, since it last came (made by node.attach) */
     char *node_name;         /* [lock] this VM's name among nodes, or NULL (node.set_name) */

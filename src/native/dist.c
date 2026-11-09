@@ -805,6 +805,22 @@ static void n_named(Process *p, Word *a, Word *r) {
     r[0].i = ok;
 }
 
+/* node.set_ticktime(ms): a connection that hears nothing for this long is
+ * taken as down, and an idle one sends a tick every quarter of it (0: no
+ * ticks, and never down for silence). For connections made from now on; each
+ * end uses the longer of its own and the other's. */
+static void n_set_ticktime(Process *p, Word *a, Word *r) {
+    (void)r;
+    if (a[0].i < 0 || (a[0].i > 0 && a[0].i < 400) || a[0].i > 86400000)
+        vm_trap(p, "E_RANGE", "node.set_ticktime: 0 (none), or 400 ms to a day");
+    atomic_store(&p->vm->node_ticktime, a[0].i);
+}
+
+static void n_ticktime(Process *p, Word *a, Word *r) {
+    (void)a;
+    r[0].i = atomic_load(&p->vm->node_ticktime);
+}
+
 /* node.watch(on): whether this process is told, by a NodeEvent, of each
  * connection to another node that comes or goes. */
 static void n_watch(Process *p, Word *a, Word *r) {
@@ -1040,6 +1056,8 @@ static const NativeDef NODE_NATIVES[] = {
     N("node.frame", 1, T(T_R), 1, T(T_R), n_frame, "A value as bytes for a connection, with its length. For std.node."),
     N("node.decode", 1, T(T_R), 1, T(T_R), n_decode, "A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node."),
     N("node.name_pid", 2, T(T_I64, T_R), 1, T(T_I64), n_name_pid, "A pid for whichever process has a name registered on a node (0: this VM) when a message arrives there: for send and proc.call, and to keep."),
+    N("node.set_ticktime", 1, T(T_I64), 0, T(0), n_set_ticktime, "How long, in ms, a connection may hear nothing before it is taken as down; idle ones tick every quarter of it (0: no ticks). 60000 at first."),
+    N("node.ticktime", 0, T(0), 1, T(T_I64), n_ticktime, "node.set_ticktime's value."),
     N("node.written", 1, T(T_I64), 0, T(0), n_written, "The bytes of frames this connection's writer has written, for senders waiting for room. For std.node."),
     N("node.take", 2, T(T_R, T_I64), 1, T(T_R), n_take, "A frame from a node (the second argument): a message, [0, pid, value], delivered to its process here (null returned), else the frame's value, as node.decode gives it. For std.node."),
     N("node.control", 1, T(T_R), 0, T(0), n_control,
