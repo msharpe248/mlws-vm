@@ -67,6 +67,7 @@ VM *vm_new(void) {
     natives_register_builtin(vm);
     natives_register_caps(vm);
     natives_register_node(vm);
+    natives_register_env(vm);
     return vm;
 }
 
@@ -236,6 +237,10 @@ void vm_free(VM *vm) {
     for (size_t i = 0; i < vm->tickets.n; i++) plat_fd_close(vm->tickets.v[i].fd); /* given, never taken */
     VEC_FREE(vm->tickets);
     smap_free(&vm->registry);
+    for (size_t i = 0; i < vm->env_named.cap; i++)
+        if (vm->env_named.keys && vm->env_named.keys[i] && vm->env_named.vals[i]) env_release(vm->env_named.vals[i]);
+    smap_free(&vm->env_named);
+    env_release(vm->env_init);
     for (size_t i = 0; i < vm->pid_names.n; i++) free(vm->pid_names.v[i]);
     VEC_FREE(vm->pid_names);
     smap_free(&vm->pid_name_ids);

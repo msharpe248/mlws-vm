@@ -1917,6 +1917,19 @@ fails the linked ones with `E_LINKED`, gives each watcher a `Down` with
 when `node.attach` gives a node its first route; a watcher that has ended is
 dropped from the list then.
 
+### 14.2 Environments
+
+An environment (`src/native/env.c`) is a table of name to value, with a lock,
+counted references and a list of watchers. A `Program` makes one as it is added
+(`vm_program_env`), filled from `--env`'s files (`VM.env_init`, read and
+checked as the options are) and, for `mlwsvm serve`, the `NAME.mlws.env` beside
+its file; its main belongs to it, and a spawned process to its parent's
+(`Process.env`, as `caps`). Named ones (`env.join`) are in `VM.env_named` for
+the VM's life. A value is kept as the bytes `std.node` sends it as
+(`node_encode_value`), so anything a message can be may be one, and `env.get`
+decodes a copy into the reader's heap (`node_decode_value`): processes still
+share no objects. A set or delete sends each watcher an `EnvChange`.
+
 ## 15. Input and output
 
 A native that may wait is a *checked* native (`NF_CHECKED`). Instead of

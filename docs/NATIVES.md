@@ -93,6 +93,19 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `node.control` | r | - | Act on a control frame from a node: link, unlink, exit, monitor, down, reply, noproc or kill. For std.node. |
 | `node.proof` | r, r, r | r | HMAC-SHA-256 of a role and a nonce, keyed by a cookie. For std.node. |
 | `node.proof_ok` | r, r, r, r | b | Whether a proof is right, in constant time. For std.node. |
+| `env.get` | r, r | r | A value of this process's environment that is a reference, as a copy of its own; the second argument if there is none (E_TYPE for a number: env.get_i, env.get_f). |
+| `env.get_i` | r, i64 | i64 | An integer value of the environment, or the second argument if there is none. |
+| `env.get_f` | r, f64 | f64 | A float value of the environment, or the second argument if there is none. |
+| `env.set` | r, r | - | Set a value of the environment: any value a message can be, copied in; every process of the environment sees it at once. Not in a restricted process (E_PERMISSION). |
+| `env.set_i` | r, i64 | - | Set an integer value of the environment. |
+| `env.set_f` | r, f64 | - | Set a float value of the environment. |
+| `env.has` | r | b | Whether the environment has a value of that name. |
+| `env.delete` | r | - | Remove a value of the environment. |
+| `env.keys` | - | r | The names of the environment's values, as a list. |
+| `env.join` | r | - | Belong to the environment of that name from now on (made if there is none; it lasts as long as the VM), as do the processes spawned from now on; "": the program's own again. |
+| `env.name` | - | r | The name of this process's environment ("": its program's own). |
+| `env.watch` | b | - | Whether this process gets a built-in EnvChange {key} for each value set or deleted in its environment. |
+| `env.load` | r | - | Load a file of `name = JSON` lines (${VAR}: the operating system's environment variable) into the environment. |
 
 ## Files, the operating system and the network (`fs.*`, `os.*`, `net.*`)
 

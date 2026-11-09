@@ -11,14 +11,14 @@
 
 typedef enum {
     OPT_STACK_WORDS, OPT_THREADS, OPT_MAX_FRAMES, OPT_SLICE, OPT_GC_MIN, OPT_QUOTA, OPT_EXT_PATH, OPT_LIB_PATH,
-    OPT_OPT, OPT_OPT_REPORT, OPT_JIT, OPT_JIT_HOT, OPT_JIT_REPORT, OPT_CAP,
+    OPT_OPT, OPT_OPT_REPORT, OPT_JIT, OPT_JIT_HOT, OPT_JIT_REPORT, OPT_CAP, OPT_ENV,
     OPT__COUNT
 } OptId;
 
 static const char *const OPT_NAMES[OPT__COUNT] = {"stack-words", "threads", "max-frames", "slice",
                                                   "gc-min",      "quota",   "ext-path", "lib-path",
                                                   "opt",         "opt-report", "jit",      "jit-hot",
-                                                  "jit-report",  "cap"};
+                                                  "jit-report",  "cap",        "env"};
 
 static int opt_find(const char *name) {
     for (int i = 0; i < OPT__COUNT; i++)
@@ -204,6 +204,11 @@ bool vm_set_option(VM *vm, const char *name, const char *value, MlwsError *err) 
         if (!parse_range(name, value, false, 1, UINT32_MAX, &n, err)) return false;
         vm->jit_hot = (uint32_t)n;
         return true;
+    case OPT_ENV: { /* a file of `name = JSON` lines for every program's environment; again for more */
+        char why[600];
+        if (!vm_env_load_file(vm, value, why, sizeof why)) return mlws_err(err, "E_BAD_OPTION", "--env: %s", why), false;
+        return true;
+    }
     case OPT_JIT_REPORT: /* where vm_free writes what the JIT did */
         free(vm->jit_report_path);
         vm->jit_report_path = xstrdup(value);
