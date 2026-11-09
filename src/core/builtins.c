@@ -18,6 +18,8 @@ static const uint8_t DATE_TYPES[] = {T_I64, T_I64, T_I64, T_I64, T_I64, T_I64, T
 
 static const char *const NODEEVENT_FIELDS[] = {"node", "name", "up"};
 static const uint8_t NODEEVENT_TYPES[] = {T_I64, T_R, T_B};
+static const char *const RELOADED_FIELDS[] = {"module"};
+static const uint8_t RELOADED_TYPES[] = {T_R};
 
 const BuiltinStruct BUILTIN_STRUCTS[BUILTIN__COUNT] = {
     {"Error", 3, ERROR_FIELDS, ERROR_TYPES},
@@ -27,6 +29,7 @@ const BuiltinStruct BUILTIN_STRUCTS[BUILTIN__COUNT] = {
     {"Callback", 2, CALLBACK_FIELDS, CALLBACK_TYPES},
     {"Date", 10, DATE_FIELDS, DATE_TYPES},
     {"NodeEvent", 3, NODEEVENT_FIELDS, NODEEVENT_TYPES},
+    {"Reloaded", 1, RELOADED_FIELDS, RELOADED_TYPES},
 };
 
 int builtin_struct_find(const char *name) {

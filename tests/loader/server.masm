@@ -1,0 +1,152 @@
+; std.server, and what it is built on: module.watch's Reloaded, module.of,
+; module.current and module.function of a closure's version.
+;
+; A server keeps its state through reloads of its callback module
+; (_server/counter.masm, then v2 to v5.masm): the messages that came before a
+; reload are the old version's to handle, with the old state, and the new
+; version first sees its state through its code_change. The old version
+; keeps a list and the new ones a map, so a version given the other's state
+; would fail the server.
+.include "std/test.inc"
+.import std.server as server
+.import _server.counter as counter
+
+; The count the server has, by a call: "inc" adds one and returns [count].
+.func inc(i64 s) -> i64
+    ncall "proc.call" (s, "inc", 5000) -> (R1)
+    mov I2, R1[0]
+    ret I2
+.endf
+
+.func version(i64 s) -> ref
+    ncall "proc.call" (s, "version", 5000) -> (R1)
+    ret R1
+.endf
+
+.func reload(ref file)
+    ncall "fs.read_file" (file) -> (R1)
+    len I2, R1
+    ncall "text.slice" (R1, 0, I2) -> (R1)  ; (as a string)
+    ncall "module.reload_text" ("_server.counter", R1)
+    ret
+.endf
+
+; Send the server ["nap", PID], which it handles by waiting in a call to
+; this process; returns that Call, to answer when the messages to queue
+; meanwhile are sent.
+.func nap(i64 s) -> ref
+    lnew R1
+    lpush R1, "nap"
+    lpush R1, PID
+    send s, R1
+    recv R2
+    isa I3, R2, Call
+    ASSERT_TRUE I3
+    ret R2
+.endf
+
+.func main
+    ; What the server is built on.
+    ncall "module.function" ("_server.counter", "init") -> (R0)
+    ncall "module.of" (R0) -> (R1, I2)
+    strcmp I3, R1, "_server.counter"
+    ASSERT_EQ I3, 0
+    ncall "module.function" (R0, "handle_call") -> (R3)
+    ncall "module.of" (R3) -> (R4, I5)
+    ASSERT_EQ I5, I2                   ; (the same version)
+    ncall "module.current" (R0, "handle_info") -> (R3)
+    ncall "module.of" (R3) -> (R4, I5)
+    ASSERT_EQ I5, I2                   ; (not reloaded yet: the closure's own)
+    ncall "module.watch" ("_server.counter", 1)
+
+    lnew R6
+    lpush R6, 5
+    call server.start (R0, R6) -> (I10)
+    monitor I10
+    call inc (I10) -> (I11)
+    ASSERT_EQ I11, 6
+    call version (I10) -> (R12)
+    strcmp I3, R12, "v1"
+    ASSERT_EQ I3, 0
+    send I10, "bump"                   ; handle_info: 10 more
+    call inc (I10) -> (I11)
+    ASSERT_EQ I11, 17
+
+    ; A reload while the server waits: the bump sent before it is the old
+    ; version's (10, on its list), then code_change makes the map, and the
+    ; bump sent after is the new version's (100).
+    call nap (I10) -> (R20)
+    send I10, "bump"
+    call reload ("tests/loader/_server/v2.masm")
+    ncall "proc.reply" (R20, "go")
+    recv R13                           ; (this process watches too)
+    isa I3, R13, Reloaded
+    ASSERT_TRUE I3
+    mov R14, R13->Reloaded.module
+    strcmp I3, R14, "_server.counter"
+    ASSERT_EQ I3, 0
+    ncall "module.current" (R0, "handle_info") -> (R3)
+    ncall "module.of" (R3) -> (R4, I5)
+    ASSERT_NE I5, I2                   ; (now the new version)
+    ncall "module.function" (R0, "handle_call") -> (R3)
+    ncall "module.of" (R3) -> (R4, I5)
+    ASSERT_EQ I5, I2                   ; (by the closure: still its own version)
+    send I10, "bump"
+    call inc (I10) -> (I11)
+    ASSERT_EQ I11, 128                 ; 17 + 10 + 100 + 1
+    call version (I10) -> (R12)
+    strcmp I3, R12, "v2"
+    ASSERT_EQ I3, 0
+
+    ; Two reloads met at the first: the server goes to the newest, with its
+    ; code_change once (1000), and never calls the one between (5000).
+    call nap (I10) -> (R20)
+    call reload ("tests/loader/_server/v3.masm")
+    call reload ("tests/loader/_server/v4.masm")
+    ncall "proc.reply" (R20, "go")
+    call inc (I10) -> (I11)
+    ASSERT_EQ I11, 1129
+    call version (I10) -> (R12)
+    strcmp I3, R12, "v4"
+    ASSERT_EQ I3, 0
+
+    ; A version without code_change: the state goes on as it is.
+    call reload ("tests/loader/_server/v5.masm")
+    call inc (I10) -> (I11)
+    ASSERT_EQ I11, 1130
+    call version (I10) -> (R12)
+    strcmp I3, R12, "v5"
+    ASSERT_EQ I3, 0
+
+    ; A Reloaded of another module is just a message, for handle_info.
+    new R15, Reloaded
+    mov R15->Reloaded.module, "elsewhere"
+    send I10, R15
+    send I10, "bump"
+    call inc (I10) -> (I11)
+    ASSERT_EQ I11, 1231
+
+    ; Watching no more: this process hears of no later reload.
+    mlen I3
+    ASSERT_EQ I3, 3                    ; (the Reloadeds of v3, v4 and v5)
+    recv R13
+    recv R13
+    recv R13
+    ncall "module.watch" ("_server.counter", 0)
+    call reload ("tests/loader/_server/v5.masm")
+    call inc (I10) -> (I11)
+    ASSERT_EQ I11, 1232
+    mlen I3
+    ASSERT_EQ I3, 0
+
+    ; A message it cannot take (a number) fails the server, for its monitor
+    ; to see.
+    send I10, 7                        ; (a number: not a message it takes)
+    recv R16
+    mov I3, R16->Down.pid
+    ASSERT_EQ I3, I10
+    mov R17, R16->Down.code
+    strcmp I3, R17, "E_TYPE"
+    ASSERT_EQ I3, 0
+    ret
+.endf

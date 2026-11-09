@@ -2,7 +2,9 @@
 ; through node.frame and node.decode, and what cannot cross raises E_TYPE. What
 ; arrives from the network is not trusted, so bytes that are random, or a good
 ; frame with bytes changed or cut short, must give E_PARSE or a value, and never
-; anything worse: a length is checked against what is left, and depth is bounded.
+; anything worse: a length is checked against what is left, and so is each
+; reference to an object met before. Sharing and cycles cross as a local send
+; keeps them, and a value as deep as a long list of cells crosses too.
 .include "std/test.inc"
 
 .struct Pair
@@ -68,6 +70,152 @@ h:
     mov I1, UP[0]
     add I0, x, I1
     ret I0
+.endf
+
+; The closure's capture, UP[0].
+.func up0 -> ref
+    mov R1, UP[0]
+    ret R1
+.endf
+
+; What is shared stays shared: one object where it was one, and a new one,
+; not the sender's.
+.func shared
+    strcat R1, "made", " here"
+    mnew R2
+    mset R2, "k", 1
+    lnew R3
+    lpush R3, R1
+    lpush R3, R1
+    lpush R3, R2
+    lpush R3, R2
+    call trip (R3) -> (R4)
+    mov R5, R4[0]
+    mov R6, R4[1]
+    ASSERT_EQ R5, R6, r
+    ASSERT_NE R5, R1, r
+    strcmp I1, R5, "made here"
+    ASSERT_EQ I1, 0
+    mov R5, R4[2]
+    mov R6, R4[3]
+    ASSERT_EQ R5, R6, r
+    ASSERT_NE R5, R2, r
+    ; A map keyed by an object (by identity) still finds the key sent with it.
+    lnew R7
+    mnew R8
+    mset R8, R7, 99
+    lnew R9
+    lpush R9, R8
+    lpush R9, R7
+    call trip (R9) -> (R10)
+    mov R11, R10[0]
+    mov R12, R10[1]
+    ASSERT_NE R12, R7, r
+    mget I2, R11, R12
+    ASSERT_EQ I2, 99
+    ret
+.endf
+
+; A value that holds itself: through a list, a struct, a map (as a value and
+; as a key) and a closure's capture.
+.func cycles
+    lnew R1
+    lpush R1, R1
+    call trip (R1) -> (R2)
+    mov R3, R2[0]
+    ASSERT_EQ R3, R2, r
+    ASSERT_NE R2, R1, r
+
+    new R4, Pair
+    mov R4->Pair.left, 3
+    lnew R5
+    lpush R5, R4
+    mov R4->Pair.right, R5
+    call trip (R4) -> (R6)
+    mov R7, R6->Pair.right
+    mov R8, R7[0]
+    ASSERT_EQ R8, R6, r
+    mov I1, R8->Pair.left
+    ASSERT_EQ I1, 3
+
+    mnew R9
+    mset R9, "self", R9
+    mset R9, R9, "key"
+    call trip (R9) -> (R10)
+    mget R11, R10, "self"
+    ASSERT_EQ R11, R10, r
+    mget R12, R10, R10
+    strcmp I2, R12, "key"
+    ASSERT_EQ I2, 0
+    len I3, R10
+    ASSERT_EQ I3, 2
+
+    lnew R13
+    closure up0 (R13) -> R14
+    lpush R13, R14
+    call trip (R14) -> (R15)
+    calli R15 () -> (R16)
+    mov R17, R16[0]
+    ASSERT_EQ R17, R15, r
+    ret
+.endf
+
+; Deep values: 100,000 structs each holding the next, and lists as deep, as a
+; language's list of cells is.
+.func deep
+    mov R1, null
+    mov I1, 0
+1:  new R2, Pair
+    mov R2->Pair.left, I1
+    mov R2->Pair.right, R1
+    mov R1, R2
+    inc I1
+    blt I1, 100000, 1b
+    call trip (R1) -> (R3)
+    mov I2, 0
+2:  bz.r R3, 3f
+    mov I3, R3->Pair.left
+    sub I4, 99999, I2
+    ASSERT_EQ I3, I4
+    mov R3, R3->Pair.right
+    inc I2
+    jmp 2b
+3:  ASSERT_EQ I2, 100000
+
+    lnew R4
+    mov R5, R4
+    mov I1, 0
+4:  lnew R6
+    lpush R5, R6
+    mov R5, R6
+    inc I1
+    blt I1, 100000, 4b
+    call trip (R4) -> (R7)
+    mov I2, 0
+5:  len I5, R7
+    bz I5, 6f
+    mov R7, R7[0]
+    inc I2
+    jmp 5b
+6:  ASSERT_EQ I2, 100000
+    ret
+.endf
+
+; Frames no sender writes: a reference to an object not met yet, and a
+; BigInt's type holding a string, are refused (E_PARSE); a reference back to
+; the list being read is a list that holds itself.
+.func forged
+    ncall "hex.decode" ("0d05010000000df305000000") -> (R1)
+    call try_decode (R1) -> (I1)
+    ASSERT_EQ I1, 0
+    ncall "hex.decode" ("0d05010000000f010100000037") -> (R1)
+    call try_decode (R1) -> (I1)
+    ASSERT_EQ I1, 0
+    ncall "hex.decode" ("0d05010000000df300000000") -> (R1)
+    ncall "node.decode" (R1) -> (R2)
+    mov R3, R2[0]
+    ASSERT_EQ R3, R2, r
+    ret
 .endf
 
 .func main
@@ -199,11 +347,10 @@ h:
     call send_error (R11) -> (R12)
     strcmp I1, R12, "E_TYPE"
     ASSERT_EQ I1, 0
-    lnew R13                           ; a list that holds itself
-    lpush R13, R13
-    call send_error (R13) -> (R12)
-    strcmp I1, R12, "E_TYPE"
-    ASSERT_EQ I1, 0
+    call shared
+    call cycles
+    call deep
+    call forged
 
     ; Random bytes.
     mov I2, 0

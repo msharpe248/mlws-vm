@@ -96,8 +96,13 @@ static void n_loaded(Process *p, Word *a, Word *r) {
     r[0].i = vm_module_named(p->vm, name_arg(p, a[0], "module.loaded"), caller_module(p)) != NULL;
 }
 
+static LModule *closure_module(Process *p, Word a, const char *fn);
+
+/* module.function(module, function): the module by name, or by a closure of
+ * one of its functions, for that closure's version. */
 static void n_function(Process *p, Word *a, Word *r) {
-    LModule *lm = loaded(p, a[0], "module.function");
+    const Obj *o = a[0].r;
+    LModule *lm = o && o->kind == OBJ_CLOSURE ? closure_module(p, a[0], "module.function") : loaded(p, a[0], "module.function");
     const char *fname = name_arg(p, a[1], "module.function");
     int i = module_find_export_func(lm->m, fname);
     if (i < 0 || (lm->m->funcs[i].flags & MF_IMPORT))
@@ -168,6 +173,59 @@ static void n_upgrade(Process *p, Word *a, Word *r) {
     r[0].r = n;
 }
 
+/* module.watch(name, on): whether this process is told, by a Reloaded
+ * {module}, of each new version of a module of that name (module.reload), in
+ * its mailbox before any message the new version's code sends. */
+static void n_watch(Process *p, Word *a, Word *r) {
+    (void)r;
+    const char *name = name_arg(p, a[0], "module.watch");
+    VM *vm = p->vm;
+    plat_lock(vm->lock);
+    size_t at = vm->mod_watchers.n;
+    for (size_t i = 0; i < vm->mod_watchers.n && at == vm->mod_watchers.n; i++)
+        if (vm->mod_watchers.v[i].pid == p->pid && !strcmp(vm->mod_watchers.v[i].name, name)) at = i;
+    if (a[1].i && at == vm->mod_watchers.n) {
+        struct ModWatch w = {xstrdup(name), p->pid};
+        VEC_PUSH(vm->mod_watchers, w);
+    }
+    if (!a[1].i && at < vm->mod_watchers.n) {
+        free(vm->mod_watchers.v[at].name);
+        vm->mod_watchers.v[at] = vm->mod_watchers.v[--vm->mod_watchers.n];
+    }
+    plat_unlock(vm->lock);
+}
+
+/* The version a closure's function is of. */
+static LModule *closure_module(Process *p, Word a, const char *fn) {
+    const ObjClosure *c = a.r;
+    if (!c || c->h.kind != OBJ_CLOSURE) vm_trap(p, "E_TYPE", "%s: expected a closure", fn);
+    return (c->fn->target ? c->fn->target : c->fn)->mod;
+}
+
+/* module.of(closure): the name of the module its function is of, and which
+ * version: a number of its own among all the VM has loaded. */
+static void n_of(Process *p, Word *a, Word *r) {
+    const LModule *lm = closure_module(p, a[0], "module.of");
+    r[0].r = &str_new(p, lm->m->name, strlen(lm->m->name))->h;
+    r[1].i = (int64_t)lm->index;
+}
+
+/* module.current(closure, function): a closure for a function that the
+ * current version of the closure's module exports: the version a reload
+ * brought in since, or the closure's own. So code in a library can follow
+ * a program's module, which it could not name. */
+static void n_current(Process *p, Word *a, Word *r) {
+    LModule *lm = closure_module(p, a[0], "module.current");
+    const char *fname = name_arg(p, a[1], "module.current");
+    LModule *now = lm->replaced ? vm_module_named(p->vm, lm->m->name, lm) : lm;
+    if (!now) now = lm;
+    int i = module_find_export_func(now->m, fname);
+    if (i < 0 || (now->m->funcs[i].flags & MF_IMPORT))
+        vm_trap(p, "E_LINK_UNDEF", "module.current: module %s does not export a function '%s'", now->m->name, fname);
+    proc_grow_globals(p);
+    r[0].r = &closure_new(p, &now->funcs[i], 0)->h;
+}
+
 #define T(...) {__VA_ARGS__}
 
 static const NativeDef MODULE_NATIVES[] = {
@@ -186,10 +244,16 @@ static const NativeDef MODULE_NATIVES[] = {
     N("module.loaded", 1, T(T_R), 1, T(T_B), n_loaded,
       "Whether a module is loaded: the module that name means to the caller, as for module.load."),
     N("module.function", 2, T(T_R, T_R), 1, T(T_R), n_function,
-      "A closure for a function a loaded module exports, to call with calli (its signature is checked then)."),
+      "A closure for a function a loaded module exports, to call with calli (its signature is checked then). The module is a name, or a closure of one of its functions, for that closure's version."),
     N("module.exports", 1, T(T_R), 1, T(T_R), n_exports, "The names of the functions a loaded module exports."),
     N("module.handle", 2, T(T_R, T_R), 1, T(T_R), n_handle,
       "A closure for a function a loaded module exports that always calls its current version: unlike module.function's, it follows module.reload, so it can be kept. Call it with calli. A reload may remove the function or change its signature, which it may not for a module calling it: the handle then raises E_LINK_UNDEF when called, and calls the function again once a later version has it with the handle's signature."),
+    N("module.watch", 2, T(T_R, T_B), 0, T(0), n_watch,
+      "Whether this process is told, by a built-in Reloaded {module} struct, of each new version of a module of that name that a reload brings in; it comes before any message the new version's code sends."),
+    N("module.of", 1, T(T_R), 2, T(T_R, T_I64), n_of,
+      "The name of the module a closure's function is of, and its version's number, which no other version loaded has."),
+    N("module.current", 2, T(T_R, T_R), 1, T(T_R), n_current,
+      "A closure for a function that the current version of a closure's module exports: the version a reload has brought in since the closure was made, or the closure's own. E_LINK_UNDEF if it does not export it."),
     N("module.upgrade", 1, T(T_R), 1, T(T_R), n_upgrade,
       "A struct object of a type that a reload changed, as an object of the type its module's current version has under that name: fields that keep their name and type keep their values, new ones start empty. Anything else is returned as it is."),
 };

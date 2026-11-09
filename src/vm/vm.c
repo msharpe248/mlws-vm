@@ -182,6 +182,8 @@ void vm_free(VM *vm) {
     for (uint32_t n = 0; vm->node_names && n <= 65535; n++) free(vm->node_names[n]);
     free(vm->node_names);
     VEC_FREE(vm->node_watchers);
+    for (size_t i = 0; i < vm->mod_watchers.n; i++) free(vm->mod_watchers.v[i].name);
+    VEC_FREE(vm->mod_watchers);
     for (size_t i = 0; i < vm->retired.n; i++) free(vm->retired.v[i]);
     VEC_FREE(vm->retired);
     for (size_t i = 0; i < vm->const_objs.n; i++) free(vm->const_objs.v[i]);
@@ -219,6 +221,7 @@ void vm_free(VM *vm) {
     VEC_FREE(vm->tickets);
     smap_free(&vm->registry);
     copy_state_free();
+    node_wire_free();
     smap_free(&vm->natives);
     plat_lock_free(vm->lock);
     plat_lock_free(vm->mods_lock);

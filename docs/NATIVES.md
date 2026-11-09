@@ -56,6 +56,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `proc.whereis` | r | i64 | The pid with a name, or 0. |
 | `proc.call` | i64, r, i64 | r | Send Call{from, id, body} and wait for proc.reply's answer, up to a timeout in ms (negative: none; E_TIMEOUT). The answer does not go through the mailbox. |
 | `proc.reply` | r, r | - | Answer a Call. |
+| `proc.alive` | i64, i64 | b | Whether a process runs, as alive says, on this VM or another node, which is asked, up to a timeout in ms (negative: none; E_TIMEOUT). False for a node that is not connected. |
 | `cap.restrict` | r | - | From now on this process, and those it spawns, may reach only what a map grants: from read, write, connect, listen, run or env to a list of what each allows. What is not granted is denied, foreign code too, and a process can only narrow what it has. |
 | `cap.allowed` | r, r | b | Whether this process may reach something: a kind, and a path, host:port, command or variable. |
 | `cap.limited` | - | b | Whether this process has been restricted. |
@@ -74,9 +75,8 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `node.route` | i64 | i64 | The process messages for a node go to, or 0. For std.node. |
 | `node.function` | r, r | r | A closure for a module's exported function, as a peer names it. For std.node. |
 | `node.frame` | r | r | A value as bytes for a connection, with its length. For std.node. |
-| `node.frame_value` | r, r | r | A frame of a list with the second item of [pid, value] added. For std.node. |
 | `node.decode` | r | r | A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node. |
-| `node.deliver` | r | - | Send [pid, value] to its process here. For std.node. |
+| `node.take` | r | r | A frame from a node: a message, [0, pid, value], delivered to its process here (null returned), else the frame's value, as node.decode gives it. For std.node. |
 | `node.control` | r | - | Act on a control frame from a node: link, unlink, exit, monitor, down, reply, noproc or kill. For std.node. |
 | `node.proof` | r, r, r | r | HMAC-SHA-256 of a role and a nonce, keyed by a cookie. For std.node. |
 | `node.proof_ok` | r, r, r, r | b | Whether a proof is right, in constant time. For std.node. |
@@ -258,7 +258,10 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `module.purge` | r | i64, i64 | Free the old versions of a module that reloads replaced and that nothing can run now: no process has one of their functions on its stack, or reaches a closure or a suspended coroutine of theirs. Returns how many were freed, and how many were kept (still in use, or not to be checked now: a process is in a blocking native call, or a debugger, profiler or trace is on). Struct types stay, and a pointer into a freed version's data traps. |
 | `module.purge_kill` | r | i64, i64, i64 | As module.purge, after killing (E_KILLED) every process but the caller that is still running an old version, as Erlang's code:purge does. Returns how many versions were freed and kept, and how many processes were killed. A version the caller itself holds, or one that a blocking native call or a debugger, profiler or trace makes unsure, is kept, and nobody is killed for it. |
 | `module.loaded` | r | b | Whether a module is loaded: the module that name means to the caller, as for module.load. |
-| `module.function` | r, r | r | A closure for a function a loaded module exports, to call with calli (its signature is checked then). |
+| `module.function` | r, r | r | A closure for a function a loaded module exports, to call with calli (its signature is checked then). The module is a name, or a closure of one of its functions, for that closure's version. |
 | `module.exports` | r | r | The names of the functions a loaded module exports. |
 | `module.handle` | r, r | r | A closure for a function a loaded module exports that always calls its current version: unlike module.function's, it follows module.reload, so it can be kept. Call it with calli. A reload may remove the function or change its signature, which it may not for a module calling it: the handle then raises E_LINK_UNDEF when called, and calls the function again once a later version has it with the handle's signature. |
+| `module.watch` | r, b | - | Whether this process is told, by a built-in Reloaded {module} struct, of each new version of a module of that name that a reload brings in; it comes before any message the new version's code sends. |
+| `module.of` | r | r, i64 | The name of the module a closure's function is of, and its version's number, which no other version loaded has. |
+| `module.current` | r, r | r | A closure for a function that the current version of a closure's module exports: the version a reload has brought in since the closure was made, or the closure's own. E_LINK_UNDEF if it does not export it. |
 | `module.upgrade` | r | r | A struct object of a type that a reload changed, as an object of the type its module's current version has under that name: fields that keep their name and type keep their values, new ones start empty. Anything else is returned as it is. |

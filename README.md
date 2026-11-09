@@ -53,7 +53,9 @@ base:
   versions of each other they need (`.requires json5, "^1.2"`), and keep
   their internal modules private. A running program can load more modules by
   name (`module.load`), call them through closures, and replace a module
-  under running processes (`module.reload`), Erlang-style. Each program's own
+  under running processes (`module.reload`), Erlang-style, with a generic
+  server (`std.server`) that carries its state to the new code, as
+  `gen_server`'s `code_change` does. Each program's own
   modules come from its own directory, so programs run together in one VM may
   both have a `main` or a `util`.
 * **Rich heap types with a garbage collector**: strings, byte buffers, typed
@@ -71,6 +73,9 @@ base:
   microseconds.
 * **Processes across machines** (`std.node`): VMs connect as nodes, `send` works on
   a pid on another node, and processes can be spawned, found and watched there.
+  A message keeps its sharing and cycles, and is encoded once, where it is
+  sent: between two VMs on one machine, about 4 million small messages a
+  second.
 * **Files, commands, the OS and the network** (`std.fs`, `std.os`, `std.net`,
   and TLS through the system's OpenSSL, loaded when asked for): a
   process waiting on a pipe or socket waits in the poller (kqueue/epoll) like it

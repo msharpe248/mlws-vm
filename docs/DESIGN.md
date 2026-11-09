@@ -586,6 +586,15 @@ quickened forms, since the signature is the same, with a new `QPlan` swapped in
 by one store, because a callback on an I/O thread can be running while the world
 is stopped. Nothing tracks frames and closures of old versions as they run:
 an old version stays valid until `module.purge` frees it, which looks for them.
+Before the world goes again, `sched_module_event` gives each process watching
+the module's name (`VM.mod_watchers`, `module.watch`) a built-in `Reloaded`
+struct, so that it comes before any message the new version's code can send.
+`std.server` (`lib/std/server.masm`) is built on that: it calls a closure of
+one version of its callback module (`module.function` given a closure finds a
+function of that closure's version), and at a `Reloaded` for its module asks
+for the current version (`module.current`), compares versions (`module.of`
+gives a number of each, `LModule.index`), and calls the new one's
+`code_change` with its state.
 
 `module.purge` (`vm_purge`, `vm/loader.c`) stops the world, then asks of each
 replaced version whether anything could still run it. No other module may
@@ -1763,13 +1772,22 @@ first has finished, counting it among those stopped, so neither waits on the oth
 A pid's top 16 bits name its node, and 0 means this VM, so nothing changes for a
 program that has no nodes. `sched_send` looks at those bits first: this node's
 number is stripped, and any other goes to `VM.node_route[number]`, the process
-carrying that connection, wrapped as `[pid, value]`, with an ordinary send.
+carrying that connection, as the frame for the wire: `send_far` encodes
+`[0, pid, value]` there and then (`node_message_frame`, in `dist.c`), into the
+sending thread's scratch heap, and sends the bytes. So a message is copied once,
+as bytes, not as objects for the writer to encode, and what cannot be sent is the
+sender's error, at the `send`. The carrier's mailbox limit holds as for any send.
 
 That process and the rest of the protocol are MLWSVM code, in `lib/std/node.masm`.
 A connection is a reader, blocked in `net.read_frame`, and a writer, blocked in
 `recv`, on two descriptors of one socket (`net.split`), since a process waits for
-one thing at a time. C provides only what must be C: the routing above, `node.frame`
-and `node.decode`, and the challenge. The handshake sends each side's number, a
+one thing at a time. The writer writes the frames it is sent, and those waiting
+behind one, up to 64 KiB, in one write. The reader gives each frame to
+`node.take`, which decodes a message straight into the thread's scratch heap
+(`sched_frag`) and delivers that as the message (`sched_node_deliver`), with no
+second copy; any other frame comes back to it as a list. C provides only what
+must be C: the routing above, `node.frame`, `node.take` and `node.decode`, and
+the challenge. The handshake sends each side's number, a
 random nonce and its name (`node.set_name`; empty if it has none), then an HMAC-SHA-256 of the peer's nonce, keyed by the cookie and
 marked with the prover's role, so that a proof cannot be reflected back at its
 maker. `node.proof_ok` compares in constant time. With `start_tls` and `connect_tls`
@@ -1778,10 +1796,19 @@ session: `net.split` gives the second handle the same `Tls`, whose calls take it
 lock, and which has its own descriptor of the socket, so that it outlives whichever
 handle closes first.
 
-`node.decode` reads bytes from the network. Every length is checked against what
-is left, before anything is allocated, recursion is bounded, type codes and kinds
-are checked, and a struct is looked up by module and name and must have the same
-fields. Bytes that are not a value raise `E_PARSE`, and the reader drops that
+A value is written depth first: its type code, then a word, or an object's kind
+and contents. Each object written whole is numbered in the order it comes, and
+one met again is `WIRE_REF` and its number (the encoder's `Seen` table, by
+address), so sharing and cycles cross as a local send keeps them; the reader
+numbers what it makes in the same order. Both ends walk the value with a stack
+of their own (`EFrame`, `DFrame`), in this thread's scratch (`tls_wire`), not
+C's, so depth is limited only by a frame's 64 MiB, and a trap part way leaks
+nothing. `node.decode` reads bytes from the network. Every length is checked
+against what is left, before anything is allocated, a reference must be to an
+object already made, type codes and kinds are checked (a BigInt's or decimal's
+type holds only one), and a struct is looked up by module and name and must have
+the same fields. Nothing collects while a native runs, so what is half made
+needs no root. Bytes that are not a value raise `E_PARSE`, and the reader drops that
 frame, not the connection. A string that is immortal where it is sent, a
 literal or `text.intern`'s, is written with a code of its own, and read back
 through `vm_intern`, so that it is that VM's literal of the same text; a
@@ -1820,15 +1847,19 @@ with `proc.call`, so that a caller's mailbox holds only what it was sent.
 (`sched.c`, "across nodes"), so they behave as on one VM. Each side keeps the
 other's pids as the wire names them: a process's `rlinks` (linked across), its
 `rmonitors` (watching it from elsewhere) and its `rwatch` (what it watches
-elsewhere). What one side must tell the other is a control frame, `[null, kind,
-...]`, sent to the connection's writer like a message, so it keeps its order
-with the sender's messages: a link, an unlink (a normal end), an exit (a failure),
-a monitor, a down, a reply, noproc (a `Call` for a process that is not there,
-answered at once), or a kill, which the far node carries out as its own `kill`
-would. The reader at the far end hands it to `node.control`. A
+elsewhere). What one side must tell the other is a control frame, `[kind, ...]`,
+encoded where it is sent (`node_control_frame`) and sent to the connection's
+writer like a message, so it keeps its order with the sender's messages: a link,
+an unlink (a normal end), an exit (a failure), a monitor, a down, a reply, noproc
+(a `Call` for a process that is not there, answered at once), a kill, which the
+far node carries out as its own `kill` would, or alive, which it answers as its
+own `alive` would. The reader at the far end hands it to `node.control`. A
 `proc.call` to another node sends its `Call` as an ordinary message there, with
 the caller's pid as that node names it, and remembers which node it called; the
-`proc.reply` comes back as a reply frame, into the reply slot. When a reader
+`proc.reply` comes back as a reply frame, encoded from the replier's value, into
+the reply slot. `proc.alive` waits in the same slot (`reply_wait`, shared with
+`proc.call`). A message for a process whose mailbox is full here is dropped,
+with a warning in the monitor's log, since its sender cannot be told. When a reader
 loses its connection it clears the route (`node.attach(n, 0)`), and
 `sched_node_down` walks the processes once: it drops their ties to that node,
 fails the linked ones with `E_LINKED`, gives each watcher a `Down` with

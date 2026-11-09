@@ -1,0 +1,94 @@
+; Node 1 of the node benchmark (run.sh): calls to node 2 (the port in the
+; first argument) and messages sent there, of a few shapes, each timed; with
+; "local" as the second argument, the same to processes of this VM.
+.import std.node as node
+.import procs
+
+.func report(ref what, i64 n, i64 t0)
+    ncall "time.monotonic" () -> (I3)
+    sub I3, I3, t0
+    div I4, I3, n                      ; ns each
+    mul I5, n, 1000000000
+    div I5, I5, I3                     ; per second
+    ncall "io.print_s" (what)
+    ncall "io.print_s" (": ")
+    ncall "io.print_i" (I4)
+    ncall "io.print_s" (" ns each, ")
+    ncall "io.print_i" (I5)
+    ncall "io.print_s" ("/s")
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+    ret
+.endf
+
+; n calls with body v, one after another.
+.func calls(ref what, i64 echo, ref v, i64 n)
+    ncall "time.monotonic" () -> (I5)
+    mov I6, 0
+1:  ncall "proc.call" (echo, v, 10000) -> (R7)
+    inc I6
+    blt I6, n, 1b
+    call report (what, n, I5)
+    ret
+.endf
+
+; n messages v, then a call for the count: all of them arrived.
+.func sends(ref what, i64 sink, ref v, i64 n)
+    ncall "time.monotonic" () -> (I5)
+    mov I6, 0
+1:  send sink, v
+    inc I6
+    blt I6, n, 1b
+    ncall "proc.call" (sink, "count", 60000) -> (R7)
+    mov I8, R7[0]
+    beq I8, n, 2f
+    ncall "io.print_s" ("LOST MESSAGES: ")
+2:  call report (what, n, I5)
+    ret
+.endf
+
+.func main
+    ncall "os.args" () -> (R0)
+    len I0, R0
+    bgt I0, 1, local
+    mov R1, R0[0]
+    parse.i64 I1, R1
+    call node.start (1, "bench", 0) -> (I2)
+    call node.connect ("127.0.0.1", I1, "bench") -> (I3)
+    call node.whereis (2, "sink") -> (I10)
+    call node.whereis (2, "echo") -> (I11)
+    jmp go
+local:
+    spawn procs.sink -> (I10)
+    spawn procs.echo -> (I11)
+go:
+    lnew R2
+    lpush R2, 1
+    call calls ("call [1]", I11, R2, 20000)
+    call sends ("send [1]", I10, R2, 300000)
+    lnew R3                            ; 100 integers
+    mov I4, 0
+1:  lpush R3, I4
+    inc I4
+    blt I4, 100, 1b
+    call calls ("call 100 ints", I11, R3, 20000)
+    call sends ("send 100 ints", I10, R3, 100000)
+    mnew R4                            ; 20 string keys
+    mov I4, 0
+2:  tostr R5, I4
+    strcat R5, "key", R5
+    mset R4, R5, I4
+    inc I4
+    blt I4, 20, 2b
+    call sends ("send map of 20", I10, R4, 100000)
+    mov R6, null                       ; a list of 100 cells [head, tail], as a cons list
+    mov I4, 0
+3:  lnew R7
+    lpush R7, I4
+    lpush R7, R6
+    mov R6, R7
+    inc I4
+    blt I4, 100, 3b
+    call sends ("send 100 cells", I10, R6, 50000)
+    ret 0
+.endf

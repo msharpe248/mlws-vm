@@ -1,0 +1,27 @@
+; The processes the node benchmark measures against: a sink that counts the
+; messages it gets (a Call answers the count since the last, and starts it
+; again) and an echo that answers a Call with its body.
+.export sink, echo
+
+.func sink
+    ncall "proc.register" ("sink", PID)
+    mov I1, 0
+1:  recv R0
+    isa I2, R0, Call
+    bnz I2, 2f
+    inc I1
+    jmp 1b
+2:  lnew R2
+    lpush R2, I1
+    mov I1, 0
+    ncall "proc.reply" (R0, R2)
+    jmp 1b
+.endf
+
+.func echo
+    ncall "proc.register" ("echo", PID)
+1:  recv R0
+    mov R1, R0->Call.body
+    ncall "proc.reply" (R0, R1)
+    jmp 1b
+.endf

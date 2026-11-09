@@ -1,0 +1,16 @@
+; Node 2 of the node benchmark (run.sh): procs.masm's sink and echo, until
+; killed. Prints the port it took.
+.import std.node as node
+.import procs
+
+.func main
+    call node.start (2, "bench", 0) -> (I1)
+    spawn procs.sink
+    spawn procs.echo
+    sleep 50                           ; (both registered)
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+1:  sleep 1000
+    jmp 1b
+.endf

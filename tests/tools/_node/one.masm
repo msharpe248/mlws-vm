@@ -165,6 +165,34 @@ plain_refused:
     beq.r R27, "still there", 1f       ; a literal there and back: the very literal here
     FAIL "a literal came back from node 2 another object"
 1:
+    lnew R28                           ; a value that holds itself, shares a string,
+    lpush R28, R28                     ; and nests 50,000 deep: there and back as it was
+    strcat R29, "sha", "red"
+    lpush R28, R29, R29
+    lnew R29
+    lpush R28, R29
+    mov I5, 0
+2:  lnew R30
+    lpush R29, R30
+    mov R29, R30
+    inc I5
+    blt I5, 50000, 2b
+    ncall "proc.call" (I4, R28, 5000) -> (R27)
+    mov R29, R27[0]
+    ASSERT_EQ R29, R27, r
+    mov R29, R27[1]
+    mov R30, R27[2]
+    ASSERT_EQ R29, R30, r
+    strcmp I5, R29, "shared"
+    ASSERT_EQ I5, 0
+    mov R29, R27[3]
+    mov I5, 0
+3:  len I6, R29
+    bz I6, 4f
+    mov R29, R29[0]
+    inc I5
+    jmp 3b
+4:  ASSERT_EQ I5, 50000
 
     ; A registered process there, and a message there and back.
     call node.whereis (2, "doubler") -> (I5)
@@ -287,15 +315,27 @@ not_connected:
 
     ; kill there: the process is killed, and its watcher here hears E_KILLED;
     ; a kill of one not there, or on a node not connected, does nothing.
+    ; proc.alive asks that node, which answers as alive there would; one on a
+    ; node not connected runs nowhere.
     call node.spawn (2, "worker", "ignore", R4) -> (I23)
+    ncall "proc.alive" (I23, 5000) -> (I22)
+    ASSERT_TRUE I22
     monitor I23
     kill I23
     call down_code (I23) -> (R16)
     call expect (R16, "E_KILLED")
+    ncall "proc.alive" (I23, 5000) -> (I22)
+    ASSERT_FALSE I22
     kill I16
     kill I18
+    ncall "proc.alive" (I16, 5000) -> (I22)
+    ASSERT_FALSE I22
+    ncall "proc.alive" (I18, 5000) -> (I22)
+    ASSERT_FALSE I22
+    ncall "proc.alive" (PID, 5000) -> (I22)
+    ASSERT_TRUE I22
     alive I22, I23
-    ASSERT_FALSE I22                   ; (alive: this VM's pids only)
+    ASSERT_FALSE I22                   ; (the instruction: this VM's pids only)
 
     ; The node goes: a watcher hears, a linked process goes, a call waiting
     ; for an answer fails, and a send goes nowhere.
@@ -355,6 +395,8 @@ not_connected:
     call node.nodes () -> (R25)
     len I3, R25
     ASSERT_EQ I3, 0
+    ncall "proc.alive" (I30, 5000) -> (I3) ; (its node gone: it runs nowhere)
+    ASSERT_FALSE I3
     ret 0
 .endf
 

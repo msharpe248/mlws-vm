@@ -296,6 +296,7 @@ typedef struct VM {
     char *node_name;         /* [lock] this VM's name among nodes, or NULL (node.set_name) */
     char **node_names;       /* [lock] per node: the name it gave when it last connected, or NULL */
     VEC(uint64_t) node_watchers; /* [lock] processes told of each connection that comes or goes (node.watch) */
+    VEC(struct ModWatch { char *name; uint64_t pid; }) mod_watchers; /* [lock] processes told of each reload of a module (module.watch) */
     struct Bundle *bundle;   /* the program this executable carries, or NULL: modules are found there first */
     bool gc_stress;          /* collect at every instruction boundary after an allocation */
     bool gc_verify;          /* after each minor collection's marking, check it against a walk of the whole heap */
@@ -846,9 +847,11 @@ void sched_monitor(Process *p, uint64_t pid);
 /* Across nodes (std.node, dist.c): a control frame from another node, a message
  * for a process here, and a node's connection gone. */
 void sched_node_control(Process *p, const ObjList *frame);
-void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag);
+Process *sched_frag(VM *vm); /* this thread's scratch heap, emptied, to make a message from a node in */
+void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag); /* v made in sched_frag's heap */
 void sched_node_down(VM *vm, uint32_t node);
 void sched_node_event(VM *vm, uint32_t node, bool up); /* a NodeEvent to each watcher */
+void sched_module_event(VM *vm, const char *name);     /* a Reloaded to each watcher of the module */
 void sched_set_quota(Process *p, int kind, uint64_t limit);
 bool sched_alive(VM *vm, uint64_t pid);
 /* The monitor's log channel (vm.c): keep the last cap entries from now on; add
@@ -870,6 +873,11 @@ uint64_t vm_pid_end(VM *vm);               /* one past the highest pid assigned 
 Word msg_copy(Process *from, Process *to, Word v, uint8_t tag);
 bool msg_copy_soft(Process *from, Process *to, Word *v, uint8_t tag, char *why, size_t n); /* for tools: no trap */
 void copy_state_free(void); /* the calling thread's copy scratch */
+void node_wire_free(void); /* the calling thread's scratch for values to and from other nodes (dist.c) */
+/* Frames for the wire (dist.c), made in f by the sending thread: a message
+ * [0, pid, value] and a control frame [kind, w...]; what cannot be sent is p's error. */
+ObjBytes *node_message_frame(Process *p, Process *f, uint64_t pid, Word v, uint8_t tag);
+ObjBytes *node_control_frame(Process *p, Process *f, int kind, int n, const Word *w, const uint8_t *t);
 
 /* natives.c */
 void natives_register_builtin(VM *vm);
