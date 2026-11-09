@@ -776,6 +776,7 @@ home = "${HOME}/app"
 ```asm
     ncall "env.get" ("greeting", "hi") -> (R0)      ; "hello" (the second: if there is none)
     ncall "env.get_i" ("port", 80) -> (I0)          ; 8080
+    ncall "env.get_any" ("port") -> (R1)            ; [8080]: tagof I1, R1[0] is 6 (i64)
     ncall "env.set" ("mode", "maintenance")         ; seen at once by every process of it
 ```
 
@@ -794,7 +795,10 @@ running system changes. It is not the operating system's environment, which
   reader's own, as a message is: processes still share nothing. `env.get`
   reads a reference (a string, a list, a map...), `env.get_i` an integer and
   `env.get_f` a float; each takes what to return if there is no such value,
-  and raises `E_TYPE` for one of another kind. `env.set`, `env.set_i` and
+  and raises `E_TYPE` for one of another kind. `env.get_any` reads one of
+  any type as the only element of a list, keeping its type, so that `tagof`
+  tells a boolean from an integer (an empty list if there is none), as
+  `json.parse_any` does. `env.set`, `env.set_i` and
   `env.set_f` set one, `env.delete` removes one, `env.has` and `env.keys` look.
 * **Watching.** After `env.watch(true)`, a process gets a built-in
   `EnvChange {key}` for each value set or deleted in its environment, so a

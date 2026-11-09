@@ -96,6 +96,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `env.get` | r, r | r | A value of this process's environment that is a reference, as a copy of its own; the second argument if there is none (E_TYPE for a number: env.get_i, env.get_f). |
 | `env.get_i` | r, i64 | i64 | An integer value of the environment, or the second argument if there is none. |
 | `env.get_f` | r, f64 | f64 | A float value of the environment, or the second argument if there is none. |
+| `env.get_any` | r | r | Any value of the environment, as the only element of a list, keeping its type (tagof tells it); an empty list if there is none. |
 | `env.set` | r, r | - | Set a value of the environment: any value a message can be, copied in; every process of the environment sees it at once. Not in a restricted process (E_PERMISSION). |
 | `env.set_i` | r, i64 | - | Set an integer value of the environment. |
 | `env.set_f` | r, f64 | - | Set a float value of the environment. |

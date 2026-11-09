@@ -317,6 +317,18 @@ static void n_get_f(Process *p, Word *a, Word *r) {
     r[0] = w;
 }
 
+/* env.get_any(name): any value, as the only element of a list (so that a
+ * number or boolean keeps its type, for tagof); an empty list if there is
+ * none (as json.parse_any). */
+static void n_get_any(Process *p, Word *a, Word *r) {
+    const char *k = key_arg(p, a[0], "env.get_any");
+    Word w;
+    uint8_t t = get(p, k, &w);
+    ObjList *l = list_new(p, t ? 1 : 0);
+    if (t) list_push(p, l, w, t);
+    r[0].r = &l->h;
+}
+
 static void n_set(Process *p, Word *a, Word *r) {
     (void)r;
     set(p, "env.set", a[0], a[1], T_R);
@@ -445,6 +457,8 @@ static const NativeDef ENV_NATIVES[] = {
       "A value of this process's environment that is a reference, as a copy of its own; the second argument if there is none (E_TYPE for a number: env.get_i, env.get_f)."),
     N("env.get_i", 2, T(T_R, T_I64), 1, T(T_I64), n_get_i, "An integer value of the environment, or the second argument if there is none."),
     N("env.get_f", 2, T(T_R, T_F64), 1, T(T_F64), n_get_f, "A float value of the environment, or the second argument if there is none."),
+    N("env.get_any", 1, T(T_R), 1, T(T_R), n_get_any,
+      "Any value of the environment, as the only element of a list, keeping its type (tagof tells it); an empty list if there is none."),
     N("env.set", 2, T(T_R, T_R), 0, T(0), n_set,
       "Set a value of the environment: any value a message can be, copied in; every process of the environment sees it at once. Not in a restricted process (E_PERMISSION)."),
     N("env.set_i", 2, T(T_R, T_I64), 0, T(0), n_set_i, "Set an integer value of the environment."),
