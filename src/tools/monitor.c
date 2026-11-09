@@ -1277,7 +1277,7 @@ static void serve_keys(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *by) 
             respond_json(k, 409, "{\"error\":\"there is a key with that label\"}");
         } else {
             MonKey nk = {{0}, {0}, scope, mon->keyfile ? 'f' : 'a', 0};
-            snprintf(nk.label, sizeof nk.label, "%s", v[0]);
+            snprintf(nk.label, sizeof nk.label, "%.63s", v[0]);
             char token[33];
             key_random(token);
             key_hash(token, strlen(token), nk.hash);

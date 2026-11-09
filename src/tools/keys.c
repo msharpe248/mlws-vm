@@ -83,7 +83,7 @@ static bool parse_line(const char *s, const char *z, MonKey *k, const char **why
     if (!(k->scope = key_scope_of(f[0]))) return *why = "a scope is read or admin", false;
     if (!key_label_ok(f[1])) return *why = "a label is 1 to 63 letters, digits, _, ., - or @", false;
     if (strlen(f[2]) != 64 || !unhex(f[2], 32, k->hash)) return *why = "a hash is 64 hex digits (SHA-256)", false;
-    snprintf(k->label, sizeof k->label, "%s", f[1]);
+    snprintf(k->label, sizeof k->label, "%.63s", f[1]); /* (key_label_ok: shorter) */
     k->from = 'f';
     return true;
 }
