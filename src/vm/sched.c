@@ -428,6 +428,31 @@ static void deliver(Sched *s, uint64_t pid, InMsg *m) {
     if (to) plat_unlock(to->lock);
 }
 
+/* A message for another node goes to its carrier as the frame for the wire,
+ * made here: so it is copied once, as bytes, and what cannot be sent is the
+ * sender's error. The carrier's mailbox limit holds as for any send. */
+static void send_far(Process *p, uint64_t carrier, uint64_t pid, Word v, uint8_t tag) {
+    Sched *s = p->vm->sched;
+    Process *f = my_frag(s);
+    frag_reset(f);
+    ObjBytes *fr = node_message_frame(p, f, pid, v, tag);
+    InMsg m = frag_take(f, (Word){.r = &fr->h}, T_R);
+    Process *to = pin(s, carrier);
+    if (!to || !accepts(to)) {
+        if (to) plat_unlock(to->lock);
+        gc_free_list(m.objs);
+        return;
+    }
+    if (to->mcount >= to->quota[QUOTA_MAILBOX]) {
+        plat_unlock(to->lock);
+        gc_free_list(m.objs);
+        vm_trap(p, "E_QUOTA", "mailbox of process %llu (node %u's connection) is full", (unsigned long long)carrier,
+                (unsigned)(pid >> NODE_SHIFT));
+    }
+    push_locked(s, to, &m);
+    plat_unlock(to->lock);
+}
+
 void sched_send(Process *p, uint64_t pid, Word v, uint8_t tag) {
     proc_reach(p, "send");
     Sched *s = p->vm->sched;
@@ -439,12 +464,8 @@ void sched_send(Process *p, uint64_t pid, Word v, uint8_t tag) {
         } else {
             uint64_t carrier = vm->node_route && node <= 65535 ? __atomic_load_n(&vm->node_route[node], __ATOMIC_ACQUIRE) : 0;
             if (!carrier) return; /* no such node, as no such process: dropped */
-            ObjList *l = list_new(p, 2);
-            list_push(p, l, (Word){.u = pid}, T_I64);
-            list_push(p, l, v, tag);
-            pid = carrier;
-            v.r = &l->h;
-            tag = T_R;
+            send_far(p, carrier, pid, v, tag);
+            return;
         }
     }
     InMsg m = {v, tag, NULL, 0, 0};
@@ -583,7 +604,7 @@ static bool has_pid(const PidVec *v, uint64_t pid) {
  * far end the reader gives it to sched_node_control. When a connection goes,
  * sched_node_down treats every process over there as failed with E_NODE_DOWN. */
 
-enum { NC_LINK = 3, NC_UNLINK, NC_EXIT, NC_MONITOR, NC_DOWN, NC_REPLY, NC_NOPROC, NC_KILL };
+enum { NC_LINK = 3, NC_UNLINK, NC_EXIT, NC_MONITOR, NC_DOWN, NC_REPLY, NC_NOPROC, NC_KILL, NC_ALIVE };
 
 static uint32_t self_node(VM *vm) { return __atomic_load_n(&vm->node_self, __ATOMIC_ACQUIRE); }
 
@@ -602,18 +623,20 @@ static uint64_t carrier_of(VM *vm, uint32_t node) {
 /* A pid of this VM as other nodes name it. */
 static uint64_t global_pid(VM *vm, uint64_t pid) { return pid | (uint64_t)self_node(vm) << NODE_SHIFT; }
 
-/* Send [null, kind, w...] to a node's carrier, built in f (this thread's scratch
- * process, holding whatever w refers to). Dropped if the node is not connected,
- * as a message to it is. */
-static void ctl_send(VM *vm, Process *f, uint32_t node, int kind, int n, const Word *w, const uint8_t *t) {
+/* Send the frame [kind, w...] to a node's carrier, made in f (this thread's
+ * scratch process; w may be anyone's, and what cannot be sent is who's
+ * error). Dropped if the node is not connected, as a message to it is. */
+static void ctl_send_by(VM *vm, Process *who, Process *f, uint32_t node, int kind, int n, const Word *w, const uint8_t *t) {
     uint64_t carrier = carrier_of(vm, node);
     if (!carrier) return; /* (f is reset by its next user) */
-    ObjList *l = list_new(f, n + 2);
-    list_push(f, l, (Word){.r = NULL}, T_R);
-    list_push(f, l, (Word){.i = kind}, T_I64);
-    for (int i = 0; i < n; i++) list_push(f, l, w[i], t[i]);
-    InMsg m = frag_take(f, (Word){.r = &l->h}, T_R);
+    ObjBytes *fr = node_control_frame(who, f, kind, n, w, t);
+    InMsg m = frag_take(f, (Word){.r = &fr->h}, T_R);
     deliver(vm->sched, carrier, &m);
+}
+
+/* The VM's own, which are always sendable. */
+static void ctl_send(VM *vm, Process *f, uint32_t node, int kind, int n, const Word *w, const uint8_t *t) {
+    ctl_send_by(vm, f, f, node, kind, n, w, t);
 }
 
 /* [kind, to, a]: link, unlink, monitor and kill (a: the asker), noproc (a: the call's id) */
@@ -952,6 +975,42 @@ void sched_node_event(VM *vm, uint32_t node, bool up) {
     VEC_FREE(to);
 }
 
+/* A new version of module `name` came (vm_reload, with the world stopped, so
+ * that it comes before any message the new code sends): a Reloaded {module}
+ * to each process watching it (module.watch). Watchers that have ended are
+ * dropped from the list. */
+void sched_module_event(VM *vm, const char *name) {
+    Sched *s = vm->sched;
+    if (!s) return;
+    PidVec to = {0};
+    plat_lock(vm->lock);
+    for (size_t i = 0; i < vm->mod_watchers.n; i++)
+        if (!strcmp(vm->mod_watchers.v[i].name, name)) VEC_PUSH(to, vm->mod_watchers.v[i].pid);
+    plat_unlock(vm->lock);
+    for (size_t i = 0; i < to.n; i++) {
+        Process *t = pin(s, to.v[i]);
+        bool live = t && accepts(t);
+        if (t) plat_unlock(t->lock);
+        if (!live) {
+            plat_lock(vm->lock);
+            for (size_t k = 0; k < vm->mod_watchers.n; k++)
+                if (vm->mod_watchers.v[k].pid == to.v[i]) {
+                    free(vm->mod_watchers.v[k].name);
+                    vm->mod_watchers.v[k--] = vm->mod_watchers.v[--vm->mod_watchers.n];
+                }
+            plat_unlock(vm->lock);
+            continue;
+        }
+        Process *f = my_frag(s);
+        frag_reset(f);
+        ObjStruct *e = struct_new(f, &VM_BUILTIN_DEFS[BUILTIN_RELOADED]);
+        e->fields[RLF_MODULE].r = str_new(f, name, strlen(name));
+        InMsg m = frag_take(f, (Word){.r = e}, T_R);
+        deliver(s, to.v[i], &m);
+    }
+    VEC_FREE(to);
+}
+
 /* A string field of a control frame, or NULL. */
 static const ObjString *frame_str(const ObjList *l, uint32_t i) {
     const Obj *o = l->items[i].r;
@@ -962,12 +1021,13 @@ void sched_node_control(Process *p, const ObjList *l) {
     VM *vm = p->vm;
     Sched *s = vm->sched;
     static const uint32_t LEN[] = {[NC_LINK] = 3, [NC_UNLINK] = 3, [NC_EXIT] = 6, [NC_MONITOR] = 3,
-                                   [NC_DOWN] = 6, [NC_REPLY] = 4, [NC_NOPROC] = 3, [NC_KILL] = 3};
+                                   [NC_DOWN] = 6, [NC_REPLY] = 4, [NC_NOPROC] = 3, [NC_KILL] = 3, [NC_ALIVE] = 4};
     if (!l || l->h.kind != OBJ_LIST || l->len < 3 || !type_is_int((MlwsType)l->tags[0]) ||
         !type_is_int((MlwsType)l->tags[1]) || !type_is_int((MlwsType)l->tags[2]))
         vm_trap(p, "E_PARSE", "node.control: expected [kind, pid, pid or id, ...]");
     int64_t kind = l->items[0].i;
-    if (kind < NC_LINK || kind > NC_KILL || l->len != LEN[kind] ||
+    if (kind < NC_LINK || kind > NC_ALIVE || l->len != LEN[kind] ||
+        (kind == NC_ALIVE && !type_is_int((MlwsType)l->tags[3])) ||
         ((kind == NC_EXIT || kind == NC_DOWN) && !type_is_int((MlwsType)l->tags[3])))
         vm_trap(p, "E_PARSE", "node.control: a frame of kind %lld that is not one", (long long)kind);
     uint64_t to = l->items[1].u, a = l->items[2].u;
@@ -1045,6 +1105,16 @@ void sched_node_control(Process *p, const ObjList *l) {
         if (claimed) finish(s, t, true);
         return;
     }
+    case NC_ALIVE: { /* a, on another node, asks (call l[3]) whether `to` runs: as `alive` here */
+        bool alive = t && is_live(t) && !t->kill_req;
+        if (t) plat_unlock(t->lock);
+        Process *f = my_frag(s);
+        frag_reset(f);
+        Word w[3] = {{.u = a}, l->items[3], {.u = alive}};
+        uint8_t ty[3] = {T_I64, T_I64, T_B};
+        ctl_send(vm, f, (uint32_t)(a >> NODE_SHIFT), NC_REPLY, 3, w, ty);
+        return;
+    }
     case NC_NOPROC: /* call a of `to` went to a process that is not there */
         if (t && accepts(t) && t->call_id == a && t->call_node && !t->reply_ready) {
             t->reply = (InMsg){0};
@@ -1058,24 +1128,45 @@ void sched_node_control(Process *p, const ObjList *l) {
     if (t) plat_unlock(t->lock);
 }
 
-/* A message from another node for a process here. A Call for one that is not
- * here is answered at once (NC_NOPROC), so that its caller need not wait out
- * its timeout. */
+/* This thread's scratch heap, emptied, for a message from another node to be
+ * made in (node.take), to give to sched_node_deliver. */
+Process *sched_frag(VM *vm) {
+    Process *f = my_frag(vm->sched);
+    frag_reset(f);
+    return f;
+}
+
+/* A message from another node for a process here, made in sched_frag's heap
+ * by p, the connection's reader: it is the message, without another copy. A
+ * Call for a process that is not here is answered at once (NC_NOPROC), so
+ * that its caller need not wait out its timeout. One for a process whose
+ * mailbox is full is dropped, with a warning in the monitor's log, as the
+ * sender, on another node, cannot be told. */
 void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag) {
     VM *vm = p->vm;
+    Sched *s = vm->sched;
     pid &= PID_LOCAL;
-    const ObjStruct *c = v.r;
-    if (type_is_ref(tag) && c && c->h.kind == OBJ_STRUCT && c->def == &VM_BUILTIN_DEFS[BUILTIN_CALL]) {
-        Process *t = pin(vm->sched, pid);
-        bool here = t && accepts(t);
-        if (t) plat_unlock(t->lock);
-        uint64_t from = c->fields[CALLF_FROM].u;
-        if (!here) {
-            if (far_node(vm, &from)) ctl_pair(vm, NC_NOPROC, from, c->fields[CALLF_ID].u);
-            return;
-        }
+    InMsg m = frag_take(my_frag(s), v, tag);
+    Process *t = pin(s, pid);
+    bool here = t && accepts(t);
+    if (here && t->mcount < t->quota[QUOTA_MAILBOX]) {
+        push_locked(s, t, &m);
+        plat_unlock(t->lock);
+        return;
     }
-    sched_send(p, pid, v, tag);
+    if (t) plat_unlock(t->lock);
+    const ObjStruct *c = v.r;
+    if (!here && type_is_ref(tag) && c && c->h.kind == OBJ_STRUCT && c->def == &VM_BUILTIN_DEFS[BUILTIN_CALL]) {
+        uint64_t from = c->fields[CALLF_FROM].u, id = c->fields[CALLF_ID].u;
+        if (far_node(vm, &from)) ctl_pair(vm, NC_NOPROC, from, id);
+    }
+    if (here && atomic_load_explicit(&vm->mlog_on, memory_order_relaxed)) {
+        char msg[128];
+        int n = snprintf(msg, sizeof msg, "std.node: a message to process %llu was dropped: its mailbox is full",
+                         (unsigned long long)pid);
+        vm_mlog_put(vm, p, 2, NULL, msg, (size_t)n);
+    }
+    gc_free_list(m.objs);
 }
 
 void sched_set_quota(Process *p, int kind, uint64_t limit) {
@@ -1153,6 +1244,48 @@ static void unregister_all(VM *vm, Process *p) {
     plat_unlock(vm->lock);
 }
 
+/* The wait for the answer to this process's call (p->call_id: proc.call's or
+ * proc.alive's), from where it is asked until it comes, run again each time it
+ * wakes. NULL with the answer in r[0], or asked to wait on (native_req); else
+ * why none will come: "E_NOPROC", "E_NODE_DOWN" (both from another node),
+ * "E_DEADLOCK" or "E_TIMEOUT". */
+static const char *reply_wait(Process *p, Word *r) {
+    plat_lock(p->lock);
+    if (p->reply_ready && p->reply_err) { /* (another node's) no answer will come */
+        const char *why = p->reply_err;
+        p->reply_ready = false;
+        p->reply_err = NULL;
+        p->call_id = 0;
+        p->call_node = 0;
+        plat_unlock(p->lock);
+        p->deadline_set = false;
+        return why;
+    }
+    if (p->reply_ready) { /* the answer */
+        gc_adopt(p, p->reply.objs, p->reply.bytes, p->reply.nobjs);
+        r[0] = p->reply.v;
+        p->reply_ready = false;
+        p->call_id = 0;
+        p->call_node = 0;
+        plat_unlock(p->lock);
+        p->deadline_set = false;
+        return NULL;
+    }
+    bool deadlock = p->deadlock;
+    p->deadlock = false;
+    bool late = p->call_deadline && plat_now_ns() >= p->call_deadline;
+    if (deadlock || late) p->call_id = 0, p->call_node = 0; /* a reply from now on is dropped */
+    plat_unlock(p->lock);
+    if (deadlock || late) {
+        p->deadline_set = false;
+        return deadlock ? "E_DEADLOCK" : "E_TIMEOUT";
+    }
+    p->native_req = NREQ_WAIT_REPLY; /* wait (as in recv), woken by the reply or the deadline */
+    p->deadline_set = p->call_deadline != 0;
+    p->wake_at = p->call_deadline;
+    return NULL;
+}
+
 /* proc.call(pid, request, timeout_ms) -> reply: send Call{from, id, body} and
  * wait for proc.reply's answer, which goes to a reply slot, never the mailbox
  * (so the caller needs no selective receive, and a late reply to a call that
@@ -1174,18 +1307,16 @@ static void n_call(Process *p, Word *a, Word *r) {
         }
         Process *f = my_frag(s);
         frag_reset(f);
-        Word body = a[1].r ? msg_copy(p, f, a[1], T_R) : a[1]; /* traps (E_TYPE) for unsendable values */
-        ObjStruct *c = struct_new(f, &VM_BUILTIN_DEFS[BUILTIN_CALL]);
+        /* Copied to f, or for another node made here (as the Call it encodes,
+         * left to this heap's collector) and encoded into f: either traps for
+         * values that cannot be sent (E_TYPE). */
+        Word body = a[1].r && !node ? msg_copy(p, f, a[1], T_R) : a[1];
+        ObjStruct *c = struct_new(node ? p : f, &VM_BUILTIN_DEFS[BUILTIN_CALL]);
         c->fields[CALLF_FROM].u = node ? global_pid(vm, p->pid) : p->pid;
         c->fields[CALLF_ID].u = ++p->call_seq;
         c->fields[CALLF_BODY] = body;
         Word root = {.r = c};
-        if (node) {
-            ObjList *l = list_new(f, 2);
-            list_push(f, l, (Word){.u = pid}, T_I64);
-            list_push(f, l, root, T_R);
-            root.r = &l->h;
-        }
+        if (node) root.r = node_message_frame(p, f, pid, root, T_R);
         InMsg m = frag_take(f, root, T_R);
         plat_lock(p->lock);
         p->call_id = p->call_seq;
@@ -1222,47 +1353,57 @@ static void n_call(Process *p, Word *a, Word *r) {
         plat_unlock(to->lock);
         p->call_deadline = a[2].i >= 0 ? plat_now_ns() + (uint64_t)a[2].i * 1000000u : 0;
     }
-wait:
-    plat_lock(p->lock);
-    if (p->reply_ready && p->reply_err) { /* (another node's) no answer will come */
-        const char *why = p->reply_err;
-        uint32_t node = p->call_node;
-        p->reply_ready = false;
+wait:;
+    const char *why = reply_wait(p, r);
+    if (!why) return;
+    if (!strcmp(why, "E_NOPROC"))
+        native_fail(p, "E_NOPROC", "proc.call: process %llu on node %u does not exist or has finished",
+                    (unsigned long long)(a[0].u & PID_LOCAL), (unsigned)(a[0].u >> NODE_SHIFT));
+    else if (!strcmp(why, "E_NODE_DOWN")) native_fail(p, "E_NODE_DOWN", "proc.call: node %u went down", (unsigned)(a[0].u >> NODE_SHIFT));
+    else if (!strcmp(why, "E_DEADLOCK")) native_fail(p, "E_DEADLOCK", "proc.call: every process is waiting: no reply can ever arrive");
+    else native_fail(p, "E_TIMEOUT", "proc.call: no reply within %lld ms", (long long)a[2].i);
+}
+
+/* proc.alive(pid, timeout_ms) -> b: whether a process runs, as `alive` says,
+ * of this VM's or another node's, which is asked (NC_ALIVE) and answers into
+ * the reply slot as for proc.call. A node that is not connected, or goes while
+ * asked, has none running: its processes count as failed (sched_node_down). */
+static void n_alive(Process *p, Word *a, Word *r) {
+    VM *vm = p->vm;
+    if (!p->resumed) {
+        uint64_t pid = a[0].u;
+        uint32_t node = far_node(vm, &pid);
+        if (!node) {
+            r[0].u = sched_alive(vm, pid);
+            return;
+        }
+        if (!self_node(vm) || !carrier_of(vm, node)) {
+            r[0].u = 0;
+            return;
+        }
+        plat_lock(p->lock);
+        p->call_id = ++p->call_seq;
+        p->call_node = node;
         p->reply_err = NULL;
-        p->call_id = 0;
-        p->call_node = 0;
-        plat_unlock(p->lock);
-        p->deadline_set = false;
-        if (!strcmp(why, "E_NOPROC"))
-            native_fail(p, "E_NOPROC", "proc.call: process %llu on node %u does not exist or has finished",
-                        (unsigned long long)(a[0].u & PID_LOCAL), node);
-        else native_fail(p, "E_NODE_DOWN", "proc.call: node %u went down", node);
-        return;
-    }
-    if (p->reply_ready) { /* the answer */
-        gc_adopt(p, p->reply.objs, p->reply.bytes, p->reply.nobjs);
-        r[0] = p->reply.v;
         p->reply_ready = false;
-        p->call_id = 0;
-        p->call_node = 0;
         plat_unlock(p->lock);
-        p->deadline_set = false;
-        return;
+        p->call_deadline = a[1].i >= 0 ? plat_now_ns() + (uint64_t)a[1].i * 1000000u : 0;
+        Process *f = my_frag(vm->sched);
+        frag_reset(f);
+        Word w[3] = {{.u = a[0].u}, {.u = global_pid(vm, p->pid)}, {.u = p->call_id}};
+        uint8_t t[3] = {T_I64, T_I64, T_I64};
+        ctl_send(vm, f, node, NC_ALIVE, 3, w, t);
+        if (!carrier_of(vm, node)) { /* it went meanwhile, perhaps before the asking (as for proc.call) */
+            plat_lock(p->lock);
+            if (!p->reply_ready) p->reply_err = "E_NODE_DOWN", p->reply_ready = true;
+            plat_unlock(p->lock);
+        }
     }
-    bool deadlock = p->deadlock;
-    p->deadlock = false;
-    bool late = p->call_deadline && plat_now_ns() >= p->call_deadline;
-    if (deadlock || late) p->call_id = 0, p->call_node = 0; /* a reply from now on is dropped */
-    plat_unlock(p->lock);
-    if (deadlock || late) {
-        p->deadline_set = false;
-        if (deadlock) native_fail(p, "E_DEADLOCK", "proc.call: every process is waiting: no reply can ever arrive");
-        else native_fail(p, "E_TIMEOUT", "proc.call: no reply within %lld ms", (long long)a[2].i);
-        return;
-    }
-    p->native_req = NREQ_WAIT_REPLY; /* wait (as in recv), woken by the reply or the deadline */
-    p->deadline_set = p->call_deadline != 0;
-    p->wake_at = p->call_deadline;
+    const char *why = reply_wait(p, r);
+    if (!why) return;
+    if (!strcmp(why, "E_NODE_DOWN")) r[0].u = 0;
+    else if (!strcmp(why, "E_DEADLOCK")) native_fail(p, "E_DEADLOCK", "proc.alive: every process is waiting: no answer can ever arrive");
+    else native_fail(p, "E_TIMEOUT", "proc.alive: no answer from node %u within %lld ms", (unsigned)(a[0].u >> NODE_SHIFT), (long long)a[1].i);
 }
 
 /* proc.reply(call, value): answer a Call received from proc.call. */
@@ -1274,15 +1415,15 @@ static void n_reply(Process *p, Word *a, Word *r) {
     Sched *s = p->vm->sched;
     Process *f = my_frag(s);
     frag_reset(f);
-    Word v = a[1].r ? msg_copy(p, f, a[1], T_R) : a[1];
     uint64_t from = c->fields[CALLF_FROM].u;
     uint32_t node = far_node(p->vm, &from);
-    if (node) { /* to its node's carrier: [reply, caller, id, value] */
-        Word w[3] = {{.u = from}, c->fields[CALLF_ID], v};
+    if (node) { /* to its node's carrier: [reply, caller, id, value], encoded from here */
+        Word w[3] = {{.u = from}, c->fields[CALLF_ID], a[1]};
         uint8_t t[3] = {T_I64, T_I64, T_R};
-        ctl_send(p->vm, f, node, NC_REPLY, 3, w, t);
+        ctl_send_by(p->vm, p, f, node, NC_REPLY, 3, w, t);
         return;
     }
+    Word v = a[1].r ? msg_copy(p, f, a[1], T_R) : a[1];
     InMsg m = frag_take(f, v, T_R);
     Process *to = pin(s, from);
     if (to && accepts(to) && to->call_id == c->fields[CALLF_ID].u && !to->reply_ready) {
@@ -1307,6 +1448,9 @@ static const NativeDef PROC_NATIVES[] = {
        "Send Call{from, id, body} and wait for proc.reply's answer, up to a timeout in ms (negative: none; "
        "E_TIMEOUT). The answer does not go through the mailbox."),
     PN("proc.reply", 2, PT(T_R, T_R), 0, PT(0), n_reply, 0, "Answer a Call."),
+    PN("proc.alive", 2, PT(T_I64, T_I64), 1, PT(T_B), n_alive, NF_CHECKED,
+       "Whether a process runs, as alive says, on this VM or another node, which is asked, up to a timeout in ms "
+       "(negative: none; E_TIMEOUT). False for a node that is not connected."),
 };
 #undef PN
 #undef PT
@@ -1488,6 +1632,7 @@ static void io_main(void *arg) {
     free(tls_io_frag);
     tls_io_frag = NULL;
     copy_state_free(); /* a callback's sends used this thread's copy scratch */
+    node_wire_free();  /* and its frames for other nodes */
 }
 
 static void io_submit(Sched *s, Process *p) {
@@ -1713,6 +1858,7 @@ static void worker_main(void *arg) {
     Sched *s = w->vm->sched;
     worker_loop(w);
     copy_state_free();
+    node_wire_free();
     plat_mutex_lock(s->lock);
     s->nexited++;
     plat_cond_signal(s->stw_cv);

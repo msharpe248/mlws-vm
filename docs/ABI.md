@@ -628,6 +628,20 @@ compiler or a deployment that sends code over a socket:
   module's current version has under that name. Anything else, an object whose
   type has not changed included, comes back as it is. It goes one level deep:
   the objects in its fields are as they were.
+* **A process can hear of reloads.** `module.watch(name, true)` gives it a
+  built-in `Reloaded` struct, `{module}`, for each new version of a module of
+  that name a reload brings in (`false`: no more). It comes before any message
+  the new version's code can send, so what came before it in the mailbox was
+  sent before the reload. To follow a module it cannot name (a program's own,
+  from a library), code takes a closure of one of its functions:
+  `module.of(closure)` gives the module's name and a number for the closure's
+  version, which no other version has; `module.function(closure, name)` finds
+  a function of that same version, and `module.current(closure, name)` one of
+  the version current now. This is what a process needs to move its own state
+  to new code, as Erlang's `code_change` does, and what `std.server` does for
+  it ([STDLIB.md](STDLIB.md#servers-stdserver)): it runs one version's
+  callbacks until the `Reloaded`, then calls the new version's `code_change`
+  with its state.
 * **It fails with nothing changed** if a module using the old version would not
   link to the new one: an export it uses has gone (`E_LINK_UNDEF`), or its
   signature or struct has changed, or it uses the old version's exported data

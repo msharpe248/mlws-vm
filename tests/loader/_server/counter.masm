@@ -1,0 +1,40 @@
+; The callback module of server.masm's std.server, first version: its state
+; is a list, [count]. Later versions (v2.masm to v5.masm) replace it by
+; module.reload_text.
+.export init, handle_call, handle_info
+
+.func init(ref arg) -> ref
+    lnew R1
+    mov I2, arg[0]
+    lpush R1, I2
+    ret R1
+.endf
+
+; "inc": one more, and the count as [count]; "version": "v1".
+.func handle_call(ref req, ref state) -> (ref, ref)
+    strcmp I2, req, "version"
+    bnz I2, 1f
+    ret "v1", state
+1:  mov I3, state[0]
+    inc I3
+    mov state[0], I3
+    lnew R4
+    lpush R4, I3
+    ret R4, state
+.endf
+
+; "bump": 10 more; ["nap", pid]: wait in a call to pid, while messages queue.
+.func handle_info(ref msg, ref state) -> ref
+    typeof I2, msg
+    bne I2, 5, 1f                      ; (5: a list, ["nap", pid]: wait for that process's word)
+    mov I3, msg[1]
+    ncall "proc.call" (I3, "nap", -1) -> (R4)
+    ret state
+1:  bne I2, 1, 2f                      ; (1: a string)
+    strcmp I2, msg, "bump"
+    bnz I2, 2f
+    mov I3, state[0]
+    add I3, I3, 10
+    mov state[0], I3
+2:  ret state
+.endf

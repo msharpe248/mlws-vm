@@ -2,13 +2,13 @@
  * wire, and the challenge that admits a peer. The rest of it, connections and
  * their processes, is MLWSVM code: lib/std/node.masm. What arrives is untrusted
  * until a peer has proved the cookie, and decoding checks everything anyway:
- * every length against what is left, and how deep it goes. */
+ * every length against what is left, and every reference against what has
+ * been made. */
 #include "../core/sha256.h"
 #include "../heap/heap.h"
 #include "../heap/numeric.h"
 #include "../platform/platform.h"
 
-#define MAX_DEPTH 200
 /* A string the sender has interned (a literal, or text.intern's): a code of
  * its own beside the object kinds, so that it is interned where it arrives
  * too, the same object there as that VM's literal of it. */
@@ -16,11 +16,96 @@
 /* The same for a BigInt and a decimal literal (vm_intern_num). */
 #define WIRE_INTERNED_BIG 0xF1
 #define WIRE_INTERNED_DEC 0xF2
+/* An object met before in this value: its number (below). */
+#define WIRE_REF 0xF3
 #define MAX_NODE 65535
 
 /* ---- values as bytes ---- *
  * A value is its type code, then a word for what is not a reference, or for a
- * reference the object's kind and contents. Lengths are u32, little-endian. */
+ * reference the object's kind and contents. Lengths are u32, little-endian.
+ *
+ * Every object written whole is numbered, from 0, in the order it is first
+ * written; met again, it is WIRE_REF and that number. So sharing and cycles
+ * cross as a send within one VM keeps them. Both ends walk the value with a
+ * stack of their own, not C's, so a value as deep as a long list of cells
+ * crosses too. The tables are this thread's scratch, as copy.c's are, so a
+ * trap part way through leaks nothing. */
+
+typedef struct {
+    const Obj *o;
+    uint32_t idx, gen; /* (a slot of another value's gen is empty) */
+} Seen;
+
+typedef struct {
+    const Obj *o;
+    uint32_t i, n; /* the next of its n values to write */
+} EFrame;
+
+typedef struct {
+    Obj *o;
+    uint32_t i, n;
+    Word key; /* a map's: the key read, until its value is */
+    uint8_t ktag;
+} DFrame;
+
+typedef struct {
+    Seen *seen;
+    uint32_t cap, n, gen;
+    VEC(EFrame) ef;
+    VEC(DFrame) df;
+    VEC(Obj *) objs;
+} Scratch;
+
+static MLWS_THREAD_LOCAL Scratch *tls_wire;
+
+static Scratch *scratch(void) {
+    if (!tls_wire) tls_wire = xcalloc(1, sizeof *tls_wire);
+    return tls_wire;
+}
+
+void node_wire_free(void) {
+    Scratch *s = tls_wire;
+    if (!s) return;
+    free(s->seen);
+    VEC_FREE(s->ef);
+    VEC_FREE(s->df);
+    VEC_FREE(s->objs);
+    free(s);
+    tls_wire = NULL;
+}
+
+static uint32_t ptr_hash(const void *p) {
+    uint64_t x = (uint64_t)(uintptr_t)p;
+    x ^= x >> 29;
+    x *= 0xbf58476d1ce4e5b9ull;
+    x ^= x >> 32;
+    return (uint32_t)x;
+}
+
+/* An object's number if it has been written, or -1 after giving it the next. */
+static int64_t seen_or_add(Scratch *s, const Obj *o) {
+    if ((s->n + 1) * 2 > s->cap) {
+        uint32_t nc = s->cap ? s->cap * 2 : 64;
+        Seen *ns = xcalloc(nc, sizeof *ns);
+        for (uint32_t i = 0; i < s->cap; i++) {
+            if (s->seen[i].gen != s->gen) continue;
+            uint32_t j = ptr_hash(s->seen[i].o) & (nc - 1);
+            while (ns[j].gen == s->gen) j = (j + 1) & (nc - 1);
+            ns[j] = s->seen[i];
+        }
+        free(s->seen);
+        s->seen = ns;
+        s->cap = nc;
+    }
+    for (uint32_t j = ptr_hash(o) & (s->cap - 1);; j = (j + 1) & (s->cap - 1)) {
+        Seen *e = &s->seen[j];
+        if (e->gen != s->gen) {
+            *e = (Seen){o, s->n++, s->gen};
+            return -1;
+        }
+        if (e->o == o) return e->idx;
+    }
+}
 
 typedef struct {
     Process *p;
@@ -42,16 +127,16 @@ static void put_bytes(Writer *b, const void *s, size_t n) {
 static void put_str(Writer *b, const char *s) { put_bytes(b, s, strlen(s)); }
 
 static void put_word(Writer *b, Word w) {
-    for (int i = 0; i < 8; i++) put8(b, (uint8_t)(w.u >> (8 * i)));
+    uint8_t s[8];
+    for (int i = 0; i < 8; i++) s[i] = (uint8_t)(w.u >> (8 * i));
+    bytes_append(b->p, b->out, s, 8);
 }
 
-static void encode(Process *p, Writer *b, Word w, uint8_t tag, int depth);
-
 /* A closure: 0, its module's name and version's hash, its function's name and
- * signature, and its captured values; or 1 for a module.handle, the module's
- * and function's names and the signature (no version: a handle calls the
- * current one). A stand-in for one of another node (vm_remote_stub) goes as
- * what it stands for. */
+ * signature, and the number of its captured values (which follow, as its
+ * contents); or 1 for a module.handle, the module's and function's names and
+ * the signature (no version: a handle calls the current one). A stand-in for
+ * one of another node (vm_remote_stub) goes as what it stands for. */
 static void put_signature(Writer *b, const MFunc *mf) {
     put8(b, mf->nparams);
     for (int i = 0; i < mf->nparams; i++) put8(b, mf->params[i]);
@@ -59,7 +144,7 @@ static void put_signature(Writer *b, const MFunc *mf) {
     for (int i = 0; i < mf->nrets; i++) put8(b, mf->rets[i]);
 }
 
-static void encode_closure(Process *p, Writer *b, const ObjClosure *c, int depth) {
+static uint32_t put_closure(Process *p, Writer *b, const ObjClosure *c) {
     Function *fn = c->fn->target ? c->fn->target : c->fn;
     LModule *lm = fn->mod;
     if (lm->handle || (lm->remote_mod && lm->remote_handle)) {
@@ -70,7 +155,7 @@ static void encode_closure(Process *p, Writer *b, const ObjClosure *c, int depth
         put_str(b, lm->handle ? lm->deps[0]->m->name : lm->remote_mod);
         put_str(b, lm->handle ? imp->name : lm->remote_fn);
         put_signature(b, fn->mf);
-        return;
+        return 0;
     }
     put8(b, 0);
     uint8_t h[16];
@@ -81,31 +166,51 @@ static void encode_closure(Process *p, Writer *b, const ObjClosure *c, int depth
     put_str(b, lm->remote_mod ? lm->remote_fn : fn->name);
     put_signature(b, fn->mf);
     put32(b, c->nup);
-    for (uint32_t i = 0; i < c->nup; i++) encode(p, b, c->up[i], c->tags[i], depth + 1);
+    return c->nup;
 }
 
-static void encode_obj(Process *p, Writer *b, const Obj *o, int depth) {
+/* One value: its type code and word, or its object: null, a literal, one met
+ * before, or its kind and what is not its values, which the caller writes
+ * next from the frame pushed for it. */
+static void put_value(Process *p, Writer *b, Scratch *s, Word w, uint8_t tag) {
+    if (tag == T_P) vm_trap(p, "E_TYPE", "node: a pointer cannot be sent to a node");
+    put8(b, tag);
+    if (!type_is_ref((MlwsType)tag)) {
+        put_word(b, w);
+        return;
+    }
+    const Obj *o = w.r;
     if (!o) {
         put8(b, OBJ_NULL);
         return;
     }
-    if (depth > MAX_DEPTH) vm_trap(p, "E_TYPE", "node: a value nested too deep (or a cycle) cannot be sent to a node");
     if (o->kind == OBJ_STRING && (o->flags & OBJF_IMMORTAL)) {
         put8(b, WIRE_INTERNED);
         put_bytes(b, ((const ObjString *)o)->data, ((const ObjString *)o)->len);
         return;
     }
-    /* A BigInt or decimal literal goes as one, to be that node's literal of the value. */
-    bool lit = (o->kind == OBJ_BIG || o->kind == OBJ_DEC) && (o->flags & OBJF_IMMORTAL);
+    /* A BigInt or decimal literal goes as one, to be that node's literal of the
+     * value; any other, whole. */
+    bool num = o->kind == OBJ_BIG || o->kind == OBJ_DEC, lit = num && (o->flags & OBJF_IMMORTAL);
+    if (!lit) {
+        int64_t k = seen_or_add(s, o);
+        if (k >= 0) {
+            put8(b, WIRE_REF);
+            put32(b, (uint32_t)k);
+            return;
+        }
+    }
     put8(b, lit ? (o->kind == OBJ_BIG ? WIRE_INTERNED_BIG : WIRE_INTERNED_DEC) : o->kind);
+    uint32_t n = 0;
     switch (o->kind) {
     case OBJ_STRING: put_bytes(b, ((const ObjString *)o)->data, ((const ObjString *)o)->len); break;
     case OBJ_BYTES: put_bytes(b, bytes_data((ObjBytes *)o), ((const ObjBytes *)o)->len); break;
     case OBJ_ARRAY: {
         const ObjArray *x = (const ObjArray *)o;
+        if (x->elem == T_P) vm_trap(p, "E_TYPE", "node: a pointer cannot be sent to a node");
         put8(b, x->elem);
         put32(b, x->len);
-        for (uint32_t i = 0; i < x->len; i++) encode(p, b, x->data[i], x->elem, depth + 1);
+        n = x->len;
         break;
     }
     case OBJ_STRUCT: {
@@ -113,27 +218,18 @@ static void encode_obj(Process *p, Writer *b, const Obj *o, int depth) {
         put_str(b, x->def->module);
         put_str(b, x->def->name);
         put32(b, x->def->nfields);
-        for (uint32_t i = 0; i < x->def->nfields; i++) encode(p, b, x->fields[i], x->def->types[i], depth + 1);
+        n = x->def->nfields;
         break;
     }
-    case OBJ_LIST: {
-        const ObjList *x = (const ObjList *)o;
-        put32(b, x->len);
-        for (uint32_t i = 0; i < x->len; i++) encode(p, b, x->items[i], x->tags[i], depth + 1);
+    case OBJ_LIST:
+        put32(b, ((const ObjList *)o)->len);
+        n = ((const ObjList *)o)->len;
         break;
-    }
-    case OBJ_MAP: {
-        const ObjMap *x = (const ObjMap *)o;
-        put32(b, x->count);
-        for (uint32_t i = 0; i < x->nentries; i++) {
-            const MapEntry *e = &x->entries[i];
-            if (!e->live) continue;
-            encode(p, b, e->key, e->ktag, depth + 1);
-            encode(p, b, e->val, e->vtag, depth + 1);
-        }
+    case OBJ_MAP:
+        put32(b, ((const ObjMap *)o)->count);
+        n = 2 * ((const ObjMap *)o)->nentries; /* (a key and a value of each entry, the dead skipped) */
         break;
-    }
-    case OBJ_CLOSURE: encode_closure(p, b, (const ObjClosure *)o, depth); break;
+    case OBJ_CLOSURE: n = put_closure(p, b, (const ObjClosure *)o); break;
     case OBJ_BIG: case OBJ_DEC: {
         StrBuf t = {0};
         num_format(&t, o);
@@ -145,22 +241,109 @@ static void encode_obj(Process *p, Writer *b, const Obj *o, int depth) {
     }
     default: vm_trap(p, "E_TYPE", "node: a %s cannot be sent to a node", obj_kind_name(o->kind));
     }
+    if (n) VEC_PUSH(s->ef, ((EFrame){o, 0, n}));
 }
 
-static void encode(Process *p, Writer *b, Word w, uint8_t tag, int depth) {
-    if (tag == T_P) vm_trap(p, "E_TYPE", "node: a pointer cannot be sent to a node");
-    put8(b, tag);
-    if (type_is_ref((MlwsType)tag)) encode_obj(p, b, w.r, depth);
-    else put_word(b, w);
+/* The values of the objects put_value began, depth first, as they come. */
+static void put_contents(Process *p, Writer *b, Scratch *s) {
+    while (s->ef.n) {
+        EFrame *f = &s->ef.v[s->ef.n - 1];
+        if (f->i >= f->n) {
+            s->ef.n--;
+            continue;
+        }
+        const Obj *o = f->o;
+        uint32_t i = f->i++;
+        Word cw;
+        uint8_t ct;
+        switch (o->kind) {
+        case OBJ_ARRAY: cw = ((const ObjArray *)o)->data[i], ct = ((const ObjArray *)o)->elem; break;
+        case OBJ_STRUCT: cw = ((const ObjStruct *)o)->fields[i], ct = ((const ObjStruct *)o)->def->types[i]; break;
+        case OBJ_LIST: cw = ((const ObjList *)o)->items[i], ct = ((const ObjList *)o)->tags[i]; break;
+        case OBJ_CLOSURE: cw = ((const ObjClosure *)o)->up[i], ct = ((const ObjClosure *)o)->tags[i]; break;
+        default: { /* OBJ_MAP */
+            const MapEntry *e = &((const ObjMap *)o)->entries[i / 2];
+            if (!e->live) {
+                f->i++; /* (its value too) */
+                continue;
+            }
+            if (i % 2) cw = e->val, ct = e->vtag;
+            else cw = e->key, ct = e->ktag;
+        }
+        }
+        put_value(p, b, s, cw, ct); /* (f may move) */
+    }
+}
+
+/* Values one after another, numbered from `first` (what the frame already has
+ * that its reader numbers: a list they are in, below). */
+static void encode(Process *p, Writer *b, uint32_t nv, const Word *vs, const uint8_t *tags, uint32_t first) {
+    Scratch *s = scratch();
+    s->ef.n = 0;
+    s->n = first;
+    if (++s->gen == 0) { /* (wrapped: every slot's gen is old again) */
+        memset(s->seen, 0, s->cap * sizeof *s->seen);
+        s->gen = 1;
+    }
+    for (uint32_t k = 0; k < nv; k++) {
+        put_value(p, b, s, vs[k], tags[k]);
+        put_contents(p, b, s);
+    }
+}
+
+/* ---- frames ---- *
+ * A frame is its length, u32, then a value: a list, [0, pid, value] for a
+ * message, else [kind, ...]. A message's and the VM's own are made where they
+ * are sent (sched.c), in the sending thread's scratch heap, so that the
+ * process that carries the connection only writes them, and what cannot be
+ * sent is the sender's error. */
+
+#define MAX_FRAME (64u << 20) /* what net.read_frame takes */
+
+static void frame_list(Writer *b, uint32_t n) {
+    put32(b, 0);
+    put8(b, T_R);
+    put8(b, OBJ_LIST);
+    put32(b, n);
+}
+
+static ObjBytes *frame_end(Process *p, Writer *b) {
+    size_t len = b->out->len - 4;
+    if (len > MAX_FRAME)
+        vm_trap(p, "E_RANGE", "node: a message of %zu bytes is more than a frame to a node holds (64 MiB)", len);
+    for (int i = 0; i < 4; i++) b->out->data[i] = (uint8_t)(len >> (8 * i));
+    return b->out;
+}
+
+/* [0, pid, value], in f; p's error if the value cannot be sent. */
+ObjBytes *node_message_frame(Process *p, Process *f, uint64_t pid, Word v, uint8_t tag) {
+    Writer b = {f, bytes_new(f, 0)};
+    frame_list(&b, 3);
+    Word w[3] = {{.i = 0}, {.u = pid}, v};
+    uint8_t t[3] = {T_I64, T_I64, tag};
+    encode(p, &b, 3, w, t, 1);
+    return frame_end(p, &b);
+}
+
+/* [kind, w...], in f; p's error (or f's, for what the VM sends, which is
+ * always sendable). */
+ObjBytes *node_control_frame(Process *p, Process *f, int kind, int n, const Word *w, const uint8_t *t) {
+    Writer b = {f, bytes_new(f, 0)};
+    frame_list(&b, (uint32_t)n + 1);
+    put8(&b, T_I64);
+    put_word(&b, (Word){.i = kind});
+    encode(p, &b, (uint32_t)n, w, t, 1);
+    return frame_end(p, &b);
 }
 
 typedef struct {
-    Process *p;
+    Process *p;   /* where the value is made */
+    Process *who; /* whose error it is when it cannot be (the reader's) */
     const uint8_t *s;
     size_t n, i;
 } Reader;
 
-static MLWS_NORETURN void bad(Reader *r) { vm_trap(r->p, "E_PARSE", "node: a malformed value at offset %zu", r->i); }
+static MLWS_NORETURN void bad(Reader *r) { vm_trap(r->who, "E_PARSE", "node: a malformed value at offset %zu", r->i); }
 
 static uint8_t get8(Reader *r) {
     if (r->i >= r->n) bad(r);
@@ -203,8 +386,6 @@ static const StructDef *find_struct(Process *p, const char *module, const char *
     return NULL;
 }
 
-static uint8_t decode(Reader *r, Word *out, int depth);
-
 /* A signature as it was sent: parameters and results, each a type a function
  * may have. */
 static int get_types(Reader *r, uint8_t *t) {
@@ -221,7 +402,8 @@ static bool fits(const MFunc *mf, const uint8_t *pt, int np, const uint8_t *rt, 
     return mf->nparams == np && mf->nrets == nr && !memcmp(mf->params, pt, (size_t)np) && !memcmp(mf->rets, rt, (size_t)nr);
 }
 
-static Obj *decode_closure(Reader *r, int depth) {
+/* A closure, its captured values still to come. */
+static ObjClosure *get_closure(Reader *r) {
     Process *p = r->p;
     VM *vm = p->vm;
     uint8_t kind = get8(r), hash[16], pt[64], rt[64];
@@ -253,59 +435,56 @@ static Obj *decode_closure(Reader *r, int depth) {
     if (!fn) fn = vm_remote_stub(vm, mod, kind ? NULL : hash, fname, pt, np, rt, nr, &err);
     free(mod);
     free(fname);
-    if (!fn) vm_trap(p, "E_TYPE", "node: a closure that cannot be made here: %s", err.msg);
-    proc_grow_globals(p); /* (its module may be new to this process) */
+    if (!fn) vm_trap(r->who, "E_TYPE", "node: a closure that cannot be made here: %s", err.msg);
+    proc_grow_globals(r->who); /* (its module may be new to this process) */
     ObjClosure *c = closure_new(p, fn, nup);
     for (uint32_t i = 0; i < nup; i++) c->up[i] = (Word){0}, c->tags[i] = T_I64; /* (until decoded) */
-    for (uint32_t i = 0; i < nup; i++) {
-        Word w;
-        uint8_t t = decode(r, &w, depth + 1);
-        c->up[i] = w;
-        c->tags[i] = t;
-    }
-    return &c->h;
+    return c;
 }
 
-static Obj *decode_obj(Reader *r, int depth) {
+/* An object: null, a literal, one met before, or a new one, numbered, whose
+ * values, if it has any, come next (the frame pushed for it). Nothing collects
+ * while a native runs, so what is half made needs no root. */
+static Obj *get_obj(Reader *r, Scratch *s) {
     Process *p = r->p;
-    if (depth > MAX_DEPTH) bad(r);
     uint8_t kind = get8(r);
-    uint32_t n;
+    uint32_t n, kids = 0;
+    Obj *o;
     switch (kind) {
     case OBJ_NULL: return NULL;
-    case OBJ_CLOSURE: return decode_closure(r, depth);
+    case WIRE_REF:
+        n = get32(r);
+        if (n >= s->objs.n) bad(r);
+        return s->objs.v[n];
     case WIRE_INTERNED_BIG: case WIRE_INTERNED_DEC: {
-        const char *s = get_span(r, &n);
-        Obj *o = vm_intern_num(p->vm, kind == WIRE_INTERNED_BIG ? T_BIG : T_DEC, s, n);
+        const char *t = get_span(r, &n);
+        o = vm_intern_num(p->vm, kind == WIRE_INTERNED_BIG ? T_BIG : T_DEC, t, n);
         if (!o) bad(r);
         return o;
     }
-    case WIRE_INTERNED: { /* (one with a NUL in it is no literal: a string of its own) */
-        const char *s = get_span(r, &n);
-        Obj *o = vm_intern(p->vm, s, n);
-        return o ? o : &str_new(p, s, n)->h;
+    case WIRE_INTERNED: { /* (one with a NUL in it is no literal: a string of its own, not numbered, as its sender did not) */
+        const char *t = get_span(r, &n);
+        o = vm_intern(p->vm, t, n);
+        return o ? o : &str_new(p, t, n)->h;
     }
     case OBJ_STRING: {
-        const char *s = get_span(r, &n);
-        return &str_new(p, s, n)->h;
+        const char *t = get_span(r, &n);
+        o = &str_new(p, t, n)->h;
+        break;
     }
     case OBJ_BYTES: {
-        const char *s = get_span(r, &n);
+        const char *t = get_span(r, &n);
         ObjBytes *b = bytes_new(p, n);
-        if (n) memcpy(b->data, s, n);
-        return &b->h;
+        if (n) memcpy(b->data, t, n);
+        o = &b->h;
+        break;
     }
     case OBJ_ARRAY: {
         uint8_t elem = get8(r);
         if (elem >= T__COUNT || elem == T_NONE || elem == T_P) bad(r);
-        n = get_count(r, 2);
-        ObjArray *a = array_new(p, (MlwsType)elem, n);
-        for (uint32_t i = 0; i < n; i++) {
-            Word w;
-            if (decode(r, &w, depth + 1) != elem) bad(r);
-            a->data[i] = w;
-        }
-        return &a->h;
+        kids = get_count(r, 2);
+        o = &array_new(p, (MlwsType)elem, kids)->h;
+        break;
     }
     case OBJ_STRUCT: {
         uint32_t mn, nn;
@@ -317,61 +496,99 @@ static Obj *decode_obj(Reader *r, int depth) {
             snprintf(msg, sizeof msg, "node: no struct %.80s.%.80s here", module, name);
             free(module);
             free(name);
-            vm_trap(p, "E_TYPE", "%s", msg);
+            vm_trap(r->who, "E_TYPE", "%s", msg);
         }
         free(module);
         free(name);
-        n = get_count(r, 2);
-        if (n != d->nfields) bad(r);
-        ObjStruct *s = struct_new(p, d);
-        for (uint32_t i = 0; i < n; i++) {
-            Word w;
-            if (decode(r, &w, depth + 1) != d->types[i]) bad(r);
-            s->fields[i] = w;
-        }
-        return &s->h;
+        kids = get_count(r, 2);
+        if (kids != d->nfields) bad(r);
+        o = &struct_new(p, d)->h;
+        break;
     }
-    case OBJ_LIST: {
-        n = get_count(r, 2);
-        ObjList *l = list_new(p, n);
-        for (uint32_t i = 0; i < n; i++) {
-            Word w;
-            uint8_t t = decode(r, &w, depth + 1);
-            list_push(p, l, w, t);
-        }
-        return &l->h;
-    }
-    case OBJ_MAP: {
-        n = get_count(r, 4);
-        ObjMap *m = map_new(p);
-        for (uint32_t i = 0; i < n; i++) {
-            Word k, v;
-            uint8_t kt = decode(r, &k, depth + 1), vt = decode(r, &v, depth + 1);
-            map_set(p, m, k, kt, v, vt);
-        }
-        return &m->h;
+    case OBJ_LIST:
+        kids = get_count(r, 2);
+        o = &list_new(p, kids)->h;
+        break;
+    case OBJ_MAP:
+        kids = 2 * get_count(r, 4);
+        o = &map_new(p)->h;
+        break;
+    case OBJ_CLOSURE: {
+        ObjClosure *c = get_closure(r);
+        kids = c->nup;
+        o = &c->h;
+        break;
     }
     case OBJ_BIG: case OBJ_DEC: {
-        const char *s = get_span(r, &n);
-        Obj *o = num_parse(p, kind == OBJ_BIG ? T_BIG : T_DEC, s, n);
+        const char *t = get_span(r, &n);
+        o = num_parse(p, kind == OBJ_BIG ? T_BIG : T_DEC, t, n);
         if (!o) bad(r);
-        return o;
+        break;
     }
     default: bad(r);
     }
+    VEC_PUSH(s->objs, o);
+    if (kids) VEC_PUSH(s->df, ((DFrame){o, 0, kids, {0}, 0}));
+    return o;
 }
 
-static uint8_t decode(Reader *r, Word *out, int depth) {
+static uint8_t get_value(Reader *r, Scratch *s, Word *out) {
     uint8_t tag = get8(r);
     if (tag == T_NONE || tag >= T__COUNT || tag == T_P) bad(r);
     if (type_is_ref((MlwsType)tag)) {
-        out->r = decode_obj(r, depth);
+        Obj *o = get_obj(r, s);
+        /* (a BigInt's or decimal's type holds only one, or null: the code relies on it) */
+        if (o && ((tag == T_BIG && o->kind != OBJ_BIG) || (tag == T_DEC && o->kind != OBJ_DEC))) bad(r);
+        out->r = o;
         return tag;
     }
     if (r->n - r->i < 8) bad(r);
     uint64_t v = 0;
     for (int k = 0; k < 8; k++) v |= (uint64_t)r->s[r->i++] << (8 * k);
     out->u = v;
+    return tag;
+}
+
+/* A value, after `first` objects that the frame numbered (a list it is in,
+ * which nothing here can refer to: null if anything does). */
+static uint8_t decode(Reader *r, Word *out, uint32_t first) {
+    Process *p = r->p;
+    Scratch *s = scratch();
+    s->df.n = 0;
+    s->objs.n = 0;
+    for (uint32_t k = 0; k < first; k++) VEC_PUSH(s->objs, NULL);
+    uint8_t tag = get_value(r, s, out);
+    while (s->df.n) {
+        size_t top = s->df.n - 1;
+        DFrame *f = &s->df.v[top];
+        if (f->i >= f->n) {
+            s->df.n--;
+            continue;
+        }
+        uint32_t i = f->i++;
+        Word w;
+        uint8_t t = get_value(r, s, &w);
+        f = &s->df.v[top]; /* (get_value may have pushed, and moved the stack) */
+        Obj *o = f->o;
+        switch (o->kind) {
+        case OBJ_ARRAY:
+            if (t != ((ObjArray *)o)->elem) bad(r);
+            ((ObjArray *)o)->data[i] = w;
+            break;
+        case OBJ_STRUCT:
+            if (t != ((ObjStruct *)o)->def->types[i]) bad(r);
+            ((ObjStruct *)o)->fields[i] = w;
+            break;
+        case OBJ_LIST: list_push(p, (ObjList *)o, w, t); break;
+        case OBJ_CLOSURE:
+            ((ObjClosure *)o)->up[i] = w;
+            ((ObjClosure *)o)->tags[i] = t;
+            break;
+        default: /* OBJ_MAP */
+            if (i % 2 == 0) f->key = w, f->ktag = t;
+            else map_set(p, (ObjMap *)o, f->key, f->ktag, w, t);
+        }
+    }
     return tag;
 }
 
@@ -582,10 +799,9 @@ static void n_route(Process *p, Word *a, Word *r) {
 static void n_frame(Process *p, Word *a, Word *r) {
     Writer b = {p, bytes_new(p, 0)};
     put32(&b, 0);
-    encode(p, &b, a[0], T_R, 0);
-    uint32_t len = b.out->len - 4;
-    for (int i = 0; i < 4; i++) b.out->data[i] = (uint8_t)(len >> (8 * i));
-    r[0].r = &b.out->h;
+    uint8_t tag = T_R;
+    encode(p, &b, 1, a, &tag, 0);
+    r[0].r = &frame_end(p, &b)->h;
 }
 
 /* A closure for an exported function of a module, as a peer names it: the one
@@ -604,35 +820,39 @@ static void n_function(Process *p, Word *a, Word *r) {
     r[0].r = &closure_new(p, &lm->funcs[i], 0)->h;
 }
 
-/* A frame of a list and one more value, typed: a message, [0, pid] and [pid, value]. */
-static void n_frame_value(Process *p, Word *a, Word *r) {
-    ObjList *head = a[0].r;
-    const ObjList *m = a[1].r;
-    if (!head || head->h.kind != OBJ_LIST || !m || m->h.kind != OBJ_LIST || m->len != 2)
-        vm_trap(p, "E_TYPE", "node.frame_value: expected a list and [pid, value]");
-    list_push(p, head, m->items[1], m->tags[1]);
-    n_frame(p, a, r);
-}
-
 static void n_decode(Process *p, Word *a, Word *r) {
     uint32_t n;
     const uint8_t *s = data_arg(p, a[0], &n);
-    Reader rd = {p, s, n, 0};
+    Reader rd = {p, p, s, n, 0};
     Word w;
     uint8_t t = decode(&rd, &w, 0);
     if (t != T_R || rd.i != n) bad(&rd);
     r[0] = w;
 }
 
-/* Give the message a frame carries, [to, value], to its process here. */
-static void n_deliver(Process *p, Word *a, Word *r) {
-    (void)r;
-    const ObjList *l = a[0].r;
-    if (!l || l->h.kind != OBJ_LIST || l->len != 2 || !type_is_int((MlwsType)l->tags[0]))
-        vm_trap(p, "E_PARSE", "node.deliver: expected [pid, value]");
-    sched_node_deliver(p, l->items[0].u, l->items[1], l->tags[1]);
+/* node.take(frame): a frame from a node, for its reader. A message, [0, pid,
+ * value], is decoded straight into what is delivered to that process here, as
+ * it was made where it was sent, and null returned; any other frame comes
+ * back as node.decode gives it. */
+static void n_take(Process *p, Word *a, Word *r) {
+    uint32_t n;
+    const uint8_t *s = data_arg(p, a[0], &n);
+    static const uint8_t head[] = {T_R, OBJ_LIST, 3, 0, 0, 0, T_I64, 0, 0, 0, 0, 0, 0, 0, 0, T_I64};
+    if (n < sizeof head + 8 || memcmp(s, head, sizeof head)) {
+        n_decode(p, a, r);
+        return;
+    }
+    uint64_t pid = 0;
+    for (int k = 0; k < 8; k++) pid |= (uint64_t)s[sizeof head + k] << (8 * k);
+    Reader rd = {sched_frag(p->vm), p, s, n, sizeof head + 8};
+    Word w;
+    uint8_t t = decode(&rd, &w, 1);
+    if (rd.i != n) bad(&rd);
+    sched_node_deliver(p, pid, w, t);
+    r[0].r = NULL;
 }
 
+/* Give the message a frame carries, [to, value], to its process here. */
 /* A control frame from a node, for link, monitor, proc.call and kill across nodes:
  * [kind, pid, ...] (sched.c, "across nodes"). */
 static void n_control(Process *p, Word *a, Word *r) {
@@ -709,9 +929,8 @@ static const NativeDef NODE_NATIVES[] = {
     N("node.route", 1, T(T_I64), 1, T(T_I64), n_route, "The process messages for a node go to, or 0. For std.node."),
     N("node.function", 2, T(T_R, T_R), 1, T(T_R), n_function, "A closure for a module's exported function, as a peer names it. For std.node."),
     N("node.frame", 1, T(T_R), 1, T(T_R), n_frame, "A value as bytes for a connection, with its length. For std.node."),
-    N("node.frame_value", 2, T(T_R, T_R), 1, T(T_R), n_frame_value, "A frame of a list with the second item of [pid, value] added. For std.node."),
     N("node.decode", 1, T(T_R), 1, T(T_R), n_decode, "A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node."),
-    N("node.deliver", 1, T(T_R), 0, T(0), n_deliver, "Send [pid, value] to its process here. For std.node."),
+    N("node.take", 1, T(T_R), 1, T(T_R), n_take, "A frame from a node: a message, [0, pid, value], delivered to its process here (null returned), else the frame's value, as node.decode gives it. For std.node."),
     N("node.control", 1, T(T_R), 0, T(0), n_control,
       "Act on a control frame from a node: link, unlink, exit, monitor, down, reply, noproc or kill. For std.node."),
     N("node.proof", 3, T(T_R, T_R, T_R), 1, T(T_R), n_proof, "HMAC-SHA-256 of a role and a nonce, keyed by a cookie. For std.node."),

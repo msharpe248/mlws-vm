@@ -13,7 +13,7 @@ restricts them.
 | `os` | arguments, the environment, exit, running commands |
 | `net`, `tls` | TCP, UDP, DNS, TLS |
 | `text`, `json`, `regex` | formatting, string utilities, UTF-8, JSON, regular expressions |
-| `proc`, `std.supervisor` | the process count, a name registry, request/reply calls, supervisors |
+| `proc`, `std.supervisor`, `std.server` | the process count, a name registry, request/reply calls, supervisors, generic servers |
 | `std.node` | processes on other VMs |
 | `weak` | weak references and weak maps (and `gc.finalize`) |
 | `cap` | limiting what a process may reach |
@@ -514,6 +514,13 @@ answer to a later call. A call to a process that does not exist raises
 `E_DEADLOCK`, as `recv` does, and so does a process calling itself. Requests and replies are references (wrap
 numbers in a list or struct), deep-copied like any message.
 
+`proc.alive(pid, timeout_ms)` says whether a process runs, as the `alive`
+instruction does, for a pid of this VM or of another node, which it asks,
+waiting for the answer in the reply slot, as `proc.call` does (`E_TIMEOUT`
+after `timeout_ms`; negative waits for ever). A node that is not connected,
+or goes while asked, has none running. The `alive` instruction itself never
+waits, so it answers for this VM's pids only.
+
 ### Other VMs (`std.node`)
 
 ```asm
@@ -561,14 +568,18 @@ this node's number in it, which works here too, wherever a plain one does. `node
 
 * **What crosses** is what a message can be: numbers, strings, byte buffers,
   arrays, lists, maps, BigInts, decimals, structs, whose module the other end
-  must have, and closures. A module a message needs there is the one loaded
+  must have, and closures, sharing and cycles kept as a send on one VM keeps
+  them: an object in two places of a message is one object where it arrives,
+  and one that holds itself still does. A value may be as deep as a frame
+  holds (a list of a million cells, say), and a message as large, up to 64 MiB
+  encoded (`E_RANGE` beyond, at the `send`). A module a message needs there is the one loaded
   under that name, or else is loaded for it, as Erlang loads code, from a
   running program's directory or the library path. A literal where it is sent
   (a string, BigInt or decimal literal, or a string `text.intern` gave) is that
   node's literal of the same value where it arrives, the same object, so that
   identity tests (`beq.r`) of atoms, symbols and other constants hold across
   nodes; any other value is a new one. Coroutines, handles of `handle` and pointers
-  cannot (`E_TYPE`), nor a value with a cycle.
+  cannot (`E_TYPE`, at the `send`).
 * **A closure crosses as its code's identity and its captured values:** its
   module's name, the hash of that module's version, its function (exported or
   not) and that function's signature. Where that very version is loaded, as the
@@ -582,8 +593,9 @@ this node's number in it, which works here too, wherever a plain one does. `node
   as its module and function only, and calls that node's current version
   (`E_LINK_UNDEF` where that node does not export the function).
 * **A message that cannot be read where it arrives** (a struct of a module
-  that node does not have) is dropped there, with a warning in its monitor's
-  log, and the connection goes on.
+  that node does not have), or that comes for a process whose mailbox is full
+  there, is dropped there, with a warning in its monitor's log, and the
+  connection goes on.
 * **A message to a node that is not connected is dropped,** as one to a finished
   process is. So is one that does not arrive because the connection fails. Use
   `monitor`, and replies, for what must be known.
@@ -618,8 +630,9 @@ this node's number in it, which works here too, wherever a plain one does. `node
 * **`kill` takes a pid of another node** too: that node kills the process with
   `E_KILLED`, as `kill` here would, so its watchers and links hear of it as of
   any kill. To a node that is not connected, or a process not there, it does
-  nothing, as `kill` of a finished process does here. `alive` answers for this
-  VM's pids only: false for another node's.
+  nothing, as `kill` of a finished process does here. `proc.alive` asks the
+  node of a pid whether it runs; the `alive` instruction answers for this VM's
+  pids only, false for another node's.
 
 ### Supervisors (`std.supervisor`)
 
@@ -641,6 +654,39 @@ Erlang/OTP. A supervisor answers the call `"children"` with the current child
 pids, and stops on the message `"stop"`. It is written in MLWSVM assembly
 (`lib/std/supervisor.masm`), on top of the instructions and natives in this
 document.
+
+### Servers (`std.server`)
+
+```asm
+.import std.server as server
+    ncall "module.function" ("counter", "init") -> (R0)  ; the callback module, by a closure of its
+    call server.start (R0, arg) -> (I0)                  ; init(arg): the first state
+    ncall "proc.call" (I0, request, 5000) -> (R1)         ; handle_call's reply
+```
+
+A generic server, as Erlang/OTP's `gen_server`: a process that keeps a state
+and answers with a callback module's functions:
+
+| Callback | Does |
+|---|---|
+| `init(ref arg) -> ref` | the first state |
+| `handle_call(ref request, ref state) -> (ref, ref)` | a `Call`'s reply, and the next state |
+| `handle_info(ref message, ref state) -> ref` | any other message (optional: without it, they are dropped) |
+| `code_change(ref state) -> ref` | the state for a new version of the module (optional) |
+
+It runs the version of the module it started with until a reload
+([ABI.md](ABI.md#reloading-a-module)) brings in a new one. Then, in the
+order of its mailbox, it calls the new version's `code_change`, if there is
+one, with its state, and the new version's functions from then on. So the old
+version handles the messages that came before the reload, with the state it
+made, and the new one sees only a state its `code_change` gave it, as
+Erlang's `sys:change_code` makes sure of by suspending the process. Two
+reloads met at once go to the newest version, through its `code_change`
+alone. It learns of a reload by `module.watch`, whose `Reloaded` comes before
+any message the new version's code sends. Messages are references (a number
+sent to it fails it with `E_TYPE`), and a callback that raises ends it with
+that error, as a failure, for its links and monitors. It is MLWSVM assembly
+(`lib/std/server.masm`).
 
 ### Example: `examples/http_server.masm`
 
@@ -686,10 +732,10 @@ and the path, and gives the OS's description:
 | `E_IO` | any other OS error |
 | `E_TYPE` | a wrong argument (a handle of another kind, a bad mode or format spec) |
 | `E_JSON` | malformed JSON (with line and column), or a value with no JSON form |
-| `E_TIMEOUT`, `E_NOPROC`, `E_DEADLOCK` | `proc.call`: no reply in time, no such process, or no reply possible |
+| `E_TIMEOUT`, `E_NOPROC`, `E_DEADLOCK` | `proc.call`: no reply in time, no such process, or no reply possible; `proc.alive`: no answer in time |
 | `E_RESTARTS` | a supervisor gave up: its children failed too often |
 | `E_PARSE` | malformed text for `time.parse`, `hex.decode`, `base64.decode`, `url.decode` or `csv.parse` |
-| `E_RANGE` | an argument out of range (an offset beyond a day, a time or `Date` outside the years 1678 to 2261, `random.int` with lo > hi, `random.bytes` of more than 16 MiB, a SipHash key that is not 16 bytes, `math.powmod` with e < 0 or m <= 0, a port outside 0 to 65535, or 0 for `net.connect` and `net.send_to`) |
+| `E_RANGE` | an argument out of range (an offset beyond a day, a time or `Date` outside the years 1678 to 2261, `random.int` with lo > hi, `random.bytes` of more than 16 MiB, a message to another node of more than 64 MiB, a SipHash key that is not 16 bytes, `math.powmod` with e < 0 or m <= 0, a port outside 0 to 65535, or 0 for `net.connect` and `net.send_to`) |
 | `E_OVERFLOW` | a result that does not fit (`math.lcm`) |
 | `E_CALLBACK` | a comparator, probe or C callback tried to wait |
 

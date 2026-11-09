@@ -18,6 +18,7 @@ each one's output against its expected checksum.
 | `closures` | 5M calls through a closure |
 | `parallel` | 16 independent CPU-bound processes (4M loop iterations each) |
 | `connections` | 10,000 TCP connections open at once, each end in its own process, then a line echoed on each |
+| `nodes/` | calls and messages between two VMs over TCP (`bench/nodes/run.sh`; [below](#between-nodes)) |
 
 ## Results
 
@@ -189,6 +190,38 @@ on the Intel one (best of two runs). During a 200-connection run of 600,000
 requests, 40 handlers were made to fail (20 `GET /crash`, 20 `GET /hog`, which
 exhausts its heap quota): every other request was still answered, at 173,000
 requests per second.
+
+### Between nodes
+
+`bench/nodes/run.sh` runs two VMs on one machine, connected over TCP on the
+loopback interface, and times calls (`proc.call`, one after another) and
+messages (`send`, all of them, then a call to see that they arrived), of a
+few shapes: `[1]`, a list of 100 integers, a map of 20 string keys, and a
+list of 100 cells `[head, tail]`, as a compiled language's cons list. Each
+message is encoded where it is sent and written by the connection's process,
+with those waiting behind it, in one write; it is decoded where it arrives
+straight into the message the receiver gets. Nanoseconds a call or a message,
+the better of two runs; `nodes.erl` is the same for Erlang/OTP 29's
+distribution:
+
+| | M5: 0.21.0 | M5: now | M5: Erlang | i7: 0.21.0 | i7: now | Ryzen: 0.21.0 | Ryzen: now |
+|---|---|---|---|---|---|---|---|
+| call `[1]` | 25,200 | 24,200 | 20,200 | 24,700 | 24,300 | 43,900 | 43,000 |
+| call 100 integers | 33,600 | 29,400 | 19,700 | 38,500 | 32,500 | 54,700 | 48,500 |
+| send `[1]` | 1,740 | 241 | 1,820 | 2,440 | 657 | 4,460 | 677 |
+| send 100 integers | 4,380 | 948 | 1,820 | 7,460 | 2,010 | 9,760 | 1,890 |
+| send a map of 20 | 2,970 | 763 | 1,800 | 6,330 | 1,930 | 8,550 | 2,350 |
+| send 100 cells | 8,500 | 2,640 | 1,820 | 20,200 | 6,320 | 20,500 | 7,930 |
+
+Messages are 3 to 7 times faster than in 0.21.0, in which each was copied as
+objects to the connection's process, encoded there and written alone, and
+copied again where it arrived. A call is a round trip over TCP: on the M5, a
+bare ping-pong over the loopback interface, in C, takes 13,100 ns, so Erlang
+adds 7,100 ns to it and MLWSVM 11,100, with one worker thread or many. The
+difference is most likely a handoff at each end (inferred, not measured
+apart): MLWSVM's poller is a thread of its own, which wakes a worker to run
+the connection's reader, where Erlang's schedulers poll themselves (below,
+under what is not done).
 
 ## The JIT
 
@@ -652,6 +685,17 @@ for each request it serves.
   list of instructions on the general path shows them, as it showed the ones
   added for compiled Lox. What remains there for Lox is allocation (`new`,
   `mnew`, `mset`), which a fast form must not do.
+* **Workers that poll.** A process waiting for a socket waits in the poller,
+  a thread of its own, which wakes a worker to run it: a handoff, most
+  likely what makes a call between nodes 4 µs slower than Erlang's (whose
+  schedulers poll when idle). A worker with nothing to
+  run could wait in the poller itself, as Erlang's and Go's do, but that
+  changes how workers sleep and wake on each of kqueue, epoll and Windows'
+  completion ports.
+* **Back-pressure between nodes.** A process sending to another node faster
+  than the connection writes fills that connection's mailbox, without limit
+  unless a mailbox quota is set (`E_QUOTA` then, in the sender); Erlang
+  suspends such a sender (`busy_dist_port`).
 * **Lock-free run queues** (Chase–Lev deques). Each queue's lock is almost
   always uncontended, because a thread mostly uses its own queue. Spawning a
   million processes from one is still twice as slow on 18 threads as on one,

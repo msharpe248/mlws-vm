@@ -190,6 +190,7 @@ civil-date conversions.
 | Regular expressions in linear time, inside the VM, with their work charged to the process's quota | Thompson's NFA construction; Pike's VM, and Russ Cox's account of both; RE2, Go's and Rust's `regexp`, whose syntax it follows, and Go's `(x+)?` for loops over what can match nothing | In a VM built to run untrusted code in sandboxes, a pattern must not be a way to stall it, or to spend CPU that a quota cannot see. |
 | Capabilities per process, by name, deny by default, inherited and only narrowed, beside quotas and handles passed by message | Deno's `--allow-read`, `--allow-net` and the like; OpenBSD's `pledge` and `unveil`; Capsicum; object capabilities, as in E and the handles of Erlang-style message passing | It belongs to the process, not the program, so one VM can run trusted and sandboxed processes side by side, and a handle sent to a sandbox carries its own authority. |
 | Processes on several VMs behind the same `send`: a pid names its node, and each connection is a pair of ordinary processes in the VM's own assembly | Erlang's distribution: node names, cookies, `spawn/4`, monitors across nodes; its external term format, which the encoding resembles | The VM adds only routing to `send`, an encoding and a challenge; the protocol is a library, in the language compilers target, so it can change without touching C. A challenge with an HMAC marked by role, not Erlang's MD5. |
+| A generic server that moves its state to each new version of its callback module, in mailbox order, without being suspended (M94) | Erlang/OTP's `gen_server` and `code_change/3`, which the release handler drives by suspending the process (`sys:suspend`), changing its code, and resuming it | The reload's notice is a message, put in the mailbox while the world is stopped, so it comes after everything sent before the reload and before anything the new code sends: the mailbox's order does what suspending does. A library follows a program's module through a closure of it, without naming it. |
 
 ---
 
@@ -329,6 +330,10 @@ of the instructions in call-heavy code.
 | M89 | Erlang's `epmd` (a name service per host, a registration held by the node's connection to it, `-sname` and `-name`) |
 | M90 | Erlang's atoms in the external term format (`ATOM_UTF8_EXT`), made atoms again where they arrive |
 | M91 | Erlang's code loading on demand (`code:ensure_loaded` when a call or a fun needs a module), and the external term format's `NIL_EXT`, the empty list wherever it arrives |
+| M92 | Java's object serialization, which numbers each object it writes and refers back to it (`TC_REFERENCE`), and Python's `pickle` memo; Erlang's external term format, which keeps no sharing (a term shared twice is sent twice) and has no cycles to keep |
+| M93 | Erlang's `is_process_alive/1`, which takes only a local pid (`rpc:call` asks another node), and its distribution's request and reply over the connection |
+| M94 | Erlang/OTP's `gen_server` and `code_change/3`, with `sys:suspend` and `sys:change_code` from the release handler |
+| M95 | Erlang's distribution, which encodes a message in the sending process (`erts_dsig_send`) into the connection's output queue, written by the port in as few writes as it can, and its `busy_dist_port` back-pressure (not done here); `writev` batching in network servers |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

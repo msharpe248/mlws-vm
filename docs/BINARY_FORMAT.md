@@ -72,7 +72,8 @@ natives      uleb n, then n × str           native names used by ncall
 structs      uleb n, then n × {
                name   str
                flags  uleb   1 = exported, 2 = import, 4 = built-in (provided by the VM:
-                             Error, Down, FileInfo, Call, Callback, Date, NodeEvent;
+                             Error, Down, FileInfo, Call, Callback, Date, NodeEvent,
+                             Reloaded;
                              nothing follows)
                if import:
                  import_index uleb                    the struct is defined there

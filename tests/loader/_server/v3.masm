@@ -1,0 +1,44 @@
+; Third version: the same map; its code_change adds 5000, which the server
+; never calls, since v4 replaces it before the server meets it.
+.export init, handle_call, handle_info, code_change
+
+.func init(ref arg) -> ref
+    mnew R1
+    mov I2, arg[0]
+    mset R1, "count", I2
+    ret R1
+.endf
+
+.func code_change(ref old) -> ref
+    mget I2, old, "count"
+    add I2, I2, 5000
+    mset old, "count", I2
+    ret old
+.endf
+
+.func handle_call(ref req, ref state) -> (ref, ref)
+    strcmp I2, req, "version"
+    bnz I2, 1f
+    ret "v3", state
+1:  mget I3, state, "count"
+    inc I3
+    mset state, "count", I3
+    lnew R4
+    lpush R4, I3
+    ret R4, state
+.endf
+
+.func handle_info(ref msg, ref state) -> ref
+    typeof I2, msg
+    bne I2, 5, 1f                      ; (5: a list, ["nap", pid]: wait for that process's word)
+    mov I3, msg[1]
+    ncall "proc.call" (I3, "nap", -1) -> (R4)
+    ret state
+1:  bne I2, 1, 2f                      ; (1: a string)
+    strcmp I2, msg, "bump"
+    bnz I2, 2f
+    mget I3, state, "count"
+    add I3, I3, 100
+    mset state, "count", I3
+2:  ret state
+.endf

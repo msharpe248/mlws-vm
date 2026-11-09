@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M91
+## Milestones M11–M95
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -113,6 +113,10 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M89 Nodes found by name** (done) | `mlwsvm names`, a name service per machine as Erlang's `epmd` (`lib/std/names.masm`): `std.node`'s `start_named(name, number, cookie, port)` registers the node's name and port with it, for as long as the node lives, and `connect_named("name@host", cookie)` finds the port from the host's service. Number 0 is a number made from the name (`node.number_for`); a peer of this node's number, or of a connected node's under another name, is refused. Asked for by the Erlang compiler, whose nodes have names and no numbers | `make check-tools`: the service started on a port of its own; node b registered, node a registered too, with numbers made from their names, connecting to b by name, the service's list of both, a name taken, a name not there, bad requests, a name not registered refused, and b's name gone once b has ended; a third VM with node 2's name, and one with node 2's number, each refused |
 | **M90 Interned strings stay interned between nodes** (done) | A string interned where it is sent (a literal, or `text.intern`'s) is written as one and interned where it arrives, the same object there as every module's literal of that text, so that identity tests of atoms and symbols hold across nodes; other strings arrive as new strings, never kept. Asked for by the Erlang compiler, whose atoms are strings compared by identity (`receive {echoed, N, M}`) | `tests/native/node_values`: a literal through a frame the very literal, a string made by `strcat` a string of its own, a `text.intern` result the interned one. `make check-tools`: a literal sent to node 2 and back the very literal. The compilers' two-node Erlang case matches its pattern |
 | **M91 Literals and code a message needs** (done) | A BigInt or decimal literal crosses to another node as one, and is that node's literal of the value there (Erlang's compiler has `0d` for `[]`, so no list from another node ended in its empty list), and the constants' pool keys numbers by value, so every spelling of one (`007n`, `7n`) is one object. A module a message names (a struct's, a closure's, a handle's, a spawn's) that the node has not loaded is loaded for it, from the one running program's directory that has its file or the library path, as Erlang loads code a message needs. Asked for by the Erlang compiler (a list in a spawn's arguments; funs of a program's own modules) | `tests/native/node_values`: a decimal and a BigInt literal (spelled `007n`) through a frame the very literals, a decimal made by arithmetic a number of its own. `make check-tools`: a closure of node 1's module, which node 2 had not loaded, run on node 2; a closure of a version of a module node 1 reloaded raising `E_LINK_CODE` there, and a struct of that version dropped there. The compilers' two-node `spawn(B, io, format, [...])` runs |
+| **M92 Sharing, cycles and depth between nodes** (done) | A value crosses to another node as a send on one VM copies it: each object written whole is numbered as it comes, and one met again is a reference to its number, so an object in two places of a message is one where it arrives, and a value that holds itself crosses (it was refused). Both ends walk the value with a stack of their own instead of C's, so its depth is limited only by a frame's 64 MiB: compiled Erlang's lists, cons cells, of more than about 200 elements could not cross, and now a list of a million can. A BigInt's or decimal's type in a frame must hold one (or null), which the reader did not check | `tests/native/node_values` (an object shared, a map keyed by an object sent with it, cycles through a list, a struct, a map's key and value, and a closure's capture, 100,000 structs and lists deep, a reference to an object not made yet and a BigInt's type holding a string refused); `make check-tools`: a value that holds itself, shares a string and nests 50,000 deep, there and back |
+| **M93 `alive` across nodes** (done) | `proc.alive(pid, timeout_ms)`: whether a process runs, for a pid of this VM or of another node, which is asked (a control frame of its own) and answers as `alive` there would, into the caller's reply slot as for `proc.call` (the wait is now one function for both). A node that is not connected, or goes while asked, has none running. The `alive` instruction, which never waits, answers for this VM's pids only | `make check-tools`: a process there alive, then killed, one not there, one on a node not connected, this process by `proc.alive`, and one of a node that has gone |
+| **M94 A server's state through a reload** (done) | `module.watch(name, on)`: a built-in `Reloaded {module}` for each new version of a module of that name, delivered with the world stopped, before any message the new code can send. `module.of(closure)` gives a closure's module and a number for its version; `module.function` takes a closure for that closure's version, and `module.current(closure, name)` finds a function of the current one, so a library can follow a program's module it cannot name. `std.server` (`lib/std/server.masm`), as Erlang/OTP's `gen_server`: `init`, `handle_call`, `handle_info` and `code_change` callbacks, running one version until its `Reloaded`, then the new version's `code_change` with its state, so neither version sees the other's state | `tests/loader/server` (a reload while the server waits in a call, so that a message before it is the old version's and one after the new's; a list state made a map by `code_change`; two reloads met at once, through the newest version's `code_change` alone; a version without one; a `Reloaded` of another module as a message; watching ended; the server failing for its monitor) |
+| **M95 Faster messages between nodes** (done) | Measured first (`bench/nodes/run.sh`, against Erlang/OTP 29's distribution): a message was deep-copied to the connection's writer process, which encoded it and wrote it alone, and collected the backlog it kept, and decoded where it arrived and copied again into the receiver. Now a message's frame is encoded where it is sent, into the sending thread's scratch heap, and only those bytes go to the writer (as do the VM's own control frames and `proc.reply`'s, encoded from the replier's value; what cannot be sent is the sender's error, and a frame of more than 64 MiB is `E_RANGE`). The writer writes the frames waiting behind one, up to 64 KiB, in one write. The reader decodes a message straight into what the receiver gets (`node.take`). A message for a full mailbox there is dropped, with a warning in the monitor's log (the connection failed before). Against 0.21.0, on the M5, i7 and Ryzen: `send [1]` 1.74, 2.44 and 4.46 µs to 0.24, 0.66 and 0.68; 100 integers 4.4, 7.5 and 9.8 µs to 0.95, 2.0 and 1.9; 100 cells 8.5, 20 and 21 µs to 2.6, 6.3 and 7.9 (Erlang on the M5: about 1.8 µs for each). A call is 2–4% faster for `[1]` and 11–16% for 100 integers; the rest of it is the TCP round trip and, most likely, the poller's handoff to a worker at each end (§4) | `tests/native/node_values` and `make check-tools` (every kind, cycles and depth through the new paths, over TCP and TLS); the benchmark under AddressSanitizer |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -223,10 +227,13 @@ Capabilities: M60.
   millisecond for anonymous pipes (a child's stdin, a stdin given to the
   VM), which have no readiness to wait for, and for pipes waited for writing.
 
-Not done in distribution (M61, M70, M83, M88): `alive` across nodes, and a
-value's cycles, which do not cross. Not done in hot reloading (M55, M72, M76): data
-carried in a process's own state, which a program moves itself, as Erlang's
-`code_change` does.
+Not done in distribution (M61, M70, M83, M88, M92–M95): back-pressure, so
+that a process sending to another node faster than the connection writes
+waits, as Erlang suspends it (`busy_dist_port`), instead of filling the
+connection's mailbox. Not done in hot reloading (M55, M72, M76, M94): moving a
+process's own state for one that is not a `std.server` is the program's, with
+`module.watch` and `module.current`, as in Erlang it is `sys`'s and the
+program's own.
 
 Not done in single executables (M54): signing on macOS. `codesign` signs the
 executable but rejects the program appended to it, so a bundle cannot be
@@ -272,6 +279,13 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   only worth it if programs show memory held that way.
 * Lock-free run queues and spinning before sleeping, for many-thread,
   message-heavy programs (M35 wakes idle threads one at a time instead).
+* Workers that poll. Measured after M95 (`bench/nodes/run.sh`): a call
+  between two VMs on the M5 takes 24 µs, of which a bare TCP round trip over
+  the loopback interface is 13 µs; Erlang's takes 20 µs. MLWSVM's poller is a
+  thread of its own, which wakes a worker to run the process a descriptor
+  was waited for by, most likely the difference; a worker with nothing to run
+  could wait in the poller itself, as Erlang's schedulers and Go's do, which
+  changes how workers sleep and wake on kqueue, epoll and IOCP alike.
 * ~~A bytecode optimizer~~ (M41: done; [OPTIMIZER.md](OPTIMIZER.md)).
   Removing type checks needs the source language's types, so that stays in
   the compilers.

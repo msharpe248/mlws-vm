@@ -327,6 +327,7 @@ directly:
 | `await task` | `spawnm f (x) -> (pid)`, then `recv` the result message, then the `Down` |
 | a supervisor | `std.supervisor` (restart strategies and limits), or by hand: `spawnm` / `monitor` (to observe), `spawnl` / `link` (to fail together) |
 | a server's API / an actor's methods | `proc.call` (with a timeout) and `proc.reply`; find services by name with `proc.register` / `proc.whereis` |
+| a server that keeps its state through code upgrades (`gen_server`'s `code_change`) | `std.server`, or by hand: `module.watch` for a `Reloaded`, then `module.current` for the new version's functions |
 | async I/O / `await socket.read()` | just call `fs.read` / `net.accept`: the process waits in the poller, holding no thread |
 | a sandbox | spawn a wrapper that executes `quota` and then calls the real code |
 
@@ -625,7 +626,9 @@ generated code, but which forms get specialised should follow what compilers
 actually emit, so the compilers' output will decide them.
 
 Reloading code in a running program (Erlang's code replacement, a REPL's
-redefinition) maps onto `module.reload_text` ([ABI.md](ABI.md#reloading-a-module)).
+redefinition) maps onto `module.reload_text` ([ABI.md](ABI.md#reloading-a-module)),
+and a process that converts its own state for the new code (Erlang's
+`code_change`) onto `module.watch` and `module.current`, or `std.server`.
 A language's `require`, `import()` or plugin loading maps onto `module.load`
 and `module.function`, which load a module by name while the program runs and
 give closures for its functions ([ABI.md §9](ABI.md#9-loading-modules-at-run-time)).

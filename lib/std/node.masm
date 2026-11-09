@@ -256,39 +256,52 @@ taken:
     ret
 .endf
 
-; What the VM routes here, as [pid, value], and what this module and the VM ask
-; for, as a whole frame [kind, ...] with a null at its head. Ends with the reader.
+; What goes to the node at the other end: frames for the wire, as bytes, made
+; where they were sent (messages, and what the VM asks for), and this module's
+; own requests, as [null, kind, ...]. Frames waiting behind one go with it, up
+; to 64 KiB, in one write. Ends with the reader.
 .func writer(i64 ticket, i64 reader)
     ncall "fs.take" (ticket) -> (R0)
     monitor reader
 1:  recv R2
+2:  typeof I2, R2
+    beq I2, 2, frame                   ; (2: bytes)
     isa I2, R2, Down
     bnz I2, ended
-    len I3, R2
-    beq I3, 2, message
     ldel R2, 0                         ; a request: [null, kind, ...]
     ncall "node.frame" (R2) -> (R3)
     ncall "fs.write" (R0, R3)
     jmp 1b
-message:
-    mov I4, R2[0]
-    lnew R4
-    lpush R4, 0
-    lpush R4, I4
-    ncall "node.frame_value" (R4, R2) -> (R3)
-    ncall "fs.write" (R0, R3)
+frame:
+    mlen I3
+    bz I3, 5f
+    bufnew R4, 0
+    bufcat R4, R2
+3:  len I4, R4
+    bge I4, 65536, 4f
+    recvt R2, 0, 4f
+    typeof I2, R2
+    bne I2, 2, 6f                      ; (not a frame: after what is gathered)
+    bufcat R4, R2
+    jmp 3b
+4:  ncall "fs.write" (R0, R4)
+    jmp 1b
+6:  ncall "fs.write" (R0, R4)
+    jmp 2b
+5:  ncall "fs.write" (R0, R2)
     jmp 1b
 ended:
     ncall "fs.close" (R0)
     ret
 .endf
 
-; A frame's value, or null if it cannot be read here (a struct this VM does not
-; have, bytes that are not a value): then it is dropped, with a warning in the
-; monitor's log, and the connection goes on, since frames come one by one.
+; A frame: a message, delivered (null); or another frame's value; or null if
+; it cannot be read here (a struct this VM does not have, bytes that are not a
+; value): then it is dropped, with a warning in the monitor's log, and the
+; connection goes on, since frames come one by one.
 .func read_one(ref bytes, i64 peer) -> ref
 .try bad
-    ncall "node.decode" (bytes) -> (R2)
+    ncall "node.take" (bytes) -> (R2)
 .endtry
     ret R2
 bad:
@@ -306,13 +319,10 @@ bad:
 1:  ncall "net.read_frame" (conn) -> (R2)
     bz R2, closed
     call read_one (R2, peer) -> (R3)
-    bz.r R3, 1b                        ; (dropped)
+    bz.r R3, 1b                        ; (a message, delivered; or dropped)
     mov I2, R3[0]
-    bnz I2, 2f
-    ldel R3, 0                         ; [pid, value]
-    ncall "node.deliver" (R3)
-    jmp 1b
-2:  beq I2, 1, 3f
+    bz I2, 1b                          ; (a message node.take could not see as one: malformed)
+    beq I2, 1, 3f
     beq I2, 2, 4f
     ncall "node.control" (R3)          ; 3 to 10
     jmp 1b

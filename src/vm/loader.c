@@ -1151,6 +1151,7 @@ LModule *vm_reload(VM *vm, const char *name, const char *text, const LModule *fr
         plat_lock(vm->mods_lock);
         retarget_users(vm, old, nw);
         plat_unlock(vm->mods_lock);
+        sched_module_event(vm, nw->m->name);
         sched_start_world(vm);
     }
     atomic_store(&vm->reloading, false);
