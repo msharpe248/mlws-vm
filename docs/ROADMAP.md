@@ -279,6 +279,20 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
 * Lock-free run queues and spinning before sleeping, for many-thread,
   message-heavy programs (M35 wakes idle threads one at a time instead).
 * ~~Workers that poll~~ (M97: done).
+* Selective receive in the VM. Measured after M97, on compiled Erlang's
+  `ring` (1,000 processes passing a message a million times, 205 ns a hop on
+  the M5; BEAM 170), against hand-written rings of the same shape: plain
+  `send` and `recv` of an integer take 65 ns a hop; wrapping each message as
+  the `[R, I]` list a compiled Erlang term is sent as, 147; receiving through
+  a function that first looks at a list of messages saved by earlier
+  receives, as compiled Erlang's `receive` does, 164. So the saved list costs
+  about 8%, and a VM primitive to take the first message that matches could
+  save no more: not worth an instruction. The wrapper costs 40%, and needs
+  nothing new: sending a term as the one value it is (its `I` when `R` is
+  null, else its `R`) and receiving into a list element, which keeps its type
+  tag, read by `tagof`, takes 96 ns a hop. What is left over plain messages
+  there is `recv` into an element and `tagof`, both on the general path: forms
+  of their own, if compilers come to receive that way.
 * ~~A bytecode optimizer~~ (M41: done; [OPTIMIZER.md](OPTIMIZER.md)).
   Removing type checks needs the source language's types, so that stays in
   the compilers.
