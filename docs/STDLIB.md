@@ -771,6 +771,7 @@ greeting = "hello"
 port = 8080
 servers = ["db1", "db2"]
 home = "${HOME}/app"
+secret db_password = "${DB_PASSWORD}"
 ```
 
 ```asm
@@ -814,7 +815,13 @@ running system changes. It is not the operating system's environment, which
   `NAME.masm`, if there is one; and `env.load(path)` the caller's. A file is
   never read unless asked for: one beside a program `mlwsvm run` runs is not.
   A name is a letter or `_`, then letters, digits, `_`, `.` or `-`. Lines that
-  start with `#`, and blank ones, are skipped.
+  start with `#`, and blank ones, are skipped. `secret name = value` marks a
+  value secret: programs read it as any other, and the monitor never shows it
+  (it stays secret when set again, until it is deleted).
+* **In the monitor** ([TOOLING.md](TOOLING.md#json-api)), each environment
+  shows the names in it, how many processes are in it and watch it, and which
+  each process is in. An admin's key also sees the values, but a secret's
+  never, and sets and deletes them, which watchers hear of as of `env.set`.
 * **Restricted processes** (`cap.restrict`, `--cap`) read their environment,
   and change nothing (`E_PERMISSION` for `env.set` and the rest, and for
   `env.join` and `env.load`).

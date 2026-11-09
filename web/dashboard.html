@@ -10,7 +10,8 @@
      comes in the address's #token=, or is typed in when the monitor asks for
      one (--monitor-tokens), and goes with every request. With an admin's
      key it also kills, sends, reloads and purges (--monitor-actions), and
-     makes and revokes keys. -->
+     makes and revokes keys. /api/envs (every five seconds) shows each
+     environment's names, and an admin its values, to set and delete. -->
 <style>
 :root {
   color-scheme: light;
@@ -144,6 +145,14 @@ button.act.danger { color: var(--critical); }
 .mini tbody tr { cursor: default; }
 .mini td.wrap { white-space: normal; }
 .mini td.wrap button { margin: 1px 0; }
+.envs { display: grid; gap: 14px; }
+.env h3 { font-size: 12px; font-weight: 600; margin: 0 0 4px; color: var(--text-primary); }
+.env h3 .sub { font-weight: 400; color: var(--text-muted); margin-left: 6px; }
+td.val { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; text-align: left; white-space: pre-wrap; word-break: break-all; width: 100%; }
+td.val.muted { color: var(--text-muted); font-family: inherit; }
+.env td.key { width: 14em; min-width: 8em; white-space: normal; word-break: break-all; }
+.env td.btns { white-space: nowrap; }
+label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); }
 @media (max-width: 600px) { .tile .value { font-size: 20px; } .graph svg { height: 300px; } }
 </style>
 </head>
@@ -235,6 +244,19 @@ button.act.danger { color: var(--critical); }
     <div class="card"><h2>Registered names</h2><div class="table-wrap"><table class="mini" id="names"><thead><tr><th class="text">Name</th><th>PID</th></tr></thead><tbody></tbody></table></div><div class="empty" id="names-empty">No names registered.</div></div>
   </section>
   <section class="card"><h2>Nodes</h2><div id="nodes-self" class="note"></div><div class="table-wrap"><table class="mini" id="nodes"><thead><tr><th>Node</th><th class="text">Name</th><th>Carried by</th><th>Up</th><th>Sent</th><th>Received</th><th>Out</th><th>In</th><th>Queued</th><th>Waiting</th></tr></thead><tbody></tbody></table></div><div class="empty" id="nodes-empty">Not connected to other nodes.</div></section>
+  <section class="card" id="envs-card">
+    <h2>Environments</h2>
+    <div class="note" id="envs-note"></div>
+    <div class="envs" id="envs"></div>
+    <div class="empty" id="envs-empty">No environments.</div>
+    <div class="acts" id="env-form" hidden>
+      <select id="env-which" aria-label="Environment"></select>
+      <input id="env-key" placeholder="name" aria-label="Name" style="flex: 0 1 160px">
+      <input id="env-value" placeholder='value as JSON: 8080, "text", [1, 2], {"a": 1}' aria-label="Value as JSON">
+      <label class="check"><input type="checkbox" id="env-secret"> secret</label>
+      <button class="act" id="env-set-btn" type="button">Set</button>
+    </div>
+  </section>
   <section class="card" id="keys-card" hidden>
     <h2>Keys</h2>
     <div class="note" id="keys-note"></div>
@@ -400,6 +422,7 @@ async function loadDetail() {
       ["Raw memory", bytes(p.raw_bytes)], ["Stack", bytes(p.stack_bytes) + `, ${p.depth} frames`],
       ["Mailbox", `${p.mailbox} waiting · ${human(p.msgs_received)} received · ${human(p.msgs_sent)} sent`],
       ["GC", `${p.gc_count} collections, ${ms(p.gc_ns)}`], ["Exceptions thrown", p.exceptions],
+      ["Environment", p.env != null ? p.env : "its program's"],
       ["Links", [...p.links, ...p.far_links.map(farName)].join(", ") || "none"],
       ["Monitored by", [...p.monitors, ...p.far_monitors.map(farName)].join(", ") || "none"],
       ["Watches elsewhere", p.far_watching.map(farName).join(", ") || "none"],
@@ -652,8 +675,55 @@ async function slowTick() {
     drawGraph(graph);
     loadProgramFiles();
     loadKeys();
+    loadEnvs();
   } catch (e) { /* shown in the header by tick */ }
 }
+
+// ---- environments: names to anyone who may read; values, and changing them, to an admin -------
+let envList = [];
+function envId(e) { return e.env != null ? { env: e.env } : { program: e.program }; }
+function envTitle(e) { return e.env != null ? `${e.env} (named)` : `${e.program_name ?? "program " + e.program} (program ${e.program})`; }
+async function loadEnvs() {
+  const es = await apiJson("/api/envs").catch(() => null);
+  if (!es) return;
+  const admin = isAdmin(), change = canAct();
+  $("envs-note").textContent = admin ? "Secret values are never shown, to anyone." : "Values need an admin's key.";
+  $("envs-empty").hidden = es.length > 0;
+  $("envs").innerHTML = es.map((e, i) => `<div class="env"><h3>${esc(envTitle(e))}<span class="sub">${e.processes} process${e.processes === 1 ? "" : "es"} · ${e.watchers} watching</span></h3>
+    ${e.values.length ? `<div class="table-wrap"><table class="mini"><tbody>${e.values.map((v) => `<tr><td class="text key">${esc(v.key)}</td>
+      ${!admin ? `<td class="val muted">${v.secret ? "secret" : "–"}</td>` : v.secret ? `<td class="val muted">secret</td>`
+        : v.note != null ? `<td class="val muted">${esc(v.note)}</td>` : `<td class="val">${esc(JSON.stringify(v.value))}</td>`}
+      ${change ? `<td class="text btns"><button class="act" data-env="${i}" data-key="${esc(v.key)}" data-edit="1" type="button">Edit</button> <button class="act danger" data-env="${i}" data-key="${esc(v.key)}" type="button">Delete</button></td>` : ""}</tr>`).join("")}
+    </tbody></table></div>` : `<div class="empty">No values.</div>`}</div>`).join("");
+  $("env-form").hidden = !change || !es.length;
+  const sel = $("env-which"), keep = sel.value;
+  sel.innerHTML = es.map((e, i) => `<option value="${i}">${esc(envTitle(e))}</option>`).join("");
+  if (keep !== "" && Number(keep) < es.length) sel.value = keep;
+  envList = es;
+  $("envs").querySelectorAll("button[data-key]").forEach((b) => b.addEventListener("click", async () => {
+    const e = envList[b.dataset.env], key = b.dataset.key;
+    if (b.dataset.edit) {
+      const v = e.values.find((x) => x.key === key);
+      $("env-which").value = b.dataset.env; $("env-key").value = key;
+      $("env-value").value = v && !v.secret && v.note == null ? JSON.stringify(v.value) : "";
+      $("env-secret").checked = !!(v && v.secret);
+      $("env-value").focus();
+      return;
+    }
+    if (!confirm(`Delete ${key} from ${envTitle(e)}? Its processes no longer see it.`)) return;
+    await act("/api/envs/delete", JSON.stringify({ ...envId(e), key }), `deleted ${key}`); loadEnvs();
+  }));
+}
+$("env-set-btn").addEventListener("click", async () => {
+  const e = envList[$("env-which").value], key = $("env-key").value.trim(), text = $("env-value").value.trim();
+  if (!e || !key || !text) return;
+  let value;
+  try { value = JSON.parse(text); } catch (err) { showStatus(false, `${key}: the value is not JSON`); return; }
+  const body = { ...envId(e), key, value };
+  if ($("env-secret").checked) body.secret = true;
+  if (await act("/api/envs/set", JSON.stringify(body), `set ${key}`)) { $("env-value").value = ""; $("env-secret").checked = false; }
+  loadEnvs();
+});
 
 // ---- keys (an admin's key) -----------------------------------------------------------
 async function loadKeys() {

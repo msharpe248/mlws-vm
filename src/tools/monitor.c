@@ -155,6 +155,10 @@ static void proc_json(StrBuf *b, const Monitor *mon, VM *vm, const Process *p, b
     sb_puts(b, ",\"entry\":");
     json_str(b, p->entry ? p->entry->name : "?");
     prog_json(b, mon, vm, p->prog ? (int32_t)p->prog->id : -1);
+    const char *env = p->env ? env_name(p->env) : NULL; /* (NULL: its program's own) */
+    sb_puts(b, ",\"env\":");
+    if (env) json_str(b, env);
+    else sb_puts(b, "null");
     sb_puts(b, ",\"function\":");
     if (fr) {
         StrBuf f = {0};
@@ -665,6 +669,48 @@ static bool read_request(Conn *c, Req *q) {
     return true;
 }
 
+/* GET /api/envs: each environment, the programs' and then the named ones,
+ * with how many processes are in it and watch it, and its names, with their
+ * values for an admin (secret ones never). */
+static void envs_json(StrBuf *b, const Monitor *mon, VM *vm, bool values) {
+    VEC(Env *) es = {0};
+    VEC(int32_t) ids = {0};
+    plat_lock(vm->lock);
+    for (size_t i = mon->programs ? 1 : 0; i < vm->progs.n; i++) /* (not mlwsvm serve's own) */
+        if (vm->progs.v[i]->env) {
+            env_retain(vm->progs.v[i]->env);
+            VEC_PUSH(es, vm->progs.v[i]->env);
+            VEC_PUSH(ids, (int32_t)i);
+        }
+    for (size_t i = 0; i < vm->env_named.cap; i++)
+        if (vm->env_named.keys && vm->env_named.keys[i] && vm->env_named.vals[i]) {
+            env_retain(vm->env_named.vals[i]);
+            VEC_PUSH(es, vm->env_named.vals[i]);
+            VEC_PUSH(ids, -1);
+        }
+    plat_unlock(vm->lock);
+    sb_putc(b, '[');
+    for (size_t i = 0; i < es.n; i++) {
+        Env *e = es.v[i];
+        size_t procs = 0;
+        for (uint64_t pid = 1, end = vm_pid_end(vm); pid < end; pid++) {
+            const Process *p = vm_proc_at(vm, pid);
+            if (p && p->env == e) procs++;
+        }
+        sb_puts(b, i ? ",{\"env\":" : "{\"env\":");
+        if (env_name(e)) json_str(b, env_name(e));
+        else sb_puts(b, "null");
+        prog_json(b, mon, vm, ids.v[i]);
+        sb_printf(b, ",\"processes\":%zu,\"watchers\":%zu,\"values\":", procs, env_watchers(e));
+        env_values_json(vm, e, values, b);
+        sb_putc(b, '}');
+        env_release(e);
+    }
+    sb_putc(b, ']');
+    VEC_FREE(es);
+    VEC_FREE(ids);
+}
+
 /* ---- keys (keys.c) -------------------------------------------------------------------- */
 
 static void audit(VM *vm, const MonKey *by, const char *what, const char *json);
@@ -831,6 +877,8 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *key) 
     }
     if (!strcmp(path, "/api/keys")) {
         keys_json(&b, mon);
+    } else if (!strcmp(path, "/api/envs")) {
+        envs_json(&b, mon, vm, scope >= SCOPE_ADMIN);
     } else if (!strcmp(path, "/api/vm")) {
         vm_json(&b, vm);
         b.n--; /* (its closing brace: one more field, whether actions are on) */
@@ -1329,7 +1377,19 @@ static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *by
     char *path = q->path, err[300] = "";
     uint64_t pid = 0;
     char verb[16] = "", name[256] = "";
-    if (sscanf(path, "/api/proc/%llu/%15[a-z]", (unsigned long long *)&pid, verb) == 2 && !strcmp(verb, "kill")) {
+    if (!strcmp(path, "/api/envs/set") || !strcmp(path, "/api/envs/delete")) {
+        bool del = !strcmp(path, "/api/envs/delete");
+        int st = env_monitor_change(vm, del, q->body ? q->body : "", q->nbody, &a, err, sizeof err);
+        if (st == 200) {
+            audit(vm, by, del ? "monitor.env_delete" : "monitor.env_set", a.s);
+            respond_json(k, 200, "{\"ok\":true}");
+        } else {
+            sb_puts(&b, "{\"error\":");
+            json_str(&b, err);
+            sb_putc(&b, '}');
+            respond_json(k, st, b.s);
+        }
+    } else if (sscanf(path, "/api/proc/%llu/%15[a-z]", (unsigned long long *)&pid, verb) == 2 && !strcmp(verb, "kill")) {
         if (sched_kill_from_outside(vm, pid, "E_KILLED", "killed from the monitor")) {
             sb_printf(&a, "{\"pid\":%llu}", (unsigned long long)pid);
             audit(vm, by, "monitor.kill", a.s);

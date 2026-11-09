@@ -1928,7 +1928,13 @@ its file; its main belongs to it, and a spawned process to its parent's
 the VM's life. A value is kept as the bytes `std.node` sends it as
 (`node_encode_value`), so anything a message can be may be one, and `env.get`
 decodes a copy into the reader's heap (`node_decode_value`): processes still
-share no objects. A set or delete sends each watcher an `EnvChange`.
+share no objects. A set or delete sends each watcher an `EnvChange`. A value
+may be marked secret, which stays with its name until it is deleted. The
+monitor lists an environment's names (`env_values_json`), decoding each value
+it shows into a scratch heap and writing it as JSON there, with the heap's
+`jb` set so that a value with no JSON form is a note, not a trap; and it sets
+and deletes values from outside any process (`env_monitor_change`, the
+`EnvChange` posted with `sched_post_build`).
 
 ## 15. Input and output
 

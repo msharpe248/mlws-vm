@@ -1006,6 +1006,54 @@ if command -v curl >/dev/null 2>&1; then
     kill $VMPID 2>/dev/null || true
     wait $VMPID 2>/dev/null || true
 
+    # Environments in the monitor: each one's names to a read key, values to
+    # an admin's (never a secret's); an admin sets and deletes one, which its
+    # watcher hears of, each in the log by name and never by value.
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions --monitor-tokens "$KF" \
+        --env tests/tools/_monitor/envs.env tests/tools/_monitor/envs.masm >/dev/null 2>"$MOND/envs.err" &
+    VMPID=$!
+    RK=$($BIN token new --label viewer --file "$KF" 2>/dev/null)
+    R="Authorization: Bearer $RK"
+    i=0
+    until curl -sf -H "$A" $U/api/names 2>/dev/null | grep -q '"watcher"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "envs: the monitor did not start"; sleep 0.1
+    done
+    [ "$(get $U/api/envs)" = 401 ] || fail "envs: without a key"
+    [ "$(get -H "$R" $U/api/envs)" = 200 ] || fail "envs: a read key"
+    grep -q '^\[{"env":null,"program":0,"program_name":"envs.masm","processes":1,"watchers":0,"values":\[{"key":"db_password","secret":true},{"key":"port","secret":false},{"key":"servers","secret":false}\]},{"env":"billing","program":null,"program_name":null,"processes":1,"watchers":1,"values":\[{"key":"odd","secret":false},{"key":"rate","secret":false}\]}\]$' "$MOND/r" \
+        || fail "envs: to a read key ($(cat "$MOND/r"))"
+    [ "$(get -H "$A" $U/api/envs)" = 200 ] || fail "envs: an admin's key"
+    grep -q '{"key":"db_password","secret":true,"value":null},{"key":"port","secret":false,"value":8080},{"key":"servers","secret":false,"value":\["a","b"\]}' "$MOND/r" \
+        && grep -q '"values":\[{"key":"odd","secret":false,"value":null,"note":"json.stringify: map keys must be strings or integers"},{"key":"rate","secret":false,"value":3}\]' "$MOND/r" \
+        || fail "envs: to an admin ($(cat "$MOND/r"))"
+    grep -q hunter2 "$MOND/r" && fail "envs: a secret shown"
+    curl -sf -H "$R" $U/api/proc/2 | grep -q '"entry":"watcher","program":0,"program_name":"envs.masm","env":"billing"' || fail "envs: a process's environment"
+    [ "$(code -H "$R" --data '{"env":"billing","key":"rate","value":4}' $U/api/envs/set)" = 403 ] || fail "envs: a set with a read key"
+    [ "$(code -H "$A" --data '{"env":"billing","key":"rate","value":4.5}' $U/api/envs/set)" = 200 ] || fail "envs: set ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"program":0,"key":"db_password","value":"swordfish"}' $U/api/envs/set)" = 200 ] || fail "envs: set a secret"
+    [ "$(code -H "$A" --data '{"program":0,"key":"api_token","value":"t0k","secret":true}' $U/api/envs/set)" = 200 ] || fail "envs: set one secret"
+    [ "$(code -H "$A" --data '{"env":"nobody","key":"x","value":1}' $U/api/envs/set)" = 404 ] || fail "envs: no such environment"
+    [ "$(code -H "$A" --data '{"env":"billing","key":"bad key","value":1}' $U/api/envs/set)" = 400 ] || fail "envs: a bad name"
+    [ "$(code -H "$A" --data '{"env":"billing","key":"x"}' $U/api/envs/set)" = 400 ] || fail "envs: a set with no value"
+    [ "$(code -H "$A" --data '{"env":"billing","key":"x"' $U/api/envs/set)" = 400 ] || fail "envs: not JSON"
+    [ "$(code -H "$A" --data '{"env":"billing","key":"nope"}' $U/api/envs/delete)" = 404 ] || fail "envs: delete no such value"
+    i=0
+    until curl -sf -H "$A" "$U/api/log" | grep -q '"text":"changed rate \[4.5\]"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "envs: the watcher did not hear ($(curl -sf -H "$A" $U/api/log))"; sleep 0.1
+    done
+    [ "$(code -H "$A" --data '{"env":"billing","key":"rate"}' $U/api/envs/delete)" = 200 ] || fail "envs: delete"
+    i=0
+    until curl -sf -H "$A" "$U/api/log" | grep -q '"text":"changed rate \[\]"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "envs: the watcher did not hear of the delete"; sleep 0.1
+    done
+    curl -sf -H "$A" $U/api/envs | grep -q '{"key":"api_token","secret":true,"value":null},{"key":"db_password","secret":true,"value":null}' || fail "envs: secrets after a set"
+    LOG=$(curl -sf -H "$A" "$U/api/log")
+    echo "$LOG" | grep -q '"event":"monitor.env_set","value":{"by":"(start)","env":"billing","program":null,"key":"rate"}' || fail "envs: env_set in the log ($LOG)"
+    echo "$LOG" | grep -q '"event":"monitor.env_delete","value":{"by":"(start)","env":"billing","program":null,"key":"rate"}' || fail "envs: env_delete in the log"
+    echo "$LOG" | grep -q 'swordfish\|t0k' && fail "envs: a value in the log"
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
+
     # mlwsvm serve: programs started, listed, stopped, kept within their
     # capabilities, only from their directory; then shut down.
     set +e

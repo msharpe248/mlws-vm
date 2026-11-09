@@ -1,0 +1,29 @@
+; Shown and changed through the monitor by check_tools.sh: this program's
+; environment comes from --env (envs.env, a secret among its values); a second
+; process joins "billing", sets values there (one, a map with a float for a
+; key, that has no JSON form), and watches it, writing to the
+; monitor's log each change it hears of, with the value it then reads. It runs
+; for a minute at most.
+.func watcher
+    ncall "env.join" ("billing")
+    ncall "env.set_i" ("rate", 3)
+    mnew R5
+    mset R5, 1.5, 1
+    ncall "env.set" ("odd", R5)
+    ncall "env.watch" (1)
+    ncall "proc.register" ("watcher", PID)
+1:  recv R0
+    mov R1, R0->EnvChange.key
+    ncall "env.get_any" (R1) -> (R2)
+    ncall "json.stringify" (R2, 0) -> (R3)
+    strcat R4, "changed ", R1
+    strcat R4, R4, " "
+    strcat R4, R4, R3
+    ncall "monitor.log" (1, R4)
+    jmp 1b
+.endf
+.func main
+    spawn watcher
+    sleep 60000
+    ret 0
+.endf

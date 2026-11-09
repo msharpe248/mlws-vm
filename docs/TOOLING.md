@@ -431,8 +431,9 @@ $ mlwsvm run --monitor 0.0.0.0:7443 --monitor-cert cert.pem --monitor-key key.pe
   a `Host` of that address (so a page from another site cannot reach it through
   a name of its own pointing here), and no `Origin` but the monitor's own. Every
   action is written to the program's log (`monitor.kill`, `monitor.send`,
-  `monitor.reload`, `monitor.purge`), with `by`, the label of the key that did
-  it. Reads need no key, unless there is a tokens file.
+  `monitor.reload`, `monitor.purge`, `monitor.env_set`, `monitor.env_delete`:
+  the environment and name, never the value), with `by`, the label of the key
+  that did it. Reads need no key, unless there is a tokens file.
 * **TLS** (`--monitor-cert FILE --monitor-key FILE`, PEM): the dashboard and the
   API over HTTPS, and nothing over plain HTTP. It needs OpenSSL or LibreSSL at
   run time, as `std.tls` does; so does `mlwsvm top https://HOST:PORT`.
@@ -445,17 +446,19 @@ process table (click a row for details: quotas, links and monitors, here and on
 other nodes, a backtrace, and the first messages waiting), the program's log
 (below), a graph of who is linked with and who monitors whom, the modules loaded
 with each version, the registered names, the nodes connected and each connection's
-traffic and backlog, and the most recent
+traffic and backlog, the [environments](STDLIB.md#environments-env) (names
+to anyone who may read; values, and setting and deleting them, to an admin),
+the keys (to an admin), and the most recent
 exits with their results. It is a single self-contained page, compiled into the
 binary from `web/dashboard.html`, and it polls the JSON API once a second (the
-modules, names, nodes and graph every five).
+modules, names, nodes, graph, environments and keys every five).
 
 ### JSON API
 
 | Endpoint | Returns |
 |---|---|
 | `GET /api/vm` | `vm` (`"mlwsvm"`), `uptime_ns`, `processes` (live), `spawned`, `max_live`, `slices`, `insns` (all processes), `heap_bytes`, `raw_bytes`, `modules`, `main_pid` |
-| `GET /api/procs` | an array, per live process: `pid`, `program` and `program_name` (the program it belongs to: its number, from 0, and file, as `--also` or `mlwsvm serve` started it), `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors`, and `far_links`, `far_monitors` and `far_watching`, its ties with processes on other nodes (`node` and `pid`: a whole pid can be larger than JavaScript's numbers hold exactly) |
+| `GET /api/procs` | an array, per live process: `pid`, `program` and `program_name` (the program it belongs to: its number, from 0, and file, as `--also` or `mlwsvm serve` started it), `env` (the named environment it is in, or null: its program's), `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors`, and `far_links`, `far_monitors` and `far_watching`, its ties with processes on other nodes (`node` and `pid`: a whole pid can be larger than JavaScript's numbers hold exactly) |
 | `GET /api/proc/PID` | the same for one process, plus `quota` (`heap`, `raw`, `mailbox`, `insns`, `foreign`, `os`; `null` = unlimited), `messages` (the first 20 waiting: `type`, and `size` or a short `preview`) and `backtrace` |
 | `GET /api/exits` | the last 64 finished processes, newest first: `pid`, `entry`, `program`, `program_name`, `main` (its program's main), `failed`, `code`, `exit`, `insns`, `cpu_ns`, `ago_ns` |
 | `GET /api/log?since=N` | the log's entries after number `N` (0: all it has), oldest first: `seq`, `t_ns` (since the VM started), `pid`, `program` and `program_name` (null for the monitor's own), and `level` and `text`, or `event` and `value` (JSON); with `next`, the number to ask from next time, and `lost`, how many were overwritten before being asked for |
@@ -463,6 +466,7 @@ modules, names, nodes and graph every five).
 | `GET /api/names` | the registry: `name` and `pid` |
 | `GET /api/nodes` | `self`, this VM's node number (0: none), its `name` (`""`: none), and `connected`: `node`, its `name`, `carrier` (the process carrying that connection), and its traffic since it came: `up_ms`, messages `sent` there and `received` from there, the frames' `bytes_out` and `bytes_in`, `queued` (bytes not yet written), `waiting` (senders waiting now for it to have room, as more than 1 MiB is queued) and `waits` (how many times one has) |
 | `GET /api/graph` | `links` (`[a, b]`, each once), `monitors` (`[watcher, watched]`), and `far`: ties with other nodes, `pid`, `kind` (`link`, `watched_by`, `watches`) and `other` |
+| `GET /api/envs` | each environment, the programs' and then the named ones: `env` (a named one's name, or null), `program` and `program_name` (a program's, or null), `processes` (in it), `watchers` (`env.watch`), and `values`, by name: `key` and `secret`, and, to an admin's key, `value` as JSON (null for a secret, or with `note` for one that has no JSON form or is over 16 KiB of it) |
 | `GET /top` | the plain-text table that `mlwsvm top` shows |
 
 Actions (with `--monitor-actions`; `Authorization: Bearer KEY`, an admin's).
@@ -477,6 +481,8 @@ module or action):
 | `POST /api/proc/PID/send` | the body, JSON of up to 64 KiB, as a message: an object is a map, an array a list, a string a string, a number an `i64` or `f64` |
 | `POST /api/modules/NAME/reload` | a new version of the module from its file (`module.reload`) |
 | `POST /api/modules/NAME/purge` | frees the old versions nothing runs (`module.purge`); answers `freed` and `kept` |
+| `POST /api/envs/set` | set a value of an environment: `{"env": "billing", "key": "rate", "value": 4.5}`, or `"program": 0` for a program's own; `"secret": true` marks it secret. Its watchers hear of it, as of `env.set`; 404 for no such environment |
+| `POST /api/envs/delete` | the same, with no `value`: delete one; 404 for no such value |
 
 `GET /api/vm` also says whether actions are on (`actions`), whether every
 request needs a key (`keys`), and whose key asked (`you`: its `label` and
