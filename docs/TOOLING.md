@@ -15,7 +15,7 @@ run before a release.
 | Debugger for editors | `mlwsvm dap` (Debug Adapter Protocol) | — |
 | Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] [--monitor-actions] prog.masm` | none |
 | A VM that stays up | `mlwsvm serve --programs DIR [--monitor [HOST:]PORT]` | — |
-| Terminal view | `mlwsvm top [https://]HOST:PORT [--ca FILE] [--once] [--interval MS]` | — |
+| Terminal view | `mlwsvm top [https://]HOST:PORT [--ca FILE] [--once] [--interval MS] [--log]` | — |
 | Name service for nodes | `mlwsvm names [--port N]` | — |
 | VM options | `mlwsvm run --max-frames N --quota heap=64M --cap read=/data ... prog.masm` | — |
 | Several programs | `mlwsvm run a.masm args --also b.masm args ...` | — |
@@ -444,8 +444,9 @@ Summary tiles (live processes, instructions per second, heap, time slices per
 second), two-minute charts of instructions per second and heap size, a sortable
 process table (click a row for details: quotas, links and monitors, here and on
 other nodes, a backtrace, and the first messages waiting), the program's log
-(below; filtered by level, and with the newest line at the bottom or the top,
-which the browser remembers), a graph of who is linked with and who monitors whom, the modules loaded
+(below; filtered by level and by text, with the newest line at the bottom or the
+top, which the browser remembers; it can be paused, and the lines shown
+downloaded as text), a graph of who is linked with and who monitors whom, the modules loaded
 with each version, the registered names, the nodes connected and each connection's
 traffic and backlog, the [environments](STDLIB.md#environments-env) (names
 to anyone who may read; values, and setting and deleting them, to an admin),
@@ -469,6 +470,7 @@ modules, names, nodes, graph, environments and keys every five).
 | `GET /api/graph` | `links` (`[a, b]`, each once), `monitors` (`[watcher, watched]`), and `far`: ties with other nodes, `pid`, `kind` (`link`, `watched_by`, `watches`) and `other` |
 | `GET /api/envs` | each environment, the programs' and then the named ones: `env` (a named one's name, or null), `program` and `program_name` (a program's, or null), `processes` (in it), `watchers` (`env.watch`), and `values`, by name: `key` and `secret`, and, to an admin's key, `value` as JSON (null for a secret, or with `note` for one that has no JSON form or is over 16 KiB of it) |
 | `GET /top` | the plain-text table that `mlwsvm top` shows |
+| `GET /log?since=N` | the log's entries after number `N` as plain text, which `mlwsvm top --log` shows: a first line with the number to ask from next time, then each entry: its time, pid, program, level (or `event`) and text (or an event's name and value) |
 
 Actions (with `--monitor-actions`; `Authorization: Bearer KEY`, an admin's).
 Each answers `{"ok": true}`, or `{"error": ...}` with 400 (a bad body, or a
@@ -652,6 +654,19 @@ checks its certificate against the host, with the authorities in `--ca FILE`
 (for a certificate of your own making) or else the system's, and never
 without checking. A monitor with a tokens file needs a key: `--token KEY`, the
 address's `#token=` part, or `MLWSVM_MONITOR_TOKEN`, in that order.
+
+`mlwsvm top --log` shows [the program's log](#the-programs-log) instead, and
+follows it as `tail -f` follows a file, until the VM ends; with `--once` it
+prints what the log holds and exits. A line is the time since the VM started,
+the pid (`-` for the monitor's own lines), the program, the level (or `event`)
+and the text (or an event's name and its value as JSON); the dashboard's
+Download writes the same lines.
+
+```
+    0.004 s     1  watched.masm  info   watched: started
+    0.004 s     1  watched.masm  event  ready [42,"x"]
+    3.120 s     -  monitor  event  monitor.kill {"by":"ops","pid":2}
+```
 
 ## Bindings generator: `mlwsvm bindgen`
 

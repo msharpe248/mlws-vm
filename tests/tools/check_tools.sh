@@ -871,6 +871,17 @@ if command -v curl >/dev/null 2>&1; then
     echo "$LOG" | grep -q '"level":"error","text":"an \\"error\\"\\u000ain two lines"' || fail "/api/log: escaped ($LOG)"
     echo "$LOG" | grep -q '"event":"ready","value":\[42,"x"\]' || fail "/api/log: an event ($LOG)"
     curl -sf "http://127.0.0.1:$PORT/api/log?since=3" | grep -q '^{"next":4,"lost":0,"entries":\[{"seq":4,' || fail "/api/log?since"
+    # mlwsvm top --log: the same lines as text (time, pid, program, level,
+    # text), a line with a newline in it on two, and none of /log's first line
+    TLOG=$($BIN top --log --once 127.0.0.1:$PORT)
+    echo "$TLOG" | grep -Eq '^ +[0-9]+\.[0-9]{3} s +1  watched\.masm  info   watched: started' || fail "top --log: a line ($TLOG)"
+    echo "$TLOG" | grep -Eq '  watched\.masm  error  an "error"' || fail "top --log: an error ($TLOG)"
+    echo "$TLOG" | grep -q '^in two lines' || fail "top --log: a line's second line ($TLOG)"
+    echo "$TLOG" | grep -Eq '  watched\.masm  event  ready \[42,"x"\]' || fail "top --log: an event ($TLOG)"
+    echo "$TLOG" | grep -Eq '  watched\.masm  warn   E_JSON' || fail "top --log: a warning ($TLOG)"
+    [ "$(echo "$TLOG" | wc -l | tr -d ' ')" = 5 ] || fail "top --log: lines ($TLOG)"
+    curl -sf "http://127.0.0.1:$PORT/log?since=3" | head -1 | grep -q '^4' || fail "/log?since: the number to ask from next"
+    [ "$(curl -sf "http://127.0.0.1:$PORT/log?since=3" | wc -l | tr -d ' ')" = 2 ] || fail "/log?since: one line after 3"
     curl -sf http://127.0.0.1:$PORT/api/names | grep -q '{"name":"sleeper","pid":2}' || fail "/api/names"
     curl -sf http://127.0.0.1:$PORT/api/graph | grep -q '"links":\[\[1,2\]\],"monitors":\[\[1,2\]\]' || fail "/api/graph"
     curl -sf http://127.0.0.1:$PORT/api/proc/2 | grep -q '"messages":\[{"type":"string","size":5,"preview":"first"},{"type":"i64","preview":7}\]' || fail "/api/proc: messages"
@@ -935,6 +946,7 @@ if command -v curl >/dev/null 2>&1; then
         # mlwsvm top over HTTPS: with the authority, from the address the run
         # printed too; without it, the certificate is refused.
         $BIN top --once --ca tests/net/_tls/cert.pem https://localhost:$PORT | grep -q "recent exits" || fail "TLS: top"
+        $BIN top --log --once --ca tests/net/_tls/cert.pem https://localhost:$PORT | grep -q '  monitor  event  monitor\.kill {"by":"(start)","pid":2}' || fail "TLS: top --log"
         $BIN top --once --ca tests/net/_tls/cert.pem "https://localhost:$PORT/#token=s3cret" | grep -q "PID" || fail "TLS: top from the printed address"
         set +e
         TOPERR=$($BIN top --once https://localhost:$PORT 2>&1 >/dev/null); RC=$?
@@ -996,6 +1008,11 @@ if command -v curl >/dev/null 2>&1; then
     TOPERR=$($BIN top --once $U 2>&1 >/dev/null); RC=$?
     set -e
     [ $RC = 1 ] && echo "$TOPERR" | grep -q 'needs a key' || fail "keys: top without a key (exit $RC): $TOPERR"
+    $BIN top --log --once --token "$LK" $U | grep -Eq ' s +-  monitor  event  monitor\.key_new \{"by":"\(start\)","label":"ci","scope":"admin"\}' || fail "keys: top --log --token"
+    set +e
+    TOPERR=$($BIN top --log --once $U 2>&1 >/dev/null); RC=$?
+    set -e
+    [ $RC = 1 ] && echo "$TOPERR" | grep -q 'needs a key' || fail "keys: top --log without a key (exit $RC): $TOPERR"
     [ "$(code -H "Authorization: Bearer $CK" $U/api/proc/2/kill)" = 200 ] || fail "keys: an action with a key made"
     LOG=$(curl -sf -H "$A" "$U/api/log")
     echo "$LOG" | grep -q '"event":"monitor.key_new","value":{"by":"(start)","label":"ci","scope":"admin"}' || fail "keys: key_new in the log ($LOG)"

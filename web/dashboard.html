@@ -123,8 +123,11 @@ dd { margin: 0; font-variant-numeric: tabular-nums; }
 .lvl { display: inline-flex; align-items: center; gap: 6px; }
 .lvl .dot.warn { background: var(--warning); }
 .lvl .dot.info { background: var(--series-1); }
-.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; color: var(--text-secondary); }
+.toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 8px; font-size: 12px; color: var(--text-secondary); }
 .toolbar h2 { margin: 0; }
+.toolbar label { white-space: nowrap; }
+.toolbar input { font: inherit; font-size: 12px; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 6px; width: 140px; }
 select { font: inherit; font-size: 12px; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
 .graph { position: relative; }
 .graph svg { width: 100%; height: 420px; display: block; }
@@ -226,9 +229,13 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12
       <span class="spacer"></span>
       <label>Show <select id="log-level"><option value="0">everything</option><option value="1">info and up</option><option value="2">warnings and errors</option><option value="3">errors</option></select></label>
       <label>Newest <select id="log-order"><option value="bottom">at the bottom</option><option value="top">at the top</option></select></label>
+      <label>Find <input id="log-find" type="search" autocomplete="off" placeholder="text, program or pid"></label>
+      <button class="act" id="log-pause" type="button" aria-pressed="false">Pause</button>
+      <button class="act" id="log-save" type="button">Download</button>
     </div>
     <div class="log table-wrap" id="log-wrap"><table class="mini"><tbody id="log"></tbody></table></div>
     <div class="empty" id="log-empty">Nothing logged yet. A program writes here with monitor.log and monitor.event.</div>
+    <div class="empty" id="log-none" hidden>No line matches.</div>
   </section>
   <section class="card">
     <h2>Links and monitors</h2>
@@ -587,8 +594,13 @@ function logRow(e) {
   const t = (e.t_ns / 1e9).toFixed(3) + " s";
   const lv = e.event != null ? `<span class="lvl"><span class="dot"></span>event</span>`
     : `<span class="lvl"><span class="dot ${e.level === "error" ? "critical" : e.level === "warn" ? "warn" : e.level === "info" ? "info" : ""}"></span>${e.level}</span>`;
-  const msg = e.event != null ? `${esc(e.event)} ${esc(JSON.stringify(e.value))}` : esc(e.text);
-  return `<tr data-seq="${e.seq}"><td>${t}</td><td>${e.pid || "–"}</td><td class="text">${esc(e.program_name ?? (e.pid ? "" : "monitor"))}</td><td class="text">${lv}</td><td class="msg">${msg}</td></tr>`;
+  return `<tr data-seq="${e.seq}"><td>${t}</td><td>${e.pid || "–"}</td><td class="text">${esc(logProgram(e))}</td><td class="text">${lv}</td><td class="msg">${esc(logText(e))}</td></tr>`;
+}
+function logProgram(e) { return e.program_name ?? (e.pid ? "" : "monitor"); }
+function logText(e) { return e.event != null ? `${e.event} ${JSON.stringify(e.value)}` : e.text; }
+// A line as text, as `mlwsvm top --log` prints it: time, pid, program, level, text.
+function logLine(e) {
+  return `${(e.t_ns / 1e9).toFixed(3).padStart(9)} s  ${String(e.pid || "-").padStart(4)}  ${logProgram(e) || "-"}  ${(e.event != null ? "event" : e.level).padEnd(5)}  ${logText(e)}`;
 }
 let logOnly = null;                       // {pid} or {program, name}: the log of one process or program
 function setLogOnly(f) {
@@ -597,10 +609,16 @@ function setLogOnly(f) {
   $("log-only-text").textContent = !f ? "" : f.pid != null ? `process ${f.pid} only` : `program ${f.name} only`;
   renderLog();
 }
+let logPaused = null;                     // while paused: the lines as they were, and the last one's number
+// The lines to show, oldest first: those of the level, the process or program, and the text asked for.
+function logShown() {
+  const min = Number($("log-level").value), find = $("log-find").value.trim().toLowerCase();
+  return (logPaused ? logPaused.lines : logLines).filter((e) => (e.event != null ? min <= 1 : LEVELS[e.level] >= min) &&
+    (!logOnly || (logOnly.pid != null ? e.pid === logOnly.pid : e.program === logOnly.program)) &&
+    (!find || logText(e).toLowerCase().includes(find) || logProgram(e).toLowerCase().includes(find) || String(e.pid) === find));
+}
 function renderLog() {
-  const min = Number($("log-level").value);
-  const shown = logLines.filter((e) => (e.event != null ? min <= 1 : LEVELS[e.level] >= min) &&
-    (!logOnly || (logOnly.pid != null ? e.pid === logOnly.pid : e.program === logOnly.program)));
+  const shown = logShown();
   const wrap = $("log-wrap"), top = $("log-order").value === "top";
   // Follow the newest line while it is in view; otherwise keep the line at the top of the view where it is.
   const follow = top ? wrap.scrollTop <= 4 : wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 4;
@@ -610,6 +628,7 @@ function renderLog() {
   if (top) shown.reverse();
   $("log").innerHTML = shown.map(logRow).join("");
   $("log-empty").hidden = logLines.length > 0;
+  $("log-none").hidden = !logLines.length || shown.length > 0;
   if (follow) { wrap.scrollTop = top ? 0 : wrap.scrollHeight; return; }
   const tr = anchor != null && $("log").querySelector(`tr[data-seq="${anchor}"]`);
   if (tr) wrap.scrollTop = tr.offsetTop - offset;
@@ -626,8 +645,25 @@ async function pollLog() {
   if (!r.entries.length) return;
   logNext = r.next;
   logLines = logLines.concat(r.entries).slice(-LOG_KEEP);
-  renderLog();
+  if (logPaused) $("log-pause").textContent = `Resume (${logNext - logPaused.next} new)`;
+  else renderLog();
 }
+// Paused, the log shows the lines it had; new ones are kept, and counted on the button, until it resumes.
+$("log-pause").addEventListener("click", () => {
+  logPaused = logPaused ? null : { lines: logLines, next: logNext };
+  $("log-pause").textContent = logPaused ? "Resume" : "Pause";
+  $("log-pause").setAttribute("aria-pressed", String(!!logPaused));
+  if (!logPaused) renderLog();
+});
+// The lines shown, oldest first, as a text file.
+$("log-save").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([logShown().map((e) => logLine(e) + "\n").join("")], { type: "text/plain" }));
+  a.download = "mlwsvm-log.txt";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+$("log-find").addEventListener("input", renderLog);
 $("log-level").addEventListener("change", renderLog);
 $("log-order").addEventListener("change", (e) => setLogOrder(e.target.value, true));
 try { if (localStorage.getItem("mlwsvm-log-order") === "top") setLogOrder("top", false); } catch (e) {}

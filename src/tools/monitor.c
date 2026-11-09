@@ -396,6 +396,34 @@ static void log_json(StrBuf *b, const Monitor *mon, VM *vm, uint64_t since) {
     plat_unlock(vm->mlog_lock);
 }
 
+/* The same entries as text, for `mlwsvm top --log`: a first line with the
+ * number to ask from next, then a line for each entry (more, where its text
+ * has newlines): time, pid, program, level, text. The dashboard's Download
+ * writes the same lines. */
+static void log_text(StrBuf *b, const Monitor *mon, VM *vm, uint64_t since) {
+    if (!vm->mlog) {
+        sb_puts(b, "0\n");
+        return;
+    }
+    plat_lock(vm->mlog_lock);
+    uint64_t last = vm->mlog_seq, first = last > vm->mlog_cap ? last - vm->mlog_cap + 1 : 1;
+    if (since > last) since = last;
+    uint64_t from = since + 1 > first ? since + 1 : first;
+    sb_printf(b, "%llu\n", (unsigned long long)last);
+    if (from > since + 1) sb_printf(b, "(%llu lines were overwritten before they were read)\n", (unsigned long long)(from - (since + 1)));
+    for (uint64_t q = from; q <= last; q++) {
+        const MLogEntry *e = &vm->mlog[(q - 1) % vm->mlog_cap];
+        char pid[24] = "-";
+        if (e->pid) snprintf(pid, sizeof pid, "%llu", (unsigned long long)e->pid);
+        const char *prog = e->prog >= 0 && (size_t)e->prog < vm->progs.n ? prog_name(mon, vm->progs.v[e->prog]) : e->pid ? "-" : "monitor";
+        sb_printf(b, "%9.3f s  %4s  %s  %-5s  ", (double)e->t_ns / 1e9, pid, prog, e->level < 0 ? "event" : LOG_LEVELS[e->level]);
+        if (e->level < 0) sb_printf(b, "%s ", e->name);
+        sb_puts(b, e->text);
+        sb_putc(b, '\n');
+    }
+    plat_unlock(vm->mlog_lock);
+}
+
 static void exits_json(StrBuf *b, const Monitor *mon, VM *vm) {
     sb_putc(b, '[');
     size_t n = vm->exits.n;
@@ -931,8 +959,9 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *key) 
         graph_json(&b, vm);
     } else if (!strcmp(path, "/api/log")) {
         log_json(&b, mon, vm, since ? strtoull(since, NULL, 10) : 0);
-    } else if (!strcmp(path, "/top")) {
-        top_text(&b, mon, vm);
+    } else if (!strcmp(path, "/top") || !strcmp(path, "/log")) {
+        if (path[1] == 't') top_text(&b, mon, vm);
+        else log_text(&b, mon, vm, since ? strtoull(since, NULL, 10) : 0);
         respond(k, 200, "text/plain; charset=utf-8", b.s, b.n, true);
         sb_free(&b);
         return;

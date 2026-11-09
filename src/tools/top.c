@@ -1,7 +1,9 @@
 /* top.c - `mlwsvm top [http[s]://]HOST:PORT [--ca FILE]`: a terminal view of a
  * running VM's processes. It fetches the plain-text table the monitor renders
  * at /top (the server computes %CPU between samples), so the client stays tiny
- * and needs no JSON parser. Over HTTPS (a monitor with --monitor-cert) it
+ * and needs no JSON parser. With --log it follows the monitor's log instead,
+ * as `tail -f` a file: /log?since=N is the lines after number N as text, under
+ * a first line with the number to ask from next. Over HTTPS (a monitor with --monitor-cert) it
  * checks the monitor's certificate against the host, with the authorities in
  * --ca's file or else the system's, as std.tls does. A monitor with a tokens
  * file needs a key: --token's, the address's #token=, or
@@ -75,7 +77,7 @@ static bool fetch(const Target *t, const char *path, StrBuf *body, char *why, si
     else if (ok && !why[0] && resp.s && !strncmp(resp.s, "HTTP/1.0 401", 12))
         snprintf(why, whylen, t->token[0] ? "the monitor does not know that key" : "the monitor needs a key: --token KEY");
     else if (ok && !why[0])
-        snprintf(why, whylen, "the monitor did not answer /top%s",
+        snprintf(why, whylen, "the monitor did not answer %.*s%s", (int)strcspn(path, "?"), path,
                  !t->tls && (!resp.s || strncmp(resp.s, "HTTP/", 5)) ? " (one over TLS is https://HOST:PORT)" : "");
     sb_free(&resp);
     return good;
@@ -110,11 +112,12 @@ static bool parse_target(const char *addr, Target *t) {
 
 int tool_top(int argc, char **argv) {
     const char *addr = "127.0.0.1:7070";
-    bool once = false;
+    bool once = false, log = false;
     long interval_ms = 1000;
     Target t = {.host = "127.0.0.1"};
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--once")) once = true;
+        else if (!strcmp(argv[i], "--log")) log = true;
         else if (!strcmp(argv[i], "--interval") && i + 1 < argc) interval_ms = atol(argv[++i]);
         else if (!strcmp(argv[i], "--ca") && i + 1 < argc) t.ca = argv[++i];
         else if (!strcmp(argv[i], "--token") && i + 1 < argc) snprintf(t.token, sizeof t.token, "%s", argv[++i]);
@@ -130,14 +133,16 @@ int tool_top(int argc, char **argv) {
         fprintf(stderr, "mlwsvm top: HTTPS needs OpenSSL or LibreSSL, and neither was found\n");
         return 1;
     }
-    bool tty = plat_is_tty() && !once, seen = false;
+    bool tty = plat_is_tty() && !once && !log, seen = false;
+    unsigned long long since = 0; /* (--log) the number of the last line printed */
     for (;;) {
         StrBuf body = {0};
-        char why[256];
-        if (!fetch(&t, "/top", &body, why, sizeof why)) {
+        char why[256], path[64] = "/top";
+        if (log) snprintf(path, sizeof path, "/log?since=%llu", since);
+        if (!fetch(&t, path, &body, why, sizeof why)) {
             sb_free(&body);
             if (seen && !why[0]) {
-                printf("\nThe program has finished.\n");
+                if (!log) printf("\nThe program has finished.\n");
                 return 0;
             }
             if (why[0]) fprintf(stderr, "mlwsvm top: %s%s:%d: %s\n", t.tls ? "https://" : "", t.host, t.port, why);
@@ -148,7 +153,13 @@ int tool_top(int argc, char **argv) {
         }
         seen = true;
         if (tty) fputs("\x1b[H\x1b[2J", stdout); /* home + clear */
-        fwrite(body.s, 1, body.n, stdout);
+        size_t skip = 0;
+        if (log && body.s) { /* the first line: the number to ask from next */
+            since = strtoull(body.s, NULL, 10);
+            skip = strcspn(body.s, "\n");
+            if (skip < body.n) skip++;
+        }
+        if (body.n > skip) fwrite(body.s + skip, 1, body.n - skip, stdout);
         if (tty) printf("\n(refreshing every %ld ms; Ctrl-C to quit)\n", interval_ms);
         fflush(stdout);
         sb_free(&body);
