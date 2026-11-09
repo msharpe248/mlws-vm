@@ -234,6 +234,9 @@ sends' medians of four runs were 5% slower, within a spread of ±15%).
 `bench/connections` is 6% faster on the i7 and 13% on the Ryzen, and
 `pingpong` and `parallel`, which wait for no descriptor, are unchanged.
 
+A message to a name on the other node (`node.name_pid`, resolved where it
+arrives) costs what one to a pid does: on the M5, 259 ns against 245.
+
 ## The JIT
 
 With `--jit on` ([JIT.md](JIT.md)), hot functions run as machine code. The

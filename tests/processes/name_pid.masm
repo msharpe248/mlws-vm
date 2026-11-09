@@ -1,0 +1,109 @@
+; node.name_pid: a pid that stands for whichever process has a registered
+; name when a message arrives, here on this VM (number 0). A message to it
+; goes to the name's holder at the time it is sent; to a name nobody has, it
+; is dropped; proc.call to it is answered by the holder, or E_NOPROC. The pid
+; is the same for the same name, and can be kept while the name passes from
+; process to process. (Between nodes: check_tools.sh's node test.)
+.include "std/test.inc"
+
+; Registers as name, then sends each message it gets, with its tag, to parent
+; as [who, message]; answers a Call with [who].
+.func holder(i64 parent, ref name, i64 who)
+    ncall "proc.register" (name, PID)
+    send parent, 0                     ; (registered)
+    lnew R5
+    lpush R5, 0
+1:  recv R5[0]
+    tagof I3, R5[0]
+    bne I3, 13, 2f
+    mov.r R4, R5[0]
+    isa I6, R4, Call
+    bz I6, 2f
+    lnew R7
+    lpush R7, who
+    ncall "proc.reply" (R4, R7)
+    jmp 1b
+2:  lnew R6
+    lpush R6, who
+    lpush R6, R5[0]
+    send parent, R6
+    jmp 1b
+.endf
+
+.func call_code(i64 pid) -> ref
+.try h
+    ncall "proc.call" (pid, "hello", 1000) -> (R1)
+.endtry
+    ret null
+h:
+    catch R2
+    mov R3, R2->Error.code
+    ret R3
+.endf
+
+.func bad_name(ref name) -> ref
+.try h
+    ncall "node.name_pid" (0, name) -> (I1)
+.endtry
+    ret null
+h:
+    catch R2
+    mov R3, R2->Error.code
+    ret R3
+.endf
+
+.func main
+    ncall "node.name_pid" (0, "logger") -> (I10)
+    ncall "node.name_pid" (0, "logger") -> (I11)
+    ASSERT_EQ I10, I11                 ; (one pid for one name)
+    ncall "node.name_pid" (0, "other") -> (I12)
+    ASSERT_NE I10, I12
+    alive I1, I10
+    ASSERT_FALSE I1                    ; (no process is a name's pid)
+
+    send I10, 1                        ; nobody has the name: dropped
+    call call_code (I10) -> (R1)
+    strcmp I1, R1, "E_NOPROC"
+    ASSERT_EQ I1, 0
+
+    spawn holder (PID, "logger", 1) -> (I20)
+    recv I1                            ; (registered)
+    send I10, 42                       ; each type as it is
+    send I10, 2.5
+    send I10, "text"
+    mov I2, 0
+1:  recv R2
+    mov I3, R2[0]
+    ASSERT_EQ I3, 1
+    inc I2
+    blt I2, 3, 1b
+    call call_code (I10) -> (R1)
+    ASSERT_FALSE R1, r                 ; (answered)
+    ncall "proc.call" (I10, "who", 1000) -> (R3)
+    mov I4, R3[0]
+    ASSERT_EQ I4, 1
+
+    ; The name passes to another process: the same pid reaches it.
+    monitor I20
+    kill I20
+    recv R9                            ; (its Down: the name is free)
+    spawn holder (PID, "logger", 2) -> (I21)
+    recv I1
+    send I10, 7
+    recv R2
+    mov I3, R2[0]
+    ASSERT_EQ I3, 2
+    mov I5, R2[1]
+    ASSERT_EQ I5, 7
+
+    ; A name of 1 to 255 bytes.
+    call bad_name ("") -> (R1)
+    strcmp I1, R1, "E_RANGE"
+    ASSERT_EQ I1, 0
+    ncall "text.repeat" ("n", 256) -> (R4)
+    call bad_name (R4) -> (R1)
+    strcmp I1, R1, "E_RANGE"
+    ASSERT_EQ I1, 0
+    kill I21
+    ret
+.endf

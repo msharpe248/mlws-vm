@@ -296,6 +296,7 @@ typedef struct VM {
     struct NodeStats **node_stats; /* per node: its connection's traffic, since it last came (made by node.attach) */
     char *node_name;         /* [lock] this VM's name among nodes, or NULL (node.set_name) */
     char **node_names;       /* [lock] per node: the name it gave when it last connected, or NULL */
+    StrMap node_numbers;     /* [lock] and back: name -> the numbers that have it (NodeNums) */
     VEC(uint64_t) node_watchers; /* [lock] processes told of each connection that comes or goes (node.watch) */
     VEC(struct ModWatch { char *name; uint64_t pid; }) mod_watchers; /* [lock] processes told of each reload of a module (module.watch) */
     struct Bundle *bundle;   /* the program this executable carries, or NULL: modules are found there first */
@@ -368,6 +369,8 @@ typedef struct VM {
     _Atomic int64_t exit_code;
     VEC(FdTicket) tickets;       /* handles given away with fs.give, not yet taken (under `lock`) */
     StrMap registry;             /* proc.register: name -> pid (0 once released), under `lock` */
+    VEC(char *) pid_names;       /* [lock] the names node.name_pid has made pids for, numbered from 1 */
+    StrMap pid_name_ids;         /* [lock] and back */
     bool external_input;         /* the host may send messages (mlws_start): never a deadlock */
 } VM;
 
@@ -515,6 +518,12 @@ typedef VEC(uint64_t) PidVec;
 /* A connection to another node, counted for the monitor: messages sent there
  * (send_far) and received from there (node.take), the frames' bytes written
  * and read, and how many times a sender waited for room (back-pressure). */
+/* The node numbers that have had a name (VM.node_numbers), few. */
+struct NodeNums {
+    uint32_t *v;
+    size_t n, cap;
+};
+
 typedef struct NodeStats {
     _Atomic uint64_t sent, received, bytes_out, bytes_in, waits;
     uint64_t up_ns; /* when it came */
@@ -871,6 +880,8 @@ Process *sched_frag(VM *vm); /* this thread's scratch heap, emptied, to make a m
 void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag); /* v made in sched_frag's heap */
 void sched_node_written(Process *p, uint64_t n); /* a connection's carrier wrote n bytes of frames */
 void sched_set_carries(VM *vm, uint64_t carrier, uint32_t node); /* (node.attach) */
+uint64_t sched_whereis(VM *vm, const char *name); /* the registry: the pid with a name, or 0 */
+ObjBytes *node_named_frame(Process *p, Process *f, const char *name, Word v, uint8_t tag); /* dist.c: [12, name, value] */
 NodeStats *node_stats_of(VM *vm, uint32_t node); /* dist.c: NULL before its first connection */
 void sched_node_down(VM *vm, uint32_t node);
 void sched_node_event(VM *vm, uint32_t node, bool up); /* a NodeEvent to each watcher */
@@ -943,6 +954,11 @@ void natives_register_caps(VM *vm);
 /* dist.c: a pid's top 16 bits name its node (0: this one, by a plain pid). */
 #define NODE_SHIFT 48
 #define PID_LOCAL ((((uint64_t)1) << NODE_SHIFT) - 1) /* a pid's part that names its process on its node */
+/* A pid that stands for whichever process has a registered name on its node
+ * when a message arrives there (node.name_pid): its low bits number the name
+ * in VM.pid_names. No process has this bit. */
+#define PID_NAMED (((uint64_t)1) << 47)
+#define PID_NAME_MAX 255
 void natives_register_node(VM *vm);
 const NativeDef *natives_node_table(size_t *n);
 const NativeDef *natives_caps_table(size_t *n);
