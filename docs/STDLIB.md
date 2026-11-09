@@ -802,7 +802,9 @@ running system changes. It is not the operating system's environment, which
 * **Files.** A file of `name = value` lines, each value JSON (an object is a
   map, an array a list, as in [JSON](#json)), in which `${VAR}` is replaced by
   the operating system's environment variable `VAR` first (nothing if it has
-  none), fills an environment: `mlwsvm run --env FILE` each program's, before
+  none; within a JSON string, escaped, so that a Windows path or a quote stays
+  itself; outside one, it is JSON itself, as `port = ${PORT}`), fills an
+  environment: `mlwsvm run --env FILE` each program's, before
   it starts (`--env` again for more files; a file that is not one stops the run,
   saying where); `mlwsvm serve` a program's from the `NAME.mlws.env` beside its
   `NAME.masm`, if there is one; and `env.load(path)` the caller's. A file is

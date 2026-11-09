@@ -1,0 +1,14 @@
+; For check_tools.sh: prints the values --env gave from esc.mlws.env, a line
+; each.
+.func main
+    ncall "env.get" ("win", null) -> (R0)
+    ncall "io.print_s" (R0)
+    ncall "io.nl" ()
+    ncall "env.get_i" ("num", 0) -> (I0)
+    ncall "io.print_i" (I0)
+    ncall "io.nl" ()
+    ncall "env.get" ("esc", null) -> (R0)
+    ncall "io.print_s" (R0)
+    ncall "io.nl" ()
+    ret 0
+.endf

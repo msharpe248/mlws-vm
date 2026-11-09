@@ -99,7 +99,8 @@ static bool name_ok(const char *s, size_t n) {
 
 /* A file's text into e: `name = value` lines, the value JSON after each
  * ${VAR} is replaced by the operating system's environment variable VAR (empty
- * if it has none); `#` lines and blank ones are skipped. Parsed and encoded in
+ * if it has none; escaped as JSON within a string, as a Windows path needs);
+ * `#` lines and blank ones are skipped. Parsed and encoded in
  * heap's heap. False, with where and why, at the first line that is not one. */
 static bool load_text(Process *heap, Env *e, const char *text, size_t len, const char *path, char *err, size_t errlen) {
     size_t line = 0;
@@ -122,7 +123,14 @@ static bool load_text(Process *heap, Env *e, const char *text, size_t len, const
         const char *v = eq + 1;
         while (v < z && isspace((unsigned char)*v)) v++;
         StrBuf json = {0};
+        bool in_str = false; /* (within a JSON string: a variable's text goes in escaped) */
         for (const char *c = v; c < z; c++) { /* ${VAR} */
+            if (in_str && *c == '\\' && c + 1 < z) {
+                sb_putc(&json, *c++);
+                sb_putc(&json, *c);
+                continue;
+            }
+            if (*c == '"') in_str = !in_str;
             const char *close = c[0] == '$' && c + 1 < z && c[1] == '{' ? memchr(c + 2, '}', (size_t)(z - c - 2)) : NULL;
             if (!close) {
                 sb_putc(&json, *c);
@@ -130,7 +138,13 @@ static bool load_text(Process *heap, Env *e, const char *text, size_t len, const
             }
             char *var = xstrndup(c + 2, (size_t)(close - c - 2));
             const char *val = getenv(var);
-            if (val) sb_puts(&json, val);
+            for (const char *s2 = val; s2 && *s2; s2++) {
+                unsigned char ch = (unsigned char)*s2;
+                if (!in_str) sb_putc(&json, (char)ch);
+                else if (ch == '"' || ch == '\\') sb_putc(&json, '\\'), sb_putc(&json, (char)ch);
+                else if (ch < 0x20) sb_printf(&json, "\\u%04x", ch);
+                else sb_putc(&json, (char)ch);
+            }
             free(var);
             c = close;
         }
