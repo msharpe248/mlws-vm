@@ -225,6 +225,7 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12
       <span class="pill" id="log-only" hidden><span id="log-only-text"></span><button class="act" id="log-only-clear" type="button" aria-label="Show everyone's log">×</button></span>
       <span class="spacer"></span>
       <label>Show <select id="log-level"><option value="0">everything</option><option value="1">info and up</option><option value="2">warnings and errors</option><option value="3">errors</option></select></label>
+      <label>Newest <select id="log-order"><option value="bottom">at the bottom</option><option value="top">at the top</option></select></label>
     </div>
     <div class="log table-wrap" id="log-wrap"><table class="mini"><tbody id="log"></tbody></table></div>
     <div class="empty" id="log-empty">Nothing logged yet. A program writes here with monitor.log and monitor.event.</div>
@@ -587,7 +588,7 @@ function logRow(e) {
   const lv = e.event != null ? `<span class="lvl"><span class="dot"></span>event</span>`
     : `<span class="lvl"><span class="dot ${e.level === "error" ? "critical" : e.level === "warn" ? "warn" : e.level === "info" ? "info" : ""}"></span>${e.level}</span>`;
   const msg = e.event != null ? `${esc(e.event)} ${esc(JSON.stringify(e.value))}` : esc(e.text);
-  return `<tr><td>${t}</td><td>${e.pid || "–"}</td><td class="text">${esc(e.program_name ?? (e.pid ? "" : "monitor"))}</td><td class="text">${lv}</td><td class="msg">${msg}</td></tr>`;
+  return `<tr data-seq="${e.seq}"><td>${t}</td><td>${e.pid || "–"}</td><td class="text">${esc(e.program_name ?? (e.pid ? "" : "monitor"))}</td><td class="text">${lv}</td><td class="msg">${msg}</td></tr>`;
 }
 let logOnly = null;                       // {pid} or {program, name}: the log of one process or program
 function setLogOnly(f) {
@@ -600,10 +601,25 @@ function renderLog() {
   const min = Number($("log-level").value);
   const shown = logLines.filter((e) => (e.event != null ? min <= 1 : LEVELS[e.level] >= min) &&
     (!logOnly || (logOnly.pid != null ? e.pid === logOnly.pid : e.program === logOnly.program)));
-  const wrap = $("log-wrap"), atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 4;
+  const wrap = $("log-wrap"), top = $("log-order").value === "top";
+  // Follow the newest line while it is in view; otherwise keep the line at the top of the view where it is.
+  const follow = top ? wrap.scrollTop <= 4 : wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 4;
+  let anchor = null, offset = 0;
+  if (!follow) for (const tr of $("log").rows)
+    if (tr.offsetTop + tr.offsetHeight > wrap.scrollTop) { anchor = tr.dataset.seq; offset = tr.offsetTop - wrap.scrollTop; break; }
+  if (top) shown.reverse();
   $("log").innerHTML = shown.map(logRow).join("");
   $("log-empty").hidden = logLines.length > 0;
-  if (atBottom) wrap.scrollTop = wrap.scrollHeight;
+  if (follow) { wrap.scrollTop = top ? 0 : wrap.scrollHeight; return; }
+  const tr = anchor != null && $("log").querySelector(`tr[data-seq="${anchor}"]`);
+  if (tr) wrap.scrollTop = tr.offsetTop - offset;
+}
+function setLogOrder(order, keep) {
+  $("log-order").value = order;
+  if (keep) try { localStorage.setItem("mlwsvm-log-order", order); } catch (e) {}
+  const wrap = $("log-wrap");
+  renderLog();
+  wrap.scrollTop = order === "top" ? 0 : wrap.scrollHeight;   // a new order starts at the newest line
 }
 async function pollLog() {
   const r = await apiJson(`/api/log?since=${logNext}`);
@@ -613,6 +629,8 @@ async function pollLog() {
   renderLog();
 }
 $("log-level").addEventListener("change", renderLog);
+$("log-order").addEventListener("change", (e) => setLogOrder(e.target.value, true));
+try { if (localStorage.getItem("mlwsvm-log-order") === "top") setLogOrder("top", false); } catch (e) {}
 $("log-only-clear").addEventListener("click", () => setLogOnly(null));
 
 // ---- modules, names, nodes and the graph (every five seconds) --------------------

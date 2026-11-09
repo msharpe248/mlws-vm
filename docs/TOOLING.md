@@ -444,7 +444,8 @@ Summary tiles (live processes, instructions per second, heap, time slices per
 second), two-minute charts of instructions per second and heap size, a sortable
 process table (click a row for details: quotas, links and monitors, here and on
 other nodes, a backtrace, and the first messages waiting), the program's log
-(below), a graph of who is linked with and who monitors whom, the modules loaded
+(below; filtered by level, and with the newest line at the bottom or the top,
+which the browser remembers), a graph of who is linked with and who monitors whom, the modules loaded
 with each version, the registered names, the nodes connected and each connection's
 traffic and backlog, the [environments](STDLIB.md#environments-env) (names
 to anyone who may read; values, and setting and deleting them, to an admin),
