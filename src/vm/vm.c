@@ -182,6 +182,12 @@ void vm_free(VM *vm) {
     free(vm->node_stats);
     free(vm->node_name);
     for (uint32_t n = 0; vm->node_names && n <= 65535; n++) free(vm->node_names[n]);
+    for (size_t i = 0; i < vm->node_numbers.cap; i++)
+        if (vm->node_numbers.keys && vm->node_numbers.keys[i] && vm->node_numbers.vals[i]) {
+            free(((struct NodeNums *)vm->node_numbers.vals[i])->v);
+            free(vm->node_numbers.vals[i]);
+        }
+    smap_free(&vm->node_numbers);
     free(vm->node_names);
     VEC_FREE(vm->node_watchers);
     for (size_t i = 0; i < vm->mod_watchers.n; i++) free(vm->mod_watchers.v[i].name);

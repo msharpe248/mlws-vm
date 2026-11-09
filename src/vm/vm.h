@@ -296,6 +296,7 @@ typedef struct VM {
     struct NodeStats **node_stats; /* per node: its connection's traffic, since it last came (made by node.attach) */
     char *node_name;         /* [lock] this VM's name among nodes, or NULL (node.set_name) */
     char **node_names;       /* [lock] per node: the name it gave when it last connected, or NULL */
+    StrMap node_numbers;     /* [lock] and back: name -> the numbers that have it (NodeNums) */
     VEC(uint64_t) node_watchers; /* [lock] processes told of each connection that comes or goes (node.watch) */
     VEC(struct ModWatch { char *name; uint64_t pid; }) mod_watchers; /* [lock] processes told of each reload of a module (module.watch) */
     struct Bundle *bundle;   /* the program this executable carries, or NULL: modules are found there first */
@@ -517,6 +518,12 @@ typedef VEC(uint64_t) PidVec;
 /* A connection to another node, counted for the monitor: messages sent there
  * (send_far) and received from there (node.take), the frames' bytes written
  * and read, and how many times a sender waited for room (back-pressure). */
+/* The node numbers that have had a name (VM.node_numbers), few. */
+struct NodeNums {
+    uint32_t *v;
+    size_t n, cap;
+};
+
 typedef struct NodeStats {
     _Atomic uint64_t sent, received, bytes_out, bytes_in, waits;
     uint64_t up_ns; /* when it came */

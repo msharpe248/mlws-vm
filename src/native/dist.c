@@ -698,15 +698,45 @@ static bool connected_now(const VM *vm, uint32_t n) {
 
 /* The number of the node by this name: this VM's, or a connected node's if
  * one has it, or else the last that had it; 0 if none. (Under vm->lock.) */
+/* The numbers that have had a name (vm->lock held): VM.node_numbers, kept
+ * with node_names (name_number_set), so that a lookup is one, not a scan of
+ * every number. NULL for none. */
+static struct NodeNums *numbers_of(const VM *vm, const char *s, uint32_t len) {
+    char key[MAX_NODE_NAME + 1];
+    if (!vm->node_numbers.n || !len || len > MAX_NODE_NAME || memchr(s, 0, len)) return NULL;
+    memcpy(key, s, len);
+    key[len] = 0;
+    void *v = NULL;
+    return smap_get(&vm->node_numbers, key, &v) ? v : NULL;
+}
+
+/* Number n has name (or none, NULL) from now on (vm->lock held). */
+static void name_number_set(VM *vm, uint32_t n, const char *name, uint32_t len) {
+    const char *was = vm->node_names[n];
+    struct NodeNums *ns = was ? numbers_of(vm, was, (uint32_t)strlen(was)) : NULL;
+    for (size_t i = 0; ns && i < ns->n; i++)
+        if (ns->v[i] == n) ns->v[i] = ns->v[--ns->n];
+    free(vm->node_names[n]);
+    vm->node_names[n] = len ? xstrndup(name, len) : NULL;
+    if (!len) return;
+    ns = numbers_of(vm, name, len);
+    if (!ns) {
+        ns = xcalloc(1, sizeof *ns);
+        smap_put(&vm->node_numbers, vm->node_names[n], ns);
+    }
+    VEC_PUSH(*ns, n);
+}
+
+/* The number of the node with a name: this VM's, a connected node's, or else
+ * the highest that had it; 0 if none (vm->lock held). */
 static uint32_t number_named(const VM *vm, const char *s, uint32_t len) {
     if (vm->node_name && strlen(vm->node_name) == len && !memcmp(vm->node_name, s, len))
         return __atomic_load_n(&vm->node_self, __ATOMIC_ACQUIRE);
+    const struct NodeNums *ns = numbers_of(vm, s, len);
     uint32_t found = 0;
-    for (uint32_t n = 1; vm->node_names && n <= MAX_NODE; n++) {
-        const char *x = vm->node_names[n];
-        if (!x || strlen(x) != len || memcmp(x, s, len)) continue;
-        if (connected_now(vm, n)) return n;
-        found = n;
+    for (size_t i = 0; ns && i < ns->n; i++) {
+        if (connected_now(vm, ns->v[i])) return ns->v[i];
+        if (ns->v[i] > found) found = ns->v[i];
     }
     return found;
 }
@@ -769,8 +799,7 @@ static void n_named(Process *p, Word *a, Word *r) {
     if (connected_now(vm, n) && (!was || strlen(was) != len || memcmp(was, s, len))) ok = false;
     if (ok) {
         if (!vm->node_names) vm->node_names = xcalloc(MAX_NODE + 1, sizeof *vm->node_names);
-        free(vm->node_names[n]);
-        vm->node_names[n] = len ? xstrndup(s, len) : NULL;
+        name_number_set(vm, n, s, len);
     }
     plat_unlock(vm->lock);
     r[0].i = ok;
