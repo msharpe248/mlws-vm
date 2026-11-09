@@ -114,9 +114,10 @@ base:
 * **Tooling**: a gdb-style debugger (`mlwsvm debug`), a debugger for editors
   (`mlwsvm dap`, the Debug Adapter Protocol), an exact profiler with
   flame-graph output, an instruction tracer, and a live monitor with a web
-  dashboard, JSON API and `mlwsvm top`, which with a token can also kill,
-  send, reload and purge, and, under `mlwsvm serve`, start and stop programs
-  in a VM that stays up. A compiler marks which line of its
+  dashboard, JSON API and `mlwsvm top`, which with an admin's key can also
+  kill, send, reload and purge, and, under `mlwsvm serve`, start and stop
+  programs in a VM that stays up. Keys that may read, or also act, are kept
+  as hashes in a tokens file (`mlwsvm token`). A compiler marks which line of its
   source each stretch of code came from (`.loc "fib.lua", 3`), and backtraces,
   the debugger and the profiler show that line.
 * **An optimizer**: `--opt 2` (or `mlwsvm opt` ahead of time) removes what

@@ -944,6 +944,68 @@ if command -v curl >/dev/null 2>&1; then
         wait $VMPID 2>/dev/null || true
     fi
 
+    # Keys (--monitor-tokens, mlwsvm token): a tokens file holds each key's
+    # hash; with one, every request but the page's needs a key; a read key
+    # reads, an admin's acts and manages keys, each action in the log by its
+    # key's label; the file is read again when it changes.
+    KF="$MOND/tokens"
+    RK=$($BIN token new --label ops --file "$KF" 2>/dev/null)
+    grep -q '^read ops [0-9a-f]\{64\}$' "$KF" || fail "token new: the file ($(cat "$KF"))"
+    grep -q "$RK" "$KF" && fail "token new: the token itself in the file"
+    [ "$($BIN token list --file "$KF")" = "read   ops" ] || fail "token list"
+    set +e
+    $BIN token new --label ops --file "$KF" >/dev/null 2>&1; RC=$?
+    set -e
+    [ $RC = 1 ] || fail "token new: a label used twice (exit $RC)"
+    printf 'read bad\n' > "$MOND/badtokens"
+    set +e
+    BADERR=$($BIN run --monitor 127.0.0.1:$PORT --monitor-tokens "$MOND/badtokens" examples/hello.masm 2>&1 >/dev/null); RC=$?
+    set -e
+    [ $RC = 1 ] && echo "$BADERR" | grep -q 'badtokens:1: expected SCOPE LABEL SHA256' || fail "a tokens file that is not one (exit $RC): $BADERR"
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions --monitor-tokens "$KF" tests/tools/_monitor/acted.masm >/dev/null 2>"$MOND/keys.err" &
+    VMPID=$!
+    i=0
+    until curl -sf -H "$A" $U/api/names 2>/dev/null | grep -q '"receiver"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "keys: the monitor did not start"; sleep 0.1
+    done
+    get() { curl -s -o "$MOND/r" -w '%{http_code}' "$@"; }
+    [ "$(get $U/api/procs)" = 401 ] || fail "keys: a read without a key"
+    [ "$(get $U/)" = 200 ] || fail "keys: the page without a key"
+    [ "$(get -H 'Authorization: Bearer nope' $U/api/procs)" = 401 ] || fail "keys: a read with no such key"
+    R="Authorization: Bearer $RK"
+    [ "$(get -H "$R" $U/api/procs)" = 200 ] || fail "keys: a read with a read key"
+    [ "$(get -H "$R" $U/api/vm)" = 200 ] && grep -q '"keys":true,"you":{"label":"ops","scope":"read"}' "$MOND/r" || fail "keys: /api/vm says whose ($(cat "$MOND/r"))"
+    [ "$(get -H "$R" $U/api/keys)" = 403 ] || fail "keys: the keys to a read key"
+    [ "$(code -H "$R" $U/api/proc/2/kill)" = 403 ] || fail "keys: an action with a read key"
+    [ "$(get -H "$A" $U/api/keys)" = 200 ] && grep -q '"label":"ops","scope":"read","from":"file","used_ago_ms":[0-9]' "$MOND/r" \
+        && grep -q '"label":"(start)","scope":"admin","from":"start"' "$MOND/r" || fail "keys: the list ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"label":"ci","scope":"admin"}' $U/api/keys)" = 200 ] || fail "keys: make one ($(cat "$MOND/r"))"
+    CK=$(sed 's/.*"token":"\([0-9a-f]*\)".*/\1/' "$MOND/r")
+    grep -q '^admin ci [0-9a-f]\{64\}$' "$KF" || fail "keys: a key made, into the file"
+    [ "$(code -H "$A" --data '{"label":"ci"}' $U/api/keys)" = 409 ] || fail "keys: a label used twice"
+    [ "$(code -H "$A" --data '{"label":"no spaces"}' $U/api/keys)" = 400 ] || fail "keys: a bad label"
+    [ "$(code -H "Authorization: Bearer $CK" $U/api/keys/ops/revoke)" = 200 ] || fail "keys: revoke ($(cat "$MOND/r"))"
+    [ "$(get -H "$R" $U/api/procs)" = 401 ] || fail "keys: a revoked key"
+    grep -q ' ops ' "$KF" && fail "keys: a revoked key still in the file"
+    [ "$(code -H "Authorization: Bearer $CK" $U/api/keys/ci/revoke)" = 409 ] || fail "keys: a key revoking itself"
+    LK=$($BIN token new --label late --file "$KF" 2>/dev/null)
+    [ "$(get -H "Authorization: Bearer $LK" $U/api/procs)" = 200 ] || fail "keys: one added to the file while it runs"
+    $BIN top --once --token "$LK" $U | grep -q "PID" || fail "keys: top --token"
+    $BIN top --once "$U/#token=$LK" | grep -q "PID" || fail "keys: top from an address with the key"
+    set +e
+    TOPERR=$($BIN top --once $U 2>&1 >/dev/null); RC=$?
+    set -e
+    [ $RC = 1 ] && echo "$TOPERR" | grep -q 'needs a key' || fail "keys: top without a key (exit $RC): $TOPERR"
+    [ "$(code -H "Authorization: Bearer $CK" $U/api/proc/2/kill)" = 200 ] || fail "keys: an action with a key made"
+    LOG=$(curl -sf -H "$A" "$U/api/log")
+    echo "$LOG" | grep -q '"event":"monitor.key_new","value":{"by":"(start)","label":"ci","scope":"admin"}' || fail "keys: key_new in the log ($LOG)"
+    echo "$LOG" | grep -q '"event":"monitor.key_revoke","value":{"by":"ci","label":"ops"}' || fail "keys: key_revoke in the log"
+    echo "$LOG" | grep -q '"event":"monitor.kill","value":{"by":"ci","pid":2}' || fail "keys: an action's key in the log"
+    $BIN token revoke --label late --file "$KF" || fail "token revoke"
+    [ "$($BIN token list --file "$KF")" = "admin  ci" ] || fail "token revoke: the file ($(cat "$KF"))"
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
+
     # mlwsvm serve: programs started, listed, stopped, kept within their
     # capabilities, only from their directory; then shut down.
     set +e

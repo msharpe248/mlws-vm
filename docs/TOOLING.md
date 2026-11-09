@@ -410,7 +410,8 @@ mlwsvm: monitor at http://127.0.0.1:7070/  (or: mlwsvm top 127.0.0.1:7070)
 ```
 
 `--monitor PORT` binds to 127.0.0.1. `--monitor HOST:PORT` binds elsewhere; use
-it with care, because what it shows needs no authentication. It is
+it with care, because what it shows needs no key unless there is a tokens file
+(`--monitor-tokens`, [Keys](#keys), below). It is
 **read-only** unless `--monitor-actions` is given (below). `--hold` keeps
 serving after `main` ends, so you can inspect the final state (Ctrl-C to quit).
 
@@ -421,15 +422,17 @@ $ mlwsvm run --monitor 0.0.0.0:7443 --monitor-cert cert.pem --monitor-key key.pe
 ```
 
 * **Actions** (`--monitor-actions`): kill a process, send it a message, and
-  reload or purge a module, from the dashboard or the API. Each needs a token:
-  128 random bits, printed at the start, or `MLWSVM_MONITOR_TOKEN`'s value. Open
-  the printed address: the token is in its `#` part, which a browser never sends
+  reload or purge a module, from the dashboard or the API. Each needs an
+  admin's [key](#keys): the one printed at the start (128 random bits, or
+  `MLWSVM_MONITOR_TOKEN`'s value), or an admin's from the tokens file. Open
+  the printed address: the key is in its `#` part, which a browser never sends
   to a server, and the page keeps it for that tab only, and only then shows the
   buttons. An action also needs, when the monitor listens on this machine only,
   a `Host` of that address (so a page from another site cannot reach it through
   a name of its own pointing here), and no `Origin` but the monitor's own. Every
   action is written to the program's log (`monitor.kill`, `monitor.send`,
-  `monitor.reload`, `monitor.purge`). Reads still need no token.
+  `monitor.reload`, `monitor.purge`), with `by`, the label of the key that did
+  it. Reads need no key, unless there is a tokens file.
 * **TLS** (`--monitor-cert FILE --monitor-key FILE`, PEM): the dashboard and the
   API over HTTPS, and nothing over plain HTTP. It needs OpenSSL or LibreSSL at
   run time, as `std.tls` does; so does `mlwsvm top https://HOST:PORT`.
@@ -462,10 +465,11 @@ modules, names, nodes and graph every five).
 | `GET /api/graph` | `links` (`[a, b]`, each once), `monitors` (`[watcher, watched]`), and `far`: ties with other nodes, `pid`, `kind` (`link`, `watched_by`, `watches`) and `other` |
 | `GET /top` | the plain-text table that `mlwsvm top` shows |
 
-Actions (with `--monitor-actions`; `Authorization: Bearer TOKEN`). Each answers
-`{"ok": true}`, or `{"error": ...}` with 400 (a bad body, or a module that will
-not reload), 401 (no token, or the wrong one), 403 (actions off, another
-`Host`, another site) or 404 (no such process, module or action):
+Actions (with `--monitor-actions`; `Authorization: Bearer KEY`, an admin's).
+Each answers `{"ok": true}`, or `{"error": ...}` with 400 (a bad body, or a
+module that will not reload), 401 (no key, or no such key), 403 (actions off, a
+key that may only read, another `Host`, another site) or 404 (no such process,
+module or action):
 
 | Endpoint | Does |
 |---|---|
@@ -474,7 +478,60 @@ not reload), 401 (no token, or the wrong one), 403 (actions off, another
 | `POST /api/modules/NAME/reload` | a new version of the module from its file (`module.reload`) |
 | `POST /api/modules/NAME/purge` | frees the old versions nothing runs (`module.purge`); answers `freed` and `kept` |
 
-`GET /api/vm` also says whether actions are on (`actions`).
+`GET /api/vm` also says whether actions are on (`actions`), whether every
+request needs a key (`keys`), and whose key asked (`you`: its `label` and
+`scope`, or null).
+
+### Keys
+
+```
+$ mlwsvm token new --label ops-dashboard --file monitor.tokens
+4be1c09a7d2f...                       (the token: shown only now)
+$ mlwsvm run --monitor 0.0.0.0:7443 --monitor-cert cert.pem --monitor-key key.pem \
+      --monitor-tokens monitor.tokens --monitor-actions server.masm
+mlwsvm: monitor at https://0.0.0.0:7443/#token=9a3e...  (actions allowed with that token)
+```
+
+A key is a token with a scope and a label:
+
+* **`read`** sees all that the monitor shows.
+* **`admin`** reads, acts (with `--monitor-actions`, or under `mlwsvm
+  serve`), and makes and revokes keys.
+
+The key printed at the start, `(start)`, is an admin's. It is made when
+actions are on or there is a tokens file, and lasts as long as the VM.
+
+A **tokens file** (`--monitor-tokens FILE`, for `run` and `serve`) holds one
+key to a line, `SCOPE LABEL SHA256`: each token's SHA-256, never the token, so
+that reading the file gives no one access. Lines that start with `#`, and
+blank ones, are skipped; a label is 1 to 63 letters, digits, `_`, `.`, `-` or
+`@`. With a tokens file, every request but the page's needs a key, so the
+monitor may listen on a network (best over TLS: a key goes with every
+request). The monitor reads the file again whenever it changes, so a key added
+or removed takes effect at once; a file that no longer reads leaves the keys as
+they were, and the log says why (`monitor.keys_unread`). A file that is not
+there yet has no keys.
+
+`mlwsvm token` keeps the file:
+
+* `new --label L [--scope read|admin] [--file F]` makes a key, prints its
+  token (the only time it is shown) and adds its line to the file; with no
+  file, it prints the line to add.
+* `revoke --label L --file F` removes one.
+* `list --file F` lists them.
+
+An admin does the same from the dashboard's Keys card, or the API. Each is in
+the log, by its key (`monitor.key_new`, `monitor.key_revoke`):
+
+| Endpoint | Does |
+|---|---|
+| `GET /api/keys` | `file` (the tokens file, or null), and `keys`: each one's `label`, `scope`, `from` (`start`, `file`, or `api`: made here with no tokens file, lasting as long as the VM) and `used_ago_ms` (null: never) |
+| `POST /api/keys` | make one: `{"label": "ops", "scope": "read"}` (`scope` may be left out: `read`); answers its `token`, the only time it is shown, and writes its hash into the tokens file; 409 for a label in use |
+| `POST /api/keys/LABEL/revoke` | it no longer works; 409 for the key asking |
+
+These need an admin's key, the monitor's own `Host` and `Origin` as actions
+do, but not `--monitor-actions`. On the dashboard, a monitor that needs a key
+asks for one, and the header says whose key is in use, with a way to sign out.
 
 Counters are cumulative; compute rates by differencing two samples, as the
 dashboard does. `cpu_ns` is the time spent executing that process's time slices.
@@ -503,8 +560,8 @@ mlwsvm: serving at http://127.0.0.1:7070/#token=9a3e...  (programs from ./servic
 ```
 
 `mlwsvm serve` starts a VM that runs until it is shut down, with no program of
-its own, and its monitor with actions on (the token is printed, or
-`MLWSVM_MONITOR_TOKEN`). Programs are started from the dashboard's Programs
+its own, and its monitor with actions on (an admin's key is printed, or is
+`MLWSVM_MONITOR_TOKEN`; `--monitor-tokens FILE` as for `run`). Programs are started from the dashboard's Programs
 card, or the API, each with its own `os.args` and, if given, capabilities and
 quotas of its own in `--cap`'s and `--quota`'s syntax, within the VM's. Each
 has an [environment](STDLIB.md#environments-env) of its own, with `--env`'s
@@ -529,7 +586,7 @@ apply to all of them. `--monitor-cert` and
 | `POST /api/programs/ID/rerun` | the same file again, with the same arguments, capabilities and quotas, as a new program; answers its `id` and `pid` |
 | `POST /api/shutdown` | every program is stopped, and `mlwsvm serve` exits 0 |
 
-These need the token, as every action does, and each is written to the log
+These need an admin's key, as every action does, and each is written to the log
 (`monitor.start`, `monitor.rerun`, `monitor.stop`, `monitor.shutdown`). `GET
 /api/vm` says `"serve": true`. On the dashboard, a program is chosen from the
 directory's, by sub-directory; a program that has ended can be run again from
@@ -581,10 +638,11 @@ written, and the senders waiting for room now (`WAIT`) and in all (`WAITS`). `--
 prints one snapshot and exits; there, %CPU is measured over the VM's whole uptime.
 It fetches `/top` from the monitor, so it works against any VM started with
 `--monitor`. A monitor over TLS is `https://HOST:PORT` (the address the run
-prints, whose path and `#token` part `top` leaves alone, will do): `top`
+prints will do): `top`
 checks its certificate against the host, with the authorities in `--ca FILE`
 (for a certificate of your own making) or else the system's, and never
-without checking.
+without checking. A monitor with a tokens file needs a key: `--token KEY`, the
+address's `#token=` part, or `MLWSVM_MONITOR_TOKEN`, in that order.
 
 ## Bindings generator: `mlwsvm bindgen`
 

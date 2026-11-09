@@ -25,6 +25,28 @@ typedef struct Tools {
     struct Monitor *mon;
 } Tools;
 
+/* The monitor's keys (keys.c): a token kept as its SHA-256, with a scope. */
+enum { SCOPE_NONE, SCOPE_READ, SCOPE_ADMIN };
+typedef struct {
+    char label[64];
+    uint8_t hash[32];
+    int scope;
+    char from;        /* 's' printed at the start, 'f' the tokens file, 'a' made through the API with no file */
+    uint64_t used_ns; /* when last used (plat_now_ns); 0: never */
+} MonKey;
+typedef VEC(MonKey) MonKeyVec;
+const char *key_scope_name(int scope);
+int key_scope_of(const char *name); /* SCOPE_NONE for neither "read" nor "admin" */
+bool key_label_ok(const char *s);
+void key_hash(const char *token, size_t n, uint8_t out[32]);
+void key_random(char out[33]);
+/* A tokens file's keys (from 'f'): false with why. A file not there has none. */
+bool keyfile_read(const char *path, MonKeyVec *out, char *err, size_t errlen);
+/* Add a key's line, or remove the line of a label: the file is written whole,
+ * beside it, and renamed over it. */
+bool keyfile_add(const char *path, int scope, const char *label, const uint8_t hash[32], char *err, size_t errlen);
+bool keyfile_remove(const char *path, const char *label, char *err, size_t errlen);
+
 Tools *tools_of(VM *vm);       /* creates on first use */
 void tools_enable_hook(VM *vm); /* install the per-instruction hook */
 void tools_free(VM *vm);

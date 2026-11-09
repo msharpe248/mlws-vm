@@ -3,7 +3,9 @@
  * at /top (the server computes %CPU between samples), so the client stays tiny
  * and needs no JSON parser. Over HTTPS (a monitor with --monitor-cert) it
  * checks the monitor's certificate against the host, with the authorities in
- * --ca's file or else the system's, as std.tls does. */
+ * --ca's file or else the system's, as std.tls does. A monitor with a tokens
+ * file needs a key: --token's, the address's #token=, or
+ * $MLWSVM_MONITOR_TOKEN. */
 #include "../native/tls.h"
 #include "../platform/platform.h"
 #include "tools.h"
@@ -13,6 +15,7 @@ typedef struct {
     int port;
     bool tls;
     const char *ca;
+    char token[200]; /* "": none */
 } Target;
 
 #define TOP_WAIT_NS 2000000000ull
@@ -30,7 +33,9 @@ static bool fetch(const Target *t, const char *path, StrBuf *body, char *why, si
     int fd = plat_tcp_connect(t->host, t->port);
     if (fd < 0) return false;
     StrBuf req = {0}, resp = {0};
-    sb_printf(&req, "GET %s HTTP/1.0\r\nHost: %s\r\n\r\n", path, t->host);
+    sb_printf(&req, "GET %s HTTP/1.0\r\nHost: %s\r\n", path, t->host);
+    if (t->token[0]) sb_printf(&req, "Authorization: Bearer %s\r\n", t->token);
+    sb_puts(&req, "\r\n");
     bool ok;
     char buf[8192];
     long n;
@@ -67,6 +72,8 @@ static bool fetch(const Target *t, const char *path, StrBuf *body, char *why, si
     const char *start = resp.s ? strstr(resp.s, "\r\n\r\n") : NULL;
     bool good = ok && start && !strncmp(resp.s, "HTTP/1.0 200", 12);
     if (good) sb_puts(body, start + 4);
+    else if (ok && !why[0] && resp.s && !strncmp(resp.s, "HTTP/1.0 401", 12))
+        snprintf(why, whylen, t->token[0] ? "the monitor does not know that key" : "the monitor needs a key: --token KEY");
     else if (ok && !why[0])
         snprintf(why, whylen, "the monitor did not answer /top%s",
                  !t->tls && (!resp.s || strncmp(resp.s, "HTTP/", 5)) ? " (one over TLS is https://HOST:PORT)" : "");
@@ -78,6 +85,11 @@ static bool fetch(const Target *t, const char *path, StrBuf *body, char *why, si
 static bool parse_target(const char *addr, Target *t) {
     if (!strncmp(addr, "https://", 8)) t->tls = true, addr += 8;
     else if (!strncmp(addr, "http://", 7)) addr += 7;
+    const char *frag = strstr(addr, "#token=");
+    if (frag && !t->token[0]) {
+        size_t n = strcspn(frag + 7, "&");
+        if (n < sizeof t->token) memcpy(t->token, frag + 7, n), t->token[n] = 0;
+    }
     size_t len = strcspn(addr, "/#?");
     char a[sizeof t->host];
     if (len >= sizeof a) return false;
@@ -105,12 +117,15 @@ int tool_top(int argc, char **argv) {
         if (!strcmp(argv[i], "--once")) once = true;
         else if (!strcmp(argv[i], "--interval") && i + 1 < argc) interval_ms = atol(argv[++i]);
         else if (!strcmp(argv[i], "--ca") && i + 1 < argc) t.ca = argv[++i];
+        else if (!strcmp(argv[i], "--token") && i + 1 < argc) snprintf(t.token, sizeof t.token, "%s", argv[++i]);
         else addr = argv[i];
     }
     if (!parse_target(addr, &t)) {
         fprintf(stderr, "mlwsvm top: bad address '%s' (expected [https://]HOST:PORT)\n", addr);
         return 2;
     }
+    const char *env_token = getenv("MLWSVM_MONITOR_TOKEN");
+    if (!t.token[0] && env_token) snprintf(t.token, sizeof t.token, "%s", env_token);
     if (t.tls && !tls_available()) {
         fprintf(stderr, "mlwsvm top: HTTPS needs OpenSSL or LibreSSL, and neither was found\n");
         return 1;

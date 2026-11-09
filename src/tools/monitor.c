@@ -21,7 +21,13 @@ typedef struct Monitor {
     char addr[96]; /* HOST:PORT */
     char host[64];
     int port;
-    char *token;       /* --monitor-actions: what an action must show; NULL: none allowed */
+    bool actions;      /* --monitor-actions, or mlwsvm serve: actions allowed, to an admin key */
+    char *token;       /* the key printed at the start (an admin's); NULL: none */
+    MonKeyVec keys;    /* every key: its own, the tokens file's, and those made with no file */
+    char *keyfile;     /* --monitor-tokens: NULL none */
+    int64_t keyfile_mtime, keyfile_size;
+    bool keyfile_seen;
+    bool need_key;     /* (a tokens file) every request but the page's needs a key */
     char *cert, *key;  /* --monitor-cert, --monitor-key: TLS */
     char *programs;    /* mlwsvm serve: the directory programs are started from (real path); NULL: not serving */
     /* previous /top sample, to turn cumulative CPU time into a percentage */
@@ -659,6 +665,85 @@ static bool read_request(Conn *c, Req *q) {
     return true;
 }
 
+/* ---- keys (keys.c) -------------------------------------------------------------------- */
+
+static void audit(VM *vm, const MonKey *by, const char *what, const char *json);
+
+/* The tokens file's keys again, if it has changed since they were read: those
+ * made otherwise stay, and each keeps when it was last used. If it no longer
+ * reads, the keys stay as they were, and the log says why. */
+static void keys_refresh(Monitor *mon, VM *vm) {
+    if (!mon->keyfile) return;
+    PlatStat st;
+    int e;
+    bool seen = plat_stat(mon->keyfile, true, &st, &e);
+    if (seen == mon->keyfile_seen && (!seen || (st.mtime_ns == mon->keyfile_mtime && st.size == mon->keyfile_size))) return;
+    MonKeyVec fresh = {0};
+    char err[600];
+    if (!keyfile_read(mon->keyfile, &fresh, err, sizeof err)) {
+        StrBuf a = {0};
+        sb_puts(&a, "{\"error\":");
+        json_str(&a, err);
+        sb_putc(&a, '}');
+        audit(vm, NULL, "monitor.keys_unread", a.s);
+        sb_free(&a);
+        VEC_FREE(fresh);
+    } else {
+        for (size_t i = 0; i < fresh.n; i++)
+            for (size_t j = 0; j < mon->keys.n; j++)
+                if (mon->keys.v[j].from == 'f' && !strcmp(mon->keys.v[j].label, fresh.v[i].label))
+                    fresh.v[i].used_ns = mon->keys.v[j].used_ns;
+        for (size_t j = 0; j < mon->keys.n; j++) /* (its own, then the file's) */
+            if (mon->keys.v[j].from != 'f') VEC_PUSH(fresh, mon->keys.v[j]);
+        VEC_FREE(mon->keys);
+        mon->keys = fresh;
+    }
+    mon->keyfile_seen = seen;
+    mon->keyfile_mtime = seen ? st.mtime_ns : 0;
+    mon->keyfile_size = seen ? st.size : 0;
+}
+
+/* The key an Authorization: Bearer TOKEN names, or NULL. Every key's hash is
+ * compared whole, so the time taken says nothing of the token. */
+static MonKey *key_of(Monitor *mon, const char *auth) {
+    if (strncmp(auth, "Bearer ", 7)) return NULL;
+    uint8_t h[32];
+    key_hash(auth + 7, strlen(auth + 7), h);
+    MonKey *found = NULL;
+    for (size_t i = 0; i < mon->keys.n; i++) {
+        unsigned diff = 0;
+        for (int j = 0; j < 32; j++) diff |= (unsigned)(h[j] ^ mon->keys.v[i].hash[j]);
+        if (!diff) found = &mon->keys.v[i];
+    }
+    if (found) found->used_ns = plat_now_ns();
+    return found;
+}
+
+static MonKey *key_labelled(Monitor *mon, const char *label) {
+    for (size_t i = 0; i < mon->keys.n; i++)
+        if (!strcmp(mon->keys.v[i].label, label)) return &mon->keys.v[i];
+    return NULL;
+}
+
+/* GET /api/keys: each key's label, scope, where it is from and when last used. */
+static void keys_json(StrBuf *b, const Monitor *mon) {
+    uint64_t now = plat_now_ns();
+    sb_puts(b, "{\"file\":");
+    if (mon->keyfile) json_str(b, mon->keyfile);
+    else sb_puts(b, "null");
+    sb_puts(b, ",\"keys\":[");
+    for (size_t i = 0; i < mon->keys.n; i++) {
+        const MonKey *k = &mon->keys.v[i];
+        sb_puts(b, i ? ",{\"label\":" : "{\"label\":");
+        json_str(b, k->label);
+        sb_printf(b, ",\"scope\":\"%s\",\"from\":\"%s\",\"used_ago_ms\":", key_scope_name(k->scope),
+                  k->from == 's' ? "start" : k->from == 'f' ? "file" : "api");
+        if (k->used_ns) sb_printf(b, "%llu}", (unsigned long long)((now - k->used_ns) / 1000000));
+        else sb_puts(b, "null}");
+    }
+    sb_puts(b, "]}");
+}
+
 /* mlwsvm serve's programs (the first, its own, left out): each one's number,
  * file (from the programs' directory), arguments, main process, and how it is. */
 static void programs_json(StrBuf *b, const Monitor *mon, VM *vm) {
@@ -723,21 +808,41 @@ static void list_programs(StrBuf *b, const char *dir, const char *rel, int depth
     free(names);
 }
 
-/* The read-only API and the page, with the world stopped. */
-static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q) {
+/* The read-only API and the page, with the world stopped: the page to
+ * anyone; the rest to a key that may read (anyone, with no tokens file), and
+ * the keys to an admin. */
+static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *key) {
     char *path = q->path;
     char *qs = strchr(path, '?');
     if (qs) *qs++ = 0;
     const char *since = qs && !strncmp(qs, "since=", 6) ? qs + 6 : NULL;
     StrBuf b = {0};
     const char *json = "application/json";
+    int scope = key ? key->scope : mon->need_key ? SCOPE_NONE : SCOPE_READ;
     if (!strcmp(path, "/") || !strcmp(path, "/index.html")) {
         respond(k, 200, "text/html; charset=utf-8", DASHBOARD_HTML, DASHBOARD_HTML_LEN, true);
         return;
+    }
+    int need = !strcmp(path, "/api/keys") ? SCOPE_ADMIN : SCOPE_READ;
+    if (scope < need) {
+        if (key) respond_json(k, 403, "{\"error\":\"this key may only read: an admin's is needed\"}");
+        else respond_json(k, 401, "{\"error\":\"a key is needed: Authorization: Bearer KEY\"}");
+        return;
+    }
+    if (!strcmp(path, "/api/keys")) {
+        keys_json(&b, mon);
     } else if (!strcmp(path, "/api/vm")) {
         vm_json(&b, vm);
         b.n--; /* (its closing brace: one more field, whether actions are on) */
-        sb_printf(&b, ",\"actions\":%s,\"serve\":%s}", mon->token ? "true" : "false", mon->programs ? "true" : "false");
+        sb_printf(&b, ",\"actions\":%s,\"serve\":%s,\"keys\":%s,\"you\":", mon->actions ? "true" : "false",
+                  mon->programs ? "true" : "false", mon->need_key ? "true" : "false");
+        if (key) {
+            sb_puts(&b, "{\"label\":");
+            json_str(&b, key->label);
+            sb_printf(&b, ",\"scope\":\"%s\"}}", key_scope_name(key->scope));
+        } else {
+            sb_puts(&b, "null}");
+        }
     } else if (!strcmp(path, "/api/programs")) {
         programs_json(&b, mon, vm);
     } else if (!strcmp(path, "/api/programs/files") && mon->programs) {
@@ -785,7 +890,7 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q) {
         respond(k, 404, "text/plain", "not found\n", 10, true);
         return;
     }
-    respond(k, 200, json, b.s, b.n, true);
+    respond(k, 200, json, b.s, b.n, need < SCOPE_ADMIN);
     sb_free(&b);
 }
 
@@ -818,15 +923,6 @@ static bool origin_ok(const Monitor *mon, const Req *q) {
     return !strcmp(q->origin, want);
 }
 
-static bool token_ok(const Monitor *mon, const char *auth) {
-    if (strncmp(auth, "Bearer ", 7)) return false;
-    const char *t = auth + 7;
-    size_t n = strlen(t), m = strlen(mon->token);
-    unsigned diff = (unsigned)(n ^ m); /* (in time that does not depend on how much matches) */
-    for (size_t i = 0; i < m; i++) diff |= (unsigned)(t[i < n ? i : 0] ^ mon->token[i]);
-    return diff == 0;
-}
-
 /* A path's segment, %-decoded: module names may be in it. */
 static void url_decode(char *s) {
     char *o = s;
@@ -842,8 +938,20 @@ static void url_decode(char *s) {
     *o = 0;
 }
 
-static void audit(VM *vm, const char *what, const char *json) {
-    if (vm->mlog) vm_mlog_put(vm, NULL, -1, what, json, strlen(json));
+/* An action, into the log: what, and its JSON with the label of the key that
+ * did it ("by") first. */
+static void audit(VM *vm, const MonKey *by, const char *what, const char *json) {
+    if (!vm->mlog) return;
+    StrBuf b = {0};
+    if (by && json[0] == '{') {
+        sb_puts(&b, "{\"by\":");
+        json_str(&b, by->label);
+        sb_puts(&b, json[1] == '}' ? "}" : ",");
+        if (json[1] != '}') sb_puts(&b, json + 1);
+        json = b.s;
+    }
+    vm_mlog_put(vm, NULL, -1, what, json, strlen(json));
+    sb_free(&b);
 }
 
 /* ---- mlwsvm serve: starting programs ---------------------------------------------------- *
@@ -973,7 +1081,7 @@ static char *program_file(const Monitor *mon, const char *rel) {
     return real;
 }
 
-static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q) {
+static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *by) {
     StrBuf b = {0}, a = {0};
     size_t id = 0;
     char verb[16] = "";
@@ -999,7 +1107,7 @@ static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q) {
             sb_puts(&a, "{\"path\":");
             json_str(&a, r.path);
             sb_printf(&a, ",\"pid\":%llu}", (unsigned long long)pr->main->pid);
-            audit(vm, "monitor.start", a.s);
+            audit(vm, by, "monitor.start", a.s);
             respond_json(k, 200, b.s);
         } else {
             sb_puts(&b, "{\"error\":");
@@ -1034,7 +1142,7 @@ static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q) {
             if (pr) {
                 sb_printf(&b, "{\"ok\":true,\"id\":%u,\"pid\":%llu}", pr->id, (unsigned long long)pr->main->pid);
                 sb_printf(&a, "{\"id\":%zu,\"as\":%u,\"pid\":%llu}", id, pr->id, (unsigned long long)pr->main->pid);
-                audit(vm, "monitor.rerun", a.s);
+                audit(vm, by, "monitor.rerun", a.s);
                 respond_json(k, 200, b.s);
             } else {
                 sb_puts(&b, "{\"error\":");
@@ -1055,13 +1163,13 @@ static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q) {
         plat_unlock(vm->lock);
         if (pid && sched_kill_from_outside(vm, pid, "E_KILLED", "stopped from the monitor")) {
             sb_printf(&a, "{\"id\":%zu,\"pid\":%llu}", id, (unsigned long long)pid);
-            audit(vm, "monitor.stop", a.s);
+            audit(vm, by, "monitor.stop", a.s);
             respond_json(k, 200, "{\"ok\":true}");
         } else {
             respond_json(k, 404, "{\"error\":\"no such program running\"}");
         }
     } else if (!strcmp(q->path, "/api/shutdown")) {
-        audit(vm, "monitor.shutdown", "{}");
+        audit(vm, by, "monitor.shutdown", "{}");
         respond_json(k, 200, "{\"ok\":true}");
         vm_serve_stop(vm);
     } else {
@@ -1071,8 +1179,125 @@ static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q) {
     sb_free(&b);
 }
 
-static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q) {
-    if (!mon->token) {
+/* A JSON object of strings only, each named in names, into vals (malloc'd;
+ * NULL for one not there). */
+static bool flat_strings(const char *body, size_t n, const char *const *names, char **vals, size_t nnames) {
+    JText t = {body, body + n};
+    jt_ws(&t);
+    if (t.s >= t.end || *t.s++ != '{') return false;
+    jt_ws(&t);
+    if (t.s < t.end && *t.s == '}') return t.s++, jt_ws(&t), t.s == t.end;
+    for (;;) {
+        char *key = NULL, *v = NULL;
+        if (!jt_str(&t, &key)) return false;
+        jt_ws(&t);
+        bool ok = t.s < t.end && *t.s++ == ':' && jt_str(&t, &v);
+        size_t at = nnames;
+        for (size_t i = 0; ok && i < nnames; i++)
+            if (!strcmp(key, names[i])) at = i;
+        ok = ok && at < nnames && !vals[at];
+        free(key);
+        if (!ok) return free(v), false;
+        vals[at] = v;
+        jt_ws(&t);
+        if (t.s < t.end && *t.s == ',') {
+            t.s++;
+            continue;
+        }
+        if (t.s < t.end && *t.s == '}') break;
+        return false;
+    }
+    t.s++;
+    jt_ws(&t);
+    return t.s == t.end;
+}
+
+/* POST /api/keys {"label", "scope"}: a new key, its token in the answer only
+ * (and into the tokens file, as its hash, if there is one); POST
+ * /api/keys/LABEL/revoke: a key no more, but not the one asking. */
+static void serve_keys(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *by) {
+    StrBuf b = {0}, a = {0};
+    char err[600], label[256] = "", verb[16] = "";
+    if (!strcmp(q->path, "/api/keys")) {
+        static const char *const NAMES[] = {"label", "scope"};
+        char *v[2] = {NULL, NULL};
+        int scope = SCOPE_NONE;
+        if (!flat_strings(q->body ? q->body : "", q->nbody, NAMES, v, 2) || !v[0] || !key_label_ok(v[0]) ||
+            !(scope = v[1] ? key_scope_of(v[1]) : SCOPE_READ)) {
+            respond_json(k, 400, "{\"error\":\"expected a label (1 to 63 letters, digits, _, ., - or @) and a scope (read or admin)\"}");
+        } else if (key_labelled(mon, v[0])) {
+            respond_json(k, 409, "{\"error\":\"there is a key with that label\"}");
+        } else {
+            MonKey nk = {{0}, {0}, scope, mon->keyfile ? 'f' : 'a', 0};
+            snprintf(nk.label, sizeof nk.label, "%s", v[0]);
+            char token[33];
+            key_random(token);
+            key_hash(token, strlen(token), nk.hash);
+            bool ok = true;
+            if (mon->keyfile) {
+                ok = keyfile_add(mon->keyfile, scope, nk.label, nk.hash, err, sizeof err);
+                if (ok) keys_refresh(mon, vm);
+            } else {
+                VEC_PUSH(mon->keys, nk);
+            }
+            if (ok) {
+                sb_puts(&b, "{\"ok\":true,\"label\":");
+                json_str(&b, nk.label);
+                sb_printf(&b, ",\"scope\":\"%s\",\"token\":\"%s\"}", key_scope_name(scope), token);
+                sb_puts(&a, "{\"label\":");
+                json_str(&a, nk.label);
+                sb_printf(&a, ",\"scope\":\"%s\"}", key_scope_name(scope));
+                audit(vm, by, "monitor.key_new", a.s);
+                respond_json(k, 200, b.s);
+            } else {
+                sb_puts(&b, "{\"error\":");
+                json_str(&b, err);
+                sb_putc(&b, '}');
+                respond_json(k, 500, b.s);
+            }
+        }
+        free(v[0]);
+        free(v[1]);
+    } else if (sscanf(q->path, "/api/keys/%255[^/]/%15[a-z]", label, verb) == 2 && !strcmp(verb, "revoke")) {
+        url_decode(label);
+        MonKey *old = key_labelled(mon, label);
+        if (!old) {
+            respond_json(k, 404, "{\"error\":\"no key with that label\"}");
+        } else if (!strcmp(label, by->label)) {
+            respond_json(k, 409, "{\"error\":\"a key cannot revoke itself\"}");
+        } else {
+            bool ok = true;
+            if (old->from == 'f') {
+                ok = keyfile_remove(mon->keyfile, label, err, sizeof err);
+                if (ok) keys_refresh(mon, vm);
+            } else {
+                *old = mon->keys.v[--mon->keys.n];
+            }
+            if (ok) {
+                sb_puts(&a, "{\"label\":");
+                json_str(&a, label);
+                sb_putc(&a, '}');
+                audit(vm, by, "monitor.key_revoke", a.s);
+                respond_json(k, 200, "{\"ok\":true}");
+            } else {
+                sb_puts(&b, "{\"error\":");
+                json_str(&b, err);
+                sb_putc(&b, '}');
+                respond_json(k, 500, b.s);
+            }
+        }
+    } else {
+        respond_json(k, 404, "{\"error\":\"no such action\"}");
+    }
+    sb_free(&a);
+    sb_free(&b);
+}
+
+/* A POST: an admin's key, the monitor's own Host when it listens on this
+ * machine only, and no Origin but its own; and, but for the keys, actions on. */
+static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *by) {
+    bool keys = !strncmp(q->path, "/api/keys", 9) && (!q->path[9] || q->path[9] == '/');
+    if (!keys && !mon->actions) {
         respond_json(k, 403, "{\"error\":\"actions are off: start with --monitor-actions\"}");
         return;
     }
@@ -1084,12 +1309,20 @@ static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q) {
         respond_json(k, 403, "{\"error\":\"a request from another site\"}");
         return;
     }
-    if (!token_ok(mon, q->auth)) {
-        respond_json(k, 401, "{\"error\":\"the token is needed: Authorization: Bearer TOKEN\"}");
+    if (!by) {
+        respond_json(k, 401, "{\"error\":\"an admin's key is needed: Authorization: Bearer KEY\"}");
+        return;
+    }
+    if (by->scope < SCOPE_ADMIN) {
+        respond_json(k, 403, "{\"error\":\"this key may only read: an admin's is needed\"}");
+        return;
+    }
+    if (keys) {
+        serve_keys(mon, vm, k, q, by);
         return;
     }
     if (mon->programs && (!strncmp(q->path, "/api/programs", 13) || !strcmp(q->path, "/api/shutdown"))) {
-        serve_programs(mon, vm, k, q);
+        serve_programs(mon, vm, k, q, by);
         return;
     }
     StrBuf b = {0}, a = {0};
@@ -1099,7 +1332,7 @@ static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q) {
     if (sscanf(path, "/api/proc/%llu/%15[a-z]", (unsigned long long *)&pid, verb) == 2 && !strcmp(verb, "kill")) {
         if (sched_kill_from_outside(vm, pid, "E_KILLED", "killed from the monitor")) {
             sb_printf(&a, "{\"pid\":%llu}", (unsigned long long)pid);
-            audit(vm, "monitor.kill", a.s);
+            audit(vm, by, "monitor.kill", a.s);
             respond_json(k, 200, "{\"ok\":true}");
         } else {
             respond_json(k, 404, "{\"error\":\"no such process\"}");
@@ -1107,7 +1340,7 @@ static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q) {
     } else if (sscanf(path, "/api/proc/%llu/%15[a-z]", (unsigned long long *)&pid, verb) == 2 && !strcmp(verb, "send")) {
         if (sched_post_json(vm, pid, q->body ? q->body : "", q->nbody, err, sizeof err)) {
             sb_printf(&a, "{\"pid\":%llu,\"message\":%s}", (unsigned long long)pid, q->body);
-            audit(vm, "monitor.send", a.s);
+            audit(vm, by, "monitor.send", a.s);
             respond_json(k, 200, "{\"ok\":true}");
         } else {
             sb_puts(&b, "{\"error\":");
@@ -1132,7 +1365,7 @@ static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q) {
             sb_puts(&a, "{\"module\":");
             json_str(&a, name);
             sb_putc(&a, '}');
-            audit(vm, !strcmp(verb, "reload") ? "monitor.reload" : "monitor.purge", a.s);
+            audit(vm, by, !strcmp(verb, "reload") ? "monitor.reload" : "monitor.purge", a.s);
             respond_json(k, 200, b.s);
         } else {
             sb_puts(&b, "{\"error\":");
@@ -1173,14 +1406,20 @@ static void monitor_poll(VM *vm, uint64_t wait_ns) {
         }
         Req q = {0};
         if (read_request(&k, &q)) {
+            keys_refresh(mon, vm);
+            MonKey *found = q.auth[0] ? key_of(mon, q.auth) : NULL, key; /* (a copy: the keys may change as it is served) */
+            if (found) key = *found;
+            bool page = !strcmp(q.method, "GET") && (!strcmp(q.path, "/") || !strcmp(q.path, "/index.html"));
             if (q.bad_len) {
                 respond_json(&k, 413, "{\"error\":\"the body is over 64 KiB\"}");
+            } else if (q.auth[0] && !found && !page) {
+                respond_json(&k, 401, "{\"error\":\"no such key\"}");
             } else if (!strcmp(q.method, "GET")) {
                 sched_stop_world(vm); /* other worker threads pause while we read their processes */
-                serve_get(mon, vm, &k, &q);
+                serve_get(mon, vm, &k, &q, found ? &key : NULL);
                 sched_start_world(vm);
             } else if (!strcmp(q.method, "POST")) {
-                serve_action(mon, vm, &k, &q);
+                serve_action(mon, vm, &k, &q, found ? &key : NULL);
             } else {
                 respond(&k, 405, "text/plain", "GET, or POST for an action\n", 27, false);
             }
@@ -1219,18 +1458,32 @@ bool tools_monitor(VM *vm, const char *addr, char *err, size_t errlen) {
     return true;
 }
 
-const char *tools_monitor_actions(VM *vm, const char *token) {
+void tools_monitor_actions(VM *vm) { ((Tools *)vm->tools)->mon->actions = true; }
+
+bool tools_monitor_tokens(VM *vm, const char *path, char *err, size_t errlen) {
     Monitor *mon = ((Tools *)vm->tools)->mon;
+    MonKeyVec ks = {0};
+    bool ok = keyfile_read(path, &ks, err, errlen);
+    VEC_FREE(ks);
+    if (!ok) return false;
+    mon->keyfile = xstrdup(path);
+    mon->need_key = true;
+    keys_refresh(mon, vm);
+    return true;
+}
+
+const char *tools_monitor_key(VM *vm, const char *token) {
+    Monitor *mon = ((Tools *)vm->tools)->mon;
+    if (!mon->actions && !mon->keyfile) return NULL;
     if (token && *token) {
         mon->token = xstrdup(token);
-    } else { /* 128 random bits, as hex */
-        uint8_t r[16];
+    } else {
         mon->token = xmalloc(33);
-        if (!plat_random_bytes(r, sizeof r)) {
-            for (int i = 0; i < 16; i++) r[i] = (uint8_t)(plat_now_ns() >> (i % 8 * 8)); /* (never: the OS has entropy) */
-        }
-        for (int i = 0; i < 16; i++) snprintf(mon->token + 2 * i, 3, "%02x", r[i]);
+        key_random(mon->token);
     }
+    MonKey k = {"(start)", {0}, SCOPE_ADMIN, 's', 0}; /* (a label no other key can have) */
+    key_hash(mon->token, strlen(mon->token), k.hash);
+    VEC_PUSH(mon->keys, k);
     return mon->token;
 }
 
@@ -1273,6 +1526,8 @@ void tools_monitor_close(VM *vm) {
     plat_sock_close(t->mon->fd);
     VEC_FREE(t->mon->last_cpu);
     free(t->mon->token);
+    VEC_FREE(t->mon->keys);
+    free(t->mon->keyfile);
     free(t->mon->cert);
     free(t->mon->key);
     free(t->mon->programs);

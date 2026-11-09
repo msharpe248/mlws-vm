@@ -21,8 +21,10 @@ static void usage(FILE *f) {
           "        --profile [--flame FILE]        hot functions, lines and opcodes; collapsed stacks\n"
           "        --trace FILE|- [--trace-limit N] log every instruction\n"
           "        --monitor [HOST:]PORT [--hold]  serve the web dashboard and /api while running\n"
-          "        --monitor-actions               and allow actions (kill, send, reload, purge), with a token\n"
-          "                                        (printed; or $MLWSVM_MONITOR_TOKEN)\n"
+          "        --monitor-actions               and allow actions (kill, send, reload, purge), to an admin's\n"
+          "                                        key (printed; or $MLWSVM_MONITOR_TOKEN)\n"
+          "        --monitor-tokens FILE           the keys that may read or act (mlwsvm token); every\n"
+          "                                        request then needs one\n"
           "        --monitor-cert FILE --monitor-key FILE   serve it over TLS (HTTPS)\n"
           "        --gc-stress                     collect garbage at every allocation (VM testing)\n"
           "        --gc-verify                     check each minor collection against the whole heap (VM testing)\n"
@@ -46,13 +48,18 @@ static void usage(FILE *f) {
           "        --jit-hot N                     calls or loop iterations before compiling (1000)\n"
           "        --jit-report FILE|-             what the JIT did, written when the run ends\n"
           "  debug [-L dir] [VM options] file.(masm|mlwso)   interactive debugger (type 'help')\n"
-          "  top   [https://]HOST:PORT [--ca FILE] [--once]   live process table of a VM run with --monitor\n"
+          "  top   [https://]HOST:PORT [--ca FILE] [--token KEY] [--once]   live process table of a VM run\n"
+          "                                        with --monitor\n"
+          "  token new --label L [--scope read|admin] [--file F] | revoke --label L --file F | list --file F\n"
+          "                                        the monitor's keys: a token, its hash into a tokens file\n"
           "  names [--port N]                      the name service for nodes, by which they connect by name\n"
           "                                        (as Erlang's epmd: one per machine; port 4368)\n"
-          "  serve --programs DIR [--monitor [HOST:]PORT] [--monitor-cert F --monitor-key F] [VM options]\n"
+          "  serve --programs DIR [--monitor [HOST:]PORT] [--monitor-tokens F] [--monitor-cert F --monitor-key F]\n"
+          "        [VM options]\n"
           "                                        a VM that stays up, starting programs from DIR when its\n"
           "                                        monitor is asked to (the token printed; 127.0.0.1:7070)\n"
-          "  asm  [-L dir] [-o out.mlwso] [-E] file.masm                   assemble (-E: preprocess only)\n"
+          , f);
+    fputs("  asm  [-L dir] [-o out.mlwso] [-E] file.masm                   assemble (-E: preprocess only)\n"
           "  dis  [-L dir] file.(masm|mlwso)                               disassemble\n"
           "  test [-L dir] [-v] [VM options] [paths...]                  run assembly tests (default: tests/)\n"
           "  doc  isa|natives [-o file]                                  generate reference docs\n"
@@ -181,7 +188,7 @@ static int cmd_run(int argc, char **argv) {
     const char *file = NULL;
     bool stats = false, gc_stress = false, gc_verify = false, profile = false, hold = false, unsafe_native = false, no_cache = false;
     bool actions = false;
-    const char *trace = NULL, *flame = NULL, *monitor = NULL, *mcert = NULL, *mkey = NULL;
+    const char *trace = NULL, *flame = NULL, *monitor = NULL, *mcert = NULL, *mkey = NULL, *mtokens = NULL;
     uint64_t trace_limit = 0;
     VEC(const char *) opts = {0}; /* VM options: name, value pairs */
     char **prog_argv = NULL;
@@ -195,6 +202,7 @@ static int cmd_run(int argc, char **argv) {
         else if (!strcmp(argv[i], "--trace-limit") && i + 1 < argc) trace_limit = strtoull(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor = argv[++i];
         else if (!strcmp(argv[i], "--monitor-actions")) actions = true;
+        else if (!strcmp(argv[i], "--monitor-tokens") && i + 1 < argc) mtokens = argv[++i];
         else if (!strcmp(argv[i], "--monitor-cert") && i + 1 < argc) mcert = argv[++i];
         else if (!strcmp(argv[i], "--monitor-key") && i + 1 < argc) mkey = argv[++i];
         else if (!strcmp(argv[i], "--gc-stress")) gc_stress = true;
@@ -298,10 +306,16 @@ static int cmd_run(int argc, char **argv) {
             return 1;
         }
         const char *scheme = tools_monitor_scheme(vm);
-        if (actions) {
-            const char *token = tools_monitor_actions(vm, getenv("MLWSVM_MONITOR_TOKEN"));
-            fprintf(stderr, "mlwsvm: monitor at %s://%s/#token=%s  (actions allowed with that token)\n", scheme,
-                    tools_monitor_addr(vm), token);
+        if (actions) tools_monitor_actions(vm);
+        if (mtokens && !tools_monitor_tokens(vm, mtokens, err, sizeof err)) {
+            fprintf(stderr, "mlwsvm run: --monitor-tokens: %s\n", err);
+            vm_free(vm);
+            return 1;
+        }
+        const char *token = tools_monitor_key(vm, getenv("MLWSVM_MONITOR_TOKEN"));
+        if (token) {
+            fprintf(stderr, "mlwsvm: monitor at %s://%s/#token=%s  (%s with that token)\n", scheme, tools_monitor_addr(vm),
+                    token, actions ? "actions allowed" : "an admin's key");
         } else if (mcert) {
             fprintf(stderr, "mlwsvm: monitor at %s://%s/\n", scheme, tools_monitor_addr(vm));
         } else {
@@ -309,8 +323,8 @@ static int cmd_run(int argc, char **argv) {
                     tools_monitor_addr(vm));
         }
         vm->hold = hold;
-    } else if (actions || mcert || mkey) {
-        fprintf(stderr, "mlwsvm run: --monitor-actions, --monitor-cert and --monitor-key need --monitor\n");
+    } else if (actions || mcert || mkey || mtokens) {
+        fprintf(stderr, "mlwsvm run: --monitor-actions, --monitor-tokens, --monitor-cert and --monitor-key need --monitor\n");
         vm_free(vm);
         return 2;
     }
@@ -379,11 +393,12 @@ static int cmd_run(int argc, char **argv) {
 /* mlwsvm serve: a VM that stays up, starting programs from a directory when
  * the monitor is asked to (POST /api/programs, or the dashboard). */
 static int cmd_serve(int argc, char **argv) {
-    const char *monitor = "127.0.0.1:7070", *programs = NULL, *mcert = NULL, *mkey = NULL;
+    const char *monitor = "127.0.0.1:7070", *programs = NULL, *mcert = NULL, *mkey = NULL, *mtokens = NULL;
     VEC(const char *) opts = {0};
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor = argv[++i];
         else if (!strcmp(argv[i], "--programs") && i + 1 < argc) programs = argv[++i];
+        else if (!strcmp(argv[i], "--monitor-tokens") && i + 1 < argc) mtokens = argv[++i];
         else if (!strcmp(argv[i], "--monitor-cert") && i + 1 < argc) mcert = argv[++i];
         else if (!strcmp(argv[i], "--monitor-key") && i + 1 < argc) mkey = argv[++i];
         else if (!strncmp(argv[i], "--", 2) && vm_option_known(argv[i] + 2) && i + 1 < argc) {
@@ -396,8 +411,8 @@ static int cmd_serve(int argc, char **argv) {
         }
     }
     if (!programs || (mcert != NULL) != (mkey != NULL)) {
-        fprintf(stderr, "usage: mlwsvm serve --programs DIR [--monitor [HOST:]PORT] [--monitor-cert FILE --monitor-key FILE] "
-                        "[VM options]\n");
+        fprintf(stderr, "usage: mlwsvm serve --programs DIR [--monitor [HOST:]PORT] [--monitor-tokens FILE] "
+                        "[--monitor-cert FILE --monitor-key FILE] [VM options]\n");
         VEC_FREE(opts);
         return 2;
     }
@@ -414,12 +429,14 @@ static int cmd_serve(int argc, char **argv) {
     }
     VEC_FREE(opts);
     if (!tools_monitor(vm, monitor, err, sizeof err) || !tools_monitor_serve(vm, programs, err, sizeof err) ||
-        (mcert && !tools_monitor_tls(vm, mcert, mkey, err, sizeof err))) {
+        (mcert && !tools_monitor_tls(vm, mcert, mkey, err, sizeof err)) ||
+        (mtokens && !tools_monitor_tokens(vm, mtokens, err, sizeof err))) {
         fprintf(stderr, "mlwsvm serve: %s\n", err);
         vm_free(vm);
         return 1;
     }
-    const char *token = tools_monitor_actions(vm, getenv("MLWSVM_MONITOR_TOKEN"));
+    tools_monitor_actions(vm);
+    const char *token = tools_monitor_key(vm, getenv("MLWSVM_MONITOR_TOKEN"));
     fprintf(stderr, "mlwsvm: serving at %s://%s/#token=%s  (programs from %s)\n", tools_monitor_scheme(vm),
             tools_monitor_addr(vm), token, programs);
     tool_env_libpaths(&g_env, vm);
@@ -631,6 +648,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "debug")) rc = cmd_debug(n, args);
     else if (!strcmp(cmd, "serve")) rc = cmd_serve(n, args);
     else if (!strcmp(cmd, "top")) rc = tool_top(n, args);
+    else if (!strcmp(cmd, "token")) rc = tool_token(n, args);
     else if (!strcmp(cmd, "names")) rc = cmd_names(n, args);
     else if (!strcmp(cmd, "doc")) rc = tool_doc(n, args);
     else if (!strcmp(cmd, "ext")) rc = tool_ext(n, args, &g_env);
