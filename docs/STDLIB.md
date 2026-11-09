@@ -564,6 +564,8 @@ this node's number in it, which works here too, wherever a plain one does. `node
 | `watch()`, `unwatch()` | from now on, a `NodeEvent` comes to this process for each connection that comes or goes; or no more |
 | `set_ticktime(ms)`, `ticktime()` | how long a connection may hear nothing before its node is taken as down (60000 at first; 0: never) |
 | `disconnect(number)` | close the connection to a node, as if it had gone |
+| `register_global(name, pid)` | give a process a name across the cluster: 1, or 0 if it is taken (or being taken) |
+| `unregister_global(name)`, `whereis_global(name)`, `globals()` | drop such a name; the pid with it (0: none); all of them, as `[name, pid]` |
 | `auto_connect(on)` | whether a message to a node not connected, but reached before, connects to it again (true at first) |
 | `set_ca(ca)` | for a TLS node, the authorities checked when it connects for a message to a node only known by name (`""`: the system's) |
 | `whereis(number, name)` | the pid registered under a name there (`proc.register`), or 0 |
@@ -601,6 +603,16 @@ this node's number in it, which works here too, wherever a plain one does. `node
   that node does not have), or that comes for a process whose mailbox is full
   there, is dropped there, with a warning in its monitor's log, and the
   connection goes on.
+* **Names across the cluster** (as Erlang's `global`). Each node runs a
+  server, registered as `std.node.global`, that keeps them. A registration
+  reserves the name at every node connected and is made only if each agrees
+  (a node that does not answer in 5 s says no), so two at once of one name
+  both fail, and can be tried again. A name goes, everywhere, when its process
+  ends or it is unregistered; when a node goes, the others drop its processes'
+  names. When two nodes connect, each sends the other its processes' names: a
+  name both have for different processes stays with the lower pid, at every
+  node alike, and the other process is killed by its own node, as `global`'s
+  default does. `whereis_global` asks this node's server only.
 * **A message to a name.** `node.name_pid(number, name)` gives a pid for
   whichever process has `name` registered on that node (0: this VM) when a
   message arrives there, as Erlang's `{Name, Node} ! Msg`. `send` and

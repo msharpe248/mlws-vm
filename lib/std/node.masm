@@ -46,6 +46,7 @@
 .export set_name, name, number, nodes, watch, unwatch
 .export start_named, start_tls_named, connect_named, connect_tls_named, names
 .export set_ticktime, ticktime, auto_connect, set_ca, disconnect
+.export register_global, unregister_global, whereis_global, globals
 
 .const NAMES_PORT = 4368
 
@@ -69,6 +70,8 @@
     mov R5, ""                         ; (the system's, for TLS, until set_ca)
 1:  spawn dialer (cookie, R5) -> (I4)
     ncall "node.set_dialer" (I4)
+    spawn global_server -> (I6)
+    ncall "proc.register" ("std.node.global", I6)
     spawn acceptor (cookie, port, PID, cert, key)
     recv I3
     ret I3
@@ -837,4 +840,460 @@ unknown:
     jmp 1b
 2:  ncall "fs.close" (R2)
     ret R3
+.endf
+
+; ---- names across the cluster (as Erlang's global) ----
+;
+; Each node runs a server, registered here as "std.node.global", that keeps
+; the cluster's names: name -> a pid (as other nodes name it). A
+; registration reserves the name at every node connected, and is made only if
+; each agrees (a node that cannot answer in 5 s says no; a node gone, or
+; without a server, has no say); so two at once of one name both fail, and
+; may be tried again. The node of a registered process watches it, and when it
+; ends, or is unregistered, every node drops the name; when a node goes, the
+; others drop its processes' names. When two nodes connect, each sends the
+; other the names of its own processes; a name both have for different
+; processes stays with the lower pid, at every node alike, and the other
+; process is killed by its own node (as global's default resolver).
+
+.const GLOBAL_TIMEOUT = 5000
+.const RESERVE_MS = 10000
+
+; Give a process a name across the cluster: 1, or 0 if the name is taken (or
+; being taken). E_NODE before start.
+.func register_global(ref name, i64 pid) -> i64
+    ncall "node.global" (pid) -> (I2)
+    lnew R2
+    lpush R2, "register", name, I2
+    call global_call (R2) -> (R3)
+    mov I3, R3[0]
+    ret I3
+.endf
+
+; Drop a name, wherever it is registered.
+.func unregister_global(ref name)
+    lnew R2
+    lpush R2, "unregister", name
+    call global_call (R2) -> (R3)
+    ret
+.endf
+
+; The pid with a name across the cluster, or 0.
+.func whereis_global(ref name) -> i64
+    lnew R2
+    lpush R2, "whereis", name
+    call global_call (R2) -> (R3)
+    mov I3, R3[0]
+    ret I3
+.endf
+
+; The names across the cluster: a list of [name, pid].
+.func globals -> ref
+    lnew R2
+    lpush R2, "names"
+    call global_call (R2) -> (R3)
+    ret R3
+.endf
+
+.func global_call(ref body) -> ref
+    ncall "proc.whereis" ("std.node.global") -> (I1)
+    bnz I1, 1f
+    call name_error ("names across the cluster need this VM to be a node (start)")
+1:  ncall "proc.call" (I1, body, 30000) -> (R2)
+    ret R2
+.endf
+
+; The server, at each node.
+.func global_server
+    call watch ()
+    mnew R20                           ; name -> pid
+    mnew R21                           ; name -> [pid, ms]: reserved for a registration under way
+    mnew R22                           ; pids of this node's that it watches -> 1
+1:  recv R0
+    isa I1, R0, Call
+    bnz I1, call
+    isa I1, R0, NodeEvent
+    bnz I1, event
+    isa I1, R0, Down
+    bnz I1, down
+    typeof I1, R0
+    bne I1, 5, 1b                      ; (5: a list; anything else is not for it)
+    mov R1, R0[0]
+    strcmp I2, R1, "commit"
+    bnz I2, 2f
+    call gl_commit (R20, R21, R22, R0)
+    jmp 1b
+2:  strcmp I2, R1, "release"
+    bnz I2, 3f
+    call gl_release (R21, R0)
+    jmp 1b
+3:  strcmp I2, R1, "unreg"
+    bnz I2, 4f
+    call gl_unreg (R20, R0)
+    jmp 1b
+4:  strcmp I2, R1, "sync"
+    bnz I2, 1b
+    call gl_sync (R20, R22, R0)
+    jmp 1b
+call:
+    mov R2, R0->Call.body
+    mov R1, R2[0]
+    strcmp I2, R1, "whereis"
+    bnz I2, 5f
+    mov R3, R2[1]
+    mget I3, R20, R3, 0
+    lnew R4
+    lpush R4, I3
+    ncall "proc.reply" (R0, R4)
+    jmp 1b
+5:  strcmp I2, R1, "reserve"
+    bnz I2, 6f
+    call gl_reserve (R20, R21, R2) -> (I3)
+    lnew R4
+    lpush R4, I3
+    ncall "proc.reply" (R0, R4)
+    jmp 1b
+6:  strcmp I2, R1, "register"
+    bnz I2, 7f
+    call gl_register (R20, R21, R0)
+    jmp 1b
+7:  strcmp I2, R1, "unregister"
+    bnz I2, 8f
+    mov R3, R2[1]
+    call gl_drop (R20, R3)
+    lnew R4
+    lpush R4, 1
+    ncall "proc.reply" (R0, R4)
+    jmp 1b
+8:  strcmp I2, R1, "names"
+    bnz I2, 1b
+    call gl_names (R20) -> (R4)
+    ncall "proc.reply" (R0, R4)
+    jmp 1b
+event:
+    mov I3, R0->NodeEvent.node
+    mov I4, R0->NodeEvent.up
+    bz I4, 9f
+    call gl_send_sync (R20, I3)
+    jmp 1b
+9:  call gl_node_gone (R20, R21, I3)
+    jmp 1b
+down:
+    mov I3, R0->Down.pid
+    call self (I3) -> (I3)
+    mdel R22, I3
+    call gl_pid_gone (R20, I3)
+    jmp 1b
+.endf
+
+; The names: a list of [name, pid].
+.func gl_names(ref table) -> ref
+    lnew R1
+    mkeys R2, table
+    len I1, R2
+    mov I2, 0
+1:  bge I2, I1, 2f
+    mov R3, R2[I2]
+    mget I3, table, R3, 0
+    lnew R4
+    lpush R4, R3, I3
+    lpush R1, R4
+    inc I2
+    jmp 1b
+2:  ret R1
+.endf
+
+; Whether pid is of this node.
+.func gl_mine(i64 pid) -> i64
+    ncall "node.of" (pid) -> (I1)
+    ncall "node.self" () -> (I2)
+    seq I3, I1, I2
+    ret I3
+.endf
+
+; The server at node n.
+.func gl_at(i64 n) -> i64
+    ncall "node.name_pid" (n, "std.node.global") -> (I1)
+    ret I1
+.endf
+
+; Send msg to the server at every node connected.
+.func gl_broadcast(ref msg)
+    ncall "node.nodes" () -> (R1)
+    len I1, R1
+    mov I2, 0
+1:  bge I2, I1, 2f
+    mov I3, R1[I2]
+    call gl_at (I3) -> (I4)
+    send I4, msg
+    inc I2
+    jmp 1b
+2:  ret
+.endf
+
+; A reservation, for another node's registration: 1 if the name is free here.
+.func gl_reserve(ref table, ref pending, ref body) -> i64
+    mov R3, body[1]
+    mov I1, body[2]
+    mget I2, table, R3, 0
+    bz I2, 1f
+    seq I3, I2, I1
+    ret I3
+1:  call gl_reserved (pending, R3, I1) -> (I4)
+    bz I4, 2f
+    ret 0
+2:  lnew R4
+    ncall "time.monotonic" () -> (I5)
+    div I5, I5, 1000000
+    lpush R4, I1, I5
+    mset pending, R3, R4
+    ret 1
+.endf
+
+; Whether name is reserved, not long ago, for a pid other than pid.
+.func gl_reserved(ref pending, ref name, i64 pid) -> i64
+    mget R3, pending, name, null
+    bz.r R3, 1f
+    mov I1, R3[0]
+    beq I1, pid, 1f
+    mov I2, R3[1]
+    ncall "time.monotonic" () -> (I3)
+    div I3, I3, 1000000
+    sub I3, I3, I2
+    bge I3, RESERVE_MS, 1f
+    ret 1
+1:  ret 0
+.endf
+
+; A registration asked here: refused at once if the name is taken or being
+; taken here; else reserved here, and a process of its own asks the other
+; nodes, and answers the Call.
+.func gl_register(ref table, ref pending, ref req)
+    mov R3, req->Call.body
+    mov R4, R3[1]
+    mov I1, R3[2]
+    mget I2, table, R4, 0
+    bz I2, 1f
+    seq I3, I2, I1
+    jmp answer
+1:  call gl_reserve (table, pending, R3) -> (I3)
+    bz I3, answer
+    spawn gl_registrar (R4, I1, req, PID)
+    ret
+answer:
+    lnew R5
+    lpush R5, I3
+    ncall "proc.reply" (req, R5)
+    ret
+.endf
+
+; Asks every node connected to reserve name for pid; if all agree, commits it
+; everywhere, here (server) too; else releases it. Answers req, the Call.
+.func gl_registrar(ref name, i64 pid, ref req, i64 server)
+    mov R10, name
+    mov I10, pid
+    mov R11, req
+    mov I11, server
+    lnew R12                           ; the servers that agreed
+    lnew R13
+    lpush R13, "reserve", R10, I10
+    ncall "node.nodes" () -> (R14)
+    len I12, R14
+    mov I13, 0
+1:  bge I13, I12, 3f
+    mov I14, R14[I13]
+    call gl_at (I14) -> (I15)
+    call gl_ask (I15, R13) -> (I16)
+    bz I16, refused
+    bne I16, 1, 2f
+    lpush R12, I15
+2:  inc I13
+    jmp 1b
+3:  lnew R15
+    lpush R15, "commit", R10, I10
+    call gl_tell (R12, R15)
+    send I11, R15
+    lnew R16
+    lpush R16, 1
+    ncall "proc.reply" (R11, R16)
+    ret
+refused:
+    lnew R15
+    lpush R15, "release", R10, I10
+    call gl_tell (R12, R15)
+    send I11, R15
+    lnew R16
+    lpush R16, 0
+    ncall "proc.reply" (R11, R16)
+    ret
+.endf
+
+; A server's answer to a reservation: 1 yes, 0 no (or no answer in time), 2
+; no say (its node gone, or no server there).
+.func gl_ask(i64 server, ref body) -> i64
+.try failed
+    ncall "proc.call" (server, body, GLOBAL_TIMEOUT) -> (R2)
+.endtry
+    mov I2, R2[0]
+    ret I2
+failed:
+    catch R3
+    mov R4, R3->Error.code
+    strcmp I3, R4, "E_TIMEOUT"
+    bnz I3, 1f
+    ret 0
+1:  ret 2
+.endf
+
+; Send msg to each of the servers in a list.
+.func gl_tell(ref servers, ref msg)
+    len I1, servers
+    mov I2, 0
+1:  bge I2, I1, 2f
+    mov I3, servers[I2]
+    send I3, msg
+    inc I2
+    jmp 1b
+2:  ret
+.endf
+
+; ["commit", name, pid]: registered. Its node watches it.
+.func gl_commit(ref table, ref pending, ref watched, ref msg)
+    mov R4, msg[1]
+    mov I1, msg[2]
+    mset table, R4, I1
+    mdel pending, R4
+    call gl_mine (I1) -> (I2)
+    bz I2, 1f
+    mhas I3, watched, I1
+    bnz I3, 1f
+    mset watched, I1, 1
+    monitor I1
+1:  ret
+.endf
+
+; ["release", name, pid]: a registration that did not happen.
+.func gl_release(ref pending, ref msg)
+    mov R2, msg[1]
+    mov I1, msg[2]
+    mget R3, pending, R2, null
+    bz.r R3, 1f
+    mov I2, R3[0]
+    bne I2, I1, 1f
+    mdel pending, R2
+1:  ret
+.endf
+
+; ["unreg", name, pid]: dropped, if it is still pid's.
+.func gl_unreg(ref table, ref msg)
+    mov R2, msg[1]
+    mov I1, msg[2]
+    mget I2, table, R2, 0
+    bne I2, I1, 1f
+    mdel table, R2
+1:  ret
+.endf
+
+; Drop name here and everywhere.
+.func gl_drop(ref table, ref name)
+    mget I1, table, name, 0
+    bz I1, 1f
+    mdel table, name
+    lnew R2
+    lpush R2, "unreg", name, I1
+    call gl_broadcast (R2)
+1:  ret
+.endf
+
+; A process of this node's ended: its names go, everywhere.
+.func gl_pid_gone(ref table, i64 pid)
+    mkeys R2, table
+    len I1, R2
+    mov I2, 0
+1:  bge I2, I1, 3f
+    mov R3, R2[I2]
+    mget I3, table, R3, 0
+    bne I3, pid, 2f
+    call gl_drop (table, R3)
+2:  inc I2
+    jmp 1b
+3:  ret
+.endf
+
+; Node n has gone: its processes' names, and reservations, go here.
+.func gl_node_gone(ref table, ref pending, i64 n)
+    mkeys R2, table
+    len I1, R2
+    mov I2, 0
+1:  bge I2, I1, 3f
+    mov R3, R2[I2]
+    mget I3, table, R3, 0
+    ncall "node.of" (I3) -> (I4)
+    bne I4, n, 2f
+    mdel table, R3
+2:  inc I2
+    jmp 1b
+3:  mkeys R2, pending
+    len I1, R2
+    mov I2, 0
+4:  bge I2, I1, 6f
+    mov R3, R2[I2]
+    mget R4, pending, R3
+    mov I3, R4[0]
+    ncall "node.of" (I3) -> (I4)
+    bne I4, n, 5f
+    mdel pending, R3
+5:  inc I2
+    jmp 4b
+6:  ret
+.endf
+
+; Node n has come: it gets this node's processes' names.
+.func gl_send_sync(ref table, i64 n)
+    lnew R2
+    mkeys R3, table
+    len I1, R3
+    mov I2, 0
+1:  bge I2, I1, 3f
+    mov R4, R3[I2]
+    mget I3, table, R4, 0
+    call gl_mine (I3) -> (I4)
+    bz I4, 2f
+    lnew R5
+    lpush R5, R4, I3
+    lpush R2, R5
+2:  inc I2
+    jmp 1b
+3:  lnew R6
+    lpush R6, "sync", R2
+    call gl_at (n) -> (I5)
+    send I5, R6
+    ret
+.endf
+
+; ["sync", [[name, pid], ...]]: another node's processes' names. A name
+; registered here for another process stays with the lower pid, at every
+; node alike; the other, if of this node, is killed.
+.func gl_sync(ref table, ref watched, ref msg)
+    mov R3, msg[1]
+    len I1, R3
+    mov I2, 0
+1:  bge I2, I1, 5f
+    mov R4, R3[I2]
+    mov R5, R4[0]
+    mov I3, R4[1]
+    mget I4, table, R5, 0
+    beq I4, I3, 4f
+    bz I4, 3f
+    min.u64 I5, I4, I3                 ; (the one that stays)
+    max.u64 I6, I4, I3
+    mset table, R5, I5
+    call gl_mine (I6) -> (I7)
+    bz I7, 4f
+    kill I6
+    jmp 4f
+3:  mset table, R5, I3
+4:  inc I2
+    jmp 1b
+5:  ret
 .endf

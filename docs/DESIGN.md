@@ -1861,6 +1861,17 @@ the other connection. `node.attach` applies the same rule, and ends the
 replaced connection's reader and writer (`VM.node_reader`), as
 `node.disconnect` does.
 
+Names across the cluster are MLWSVM code too (`std.node`'s `global_server`,
+one per node, registered as `std.node.global`): a table of name to pid, the
+reservations of registrations under way (which expire after 10 s), and
+monitors of this node's registered processes. A registration is reserved here,
+then a process of its own (`gl_registrar`) asks each connected node's server to
+reserve it, by `proc.call` to `node.name_pid(n, "std.node.global")`, and commits or
+releases it everywhere; so the server itself never waits. On a `NodeEvent`, a
+server sends a node that came its own processes' names (`gl_send_sync`), and
+drops the names of one that went; a clash is settled by the lower pid, which
+every node computes alike.
+
 A pid does not change when it crosses: `node.global` adds the sender's number, and
 it means the same process everywhere, which is why numbers are given, not assigned
 per connection. A name is beside the number, not instead of it: `VM.node_names`

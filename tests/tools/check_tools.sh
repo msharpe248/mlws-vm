@@ -368,6 +368,19 @@ perl -e 'alarm 60; exec @ARGV' $BIN run tests/tools/_auto/a.masm "$(cat "$AUTOD/
 wait $NODEB 2>/dev/null || true
 rm -rf "${AUTOD:?}"
 
+# Names across the cluster: registered at one node, seen and taken at the
+# other; gone everywhere when the process ends or is unregistered; dropped
+# when the nodes part; and settled when both registered one name apart.
+GLOBD=$(mktemp -d)
+$BIN run tests/tools/_global/b.masm > "$GLOBD/port" 2>"$GLOBD/b.err" &
+NODEB=$!
+for _ in $(seq 1 80); do grep -q '^[0-9][0-9]*$' "$GLOBD/port" && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+perl -e 'alarm 60; exec @ARGV' $BIN run tests/tools/_global/a.masm "$(cat "$GLOBD/port")" > "$GLOBD/out" 2>&1 || { kill $NODEB 2>/dev/null; fail "names across the cluster: $(cat "$GLOBD/out") $(cat "$GLOBD/b.err")"; }
+kill $NODEB 2>/dev/null || true
+wait $NODEB 2>/dev/null || true
+[ ! -s "$GLOBD/b.err" ] || fail "names across the cluster: node b: $(cat "$GLOBD/b.err")"
+rm -rf "${GLOBD:?}"
+
 # Ticks: two nodes with a ticktime of a second stay connected while idle,
 # and once the far one is stopped, the near one takes it as down in about a
 # second. (No SIGSTOP on Windows.)
