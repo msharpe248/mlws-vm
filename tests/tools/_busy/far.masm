@@ -1,0 +1,29 @@
+; The far node of check_tools.sh's back-pressure test: a sink that counts the
+; messages it gets (a Call answers the count). It prints its port, and is
+; stopped (SIGSTOP) while near.masm sends, so that its connection fills.
+.import std.node as node
+
+.func sink
+    ncall "proc.register" ("sink", PID)
+    mov I1, 0
+1:  recv R0
+    isa I2, R0, Call
+    bnz I2, 2f
+    inc I1
+    jmp 1b
+2:  lnew R2
+    lpush R2, I1
+    ncall "proc.reply" (R0, R2)
+    jmp 1b
+.endf
+
+.func main
+    call node.start (2, "busy", 0) -> (I1)
+    spawn sink
+    sleep 50                           ; (registered)
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+    ncall "io.flush" ()
+1:  sleep 1000
+    jmp 1b
+.endf

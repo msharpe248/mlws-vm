@@ -222,8 +222,8 @@ button.act.danger { color: var(--critical); }
   <section class="three">
     <div class="card"><h2>Modules</h2><div class="table-wrap"><table class="mini" id="mods"><thead><tr><th class="text">Module</th><th>Version</th><th class="text">State</th><th>Functions</th><th class="text" id="mods-acts-h" hidden></th></tr></thead><tbody></tbody></table></div></div>
     <div class="card"><h2>Registered names</h2><div class="table-wrap"><table class="mini" id="names"><thead><tr><th class="text">Name</th><th>PID</th></tr></thead><tbody></tbody></table></div><div class="empty" id="names-empty">No names registered.</div></div>
-    <div class="card"><h2>Nodes</h2><div id="nodes-self" class="note"></div><div class="table-wrap"><table class="mini" id="nodes"><thead><tr><th>Node</th><th>Name</th><th>Carried by</th></tr></thead><tbody></tbody></table></div><div class="empty" id="nodes-empty">Not connected to other nodes.</div></div>
   </section>
+  <section class="card"><h2>Nodes</h2><div id="nodes-self" class="note"></div><div class="table-wrap"><table class="mini" id="nodes"><thead><tr><th>Node</th><th class="text">Name</th><th>Carried by</th><th>Up</th><th>Sent</th><th>Received</th><th>Out</th><th>In</th><th>Queued</th><th>Waiting</th></tr></thead><tbody></tbody></table></div><div class="empty" id="nodes-empty">Not connected to other nodes.</div></section>
   <section class="card">
     <h2>Recent exits</h2>
     <div class="table-wrap"><table id="exits"><thead><tr>
@@ -606,7 +606,7 @@ async function slowTick() {
     $("names").querySelector("tbody").innerHTML = names.map((n) => `<tr><td class="text">${esc(n.name)}</td><td>${n.pid}</td></tr>`).join("");
     $("names-empty").hidden = names.length > 0;
     $("nodes-self").textContent = nodes.self ? `This VM is node ${nodes.self}${nodes.name ? `, ${nodes.name}` : ""}.` : "This VM is not a node.";
-    $("nodes").querySelector("tbody").innerHTML = nodes.connected.map((n) => `<tr><td>${n.node}</td><td>${esc(n.name)}</td><td>process ${n.carrier}</td></tr>`).join("");
+    $("nodes").querySelector("tbody").innerHTML = nodes.connected.map((n) => `<tr><td>${n.node}</td><td class="text">${n.name ? esc(n.name) : "–"}</td><td>process ${n.carrier}</td><td>${ms(n.up_ms * 1e6)}</td><td>${human(n.sent)}</td><td>${human(n.received)}</td><td>${bytes(n.bytes_out)}</td><td>${bytes(n.bytes_in)}</td><td>${bytes(n.queued)}</td><td title="senders waiting for room now, and how many times one has">${n.waiting} (${human(n.waits)})</td></tr>`).join("");
     $("nodes-empty").hidden = nodes.connected.length > 0;
     drawGraph(graph);
     loadProgramFiles();

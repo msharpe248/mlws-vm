@@ -259,7 +259,8 @@ taken:
 ; What goes to the node at the other end: frames for the wire, as bytes, made
 ; where they were sent (messages, and what the VM asks for), and this module's
 ; own requests, as [null, kind, ...]. Frames waiting behind one go with it, up
-; to 64 KiB, in one write. Ends with the reader.
+; to 64 KiB, in one write, and what it writes is room for senders that wait
+; while it has more than 1 MiB to write (node.written). Ends with the reader.
 .func writer(i64 ticket, i64 reader)
     ncall "fs.take" (ticket) -> (R0)
     monitor reader
@@ -285,13 +286,23 @@ frame:
     bufcat R4, R2
     jmp 3b
 4:  ncall "fs.write" (R0, R4)
+    call written (R4)
     jmp 1b
 6:  ncall "fs.write" (R0, R4)
+    call written (R4)
     jmp 2b
 5:  ncall "fs.write" (R0, R2)
+    call written (R2)
     jmp 1b
 ended:
     ncall "fs.close" (R0)
+    ret
+.endf
+
+; Frames written: room for senders waiting for it (back-pressure).
+.func written(ref frames)
+    len I1, frames
+    ncall "node.written" (I1)
     ret
 .endf
 
@@ -301,7 +312,7 @@ ended:
 ; connection goes on, since frames come one by one.
 .func read_one(ref bytes, i64 peer) -> ref
 .try bad
-    ncall "node.take" (bytes) -> (R2)
+    ncall "node.take" (bytes, peer) -> (R2)
 .endtry
     ret R2
 bad:

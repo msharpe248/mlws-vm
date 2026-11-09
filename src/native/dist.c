@@ -640,7 +640,16 @@ static void n_attach(Process *p, Word *a, Word *r) {
     VM *vm = p->vm;
     plat_lock(vm->lock);
     if (!vm->node_route) vm->node_route = xcalloc(MAX_NODE + 1, sizeof *vm->node_route);
+    if (!vm->node_stats) vm->node_stats = xcalloc(MAX_NODE + 1, sizeof *vm->node_stats);
+    if (a[1].u) { /* a connection comes: its counts start again */
+        NodeStats *st = vm->node_stats[a[0].i];
+        if (!st) st = vm->node_stats[a[0].i] = xcalloc(1, sizeof *st);
+        atomic_store(&st->sent, 0), atomic_store(&st->received, 0), atomic_store(&st->bytes_out, 0);
+        atomic_store(&st->bytes_in, 0), atomic_store(&st->waits, 0);
+        st->up_ns = plat_now_ns();
+    }
     plat_unlock(vm->lock);
+    if (a[1].u) sched_set_carries(vm, a[1].u, (uint32_t)a[0].i);
     uint64_t old = __atomic_exchange_n(&vm->node_route[a[0].i], a[1].u, __ATOMIC_ACQ_REL);
     if (old && !a[1].u) { /* the connection has gone */
         sched_node_down(vm, (uint32_t)a[0].i);
@@ -830,13 +839,21 @@ static void n_decode(Process *p, Word *a, Word *r) {
     r[0] = w;
 }
 
-/* node.take(frame): a frame from a node, for its reader. A message, [0, pid,
+/* The counts of node n's connection, or NULL before it first came. */
+NodeStats *node_stats_of(VM *vm, uint32_t n) {
+    NodeStats **v = __atomic_load_n(&vm->node_stats, __ATOMIC_ACQUIRE);
+    return v && n && n <= MAX_NODE ? __atomic_load_n(&v[n], __ATOMIC_ACQUIRE) : NULL;
+}
+
+/* node.take(frame, peer): a frame from node peer, for its reader. A message, [0, pid,
  * value], is decoded straight into what is delivered to that process here, as
  * it was made where it was sent, and null returned; any other frame comes
  * back as node.decode gives it. */
 static void n_take(Process *p, Word *a, Word *r) {
     uint32_t n;
     const uint8_t *s = data_arg(p, a[0], &n);
+    NodeStats *st = node_stats_of(p->vm, (uint32_t)a[1].i);
+    if (st) atomic_fetch_add(&st->bytes_in, (uint64_t)n + 4);
     static const uint8_t head[] = {T_R, OBJ_LIST, 3, 0, 0, 0, T_I64, 0, 0, 0, 0, 0, 0, 0, 0, T_I64};
     if (n < sizeof head + 8 || memcmp(s, head, sizeof head)) {
         n_decode(p, a, r);
@@ -848,11 +865,19 @@ static void n_take(Process *p, Word *a, Word *r) {
     Word w;
     uint8_t t = decode(&rd, &w, 1);
     if (rd.i != n) bad(&rd);
+    if (st) atomic_fetch_add(&st->received, 1);
     sched_node_deliver(p, pid, w, t);
     r[0].r = NULL;
 }
 
 /* Give the message a frame carries, [to, value], to its process here. */
+/* node.written(n): the carrier of a connection wrote n bytes of the frames
+ * sent to it, so that senders waiting for it to have room go on. */
+static void n_written(Process *p, Word *a, Word *r) {
+    (void)r;
+    if (a[0].i > 0) sched_node_written(p, (uint64_t)a[0].i);
+}
+
 /* A control frame from a node, for link, monitor, proc.call and kill across nodes:
  * [kind, pid, ...] (sched.c, "across nodes"). */
 static void n_control(Process *p, Word *a, Word *r) {
@@ -930,7 +955,8 @@ static const NativeDef NODE_NATIVES[] = {
     N("node.function", 2, T(T_R, T_R), 1, T(T_R), n_function, "A closure for a module's exported function, as a peer names it. For std.node."),
     N("node.frame", 1, T(T_R), 1, T(T_R), n_frame, "A value as bytes for a connection, with its length. For std.node."),
     N("node.decode", 1, T(T_R), 1, T(T_R), n_decode, "A value from a frame's bytes. Untrusted bytes raise E_PARSE, never worse. For std.node."),
-    N("node.take", 1, T(T_R), 1, T(T_R), n_take, "A frame from a node: a message, [0, pid, value], delivered to its process here (null returned), else the frame's value, as node.decode gives it. For std.node."),
+    N("node.written", 1, T(T_I64), 0, T(0), n_written, "The bytes of frames this connection's writer has written, for senders waiting for room. For std.node."),
+    N("node.take", 2, T(T_R, T_I64), 1, T(T_R), n_take, "A frame from a node (the second argument): a message, [0, pid, value], delivered to its process here (null returned), else the frame's value, as node.decode gives it. For std.node."),
     N("node.control", 1, T(T_R), 0, T(0), n_control,
       "Act on a control frame from a node: link, unlink, exit, monitor, down, reply, noproc or kill. For std.node."),
     N("node.proof", 3, T(T_R, T_R, T_R), 1, T(T_R), n_proof, "HMAC-SHA-256 of a role and a nonce, keyed by a cookie. For std.node."),

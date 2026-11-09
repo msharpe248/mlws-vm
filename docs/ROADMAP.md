@@ -23,7 +23,7 @@ The scripting language is a separate project.
 | **M9 Performance** | quickening, cheaper frames, `_setjmp` (1.2–7.8× faster); the multi-threaded scheduler (work stealing; 8.2× on 16 CPU-bound processes). A generational GC and more specialised memory forms were measured and deferred (section 4) |
 | **M10 Calling C** | extension API, declarative FFI, trusted installation (`mlwsvm ext`) |
 
-## Milestones M11–M95
+## Milestones M11–M98
 
 | Milestone | Contents | Done when |
 |---|---|---|
@@ -117,6 +117,9 @@ Then, in order (Windows is set aside until there is a machine to test on):
 | **M93 `alive` across nodes** (done) | `proc.alive(pid, timeout_ms)`: whether a process runs, for a pid of this VM or of another node, which is asked (a control frame of its own) and answers as `alive` there would, into the caller's reply slot as for `proc.call` (the wait is now one function for both). A node that is not connected, or goes while asked, has none running. The `alive` instruction, which never waits, answers for this VM's pids only | `make check-tools`: a process there alive, then killed, one not there, one on a node not connected, this process by `proc.alive`, and one of a node that has gone |
 | **M94 A server's state through a reload** (done) | `module.watch(name, on)`: a built-in `Reloaded {module}` for each new version of a module of that name, delivered with the world stopped, before any message the new code can send. `module.of(closure)` gives a closure's module and a number for its version; `module.function` takes a closure for that closure's version, and `module.current(closure, name)` finds a function of the current one, so a library can follow a program's module it cannot name. `std.server` (`lib/std/server.masm`), as Erlang/OTP's `gen_server`: `init`, `handle_call`, `handle_info` and `code_change` callbacks, running one version until its `Reloaded`, then the new version's `code_change` with its state, so neither version sees the other's state | `tests/loader/server` (a reload while the server waits in a call, so that a message before it is the old version's and one after the new's; a list state made a map by `code_change`; two reloads met at once, through the newest version's `code_change` alone; a version without one; a `Reloaded` of another module as a message; watching ended; the server failing for its monitor) |
 | **M95 Faster messages between nodes** (done) | Measured first (`bench/nodes/run.sh`, against Erlang/OTP 29's distribution): a message was deep-copied to the connection's writer process, which encoded it and wrote it alone, and collected the backlog it kept, and decoded where it arrived and copied again into the receiver. Now a message's frame is encoded where it is sent, into the sending thread's scratch heap, and only those bytes go to the writer (as do the VM's own control frames and `proc.reply`'s, encoded from the replier's value; what cannot be sent is the sender's error, and a frame of more than 64 MiB is `E_RANGE`). The writer writes the frames waiting behind one, up to 64 KiB, in one write. The reader decodes a message straight into what the receiver gets (`node.take`). A message for a full mailbox there is dropped, with a warning in the monitor's log (the connection failed before). Against 0.21.0, on the M5, i7 and Ryzen: `send [1]` 1.74, 2.44 and 4.46 µs to 0.24, 0.66 and 0.68; 100 integers 4.4, 7.5 and 9.8 µs to 0.95, 2.0 and 1.9; 100 cells 8.5, 20 and 21 µs to 2.6, 6.3 and 7.9 (Erlang on the M5: about 1.8 µs for each). A call is 2–4% faster for `[1]` and 11–16% for 100 integers; the rest of it is the TCP round trip and, most likely, the poller's handoff to a worker at each end (§4) | `tests/native/node_values` and `make check-tools` (every kind, cycles and depth through the new paths, over TCP and TLS); the benchmark under AddressSanitizer |
+| **M96 Back-pressure between nodes** (done) | A process sending to another node faster than the connection can write filled the connection's mailbox without limit: with the far node stopped, a sender queued all of 125 MiB. Now a connection's carrier counts the bytes of frames it has to write; above 1 MiB, a `send` to that node ends its slice and the sender sleeps, until the writer, which reports what it writes (`node.written`), is down to 512 KiB, or 100 ms pass, as Erlang suspends a sender on a busy distribution port. A carrier that ends wakes its senders. Replies, control frames and sends from callbacks from C never wait. `bench/nodes` unchanged (it rarely queues 1 MiB) | `make check-tools`: 2,000 messages of 64 KiB sent while the far VM is stopped (SIGSTOP): the sender stops after a few MiB (50 messages on the M5, all 2,000 before), and all arrive once it goes on (not on Windows, which has no SIGSTOP) |
+| **M97 Workers that wait in the poller** (done) | Measured first (M95): a call between two VMs took 23 µs on the M5, against 20 µs for Erlang and 13 µs for a bare TCP round trip, the same on one worker thread or many, since a descriptor's event went to the poller, a thread of its own, which woke a worker to run its process. Now the poller has no thread: an idle worker waits in it (for at most a second or its next timer) and runs what it wakes, as Erlang's schedulers and Go's do; one thread at a time is in it, so that a wake-up meant for a waiting worker is not taken by another; whoever would wake an idle worker wakes that one (`plat_poller_wake`), as do an earlier timer, stopping the world and the end; while nobody waits there, busy workers look, without waiting, at most once a millisecond; the first process to wait for a descriptor calls an idle worker there. A prototype that also called an idle worker there at every wait, or had busy workers' looks call idle workers back, gave the gain back. Against 0.22.0, calls between nodes on the M5, i7 and Ryzen: `[1]` −18%, −42% and −54% (18.8 µs on the M5; Erlang 20.2), 100 integers −24%, −46% and −50%; `bench/connections` −6% and −13% on the i7 and Ryzen; messages, `pingpong` and `parallel` unchanged within noise (the i7's small sends' medians 5% slower, within ±15%) | `make test`, `make check-tools` and `make check-tsan`, which run every program that waits for sockets, pipes, timers and children with many threads; on Windows, the CI's completion port |
+| **M98 Nodes' traffic in the monitor** (done) | The monitor showed the nodes connected, but not what went over each connection. Now each connection counts, from when it came, the messages sent there and received from there, and the frames' bytes written and read, and how many times a sender waited for room; with what its carrier has queued and the senders waiting now, `/api/nodes` gives them, `mlwsvm top` has a line per connection, and the dashboard's Nodes table, now a card of its own, shows them | `make check-tools`: while the far node is stopped and the sender waits (M96), the near node's `/api/nodes` shows node 2 with more than 1 MiB queued and one sender waiting, and its `/top` has node 2's line |
 
 ## 1. Calling existing libraries (M10: done)
 
@@ -227,10 +230,7 @@ Capabilities: M60.
   millisecond for anonymous pipes (a child's stdin, a stdin given to the
   VM), which have no readiness to wait for, and for pipes waited for writing.
 
-Not done in distribution (M61, M70, M83, M88, M92–M95): back-pressure, so
-that a process sending to another node faster than the connection writes
-waits, as Erlang suspends it (`busy_dist_port`), instead of filling the
-connection's mailbox. Not done in hot reloading (M55, M72, M76, M94): moving a
+Not done in hot reloading (M55, M72, M76, M94): moving a
 process's own state for one that is not a `std.server` is the program's, with
 `module.watch` and `module.current`, as in Erlang it is `sys`'s and the
 program's own.
@@ -279,13 +279,22 @@ Each of these was measured and deferred; see [PERFORMANCE.md](PERFORMANCE.md).
   only worth it if programs show memory held that way.
 * Lock-free run queues and spinning before sleeping, for many-thread,
   message-heavy programs (M35 wakes idle threads one at a time instead).
-* Workers that poll. Measured after M95 (`bench/nodes/run.sh`): a call
-  between two VMs on the M5 takes 24 µs, of which a bare TCP round trip over
-  the loopback interface is 13 µs; Erlang's takes 20 µs. MLWSVM's poller is a
-  thread of its own, which wakes a worker to run the process a descriptor
-  was waited for by, most likely the difference; a worker with nothing to run
-  could wait in the poller itself, as Erlang's schedulers and Go's do, which
-  changes how workers sleep and wake on kqueue, epoll and IOCP alike.
+* ~~Workers that poll~~ (M97: done).
+* Selective receive in the VM. Measured after M97, on compiled Erlang's
+  `ring` (1,000 processes passing a message a million times, 205 ns a hop on
+  the M5; BEAM 170), against hand-written rings of the same shape: plain
+  `send` and `recv` of an integer take 65 ns a hop; wrapping each message as
+  the `[R, I]` list a compiled Erlang term is sent as, 147; receiving through
+  a function that first looks at a list of messages saved by earlier
+  receives, as compiled Erlang's `receive` does, 164. So the saved list costs
+  about 8%, and a VM primitive to take the first message that matches could
+  save no more: not worth an instruction. The wrapper costs 40%, and needs
+  nothing new: sending a term as the one value it is (its `I` when `R` is
+  null, else its `R`) and receiving into a list element, which keeps its type
+  tag, read by `tagof`, takes 96 ns a hop. Compiled Erlang now sends and
+  receives that way: its `ring` takes 110 ns a hop with the JIT, against
+  BEAM's 170 (the JIT compiles `tagof`, and `recv` into an element costs what
+  into a register does, so no new forms were needed).
 * ~~A bytecode optimizer~~ (M41: done; [OPTIMIZER.md](OPTIMIZER.md)).
   Removing type checks needs the source language's types, so that stays in
   the compilers.

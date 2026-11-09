@@ -633,7 +633,8 @@ MLWSVM uses both, as Go's runtime and libuv do:
 * For pipes and sockets, make the descriptor non-blocking, and when a read
   would block, park the process and ask the operating system to say when
   the descriptor is ready (kqueue on macOS and the BSDs, epoll on Linux).
-  One *poller* thread waits for all of them.
+  One *poller* holds all of them, and a worker thread with nothing else to
+  do waits in it, so the process a descriptor wakes runs on that same thread.
 * For things that cannot be polled (regular files, running a command, a C
   library call that blocks), run the call on a pool of I/O threads while the
   process waits.
@@ -664,7 +665,8 @@ the request and does what `recv` does: back up and end the slice.
 ```
 
 `after_slice` hands the process to the poller; when the descriptor is
-ready, the poller thread makes it ready again, and the `ncall` runs once
+ready, the worker waiting in the poller (or a busy one that looks, between
+slices) makes it ready again, and the `ncall` runs once
 more with `p->resumed` set, so the native continues where it stopped.
 Natives that need a thread ask for `NREQ_BLOCKING` instead and go to the
 I/O pool, which grows up to 64 threads. Both kinds of waiting are counted

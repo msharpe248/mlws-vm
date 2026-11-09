@@ -313,6 +313,50 @@ set -e
 [ $HAVE_TLS = 1 ] && node_pair tls
 rm -rf "${NODED:?}"
 
+# Back-pressure between nodes: near.masm sends 125 MiB to far.masm's sink
+# while far's VM is stopped, so that the connection cannot write. The sender
+# must wait after a few MiB, and everything arrives once far goes on. Near's
+# monitor shows it meanwhile: the connection's backlog, over 1 MiB, and one
+# sender waiting, in /api/nodes and /top. (No SIGSTOP on Windows.)
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*) ;;
+*)
+    BUSYD=$(mktemp -d)
+    mkfifo "$BUSYD/in"
+    $BIN run tests/tools/_busy/far.masm > "$BUSYD/port" 2>/dev/null &
+    FAR=$!
+    for _ in $(seq 1 80); do grep -q '^[0-9][0-9]*$' "$BUSYD/port" && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+    perl -e 'alarm 120; exec @ARGV' $BIN run --monitor 127.0.0.1:$PORT tests/tools/_busy/near.masm "$(cat "$BUSYD/port")" < "$BUSYD/in" > "$BUSYD/out" 2>&1 &
+    NEAR=$!
+    exec 4> "$BUSYD/in"
+    for _ in $(seq 1 80); do grep -q ready "$BUSYD/out" && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+    kill -STOP $FAR
+    echo stopped >&4
+    for _ in $(seq 1 80); do grep -q 'sent while' "$BUSYD/out" && break; perl -e 'select(undef, undef, undef, 0.25)'; done
+    if command -v curl >/dev/null 2>&1; then
+        NODES=$(curl -sf http://127.0.0.1:$PORT/api/nodes) || NODES="(no answer)"
+        TOPN=$(curl -sf http://127.0.0.1:$PORT/top) || TOPN="(no answer)"
+    fi
+    kill -CONT $FAR
+    echo going >&4
+    exec 4>&-
+    wait $NEAR || { kill $FAR 2>/dev/null; cat "$BUSYD/out" >&2; fail "node back-pressure: near failed"; }
+    kill $FAR 2>/dev/null; wait $FAR 2>/dev/null || true
+    SENT=$(sed -n 's/^sent while stopped: //p' "$BUSYD/out")
+    grep -q '^arrived: 2000$' "$BUSYD/out" || fail "node back-pressure: not all arrived: $(cat "$BUSYD/out")"
+    [ -n "$SENT" ] && [ "$SENT" -lt 1000 ] || fail "node back-pressure: the sender did not wait: $(cat "$BUSYD/out")"
+    if [ -n "${NODES:-}" ]; then
+        QUEUED=$(echo "$NODES" | sed -n 's/.*"queued":\([0-9]*\).*/\1/p')
+        echo "$NODES" | grep -q '"node":2,"name":"","carrier":[0-9]*,"up_ms":[0-9]*,"sent":[0-9]*' || fail "/api/nodes: $NODES"
+        echo "$NODES" | grep -q '"waiting":1,' || fail "/api/nodes: no sender waiting: $NODES"
+        [ -n "$QUEUED" ] && [ "$QUEUED" -gt 1048576 ] || fail "/api/nodes: the backlog: $NODES"
+        echo "$TOPN" | grep -q '^nodes (this VM: node 1):' || fail "/top: no nodes: $TOPN"
+        echo "$TOPN" | grep -Eq '^ +2 - .* 1 +[0-9]+$' || fail "/top: node 2's line: $TOPN"
+    fi
+    rm -rf "${BUSYD:?}"
+    ;;
+esac
+
 # mlwsvm names, and nodes that register with it and connect by name: node b
 # registers and waits, node a registers too, connects to b by name, checks the
 # service's answers, and tells b to end. The service takes any free port (0),

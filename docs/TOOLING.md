@@ -440,7 +440,8 @@ second), two-minute charts of instructions per second and heap size, a sortable
 process table (click a row for details: quotas, links and monitors, here and on
 other nodes, a backtrace, and the first messages waiting), the program's log
 (below), a graph of who is linked with and who monitors whom, the modules loaded
-with each version, the registered names, the nodes connected, and the most recent
+with each version, the registered names, the nodes connected and each connection's
+traffic and backlog, and the most recent
 exits with their results. It is a single self-contained page, compiled into the
 binary from `web/dashboard.html`, and it polls the JSON API once a second (the
 modules, names, nodes and graph every five).
@@ -456,7 +457,7 @@ modules, names, nodes and graph every five).
 | `GET /api/log?since=N` | the log's entries after number `N` (0: all it has), oldest first: `seq`, `t_ns` (since the VM started), `pid`, `program` and `program_name` (null for the monitor's own), and `level` and `text`, or `event` and `value` (JSON); with `next`, the number to ask from next time, and `lost`, how many were overwritten before being asked for |
 | `GET /api/modules` | every module loaded, each version in the order loaded: `name`, `path`, `version` (1, 2, ...), `current`, `state` (`ready`, `failed`, `purged`), `functions`, `globals_bytes` |
 | `GET /api/names` | the registry: `name` and `pid` |
-| `GET /api/nodes` | `self`, this VM's node number (0: none), its `name` (`""`: none), and `connected`: `node`, its `name`, and `carrier`, the process carrying that connection |
+| `GET /api/nodes` | `self`, this VM's node number (0: none), its `name` (`""`: none), and `connected`: `node`, its `name`, `carrier` (the process carrying that connection), and its traffic since it came: `up_ms`, messages `sent` there and `received` from there, the frames' `bytes_out` and `bytes_in`, `queued` (bytes not yet written), `waiting` (senders waiting now for it to have room, as more than 1 MiB is queued) and `waits` (how many times one has) |
 | `GET /api/graph` | `links` (`[a, b]`, each once), `monitors` (`[watcher, watched]`), and `far`: ties with other nodes, `pid`, `kind` (`link`, `watched_by`, `watches`) and `other` |
 | `GET /top` | the plain-text table that `mlwsvm top` shows |
 
@@ -560,12 +561,19 @@ MLWSVM  up 12.0s  processes 4 (max 4, spawned 4)  insns 33.9M  heap 712.0KB
      2 ready     46.5    16.9M   356.0K        0       0     0         0/0   97  busy.spinner+7 (busy.masm:9)
      1 sleeping   0.0        4        0        0       0     0         0/0    0  busy.main+4 (busy.masm:20)
 
+nodes (this VM: node 1, one@host):
+  NODE NAME                       UP     SENT RECEIVED      OUT       IN   QUEUED WAIT  WAITS
+     2 two@host                 8.4s     1.2M     3.0K   35.7MB   88.1KB    1.2MB    1     14
+
 recent exits:
      7 worker           failed E_BOUNDS        1.2K insns
 ```
 
 `top` connects to `127.0.0.1:7070` unless given another address. It redraws
-every second (`--interval MS`) and sorts processes by CPU. `--once`
+every second (`--interval MS`) and sorts processes by CPU. A VM connected to
+other nodes has a line for each connection: how long it has been up, the
+messages sent and received, the bytes written and read, what is queued to be
+written, and the senders waiting for room now (`WAIT`) and in all (`WAITS`). `--once`
 prints one snapshot and exits; there, %CPU is measured over the VM's whole uptime.
 It fetches `/top` from the monitor, so it works against any VM started with
 `--monitor`. A monitor over TLS is `https://HOST:PORT` (the address the run
