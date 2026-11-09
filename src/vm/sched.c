@@ -853,7 +853,7 @@ static void finish(Sched *s, Process *p, bool failed);
 /* Stop every process of a program whose main has ended (as a run stops its
  * processes when it ends): their monitors in other programs see E_KILLED. */
 static void end_program(Sched *s, const Program *prog) {
-    uint64_t end = vm_pid_end(prog->main->vm);
+    uint64_t end = vm_pid_end(s->vm);
     for (uint64_t pid = 1; pid < end; pid++) {
         Process *t = pin(s, pid);
         if (!t) continue;
@@ -866,7 +866,8 @@ static void end_program(Sched *s, const Program *prog) {
 
 /* A process has ended (on this thread, or claimed by kill_locked): notify its
  * monitors, take linked processes down with a failing one, and free it unless
- * it is main (freed by its runner, after collecting statistics). */
+ * it is main (freed by its runner, after collecting statistics; or here, for
+ * mlwsvm serve's programs, with how it ended kept in its Program). */
 static void finish(Sched *s, Process *p, bool failed) {
     VM *vm = p->vm;
     proc_write_line_out(p); /* (it is not running: this thread may) */
@@ -934,6 +935,19 @@ static void finish(Sched *s, Process *p, bool failed) {
         plat_mutex_unlock(s->lock);
     } else {
         end_program(s, p->prog); /* a program ends with its main; the others run on */
+    }
+    if (is_main && p->prog->free_main) {
+        Program *pr = p->prog;
+        plat_lock(vm->lock); /* (the monitor reads it) */
+        pr->ended = failed ? PROC_FAILED : PROC_DONE;
+        pr->exit_code = p->exit_code;
+        if (failed) {
+            memcpy(pr->err_code, p->err.code, sizeof pr->err_code);
+            memcpy(pr->err_msg, p->err.msg, sizeof pr->err_msg);
+        }
+        pr->main = NULL;
+        plat_unlock(vm->lock);
+        proc_free(p);
     }
 }
 
@@ -1780,7 +1794,7 @@ static void idle(Worker *w) {
     plat_mutex_unlock(s->lock);
     if (deadlock) { /* each main waiting with no possible sender: its recv raises E_DEADLOCK */
         for (size_t i = 0; i < vm->progs.n; i++) {
-            Process *m = pin(s, vm->progs.v[i]->main->pid);
+            Process *m = pin(s, vm->progs.v[i]->main_pid);
             if (!m) continue;
             if (m->state == PROC_WAITING) {
                 m->deadlock = true;

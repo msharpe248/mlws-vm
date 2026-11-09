@@ -676,8 +676,8 @@ static void envs_json(StrBuf *b, const Monitor *mon, VM *vm, bool values) {
     VEC(Env *) es = {0};
     VEC(int32_t) ids = {0};
     plat_lock(vm->lock);
-    for (size_t i = mon->programs ? 1 : 0; i < vm->progs.n; i++) /* (not mlwsvm serve's own) */
-        if (vm->progs.v[i]->env) {
+    for (size_t i = mon->programs ? 1 : 0; i < vm->progs.n; i++) /* (not mlwsvm serve's own, nor one that has ended) */
+        if (vm->progs.v[i]->env && !vm->progs.v[i]->ended) {
             env_retain(vm->progs.v[i]->env);
             VEC_PUSH(es, vm->progs.v[i]->env);
             VEC_PUSH(ids, (int32_t)i);
@@ -811,15 +811,17 @@ static void programs_json(StrBuf *b, const Monitor *mon, VM *vm) {
             if (k) sb_putc(b, ',');
             json_str(b, pr->args.v[k]);
         }
-        bool done = m->state == PROC_DONE, failed = m->state == PROC_FAILED;
-        sb_printf(b, "],\"pid\":%llu,\"state\":\"%s\"", (unsigned long long)m->pid,
+        int state = m ? (int)m->state : pr->ended; /* (no main: it has ended, and been freed) */
+        bool done = state == PROC_DONE, failed = state == PROC_FAILED;
+        const char *code = m ? m->err.code : pr->err_code, *msg = m ? m->err.msg : pr->err_msg;
+        sb_printf(b, "],\"pid\":%llu,\"state\":\"%s\"", (unsigned long long)pr->main_pid,
                   failed ? "failed" : done ? "done" : "running");
-        if (done) sb_printf(b, ",\"exit\":%lld", (long long)m->exit_code);
+        if (done) sb_printf(b, ",\"exit\":%lld", (long long)(m ? m->exit_code : pr->exit_code));
         if (failed) {
             sb_puts(b, ",\"code\":");
-            json_str(b, m->err.code);
+            json_str(b, code);
             sb_puts(b, ",\"message\":");
-            json_str(b, m->err.msg);
+            json_str(b, msg);
         }
         sb_putc(b, '}');
     }
@@ -1151,10 +1153,10 @@ static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *
         Program *pr = vm_start_program(vm, file, &r.args, r.cap, r.quota, &e);
         sched_start_world(vm);
         if (pr) {
-            sb_printf(&b, "{\"ok\":true,\"id\":%zu,\"pid\":%llu}", vm->progs.n - 1, (unsigned long long)pr->main->pid);
+            sb_printf(&b, "{\"ok\":true,\"id\":%zu,\"pid\":%llu}", vm->progs.n - 1, (unsigned long long)pr->main_pid);
             sb_puts(&a, "{\"path\":");
             json_str(&a, r.path);
-            sb_printf(&a, ",\"pid\":%llu}", (unsigned long long)pr->main->pid);
+            sb_printf(&a, ",\"pid\":%llu}", (unsigned long long)pr->main_pid);
             audit(vm, by, "monitor.start", a.s);
             respond_json(k, 200, b.s);
         } else {
@@ -1188,8 +1190,8 @@ static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *
             Program *pr = vm_start_program(vm, file, &args, cap, quota, &e);
             sched_start_world(vm);
             if (pr) {
-                sb_printf(&b, "{\"ok\":true,\"id\":%u,\"pid\":%llu}", pr->id, (unsigned long long)pr->main->pid);
-                sb_printf(&a, "{\"id\":%zu,\"as\":%u,\"pid\":%llu}", id, pr->id, (unsigned long long)pr->main->pid);
+                sb_printf(&b, "{\"ok\":true,\"id\":%u,\"pid\":%llu}", pr->id, (unsigned long long)pr->main_pid);
+                sb_printf(&a, "{\"id\":%zu,\"as\":%u,\"pid\":%llu}", id, pr->id, (unsigned long long)pr->main_pid);
                 audit(vm, by, "monitor.rerun", a.s);
                 respond_json(k, 200, b.s);
             } else {
@@ -1207,7 +1209,7 @@ static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *
     } else if (sscanf(q->path, "/api/programs/%zu/%15[a-z]", &id, verb) == 2 && !strcmp(verb, "stop")) {
         uint64_t pid = 0;
         plat_lock(vm->lock);
-        if (id >= 1 && id < vm->progs.n) pid = vm->progs.v[id]->main->pid;
+        if (id >= 1 && id < vm->progs.n) pid = vm->progs.v[id]->main_pid;
         plat_unlock(vm->lock);
         if (pid && sched_kill_from_outside(vm, pid, "E_KILLED", "stopped from the monitor")) {
             sb_printf(&a, "{\"id\":%zu,\"pid\":%llu}", id, (unsigned long long)pid);
