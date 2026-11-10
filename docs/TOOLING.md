@@ -13,9 +13,10 @@ run before a release.
 | Tracer | `mlwsvm run --trace FILE\|- [--trace-limit N] prog.masm` | none |
 | Debugger | `mlwsvm debug prog.masm` | — |
 | Debugger for editors | `mlwsvm dap` (Debug Adapter Protocol) | — |
+| Debugger for a running process | the monitor's dashboard: **Debug**, or `/debug#pid=N` | none |
 | Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] [--monitor-actions] prog.masm` | none |
 | A VM that stays up | `mlwsvm serve --programs DIR [--monitor [HOST:]PORT]` | — |
-| Terminal view | `mlwsvm top [https://]HOST:PORT [--ca FILE] [--once] [--interval MS]` | — |
+| Terminal view | `mlwsvm top [https://]HOST:PORT [--ca FILE] [--once] [--interval MS] [--log]` | — |
 | Name service for nodes | `mlwsvm names [--port N]` | — |
 | VM options | `mlwsvm run --max-frames N --quota heap=64M --cap read=/data ... prog.masm` | — |
 | Several programs | `mlwsvm run a.masm args --also b.masm args ...` | — |
@@ -437,6 +438,18 @@ $ mlwsvm run --monitor 0.0.0.0:7443 --monitor-cert cert.pem --monitor-key key.pe
 * **TLS** (`--monitor-cert FILE --monitor-key FILE`, PEM): the dashboard and the
   API over HTTPS, and nothing over plain HTTP. It needs OpenSSL or LibreSSL at
   run time, as `std.tls` does; so does `mlwsvm top https://HOST:PORT`.
+* **Clients** hold nothing up. A request is read as its bytes come and its
+  answer written as its client takes it, between the program's time slices, so
+  one that sends slowly, or does not read, waits by itself: a request has 2
+  seconds to arrive and its answer 10 to be taken, and then the connection is
+  dropped. The monitor serves 32 connections at once (others wait their turn),
+  takes 8 KiB of headers (431 for more) and a 64 KiB body (413), and answers
+  503 while more than 64 MiB of answers wait to be taken. After a 431 or 413
+  it lets the rest of the request come for a second, unread, so that the
+  answer reaches its client.
+* **The page** is sent with headers that keep it out of any other site's
+  frame, and let it run and fetch only what is its own
+  (`Content-Security-Policy`, `X-Frame-Options`).
 
 ### Web dashboard: `GET /`
 
@@ -444,22 +457,27 @@ Summary tiles (live processes, instructions per second, heap, time slices per
 second), two-minute charts of instructions per second and heap size, a sortable
 process table (click a row for details: quotas, links and monitors, here and on
 other nodes, a backtrace, and the first messages waiting), the program's log
-(below), a graph of who is linked with and who monitors whom, the modules loaded
+(below; filtered by level and by text, with the newest line at the bottom or the
+top, which the browser remembers; it can be paused, and the lines shown
+downloaded as text), a graph of who is linked with and who monitors whom, the modules loaded
 with each version, the registered names, the nodes connected and each connection's
 traffic and backlog, the [environments](STDLIB.md#environments-env) (names
 to anyone who may read; values, and setting and deleting them, to an admin),
 the keys (to an admin), and the most recent
 exits with their results. It is a single self-contained page, compiled into the
 binary from `web/dashboard.html`, and it polls the JSON API once a second (the
-modules, names, nodes, graph, environments and keys every five).
+modules, names, nodes, graph, environments and keys every five). To an admin,
+a process's details have **Debug**, which opens [its
+debugger](#debugging-a-process), and the processes being debugged are listed
+above the table.
 
 ### JSON API
 
 | Endpoint | Returns |
 |---|---|
 | `GET /api/vm` | `vm` (`"mlwsvm"`), `uptime_ns`, `processes` (live), `spawned`, `max_live`, `slices`, `insns` (all processes), `heap_bytes`, `raw_bytes`, `modules`, `main_pid` |
-| `GET /api/procs` | an array, per live process: `pid`, `program` and `program_name` (the program it belongs to: its number, from 0, and file, as `--also` or `mlwsvm serve` started it), `env` (the named environment it is in, or null: its program's), `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors`, and `far_links`, `far_monitors` and `far_watching`, its ties with processes on other nodes (`node` and `pid`: a whole pid can be larger than JavaScript's numbers hold exactly) |
-| `GET /api/proc/PID` | the same for one process, plus `quota` (`heap`, `raw`, `mailbox`, `insns`, `foreign`, `os`; `null` = unlimited), `messages` (the first 20 waiting: `type`, and `size` or a short `preview`) and `backtrace` |
+| `GET /api/procs` | an array, per live process: `pid`, `program` and `program_name` (the program it belongs to: its number, from 0, and file, as `--also` or `mlwsvm serve` started it), `env` (the named environment it is in, or null: its program's), `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket / `paused`: by [its debugger](#debugging-a-process)), `away` (true while an I/O thread is still making that blocking call: the rest is then as it was when the call began), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors`, and `far_links`, `far_monitors` and `far_watching`, its ties with processes on other nodes (`node` and `pid`: a whole pid can be larger than JavaScript's numbers hold exactly) |
+| `GET /api/proc/PID` | the same for one process, plus `quota` (`heap`, `raw`, `mailbox`, `insns`, `foreign`, `os`; `null` = unlimited), `messages` (the first 20 waiting: `type`, and `size` or a short `preview`) and `backtrace`. A process in a blocking call that is still being made (`away`) is shown as it was when the call began: no `messages`, and for `backtrace` where it made the call |
 | `GET /api/exits` | the last 64 finished processes, newest first: `pid`, `entry`, `program`, `program_name`, `main` (its program's main), `failed`, `code`, `exit`, `insns`, `cpu_ns`, `ago_ns` |
 | `GET /api/log?since=N` | the log's entries after number `N` (0: all it has), oldest first: `seq`, `t_ns` (since the VM started), `pid`, `program` and `program_name` (null for the monitor's own), and `level` and `text`, or `event` and `value` (JSON); with `next`, the number to ask from next time, and `lost`, how many were overwritten before being asked for |
 | `GET /api/modules` | every module loaded, each version in the order loaded: `name`, `path`, `version` (1, 2, ...), `current`, `state` (`ready`, `failed`, `purged`), `functions`, `globals_bytes` |
@@ -468,6 +486,7 @@ modules, names, nodes, graph, environments and keys every five).
 | `GET /api/graph` | `links` (`[a, b]`, each once), `monitors` (`[watcher, watched]`), and `far`: ties with other nodes, `pid`, `kind` (`link`, `watched_by`, `watches`) and `other` |
 | `GET /api/envs` | each environment, the programs' and then the named ones: `env` (a named one's name, or null), `program` and `program_name` (a program's, or null), `processes` (in it), `watchers` (`env.watch`), and `values`, by name: `key` and `secret`, and, to an admin's key, `value` as JSON (null for a secret, or with `note` for one that has no JSON form or is over 16 KiB of it) |
 | `GET /top` | the plain-text table that `mlwsvm top` shows |
+| `GET /log?since=N` | the log's entries after number `N` as plain text, which `mlwsvm top --log` shows: a first line with the number to ask from next time, then each entry: its time, pid, program, level (or `event`) and text (or an event's name and value) |
 
 Actions (with `--monitor-actions`; `Authorization: Bearer KEY`, an admin's).
 Each answers `{"ok": true}`, or `{"error": ...}` with 400 (a bad body, or a
@@ -518,6 +537,19 @@ or removed takes effect at once; a file that no longer reads leaves the keys as
 they were, and the log says why (`monitor.keys_unread`). A file that is not
 there yet has no keys.
 
+Whoever can write the file can make a key. So the monitor takes none from a
+file that other users can write, or that another user owns (the administrator
+aside): it does not start on one, and one that becomes so while it runs leaves
+the keys as they were. `mlwsvm token` writes a file that only its owner can
+write, whatever the umask. Keep its directory yours as well.
+
+**Wrong keys** are counted by the address they come from. An address may send
+ten, and one more every three seconds; past that, a request with a key from
+there is refused unread (429) until the next is due, so a key cannot be found
+by trying, and the log says so once a minute (`monitor.keys_refused`, with
+`from`). The same wrong key again counts once, so a page left open with a key
+since revoked uses up nothing. A request with no key is not counted.
+
 `mlwsvm token` keeps the file:
 
 * `new --label L [--scope read|admin] [--file F]` makes a key, prints its
@@ -541,6 +573,102 @@ asks for one, and the header says whose key is in use, with a way to sign out.
 
 Counters are cumulative; compute rates by differencing two samples, as the
 dashboard does. `cpu_ns` is the time spent executing that process's time slices.
+
+### Debugging a process
+
+`/api/debug` debugs one process of a VM that goes on running: the process is
+interpreted, an instruction at a time, and when it stops it alone is paused
+(`paused`, among the states); every other process runs as it did, machine code
+and all. `mlwsvm debug` and `mlwsvm dap` debug a whole program from its start,
+on one thread; this debugs what is already running, and several processes at
+once, each by itself.
+
+**The debugger's page**, `/debug#pid=N`, is the way to use it: a page for
+one process, in a tab of its own, so that several can be debugged side by
+side with the dashboard still there. **Debug**, in a process's details on the
+dashboard, pauses the process and opens it; under `mlwsvm serve`, a program
+can be started *paused, in the debugger*, its main stopped before its first
+instruction. The page shows the source with the line the process is at (the
+compiled language's own file where there is one, or the assembly, and the
+function's instructions on request), the call stack, the variables of the
+frame chosen, which open to show what they hold and are marked when a step
+changed them, the messages waiting in its mailbox, the breakpoints, and the
+process's own lines of the log, and it names the other processes being
+debugged, each a click away. A click beside a line sets or removes a
+breakpoint there. Continue is F8 or `c`, step over F10 or `n`, step into `s`,
+step out `o`, pause `p`. Closing the page changes nothing: a paused process
+stays paused, and the dashboard says so. The page is compiled into the
+binary from `web/debugger.html`, and asks for the process's state five times
+a second while it runs, once a second while it is paused.
+
+A process is **attached** to, and from then:
+
+* **Pause** stops it before its next instruction. One that is waiting, for a
+  message or a time, pauses when it next would run, and can be read meanwhile.
+* **Steps** go by the lines of its source (the compiled language's, where its
+  compiler marked them with `.loc`, else the assembly's) or by instructions:
+  into a call, over one, or out of the function.
+* **Breakpoints** are the VM's: at a line of a file, or at a function's first
+  instruction, they stop whichever attached process reaches one. A line
+  without code moves to the next that has some, up to ten lines on. One for
+  code that is not loaded waits for it, and each follows a reload. A `break`
+  instruction stops an attached process too.
+* **Continue** lets it go on; **detach** as well, and from then it runs as it
+  did before, its machine code where it has some. Continue also lets off one
+  that was asked to pause and is not there yet.
+* **What it spawns** can be debugged too (`children`): each process it spawns
+  from then on, and theirs, so that a breakpoint stops whichever of them
+  reaches it. A program started paused, in the debugger, is debugged so from
+  its first process.
+* **An error that nothing catches** pauses an attached process where it was
+  raised, its frames and variables still there, instead of ending it
+  (`reason` `error`, with the `error`'s `code` and `message`). It cannot step;
+  let go on, it ends as it would have, with the same report. An error that a
+  `.try` catches stops nothing.
+* **Its whole program** can be paused: every process of the program is
+  attached to and asked to pause, and what they spawn is debugged; and let go
+  on, all at once.
+
+Paused, the process keeps its mailbox: messages sent to it wait. A call to it
+may time out meanwhile, as in Erlang's debugger. It can be killed, and it ends
+with its program. What it is paused in is one instruction: a breakpoint on a
+`recv` stops it once, though the `recv` runs again when a message comes.
+
+Everything here needs an admin's key, since what a process holds is shown; the
+actions also need `--monitor-actions`, as others do. Attaching, detaching,
+pausing and each new breakpoint go into the log (`monitor.debug_attach`,
+`monitor.debug_detach`, `monitor.debug_pause`, `monitor.debug_break`).
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/debug` | `available` (false, with `why`, in a VM run under the profiler, the tracer or `mlwsvm debug`), `breakpoints`, and `processes`: each one attached to, as below without its frames |
+| `GET /api/debug/PID` | `debugged`, `state`, `away`, `pausing` (asked to pause, and not yet there), `stepping`, `reason` (why it is paused: `pause`, `step`, `breakpoint`, `break`, `entry`, `error`), `error` (what it failed with, paused there: `code` and `message`; else null), `seq` (its pauses so far: a new one is a new stop), `children` (what it spawns is debugged too), `at` (where it is) and `frames`, the innermost first, 200 at most: each a `function`, `pc`, `file` and `line` (the assembly's), and `source` and `source_line` where `.loc` gives them |
+| `GET /api/debug/PID/vars?frame=N` | frame N's `locals` (the names the program gave its registers, each as its formatter shows it) and `registers` by bank: each a `name`, `value`, `kind`, how many `children` it opens to show, and its `path` |
+| `GET /api/debug/PID/vars?frame=N&path=P` | the `children` of the value at a path: a struct's fields, a list's or an array's elements, a map's values by key, a closure's captures, the registers of a variable of several; 1,000 at most, from `from=K` |
+| `GET /api/debug/PID/code?frame=N` | the frame's function as instructions: each a `pc`, `line`, `text`, `source` and `source_line`, and whether a `breakpoint` is there; with `pc`, the frame's own |
+| `GET /api/debug/source?file=F` | the `text` of a file that loaded code came from, as the frames name it: the file of that name, or one beside the module's own file (a compiler names a program's file as it was given it); 404 for any other file, or one that is not there |
+| `GET /api/debug/breakpoints` | each breakpoint: `id`, `file` and `line`, or `function`; `line_at` (the line with code it is at) and `at`, the places it is at now (none: waiting for its code) |
+
+| Action | Does |
+|---|---|
+| `POST /api/debug/PID/attach` | debug it; with `{"pause": true}`, pause it too; with `{"children": true}` (or `false`), what it spawns from now as well (or no longer); 403 for `mlwsvm serve`'s own process |
+| `POST /api/debug/PID/detach` | no longer; it goes on if it was paused |
+| `POST /api/debug/PID/pause` | pause it before its next instruction; with `{"program": true}`, every process of its program, each attached to |
+| `POST /api/debug/PID/continue` | a paused one goes on, and one asked to pause is let off; 409 if it is neither; with `{"program": true}`, every one of its program |
+| `POST /api/debug/PID/step` | `{"kind": "into" \| "over" \| "out", "by": "line" \| "insn"}` (`by` may be left out: `line`); 409 if it is not paused, or is paused where it failed |
+| `POST /api/debug/breakpoints` | `{"file": "app.masm", "line": 12}` (a file by its name, with or without its directories) or `{"function": "mod.f"}`; answers the breakpoint, the one there already if it is the same |
+| `POST /api/debug/breakpoints/ID/delete` | it is gone |
+
+Each action on a process answers its state as `GET /api/debug/PID` does,
+without the frames.
+
+Limits to know. A process in a blocking call that is still being made
+(`away`) cannot be read until the call returns (409), and pauses then.
+Nothing stops inside a callback from C, and an error raised inside a
+coroutine, or in such a callback, ends its process as it always did.
+Breakpoints stop only processes being debugged: one not attached to runs
+past them. A register its function has not
+written yet shows whatever was there. Values are read, not changed.
 
 ### The program's log
 
@@ -589,9 +717,9 @@ apply to all of them. `--monitor-cert` and
 |---|---|
 | `GET /api/programs` | the programs started: `id`, `path` (in the programs' directory), `cap` and `quota` (as started, or null), `args`, `pid` (of its main), `state` (`running`, `done` with `exit`, `failed` with `code` and `message`) |
 | `GET /api/programs/files` | the programs in the directory, for the dashboard's picker: each `.masm` or `.mlwso` file by its path within it, at most four directories down |
-| `POST /api/programs` | start one: `{"path": "app.masm", "args": ["-v"], "cap": "read=/data", "quota": "heap=64M"}` (all but `path` may be left out); answers its `id` and `pid`; 400 for a program that does not load or a bad `cap` or `quota`, 403 for a path not in the directory |
+| `POST /api/programs` | start one: `{"path": "app.masm", "args": ["-v"], "cap": "read=/data", "quota": "heap=64M"}` (all but `path` may be left out); with `"debug": true`, its main is paused before its first instruction, [its debugger's](#debugging-a-process); answers its `id` and `pid`; 400 for a program that does not load or a bad `cap` or `quota`, 403 for a path not in the directory |
 | `POST /api/programs/ID/stop` | its main fails with `E_KILLED`, and its other processes stop, as when a program's main ends |
-| `POST /api/programs/ID/rerun` | the same file again, with the same arguments, capabilities and quotas, as a new program; answers its `id` and `pid` |
+| `POST /api/programs/ID/rerun` | the same file again, with the same arguments, capabilities and quotas, as a new program (paused, with `{"debug": true}`); answers its `id` and `pid` |
 | `POST /api/shutdown` | every program is stopped, and `mlwsvm serve` exits 0 |
 
 These need an admin's key, as every action does, and each is written to the log
@@ -651,6 +779,19 @@ checks its certificate against the host, with the authorities in `--ca FILE`
 (for a certificate of your own making) or else the system's, and never
 without checking. A monitor with a tokens file needs a key: `--token KEY`, the
 address's `#token=` part, or `MLWSVM_MONITOR_TOKEN`, in that order.
+
+`mlwsvm top --log` shows [the program's log](#the-programs-log) instead, and
+follows it as `tail -f` follows a file, until the VM ends; with `--once` it
+prints what the log holds and exits. A line is the time since the VM started,
+the pid (`-` for the monitor's own lines), the program, the level (or `event`)
+and the text (or an event's name and its value as JSON); the dashboard's
+Download writes the same lines.
+
+```
+    0.004 s     1  watched.masm  info   watched: started
+    0.004 s     1  watched.masm  event  ready [42,"x"]
+    3.120 s     -  monitor  event  monitor.kill {"by":"ops","pid":2}
+```
 
 ## Bindings generator: `mlwsvm bindgen`
 

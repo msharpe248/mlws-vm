@@ -116,7 +116,9 @@ base:
   flame-graph output, an instruction tracer, and a live monitor with a web
   dashboard, JSON API and `mlwsvm top`, which with an admin's key can also
   kill, send, reload and purge, and, under `mlwsvm serve`, start and stop
-  programs in a VM that stays up. Keys that may read, or also act, are kept
+  programs in a VM that stays up, and debug any process of it in a page of
+  its own (source, breakpoints, steps, the call stack, variables, the
+  mailbox) while the others run. Keys that may read, or also act, are kept
   as hashes in a tokens file (`mlwsvm token`). A compiler marks which line of its
   source each stretch of code came from (`.loc "fib.lua", 3`), and backtraces,
   the debugger and the profiler show that line.
@@ -320,9 +322,9 @@ src/embed/      the embedding API (libmlwsvm)
 src/tools/      test runner, doc generator, debugger, the DAP server, bundle, profiler/tracer, monitor, top, ext, lib, opt, bindgen, fuzz
 src/platform/   the only OS-specific code (POSIX and Windows)
 include/mlwsvm/ public C headers: the extension API (mlwsvm.h) and the embedding API (embed.h)
-web/            the monitor's dashboard (compiled into the binary)
+web/            the monitor's dashboard and its debugger's page (compiled into the binary)
 editors/        a VS Code extension that declares `mlwsvm dap`
-build-tools/    build helpers: the dashboard compiled into C, the Unicode tables generated from the UCD
+build-tools/    build helpers: the monitor's pages compiled into C, the Unicode tables generated from the UCD
 extensions/     an example native extension (also a test fixture)
 lib/std/        standard library and macro files, written in MLWSVM assembly (std.node: distribution)
 tests/          the test suite, in MLWSVM assembly
@@ -335,7 +337,7 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 
 ## Status
 
-The current release is 0.27.1 (`mlwsvm version`); releases are tagged `vX.Y.Z`
+The current release is 0.28.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
 on GitHub. Everything described in `docs/` is implemented and tested on macOS, Linux and
 Windows ([Platforms](#platforms) has the details).
 [docs/ROADMAP.md](docs/ROADMAP.md) lists the milestones and what remains.

@@ -80,6 +80,7 @@ typedef struct Sched {
     int io_idle, io_busy;
     bool io_stop, io_abandoned;
     _Atomic int io_inflight; /* queued or running: other work that can still wake processes */
+    _Atomic int npaused;     /* processes paused by a debugger: someone will let them go on */
     /* the poller: processes waiting for descriptors (PROC_IOWAIT); see "the poller" below */
     PlatPoller *_Atomic poller; /* made on first use */
     _Atomic bool in_poller;     /* a thread waits in it or looks in it: one at a time */
@@ -737,6 +738,7 @@ static bool kill_locked(Process *t, const char *code, const char *msg) {
     t->backtrace.n = 0; /* no backtrace: it was stopped from outside */
     if (t->backtrace.s) t->backtrace.s[0] = 0;
     if (t->state == PROC_IOWAIT) t->vm->sched->io_waiting--;
+    if (t->state == PROC_PAUSED) t->vm->sched->npaused--;
     t->state = PROC_FAILED;
     return true;
 }
@@ -1680,6 +1682,48 @@ static void park_locked(Sched *s, PlatCond *cv, uint64_t timeout_ns) {
     s->nparked--;
 }
 
+/* A process as it is now: for the thread whose it is to read. */
+static void seen_now(Process *p, ProcSeen *s) {
+    const Frame *fr = p->nframes ? &p->frames[p->nframes - 1] : NULL;
+    s->fn = fr ? fr->fn : NULL;
+    s->pc = fr ? fr->pc : 0;
+    s->depth = p->nframes;
+    s->stack_bytes = PTR_SEG(p->sp) == SEG_STACK && PTR_OFF(p->sp) <= p->stack.size ? p->stack.size - PTR_OFF(p->sp) : 0;
+    s->insns = p->insns;
+    s->cpu_ns = p->cpu_ns;
+    s->heap_bytes = p->heap_bytes;
+    s->heap_peak = gc_heap_peak(p);
+    s->raw_bytes = p->raw_bytes;
+    s->objects = p->objects_allocated - p->gc_freed_objects;
+    s->gc_count = p->gc_count;
+    s->gc_ns = p->gc_ns;
+    s->thrown = p->exceptions_thrown;
+    s->msgs_sent = p->msgs_sent;
+}
+
+void sched_seen(Process *p, ProcSeen *s) {
+    bool away = p->state == PROC_NATIVE && p->bcall.state == BCALL_PENDING; /* (DONE is set with this lock held) */
+    if (away) *s = *p->bcall.seen;
+    else seen_now(p, s);
+    s->away = away;
+    s->state = p->state;
+    s->mailbox = (size_t)atomic_load(&p->mcount);
+    s->msgs_received = p->msgs_received;
+}
+
+bool sched_resume(VM *vm, uint64_t pid) {
+    Sched *s = sched_of(vm);
+    Process *p = pin(s, pid);
+    if (!p) return false;
+    bool paused = p->state == PROC_PAUSED;
+    if (paused) {
+        s->npaused--;
+        ready_locked(s, p);
+    }
+    plat_unlock(p->lock);
+    return paused;
+}
+
 void sched_stop_world(VM *vm) {
     Sched *s = vm->sched;
     if (!s || !s->running || s->nrun <= 1) return;
@@ -1757,7 +1801,7 @@ static void idle(Worker *w) {
          * below. (Checking work first left a window between the two steps in
          * which every process looked stuck, and a busy server was stopped with
          * E_DEADLOCK.) */
-        bool quiet = !s->io_inflight && !s->io_waiting && !vm->external_input && !atomic_load(&vm->async_sources);
+        bool quiet = !s->io_inflight && !s->io_waiting && !s->npaused && !vm->external_input && !atomic_load(&vm->async_sources);
         if (work_available(s)) break;
         uint64_t nt = s->next_timer, now = plat_now_ns();
         if (nt && nt <= now) break;
@@ -2009,6 +2053,18 @@ static bool after_slice(Worker *w, Process *p, int r) {
         return false;
     }
     bool stop = false;
+    /* A debugged process that waits may do so in the middle of an instruction
+     * (a recv, a blocking call; not a sleep), which runs again when it wakes:
+     * its debugger let it begin that one, and is not to stop it there again. */
+    if (r != SLICE_YIELD && r != SLICE_BREAK && atomic_load_explicit(&p->dbg_on, memory_order_relaxed) && p->nframes) {
+        ProcDebug *d = p->dbg;
+        if (p->nframes == d->at_depth && p->frames[p->nframes - 1].fn == d->at_fn && p->frames[p->nframes - 1].pc == d->at_pc) {
+            d->skip = true;
+            d->skip_fn = d->at_fn;
+            d->skip_pc = d->at_pc;
+            d->skip_depth = d->at_depth;
+        }
+    }
     switch (r) {
     case SLICE_YIELD: ready_locked(s, p); break;
     case SLICE_BLOCK:
@@ -2024,6 +2080,11 @@ static bool after_slice(Worker *w, Process *p, int r) {
         timer_add(s, p);
         break;
     case SLICE_BREAK:
+        if (!w->vm->hook) { /* its own debugger's (Process.dbg): it alone stops, until sched_resume */
+            p->state = PROC_PAUSED;
+            s->npaused++;
+            break;
+        }
         p->state = PROC_READY;
         w->vm->stopped = p;
         stop = true;
@@ -2042,6 +2103,8 @@ static bool after_slice(Worker *w, Process *p, int r) {
         break;
     case SLICE_NATIVE: /* a blocking native call: the I/O pool makes it */
         p->state = PROC_NATIVE;
+        if (!p->bcall.seen) p->bcall.seen = xmalloc(sizeof *p->bcall.seen);
+        seen_now(p, p->bcall.seen); /* what a tool reads of it until the call is done */
         s->io_inflight++;
         plat_unlock(p->lock);
         io_submit(s, p);

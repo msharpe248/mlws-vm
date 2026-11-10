@@ -17,6 +17,12 @@
                 vm->stopped = p;
                 return SLICE_BREAK;
             }
+            if (atomic_load_explicit(&p->dbg_on, memory_order_relaxed) && !p->cb_base) { /* its own debugger's */
+                p->dbg->hold = p->dbg->step = 0;
+                p->dbg->reason = PDBG_INSN;
+                p->dbg->seq++;
+                return SLICE_BREAK;
+            }
             break;
         case OP_HALT:
             if (p->cb_base) vm_trap(p, "E_CALLBACK", "halt inside a callback from C");

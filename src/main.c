@@ -49,7 +49,7 @@ static void usage(FILE *f) {
           "        --jit-report FILE|-             what the JIT did, written when the run ends\n"
           "  debug [-L dir] [VM options] file.(masm|mlwso)   interactive debugger (type 'help')\n"
           "  top   [https://]HOST:PORT [--ca FILE] [--token KEY] [--once]   live process table of a VM run\n"
-          "                                        with --monitor\n"
+          "                                        with --monitor; --log: follow its log instead\n"
           "  token new --label L [--scope read|admin] [--file F] | revoke --label L --file F | list --file F\n"
           "                                        the monitor's keys: a token, its hash into a tokens file\n"
           "  names [--port N]                      the name service for nodes, by which they connect by name\n"

@@ -23,6 +23,7 @@ typedef struct Tools {
     /* debugger, monitor */
     struct Debugger *dbg;
     struct Monitor *mon;
+    struct PDebug *pdbg; /* the monitor's debugger (pdebug.c): its breakpoints */
 } Tools;
 
 /* The monitor's keys (keys.c): a token kept as its SHA-256, with a scope. */
@@ -107,6 +108,26 @@ const MVar *dbg_var_at(const Function *f, uint32_t pc, const char *name);
 void dbg_var_reg(const Process *p, const Frame *fr, const MVar *v, int k, Word *w, MlwsType *t);
 void dbg_show_var(Process *p, const Frame *fr, const MVar *v, int depth, StrBuf *out);
 void dbg_var_regs(StrBuf *b, const MVar *v); /* "I3, F3, R3" */
+
+/* The monitor's debugger (pdebug.c): a process debugged alone, /api/debug.
+ * Requests are answered with the world stopped, as JSON into out, with the
+ * status returned; path is what follows /api/debug. An action that the log
+ * should have gives its event's name and value. */
+void pdebug_enable(VM *vm);
+void pdebug_free(VM *vm);
+void pdebug_refresh(VM *vm); /* the breakpoints placed again, if the modules have changed */
+/* A process just started is its debugger's from its first instruction, where
+ * it pauses (the world stopped, before it has run): false in a VM that cannot
+ * debug one. */
+bool pdebug_entry(VM *vm, uint64_t pid);
+int pdebug_get(VM *vm, const char *path, const char *query, StrBuf *out);
+int pdebug_post(VM *vm, const char *path, const char *body, size_t n, StrBuf *out, const char **event, StrBuf *audit);
+/* (monitor.c) JSON for it: a string; n bytes cut at max; a flat object's
+ * named values as text (false: not one, with nothing kept); a URL's escapes. */
+void tools_json_str(StrBuf *b, const char *s);
+void tools_json_strn(StrBuf *b, const char *s, size_t n, size_t max);
+bool tools_json_flat(const char *body, size_t n, const char *const *names, char **vals, size_t nnames);
+void tools_url_decode(char *s);
 
 /* Formatting shared by the debugger and the monitor. */
 void fmt_location(StrBuf *b, const Function *f, uint32_t pc);

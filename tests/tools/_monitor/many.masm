@@ -1,0 +1,24 @@
+; Watched by check_tools.sh for the monitor's own robustness: 15,000 sleeping
+; processes make /api/procs several megabytes, more than a connection's buffers
+; hold, so a client that reads it slowly has most of it still to take; and a
+; registered process counts in the log, ten times a second, so the test can see
+; the program going on meanwhile. It runs for a minute at most; the test stops it.
+.func sleeper
+    sleep 60000
+    ret
+.endf
+.func main
+    mov I0, 0
+1:  spawn sleeper -> (I1)
+    add I0, I0, 1
+    blt I0, 15000, 1b
+    ncall "proc.register" ("ticker", PID)
+    mov I0, 0
+2:  tostr R0, I0
+    strcat R1, "tick ", R0
+    ncall "monitor.log" (1, R1)
+    sleep 100
+    add I0, I0, 1
+    blt I0, 600, 2b
+    ret 0
+.endf

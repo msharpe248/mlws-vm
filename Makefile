@@ -92,7 +92,7 @@ endif
 ifeq ($(OS),Windows_NT)
 DL_LIBS := -lws2_32 -lbcrypt
 endif
-OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o
+OBJ := $(SRC:%.c=$(BUILD)/%.o) $(BUILD)/gen/dashboard.o $(BUILD)/gen/debugger.o
 
 .PHONY: check-fuzz check-regex release-check check-jit check-opt all test test-ext test-libs check-gc check-tools check-asan check-tsan check-switch check-loop check-poison check-bindgen bench docs unicode clean lib embed-example check-embed
 
@@ -105,7 +105,8 @@ $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(WARN) $(ALIGN) $(FPMATH) $(CFLAGS) -fPIC $(FFI_CFLAGS) -MMD -MP -c $< -o $@
 
-# The web dashboard is compiled into the binary (served by --monitor).
+# The web dashboard and the debugger's page are compiled into the binary
+# (served by --monitor).
 $(BUILD)/embed$(EXE): build-tools/embed.c
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -o $@ $<
@@ -115,6 +116,13 @@ $(BUILD)/gen/dashboard.c: web/dashboard.html $(BUILD)/embed$(EXE)
 	$(BUILD)/embed web/dashboard.html DASHBOARD_HTML > $@
 
 $(BUILD)/gen/dashboard.o: $(BUILD)/gen/dashboard.c
+	$(CC) $(CFLAGS) -fPIC -c $< -o $@
+
+$(BUILD)/gen/debugger.c: web/debugger.html $(BUILD)/embed$(EXE)
+	@mkdir -p $(dir $@)
+	$(BUILD)/embed web/debugger.html DEBUGGER_HTML > $@
+
+$(BUILD)/gen/debugger.o: $(BUILD)/gen/debugger.c
 	$(CC) $(CFLAGS) -fPIC -c $< -o $@
 
 # The embedding library (include/mlwsvm/embed.h): everything but the command

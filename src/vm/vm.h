@@ -341,6 +341,7 @@ typedef struct VM {
     void *err_ctx;
     /* tools */
     InsnHook hook;
+    InsnHook phook;              /* the same, for a process being debugged alone (Process.dbg; tools/pdebug.c) */
     PollHook poll;
     void *tools;                 /* tool state, owned by src/tools */
     void (*tools_free)(struct VM *vm);
@@ -478,7 +479,32 @@ typedef struct ObjCoro {
 
 /* PROC_NATIVE: in a blocking native call on the I/O pool. PROC_IOWAIT: waiting
  * for a descriptor (Process.fdwait), woken by the poller. */
-enum { PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED, PROC_NATIVE, PROC_IOWAIT };
+enum {
+    PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED, PROC_NATIVE, PROC_IOWAIT,
+    PROC_PAUSED, /* stopped by its debugger (Process.dbg): not run until sched_resume */
+};
+
+/* A process debugged alone, from the monitor (tools/pdebug.c), while the rest
+ * of the VM runs as it did. Process.dbg_on: its instructions are interpreted,
+ * each after VM.phook, which stops it (SLICE_BREAK, then PROC_PAUSED) when it
+ * is to pause, a step is done, or a breakpoint is there. A process not
+ * debugged pays one test of that flag at each time slice, and has none of
+ * this: Process.dbg is made when it is first debugged (and is there whenever
+ * dbg_on is set), and lasts as long as the process. */
+enum { PDBG_NONE = 0, PDBG_PAUSE, PDBG_ENTRY, PDBG_STEP, PDBG_BREAKPOINT, PDBG_INSN, PDBG_ERROR };
+typedef struct {
+    uint8_t hold;   /* stop before its next instruction: PDBG_PAUSE, or PDBG_ENTRY (started paused) */
+    uint8_t step;   /* a step under way (STEP_*), by lines of its source or by instructions */
+    bool by_line;
+    bool skip;      /* resumed: the instruction it was stopped at runs before it can stop there again */
+    bool children;  /* the processes it spawns are debugged too, and theirs */
+    uint8_t reason; /* why it is paused (PDBG_*) */
+    uint32_t depth0, line0, skip_pc, skip_depth; /* where the step began; where it was resumed */
+    uint32_t at_pc, at_depth;                    /* the instruction it last began */
+    const struct Function *fn0, *skip_fn, *at_fn;
+    const char *file0;
+    uint64_t seq; /* its pauses so far */
+} ProcDebug;
 
 /* How a time slice ended. SLICE_NATIVE: a blocking native call is to be made
  * on the I/O thread pool (Process.bcall). SLICE_IOWAIT: wait for Process.fdwait.
@@ -509,11 +535,26 @@ typedef struct {
     struct PlatLock *lock;
 } DeferredFinalizer;
 
+/* What a tool reads of a process with the world stopped (sched_seen). The
+ * world stopped is the workers: a blocking native call of the process may
+ * still be running on an I/O thread, which allocates in its heap and, in a
+ * callback, runs its code. Then (away) these are as they were when the call
+ * began, and its frames, stack, heap and mailbox are not to be read. */
+typedef struct {
+    bool away;
+    int state;
+    const Function *fn; /* where it is: NULL with no frame */
+    uint32_t pc, depth, stack_bytes;
+    uint64_t insns, cpu_ns, heap_bytes, heap_peak, raw_bytes, objects, gc_count, gc_ns, thrown, msgs_sent, msgs_received;
+    size_t mailbox;
+} ProcSeen;
+
 /* A blocking native call in progress: made by an I/O thread, then completed
  * when the ncall instruction runs again. */
 enum { BCALL_NONE = 0, BCALL_PENDING, BCALL_DONE };
 typedef struct {
     int state;
+    ProcSeen *seen; /* the process as the call began (made at its first such call; NULL before) */
     const NativeDef *nd;
     const Insn *insn;
     Word args[NATIVE_MAX_ARGS], rets[NATIVE_MAX_RETS]; /* GC roots while active */
@@ -655,6 +696,9 @@ struct Process {
     BlockingCall bcall;
     int native_req;              /* NREQ_*: what the checked native just asked for */
     bool on_io_thread;           /* the native is running on the I/O pool: it may block */
+    _Atomic bool dbg_on;         /* debugged from the monitor: its state is `dbg` */
+    bool dbg_failing;            /* paused where an error nothing catches was raised (err): let go on, it ends */
+    ProcDebug *dbg;
     bool resumed;                /* the native is being run again after a wait (not counted again) */
     FdWait fdwait;               /* PROC_IOWAIT */
     uint64_t os_calls;
@@ -941,6 +985,10 @@ bool sched_abandoned(VM *vm); /* a blocking native call never returned: the VM c
  * other processes' state), and let them continue. No-ops when single-threaded. */
 void sched_stop_world(VM *vm);
 void sched_start_world(VM *vm);
+/* A process as a tool may read it, the world stopped and p->lock held (ProcSeen). */
+void sched_seen(Process *p, ProcSeen *out);
+/* A process paused by its debugger goes on: false if it is not paused. */
+bool sched_resume(VM *vm, uint64_t pid);
 /* The process table, for tools: only while the world is stopped. */
 Process *vm_proc_at(VM *vm, uint64_t pid); /* any process still in the table */
 uint64_t vm_pid_end(VM *vm);               /* one past the highest pid assigned */

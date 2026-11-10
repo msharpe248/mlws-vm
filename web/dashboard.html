@@ -76,6 +76,7 @@ h2 { font-size: 13px; margin: 0 0 10px; font-weight: 600; color: var(--text-seco
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
 .dot.good { background: var(--good); }
 .dot.critical { background: var(--critical); }
+.dot.warn { background: var(--warning); }
 .spacer { flex: 1; }
 button.theme {
   font: inherit; font-size: 12px; color: var(--text-secondary); background: transparent;
@@ -123,8 +124,11 @@ dd { margin: 0; font-variant-numeric: tabular-nums; }
 .lvl { display: inline-flex; align-items: center; gap: 6px; }
 .lvl .dot.warn { background: var(--warning); }
 .lvl .dot.info { background: var(--series-1); }
-.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; color: var(--text-secondary); }
+.toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 8px; font-size: 12px; color: var(--text-secondary); }
 .toolbar h2 { margin: 0; }
+.toolbar label { white-space: nowrap; }
+.toolbar input { font: inherit; font-size: 12px; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 6px; width: 140px; }
 select { font: inherit; font-size: 12px; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
 .graph { position: relative; }
 .graph svg { width: 100%; height: 420px; display: block; }
@@ -193,6 +197,7 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12
       <input id="start-args" placeholder="arguments, separated by spaces" aria-label="Arguments">
       <input id="start-cap" placeholder="--cap, e.g. none" aria-label="Capabilities">
       <input id="start-quota" placeholder="--quota, e.g. heap=64M" aria-label="Quotas">
+      <label class="check" title="Its main process pauses before its first instruction, and its debugger opens"><input type="checkbox" id="start-debug"> paused, in the debugger</label>
       <button class="act" id="start-btn" type="button">Start</button>
     </div>
     <div class="table-wrap"><table class="mini" id="programs"><thead><tr><th>#</th><th class="text">Program</th><th class="text">Arguments</th><th class="text">Limits</th><th>PID</th><th class="text">State</th><th></th></tr></thead><tbody></tbody></table></div>
@@ -200,6 +205,7 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12
   </section>
   <section class="card">
     <h2>Processes</h2>
+    <div class="note" id="debugged" hidden></div>
     <div class="table-wrap"><table id="procs"><thead></thead><tbody></tbody></table></div>
     <div class="empty" id="procs-empty" hidden>No live processes.</div>
   </section>
@@ -217,6 +223,7 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12
     <div class="acts" id="detail-acts" hidden>
       <input id="send-text" placeholder='A message as JSON: {"cmd": "status"}' aria-label="Message as JSON">
       <button class="act" id="send-btn" type="button">Send</button>
+      <button class="act" id="debug-btn" type="button" title="Pause it, and open its debugger in a tab of its own">Debug</button>
       <button class="act danger" id="kill-btn" type="button">Kill</button>
     </div>
   </section>
@@ -225,9 +232,14 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12
       <span class="pill" id="log-only" hidden><span id="log-only-text"></span><button class="act" id="log-only-clear" type="button" aria-label="Show everyone's log">×</button></span>
       <span class="spacer"></span>
       <label>Show <select id="log-level"><option value="0">everything</option><option value="1">info and up</option><option value="2">warnings and errors</option><option value="3">errors</option></select></label>
+      <label>Newest <select id="log-order"><option value="bottom">at the bottom</option><option value="top">at the top</option></select></label>
+      <label>Find <input id="log-find" type="search" autocomplete="off" placeholder="text, program or pid"></label>
+      <button class="act" id="log-pause" type="button" aria-pressed="false">Pause</button>
+      <button class="act" id="log-save" type="button">Download</button>
     </div>
     <div class="log table-wrap" id="log-wrap"><table class="mini"><tbody id="log"></tbody></table></div>
     <div class="empty" id="log-empty">Nothing logged yet. A program writes here with monitor.log and monitor.event.</div>
+    <div class="empty" id="log-none" hidden>No line matches.</div>
   </section>
   <section class="card">
     <h2>Links and monitors</h2>
@@ -377,7 +389,7 @@ const COLS = [
   ["msgs", "Msgs in / out"], ["gc_count", "GCs"], ["function", "Current function", "text"],
 ];
 function stateCell(s) {
-  const cls = s === "failed" ? "critical" : s === "done" ? "good" : "";
+  const cls = s === "failed" ? "critical" : s === "done" ? "good" : s === "paused" ? "warn" : "";
   return `<span class="state"><span class="dot ${cls}"></span>${esc(s)}</span>`;
 }
 function renderProcs() {
@@ -417,7 +429,7 @@ async function loadDetail() {
     $("detail-title").textContent = `Process ${p.pid} · ${p.entry}` + (p.program_name ? ` · ${p.program_name}` : "");
     const q = (v, f) => v == null ? "unlimited" : f(v);
     const rows = [
-      ["State", p.state], ["Instructions", human(p.insns)], ["CPU time", ms(p.cpu_ns)],
+      ["State", p.away ? p.state + " (in a blocking call: shown as it was when the call began)" : p.state], ["Instructions", human(p.insns)], ["CPU time", ms(p.cpu_ns)],
       ["Heap", `${bytes(p.heap_bytes)} (peak ${bytes(p.heap_peak)}, ${human(p.objects)} objects)`],
       ["Raw memory", bytes(p.raw_bytes)], ["Stack", bytes(p.stack_bytes) + `, ${p.depth} frames`],
       ["Mailbox", `${p.mailbox} waiting · ${human(p.msgs_received)} received · ${human(p.msgs_sent)} sent`],
@@ -431,6 +443,7 @@ async function loadDetail() {
     $("detail-stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
     $("detail-bt").textContent = p.backtrace.join("\n") || "(no frames)";
     $("detail-acts").hidden = !canAct();
+    $("debug-btn").hidden = p.program_name === "(serve)"; // (mlwsvm serve's own process)
     detailProc = p;
     $("log-prog-btn").hidden = p.program == null;
     $("log-prog-btn").textContent = p.program == null ? "" : `Log of ${p.program_name}`;
@@ -473,9 +486,9 @@ function canAct() { return actionsOn && isAdmin(); }
 function isAdmin() { return !!(you && you.scope === "admin"); }
 function api(path) { return fetch(path, token ? { headers: { Authorization: `Bearer ${token}` } } : {}); }
 function apiJson(path) {
-  return api(path).then((r) => { if (r.status === 401) throw new NeedKey(); return r.json(); });
+  return api(path).then((r) => { if (r.status === 401 || r.status === 429) throw new NeedKey(r.status === 429); return r.json(); });
 }
-class NeedKey extends Error {}
+class NeedKey extends Error { constructor(wait) { super(); this.wait = wait; } }   // (wait: too many wrong keys came from here)
 function setToken(t) {
   token = t || null;
   try { if (token) sessionStorage.setItem("mlwsvm-token", token); else sessionStorage.removeItem("mlwsvm-token"); } catch (e) {}
@@ -510,6 +523,23 @@ $("kill-btn").addEventListener("click", async () => {
   if (selectedPid == null || !confirm(`Kill process ${selectedPid}? It fails with E_KILLED, and its links go with it.`)) return;
   await act(`/api/proc/${selectedPid}/kill`, null, `killed ${selectedPid}`); loadDetail();
 });
+// A process's debugger: a page of its own (/debug), in a tab named for the
+// process, so that asking again shows the one there. Opened as the click is
+// handled (a browser may refuse a window opened later); it begins with a copy
+// of this tab's key.
+function openDebugger(pid, attach) { return window.open(`/debug#pid=${pid}${attach ? "&attach=pause" : ""}`, `mlwsvm-debug-${pid}`); }
+$("debug-btn").addEventListener("click", () => { if (selectedPid != null) openDebugger(selectedPid, !debugged.has(selectedPid)); });
+let debugged = new Map(); // pid -> its state, for those being debugged (an admin's to know)
+async function loadDebugged() {
+  const el = $("debugged");
+  if (!isAdmin()) { debugged = new Map(); el.hidden = true; return; }
+  const d = await apiJson("/api/debug").catch(() => null);
+  debugged = new Map((d ? d.processes : []).map((p) => [p.pid, p]));
+  el.hidden = !debugged.size;
+  el.innerHTML = debugged.size ? "Being debugged: " + [...debugged.values()].map((p) =>
+    `<button class="act" data-debug="${p.pid}" type="button">${p.pid} · ${esc(p.entry)}${p.state !== "paused" ? "" : p.reason === "error" ? " · failed, paused" : " · paused"}</button>`).join(" ") : "";
+}
+$("debugged").addEventListener("click", (ev) => { const b = ev.target.closest("button[data-debug]"); if (b) openDebugger(Number(b.dataset.debug), false); });
 $("send-btn").addEventListener("click", async () => {
   const text = $("send-text").value.trim();
   if (selectedPid == null || !text) return;
@@ -565,7 +595,18 @@ $("start-btn").addEventListener("click", async () => {
   const body = { path, args: $("start-args").value.split(/\s+/).filter(Boolean) };
   if ($("start-cap").value.trim()) body.cap = $("start-cap").value.trim();
   if ($("start-quota").value.trim()) body.quota = $("start-quota").value.trim();
-  await act("/api/programs", JSON.stringify(body), `started ${path}`); loadPrograms();
+  if (!$("start-debug").checked) { await act("/api/programs", JSON.stringify(body), `started ${path}`); loadPrograms(); return; }
+  // Paused, in the debugger: its page is opened now, and told which process once the program has started.
+  body.debug = true;
+  const w = window.open("/debug#starting", "_blank");
+  try {
+    const r = await fetch("/api/programs", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    showStatus(r.ok, r.ok ? `started ${path}, paused` : `started ${path}: ${j.error || r.status}`);
+    if (r.ok && w) w.location.hash = `pid=${j.pid}`;
+    else if (w) w.close();
+  } catch (e) { showStatus(false, `started ${path}: no answer`); if (w) w.close(); }
+  loadPrograms(); loadDebugged();
 });
 $("shutdown-btn").addEventListener("click", async () => {
   if (!confirm("Shut down this VM? Every program is stopped.")) return;
@@ -586,8 +627,13 @@ function logRow(e) {
   const t = (e.t_ns / 1e9).toFixed(3) + " s";
   const lv = e.event != null ? `<span class="lvl"><span class="dot"></span>event</span>`
     : `<span class="lvl"><span class="dot ${e.level === "error" ? "critical" : e.level === "warn" ? "warn" : e.level === "info" ? "info" : ""}"></span>${e.level}</span>`;
-  const msg = e.event != null ? `${esc(e.event)} ${esc(JSON.stringify(e.value))}` : esc(e.text);
-  return `<tr><td>${t}</td><td>${e.pid || "–"}</td><td class="text">${esc(e.program_name ?? (e.pid ? "" : "monitor"))}</td><td class="text">${lv}</td><td class="msg">${msg}</td></tr>`;
+  return `<tr data-seq="${e.seq}"><td>${t}</td><td>${e.pid || "–"}</td><td class="text">${esc(logProgram(e))}</td><td class="text">${lv}</td><td class="msg">${esc(logText(e))}</td></tr>`;
+}
+function logProgram(e) { return e.program_name ?? (e.pid ? "" : "monitor"); }
+function logText(e) { return e.event != null ? `${e.event} ${JSON.stringify(e.value)}` : e.text; }
+// A line as text, as `mlwsvm top --log` prints it: time, pid, program, level, text.
+function logLine(e) {
+  return `${(e.t_ns / 1e9).toFixed(3).padStart(9)} s  ${String(e.pid || "-").padStart(4)}  ${logProgram(e) || "-"}  ${(e.event != null ? "event" : e.level).padEnd(5)}  ${logText(e)}`;
 }
 let logOnly = null;                       // {pid} or {program, name}: the log of one process or program
 function setLogOnly(f) {
@@ -596,23 +642,64 @@ function setLogOnly(f) {
   $("log-only-text").textContent = !f ? "" : f.pid != null ? `process ${f.pid} only` : `program ${f.name} only`;
   renderLog();
 }
+let logPaused = null;                     // while paused: the lines as they were, and the last one's number
+// The lines to show, oldest first: those of the level, the process or program, and the text asked for.
+function logShown() {
+  const min = Number($("log-level").value), find = $("log-find").value.trim().toLowerCase();
+  return (logPaused ? logPaused.lines : logLines).filter((e) => (e.event != null ? min <= 1 : LEVELS[e.level] >= min) &&
+    (!logOnly || (logOnly.pid != null ? e.pid === logOnly.pid : e.program === logOnly.program)) &&
+    (!find || logText(e).toLowerCase().includes(find) || logProgram(e).toLowerCase().includes(find) || String(e.pid) === find));
+}
 function renderLog() {
-  const min = Number($("log-level").value);
-  const shown = logLines.filter((e) => (e.event != null ? min <= 1 : LEVELS[e.level] >= min) &&
-    (!logOnly || (logOnly.pid != null ? e.pid === logOnly.pid : e.program === logOnly.program)));
-  const wrap = $("log-wrap"), atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 4;
+  const shown = logShown();
+  const wrap = $("log-wrap"), top = $("log-order").value === "top";
+  // Follow the newest line while it is in view; otherwise keep the line at the top of the view where it is.
+  const follow = top ? wrap.scrollTop <= 4 : wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 4;
+  let anchor = null, offset = 0;
+  if (!follow) for (const tr of $("log").rows)
+    if (tr.offsetTop + tr.offsetHeight > wrap.scrollTop) { anchor = tr.dataset.seq; offset = tr.offsetTop - wrap.scrollTop; break; }
+  if (top) shown.reverse();
   $("log").innerHTML = shown.map(logRow).join("");
   $("log-empty").hidden = logLines.length > 0;
-  if (atBottom) wrap.scrollTop = wrap.scrollHeight;
+  $("log-none").hidden = !logLines.length || shown.length > 0;
+  if (follow) { wrap.scrollTop = top ? 0 : wrap.scrollHeight; return; }
+  const tr = anchor != null && $("log").querySelector(`tr[data-seq="${anchor}"]`);
+  if (tr) wrap.scrollTop = tr.offsetTop - offset;
+}
+function setLogOrder(order, keep) {
+  $("log-order").value = order;
+  if (keep) try { localStorage.setItem("mlwsvm-log-order", order); } catch (e) {}
+  const wrap = $("log-wrap");
+  renderLog();
+  wrap.scrollTop = order === "top" ? 0 : wrap.scrollHeight;   // a new order starts at the newest line
 }
 async function pollLog() {
   const r = await apiJson(`/api/log?since=${logNext}`);
   if (!r.entries.length) return;
   logNext = r.next;
   logLines = logLines.concat(r.entries).slice(-LOG_KEEP);
-  renderLog();
+  if (logPaused) $("log-pause").textContent = `Resume (${logNext - logPaused.next} new)`;
+  else renderLog();
 }
+// Paused, the log shows the lines it had; new ones are kept, and counted on the button, until it resumes.
+$("log-pause").addEventListener("click", () => {
+  logPaused = logPaused ? null : { lines: logLines, next: logNext };
+  $("log-pause").textContent = logPaused ? "Resume" : "Pause";
+  $("log-pause").setAttribute("aria-pressed", String(!!logPaused));
+  if (!logPaused) renderLog();
+});
+// The lines shown, oldest first, as a text file.
+$("log-save").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([logShown().map((e) => logLine(e) + "\n").join("")], { type: "text/plain" }));
+  a.download = "mlwsvm-log.txt";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+$("log-find").addEventListener("input", renderLog);
 $("log-level").addEventListener("change", renderLog);
+$("log-order").addEventListener("change", (e) => setLogOrder(e.target.value, true));
+try { if (localStorage.getItem("mlwsvm-log-order") === "top") setLogOrder("top", false); } catch (e) {}
 $("log-only-clear").addEventListener("click", () => setLogOnly(null));
 
 // ---- modules, names, nodes and the graph (every five seconds) --------------------
@@ -660,6 +747,7 @@ function drawGraph(g) {
   }
 }
 async function slowTick() {
+  loadDebugged();
   try {
     const [mods, names, nodes, graph] = await Promise.all(["/api/modules", "/api/names", "/api/nodes", "/api/graph"].map(apiJson));
     $("mods-acts-h").hidden = !canAct();
@@ -805,7 +893,8 @@ async function tick() {
   } catch (e) {
     if (e instanceof NeedKey) {
       $("signin-card").hidden = false;
-      $("signin-note").textContent = token ? "That key is not one this monitor knows (or it was revoked). Paste another."
+      $("signin-note").textContent = e.wait ? "Too many wrong keys came from this address. Wait a few seconds, then paste the key again."
+        : token ? "That key is not one this monitor knows (or it was revoked). Paste another."
         : "Paste a key: the token printed when the VM started, or one made with mlwsvm token new.";
       $("conn").textContent = "needs a key"; $("conn-dot").className = "dot";
       return;

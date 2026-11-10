@@ -294,7 +294,7 @@ static MLWS_NOINLINE QCC int h_slice(QPARAMS) {
     QFRAME->pc = pc;
     p->insns = c->ibase - left;
     if (!c->hooked || c->hleft == 0) return SLICE_YIELD; /* time slice used up */
-    if (c->vm->hook(p, pc)) return SLICE_BREAK; /* debugger stop: pc not advanced */
+    if (tool_hook(c->vm, p, pc)) return SLICE_BREAK; /* debugger stop: pc not advanced */
     c->hleft--, c->ibase++;
     left = 0;
     MUSTTAIL return qhandlers[in->xop](QARGS);

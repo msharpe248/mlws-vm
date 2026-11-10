@@ -336,6 +336,7 @@ MINGW* | MSYS* | CYGWIN*) ;;
     if command -v curl >/dev/null 2>&1; then
         NODES=$(curl -sf http://127.0.0.1:$PORT/api/nodes) || NODES="(no answer)"
         TOPN=$(curl -sf http://127.0.0.1:$PORT/top) || TOPN="(no answer)"
+        AWAY=$(curl -sf http://127.0.0.1:$PORT/api/proc/1) || AWAY="(no answer)"
     fi
     kill -CONT $FAR
     echo going >&4
@@ -352,6 +353,11 @@ MINGW* | MSYS* | CYGWIN*) ;;
         [ -n "$QUEUED" ] && [ "$QUEUED" -gt 1048576 ] || fail "/api/nodes: the backlog: $NODES"
         echo "$TOPN" | grep -q '^nodes (this VM: node 1):' || fail "/top: no nodes: $TOPN"
         echo "$TOPN" | grep -Eq '^ +2 - .* 1 +[0-9]+$' || fail "/top: node 2's line: $TOPN"
+        # Its main is reading a line meanwhile, a blocking call an I/O thread
+        # makes: it is shown as it was when the call began, where it made it.
+        echo "$AWAY" | grep -q '^{"pid":1,"state":"native","away":true,' || fail "/api/proc: a process in a blocking call: $AWAY"
+        echo "$AWAY" | grep -q '"messages":\[\],"backtrace":\["near.main+[0-9]* ([^"]*near.masm:50)"\]}$' || fail "/api/proc: where its call was made: $AWAY"
+        echo "$TOPN" | grep -Eq '^ +1 native .* near\.main\+[0-9]+ \(near\.masm:50\)$' || fail "/top: a process in a blocking call: $TOPN"
     fi
     rm -rf "${BUSYD:?}"
     ;;
@@ -871,6 +877,17 @@ if command -v curl >/dev/null 2>&1; then
     echo "$LOG" | grep -q '"level":"error","text":"an \\"error\\"\\u000ain two lines"' || fail "/api/log: escaped ($LOG)"
     echo "$LOG" | grep -q '"event":"ready","value":\[42,"x"\]' || fail "/api/log: an event ($LOG)"
     curl -sf "http://127.0.0.1:$PORT/api/log?since=3" | grep -q '^{"next":4,"lost":0,"entries":\[{"seq":4,' || fail "/api/log?since"
+    # mlwsvm top --log: the same lines as text (time, pid, program, level,
+    # text), a line with a newline in it on two, and none of /log's first line
+    TLOG=$($BIN top --log --once 127.0.0.1:$PORT)
+    echo "$TLOG" | grep -Eq '^ +[0-9]+\.[0-9]{3} s +1  watched\.masm  info   watched: started' || fail "top --log: a line ($TLOG)"
+    echo "$TLOG" | grep -Eq '  watched\.masm  error  an "error"' || fail "top --log: an error ($TLOG)"
+    echo "$TLOG" | grep -q '^in two lines' || fail "top --log: a line's second line ($TLOG)"
+    echo "$TLOG" | grep -Eq '  watched\.masm  event  ready \[42,"x"\]' || fail "top --log: an event ($TLOG)"
+    echo "$TLOG" | grep -Eq '  watched\.masm  warn   E_JSON' || fail "top --log: a warning ($TLOG)"
+    [ "$(echo "$TLOG" | wc -l | tr -d ' ')" = 5 ] || fail "top --log: lines ($TLOG)"
+    curl -sf "http://127.0.0.1:$PORT/log?since=3" | head -1 | grep -q '^4' || fail "/log?since: the number to ask from next"
+    [ "$(curl -sf "http://127.0.0.1:$PORT/log?since=3" | wc -l | tr -d ' ')" = 2 ] || fail "/log?since: one line after 3"
     curl -sf http://127.0.0.1:$PORT/api/names | grep -q '{"name":"sleeper","pid":2}' || fail "/api/names"
     curl -sf http://127.0.0.1:$PORT/api/graph | grep -q '"links":\[\[1,2\]\],"monitors":\[\[1,2\]\]' || fail "/api/graph"
     curl -sf http://127.0.0.1:$PORT/api/proc/2 | grep -q '"messages":\[{"type":"string","size":5,"preview":"first"},{"type":"i64","preview":7}\]' || fail "/api/proc: messages"
@@ -923,18 +940,19 @@ if command -v curl >/dev/null 2>&1; then
     set -e
     if [ $TLS_HERE = 1 ]; then
         MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions --monitor-cert tests/net/_tls/cert.pem \
-            --monitor-key tests/net/_tls/key.pem tests/tools/_monitor/acted.masm >/dev/null 2>"$MOND/acted.err" &
+            --monitor-key tests/net/_tls/key.pem tests/tools/_monitor/acted.masm >/dev/null 2>"$MOND/tls.err" &
         VMPID=$!
         i=0
         until curl -sf --cacert tests/net/_tls/cert.pem https://localhost:$PORT/api/names 2>/dev/null | grep -q '"receiver"'; do
             i=$((i + 1)); [ $i -lt 50 ] || fail "monitor over TLS did not start"; sleep 0.1
         done
-        grep -q "^mlwsvm: monitor at https://" "$MOND/acted.err" || fail "TLS: https printed"
+        grep -q "^mlwsvm: monitor at https://" "$MOND/tls.err" || fail "TLS: https printed"
         [ "$(curl -s -o /dev/null -w '%{http_code}' --cacert tests/net/_tls/cert.pem -X POST -H "$A" https://localhost:$PORT/api/proc/2/kill)" = 200 ] || fail "TLS: an action"
         [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/api/vm)" != 200 ] || fail "TLS: plain HTTP answered"
         # mlwsvm top over HTTPS: with the authority, from the address the run
         # printed too; without it, the certificate is refused.
         $BIN top --once --ca tests/net/_tls/cert.pem https://localhost:$PORT | grep -q "recent exits" || fail "TLS: top"
+        $BIN top --log --once --ca tests/net/_tls/cert.pem https://localhost:$PORT | grep -q '  monitor  event  monitor\.kill {"by":"(start)","pid":2}' || fail "TLS: top --log"
         $BIN top --once --ca tests/net/_tls/cert.pem "https://localhost:$PORT/#token=s3cret" | grep -q "PID" || fail "TLS: top from the printed address"
         set +e
         TOPERR=$($BIN top --once https://localhost:$PORT 2>&1 >/dev/null); RC=$?
@@ -971,11 +989,14 @@ if command -v curl >/dev/null 2>&1; then
     get() { curl -s -o "$MOND/r" -w '%{http_code}' "$@"; }
     [ "$(get $U/api/procs)" = 401 ] || fail "keys: a read without a key"
     [ "$(get $U/)" = 200 ] || fail "keys: the page without a key"
+    [ "$(get $U/debug)" = 200 ] || fail "keys: the debugger's page without a key"
     [ "$(get -H 'Authorization: Bearer nope' $U/api/procs)" = 401 ] || fail "keys: a read with no such key"
     R="Authorization: Bearer $RK"
     [ "$(get -H "$R" $U/api/procs)" = 200 ] || fail "keys: a read with a read key"
     [ "$(get -H "$R" $U/api/vm)" = 200 ] && grep -q '"keys":true,"you":{"label":"ops","scope":"read"}' "$MOND/r" || fail "keys: /api/vm says whose ($(cat "$MOND/r"))"
     [ "$(get -H "$R" $U/api/keys)" = 403 ] || fail "keys: the keys to a read key"
+    [ "$(get -H "$R" $U/api/debug)" = 403 ] || fail "keys: the debugger to a read key"
+    [ "$(get -H "$R" $U/api/debug/2/vars)" = 403 ] || fail "keys: a process's variables to a read key"
     [ "$(code -H "$R" $U/api/proc/2/kill)" = 403 ] || fail "keys: an action with a read key"
     [ "$(get -H "$A" $U/api/keys)" = 200 ] && grep -q '"label":"ops","scope":"read","from":"file","used_ago_ms":[0-9]' "$MOND/r" \
         && grep -q '"label":"(start)","scope":"admin","from":"start"' "$MOND/r" || fail "keys: the list ($(cat "$MOND/r"))"
@@ -996,6 +1017,11 @@ if command -v curl >/dev/null 2>&1; then
     TOPERR=$($BIN top --once $U 2>&1 >/dev/null); RC=$?
     set -e
     [ $RC = 1 ] && echo "$TOPERR" | grep -q 'needs a key' || fail "keys: top without a key (exit $RC): $TOPERR"
+    $BIN top --log --once --token "$LK" $U | grep -Eq ' s +-  monitor  event  monitor\.key_new \{"by":"\(start\)","label":"ci","scope":"admin"\}' || fail "keys: top --log --token"
+    set +e
+    TOPERR=$($BIN top --log --once $U 2>&1 >/dev/null); RC=$?
+    set -e
+    [ $RC = 1 ] && echo "$TOPERR" | grep -q 'needs a key' || fail "keys: top --log without a key (exit $RC): $TOPERR"
     [ "$(code -H "Authorization: Bearer $CK" $U/api/proc/2/kill)" = 200 ] || fail "keys: an action with a key made"
     LOG=$(curl -sf -H "$A" "$U/api/log")
     echo "$LOG" | grep -q '"event":"monitor.key_new","value":{"by":"(start)","label":"ci","scope":"admin"}' || fail "keys: key_new in the log ($LOG)"
@@ -1003,6 +1029,341 @@ if command -v curl >/dev/null 2>&1; then
     echo "$LOG" | grep -q '"event":"monitor.kill","value":{"by":"ci","pid":2}' || fail "keys: an action's key in the log"
     $BIN token revoke --label late --file "$KF" || fail "token revoke"
     [ "$($BIN token list --file "$KF")" = "admin  ci" ] || fail "token revoke: the file ($(cat "$KF"))"
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
+
+    # The monitor where others can reach it. No client holds it up: beside one
+    # that sends half a request, and one that reads a big answer slowly, others
+    # are answered at once and the program goes on. Headers too big are refused.
+    # The page says it is for no frame and runs only its own script. Wrong keys
+    # from an address are counted, the same one again once: past ten, a key from
+    # there is refused unread for a few seconds, which the log says.
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions --monitor-tokens "$KF" tests/tools/_monitor/many.masm >/dev/null 2>"$MOND/net.err" &
+    VMPID=$!
+    i=0
+    until curl -sf -H "$A" $U/api/names 2>/dev/null | grep -q '"ticker"'; do
+        i=$((i + 1)); [ $i -lt 100 ] || fail "net: the monitor did not start"; sleep 0.1
+    done
+    curl -s --max-time 10 -o /dev/null -H "$A" -H 'Content-Length: 5000' --data 'x' $U/api/proc/1/send &
+    SLOW1=$!
+    curl -s --max-time 10 --limit-rate 2000 -o /dev/null -H "$A" $U/api/procs &
+    SLOW2=$!
+    sleep 0.5 # (each asked with a second to answer in: a monitor held up fails here, not later)
+    [ "$(curl -s --max-time 1 -o "$MOND/r" -w '%{http_code}' -H "$A" $U/api/vm)" = 200 ] || fail "net: a request beside a slow sender and a slow reader"
+    T0=$(curl -s --max-time 1 -H "$A" "$U/api/log" | sed 's/.*"next":\([0-9]*\).*/\1/')
+    sleep 1
+    T1=$(curl -s --max-time 1 -H "$A" "$U/api/log" | sed 's/.*"next":\([0-9]*\).*/\1/')
+    [ $((T1 - T0)) -ge 5 ] || fail "net: the program held up by slow clients ($T0 to $T1 log lines in a second)"
+    kill $SLOW1 $SLOW2 2>/dev/null || true
+    wait $SLOW1 $SLOW2 2>/dev/null || true
+    BIG=$(printf 'a%.0s' $(seq 1 900))
+    GOT=$(get -H "$A" -H "X-A: $BIG$BIG$BIG$BIG$BIG" -H "X-B: $BIG$BIG$BIG$BIG$BIG" $U/api/vm)
+    [ "$GOT" = 431 ] || fail "net: headers over 8 KiB ($GOT)"
+    GOT=$(head -c 70000 /dev/zero | tr '\0' 'a' | code -H "$A" --data-binary @- $U/api/proc/1/send)
+    [ "$GOT" = 413 ] && grep -q 'over 64 KiB' "$MOND/r" || fail "net: a body over 64 KiB ($GOT)"
+    HEAD=$(curl -s -D - -o /dev/null $U/ | tr -d '\r')
+    echo "$HEAD" | grep -qi '^X-Frame-Options: DENY$' || fail "net: the page's frame header ($HEAD)"
+    echo "$HEAD" | grep -qi "^Content-Security-Policy: default-src 'none'; .*frame-ancestors 'none'$" || fail "net: the page's policy ($HEAD)"
+    curl -s -D - -o /dev/null -H "$A" $U/api/vm | grep -qi '^X-Content-Type-Options: nosniff' || fail "net: nosniff"
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12; do # the same wrong key: counted once
+        [ "$(get -H 'Authorization: Bearer wrong0' $U/api/vm)" = 401 ] || fail "net: the same wrong key again ($i)"
+    done
+    i=1
+    until [ "$(get -H "Authorization: Bearer wrong$i" $U/api/vm)" = 429 ]; do
+        i=$((i + 1)); [ $i -lt 40 ] || fail "net: wrong keys never refused"
+    done
+    [ $i -ge 10 ] || fail "net: refused after $i wrong keys"
+    [ "$(get -H "$A" $U/api/vm)" = 429 ] && grep -q 'too many wrong keys' "$MOND/r" || fail "net: a key from there while refused ($(cat "$MOND/r"))"
+    [ "$(get $U/)" = 200 ] || fail "net: the page while keys are refused"
+    [ "$(get $U/api/vm)" = 401 ] || fail "net: no key while keys are refused"
+    set +e
+    TOPERR=$($BIN top --once --token s3cret $U 2>&1 >/dev/null); RC=$?
+    set -e
+    [ $RC = 1 ] && echo "$TOPERR" | grep -q 'too many wrong keys' || fail "net: top while refused (exit $RC): $TOPERR"
+    i=0
+    until [ "$(get -H "$A" $U/api/vm)" = 200 ]; do # one more every three seconds
+        i=$((i + 1)); [ $i -lt 20 ] || fail "net: keys still refused after ten seconds"; sleep 0.5
+    done
+    [ $i -ge 1 ] || fail "net: keys refused for no time"
+    curl -sf -H "$A" "$U/api/log" | grep -q '"event":"monitor.keys_refused","value":{"from":"127.0.0.1"}' || fail "net: keys_refused in the log"
+    # The tokens file is the monitor's to trust: one that other users can
+    # write gives no keys (those it had stay), and no monitor starts on one.
+    # mlwsvm token writes one that only its owner can, whatever the umask.
+    case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*) ;;
+    *)
+        chmod 666 "$KF"
+        [ "$(get -H "$A" $U/api/vm)" = 200 ] || fail "net: the keys it had, with the file open to others"
+        curl -sf -H "$A" "$U/api/log" | grep -q '"event":"monitor.keys_unread","value":{"error":"[^"]*tokens is writable by other users (mode 666)"}' || fail "net: keys_unread in the log"
+        set +e
+        BADERR=$($BIN run --monitor 127.0.0.1:$((PORT + 1)) --monitor-tokens "$KF" examples/hello.masm 2>&1 >/dev/null); RC=$?
+        set -e
+        [ $RC = 1 ] && echo "$BADERR" | grep -q 'tokens is writable by other users' || fail "a tokens file others can write (exit $RC): $BADERR"
+        chmod 600 "$KF"
+        (umask 000; $BIN token new --label open --file "$MOND/tokens2" >/dev/null 2>&1; $BIN token new --label two --file "$MOND/tokens2" >/dev/null 2>&1)
+        case "$(ls -l "$MOND/tokens2")" in
+        -rw-r--r--*) ;;
+        *) fail "token new: the file's mode ($(ls -l "$MOND/tokens2"))" ;;
+        esac
+        ;;
+    esac
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
+
+    # A process debugged alone (/api/debug), the rest going on: an admin's to
+    # do. Attached and asked to pause, a process stops before its next
+    # instruction; its frames, its variables (one shown by its formatter) and
+    # what they open to show, its code and its source are read; it steps by
+    # lines and by instructions, into a call, out of one and over one; a
+    # breakpoint at a function or a line stops it, one on a line without code
+    # at the next that has some, and one for code not loaded waits; a `break`
+    # instruction stops it; a breakpoint on a recv stops it once, though the
+    # recv runs again when a message comes; detached, it runs as before; killed
+    # while paused, it ends.
+    DF=tests/tools/_monitor/debugged.masm
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions $DF >/dev/null 2>"$MOND/debug.err" &
+    VMPID=$!
+    i=0
+    until curl -sf -H "$A" $U/api/names 2>/dev/null | grep -q '"breaker"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "debug: the monitor did not start"; sleep 0.1
+    done
+    D=$U/api/debug
+    pid_of() { curl -sf -H "$A" $U/api/names | sed "s/.*{\"name\":\"$1\",\"pid\":\([0-9]*\)}.*/\1/"; }
+    W=$(pid_of worker); O=$(pid_of other); B=$(pid_of breaker)
+    line_of() { grep -n -- "$1" $DF | head -1 | cut -d: -f1; }
+    # break_at FILE LINE: a breakpoint asked for; the status, with the answer in $MOND/r
+    break_at() {
+        BODY="{\"file\":\"$1\",\"line\":$2}"
+        code -H "$A" --data "$BODY" $D/breakpoints
+    }
+    L_SLEEP=$(line_of 'sleep 5'); L_NOTE=$(line_of '^; (I, R)'); L_RECV=$(line_of 'recv R0')
+    # paused PID N: wait until it is paused for the Nth time; its status is in $MOND/st
+    paused() {
+        TRIES=0
+        until curl -s -H "$A" $D/$1 > "$MOND/st" && grep -q "\"state\":\"paused\".*\"seq\":$2," "$MOND/st"; do
+            TRIES=$((TRIES + 1)); [ $TRIES -lt 50 ] || fail "debug: process $1 not paused for the ${2}th time ($(cat "$MOND/st"))"; sleep 0.1
+        done
+    }
+    [ "$(get $D)" = 401 ] || fail "debug: without a key"
+    [ "$(get -H "$A" $D)" = 200 ] && grep -q '^{"available":true,"why":null,"breakpoints":\[\],"processes":\[\]}$' "$MOND/r" || fail "debug: nothing debugged yet ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"kind":"over"}' $D/$W/step)" = 409 ] && grep -q 'attach first' "$MOND/r" || fail "debug: a step of a process not debugged"
+    [ "$(code -H "$A" $D/9999/attach)" = 404 ] || fail "debug: no such process"
+    [ "$(code -H "$A" --data '{"pause":true}' $D/$W/attach)" = 200 ] || fail "debug: attach ($(cat "$MOND/r"))"
+    paused $W 1
+    grep -q '"debugged":true,"state":"paused","away":false,"pausing":false,"stepping":false,"reason":"pause","error":null,"seq":1,"children":false,"entry":"worker"' "$MOND/st" || fail "debug: paused ($(cat "$MOND/st"))"
+    grep -q '"frames":\[{"function":"debugged.worker","pc":[0-9]*,"file":"[^"]*debugged.masm","line":[0-9]*}\]}$' "$MOND/st" || fail "debug: its frames ($(cat "$MOND/st"))"
+    curl -sf -H "$A" $U/api/proc/$W | grep -q "^{\"pid\":$W,\"state\":\"paused\"," || fail "debug: /api/proc says paused"
+    $BIN top --once 127.0.0.1:$PORT | grep -Eq "^ +$W paused " || fail "debug: top says paused"
+    T0=$(curl -s -H "$A" "$U/api/log" | sed 's/.*"next":\([0-9]*\).*/\1/'); sleep 0.5
+    T1=$(curl -s -H "$A" "$U/api/log" | sed 's/.*"next":\([0-9]*\).*/\1/')
+    [ $((T1 - T0)) -ge 5 ] || fail "debug: another process held up while one is paused ($T0 to $T1 log lines)"
+    curl -sf -H "$A" $D | grep -q "\"processes\":\[{\"pid\":$W,\"debugged\":true,\"state\":\"paused\"" || fail "debug: the processes debugged"
+    VARS=$(curl -s -H "$A" "$D/$W/vars")
+    echo "$VARS" | grep -q '^{"locals":\[{"name":"count","value":"[0-9]*","kind":"i64","children":0,"path":"L0"},{"name":"seen","value":"Seen {count: [0-9]*, last: null}","kind":"Seen","children":2,"path":"L1"},{"name":"all","value":"list([0-9]) \[[0-9, ]*\]","kind":"list","children":[0-9],"path":"L2"},{"name":"tagged","value":"int 7","kind":"registers","children":2,"path":"L3"}\],"registers":{"I":\[{"name":"I0"' \
+        || fail "debug: variables ($VARS)"
+    curl -s -H "$A" "$D/$W/vars?path=L1" | grep -q '^{"path":"L1","count":2,"from":0,"children":\[{"name":"count","value":"[0-9]*","kind":"i64","children":0,"path":"L1/0"},{"name":"last","value":"null","kind":"null","children":0,"path":"L1/1"}\]}$' || fail "debug: a struct opened"
+    curl -s -H "$A" "$D/$W/vars?path=L3" | grep -q '"children":\[{"name":"I3","value":"7","kind":"i64","children":0,"path":"L3/0"},{"name":"R3","value":"null","kind":"null","children":0,"path":"L3/1"}\]' || fail "debug: a variable's registers"
+    [ "$(get -H "$A" "$D/$W/vars?path=R2/99")" = 404 ] || fail "debug: a value that is not there"
+    [ "$(get -H "$A" "$D/$W/vars?frame=7")" = 404 ] || fail "debug: a frame that is not there"
+    curl -s -H "$A" "$D/$W/code" | grep -q '^{"function":"debugged.worker","pc":[0-9]*,"file":"[^"]*","insns":\[{"pc":0,"line":[0-9]*,"text":"ncall' || fail "debug: its code"
+    curl -s -H "$A" "$D/$W/code" | grep -q "{\"pc\":[0-9]*,\"line\":$(line_of 'sleep 5'),\"text\":\"sleep 5\",\"breakpoint\":false}" || fail "debug: an instruction and its line"
+    [ "$(get -H "$A" "$D/source?file=$DF")" = 200 ] && grep -q '^{"file":"[^"]*","text":"; Debugged by check_tools.sh' "$MOND/r" || fail "debug: its source"
+    [ "$(get -H "$A" "$D/source?file=/etc/passwd")" = 404 ] || fail "debug: a file no code came from"
+    # a breakpoint at a function; out of it; over the next lines, the sleep among them; into it again
+    [ "$(code -H "$A" --data '{"function":"bump"}' $D/breakpoints)" = 200 ] && grep -q "^{\"id\":1,\"file\":null,\"line\":0,\"line_at\":0,\"function\":\"bump\",\"at\":\[{\"function\":\"debugged.bump\",\"pc\":0,\"file\":\"[^\"]*\",\"line\":$(line_of 'add I1, n, 1')}\]}$" "$MOND/r" \
+        || fail "debug: a breakpoint at a function ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" $D/$W/continue)" = 200 ] || fail "debug: continue"
+    paused $W 2
+    grep -q '"reason":"breakpoint".*"frames":\[{"function":"debugged.bump","pc":0,[^}]*},{"function":"debugged.worker",' "$MOND/st" || fail "debug: at the breakpoint ($(cat "$MOND/st"))"
+    curl -s -H "$A" "$D/$W/vars?frame=1" | grep -q '"name":"count"' || fail "debug: the caller's variables"
+    curl -s -H "$A" "$D/$W/code" | grep -q '"insns":\[{"pc":0,"line":[0-9]*,"text":"add.i64 I1, I0, 1","breakpoint":true}' || fail "debug: the breakpoint in the code"
+    [ "$(code -H "$A" $D/breakpoints/1/delete)" = 200 ] || fail "debug: delete a breakpoint"
+    [ "$(code -H "$A" $D/breakpoints/1/delete)" = 404 ] || fail "debug: delete it again"
+    [ "$(code -H "$A" --data '{"kind":"out"}' $D/$W/step)" = 200 ] || fail "debug: step out"
+    paused $W 3
+    grep -q "\"reason\":\"step\".*\"frames\":\[{\"function\":\"debugged.worker\",\"pc\":[0-9]*,\"file\":\"[^\"]*\",\"line\":$(line_of 'mov R1->Seen')}\]" "$MOND/st" || fail "debug: out of the call ($(cat "$MOND/st"))"
+    N=3
+    for L in 'lpush R2' 'len I6' 'blt I6' ; do
+        [ "$(code -H "$A" --data '{"kind":"over"}' $D/$W/step)" = 200 ] || fail "debug: step over"
+        N=$((N + 1)); paused $W $N
+        grep -q "\"frames\":\[{\"function\":\"debugged.worker\",\"pc\":[0-9]*,\"file\":\"[^\"]*\",\"line\":$(line_of "$L")}\]" "$MOND/st" || fail "debug: over a line, to '$L' ($(cat "$MOND/st"))"
+    done
+    i=0 # on, over the sleep and round to the call, then into it by an instruction
+    until grep -q "\"line\":$(line_of 'call bump')}\]" "$MOND/st"; do
+        i=$((i + 1)); [ $i -lt 8 ] || fail "debug: never back at the call ($(cat "$MOND/st"))"
+        [ "$(code -H "$A" --data '{"kind":"over","by":"line"}' $D/$W/step)" = 200 ] || fail "debug: step over"
+        N=$((N + 1)); paused $W $N
+    done
+    [ "$(code -H "$A" --data '{"kind":"into","by":"insn"}' $D/$W/step)" = 200 ] || fail "debug: step into"
+    N=$((N + 1)); paused $W $N
+    grep -q '"frames":\[{"function":"debugged.bump","pc":0,' "$MOND/st" || fail "debug: into the call ($(cat "$MOND/st"))"
+    [ "$(code -H "$A" --data '{"kind":"sideways"}' $D/$W/step)" = 400 ] || fail "debug: a step of no kind"
+    # breakpoints at lines: one with code, one without (the next that has), one in no file loaded
+    [ "$(break_at debugged.masm $L_SLEEP)" = 200 ] && grep -q "\"line_at\":$(line_of 'sleep 5'),\"function\":null,\"at\":\[{\"function\":\"debugged.worker\"" "$MOND/r" || fail "debug: a breakpoint at a line ($(cat "$MOND/r"))"
+    [ "$(break_at debugged.masm $L_NOTE)" = 200 ] && grep -q "\"line_at\":$(line_of 'bnz.r r, 1f'),\"function\":null,\"at\":\[{\"function\":\"debugged.show\"" "$MOND/r" || fail "debug: a breakpoint at a line without code ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"file":"later.masm","line":3}' $D/breakpoints)" = 200 ] && grep -q '"file":"later.masm","line":3,"line_at":0,"function":null,"at":\[\]}$' "$MOND/r" || fail "debug: a breakpoint for code not loaded ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"line":3}' $D/breakpoints)" = 400 ] || fail "debug: a breakpoint nowhere"
+    [ "$(get -H "$A" $D/breakpoints)" = 200 ] && [ "$(grep -o '"id":' "$MOND/r" | wc -l | tr -d ' ')" = 3 ] || fail "debug: the breakpoints ($(cat "$MOND/r"))"
+    for i in 1 2; do # at the sleep once a pass: it is one instruction, though the process waits in it
+        [ "$(code -H "$A" $D/$W/continue)" = 200 ] || fail "debug: continue"
+        N=$((N + 1)); paused $W $N
+        grep -q "\"reason\":\"breakpoint\".*\"line\":$(line_of 'sleep 5')}\]" "$MOND/st" || fail "debug: at the line's breakpoint ($(cat "$MOND/st"))"
+        C=$(curl -s -H "$A" "$D/$W/vars" | sed 's/.*"name":"count","value":"\([0-9]*\)".*/\1/')
+        [ $i = 1 ] && C1=$C
+    done
+    [ "$C" = $((C1 + 1)) ] || fail "debug: a pass between two stops at a line ($C1, then $C)"
+    # a `break` instruction, and a breakpoint on a recv: once for each message
+    [ "$(code -H "$A" $D/$B/attach)" = 200 ] && grep -q '"debugged":true,"state":"waiting"' "$MOND/r" || fail "debug: attach to one that waits ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '"go"' $U/api/proc/$B/send)" = 200 ] || fail "debug: a message"
+    paused $B 1
+    grep -q "\"reason\":\"break\"" "$MOND/st" || fail "debug: at a break instruction ($(cat "$MOND/st"))"
+    [ "$(break_at debugged.masm $L_RECV)" = 200 ] || fail "debug: a breakpoint at a recv"
+    [ "$(code -H "$A" $D/$B/continue)" = 200 ] || fail "debug: continue after a break"
+    paused $B 2
+    grep -q "\"reason\":\"breakpoint\".*\"line\":$(line_of 'recv R0')}\]" "$MOND/st" || fail "debug: at the recv ($(cat "$MOND/st"))"
+    curl -sf -H "$A" "$U/api/log" | grep -q '"text":"after the break"' || fail "debug: on, after the break"
+    [ "$(code -H "$A" $D/$B/continue)" = 200 ] || fail "debug: continue into the recv"
+    sleep 0.3
+    curl -s -H "$A" $D/$B | grep -q '"state":"waiting".*"seq":2,' || fail "debug: waiting in the recv ($(curl -s -H "$A" $D/$B))"
+    [ "$(code -H "$A" --data '"again"' $U/api/proc/$B/send)" = 200 ] || fail "debug: another message"
+    paused $B 3
+    grep -q "\"reason\":\"break\"" "$MOND/st" || fail "debug: the recv done without stopping there again ($(cat "$MOND/st"))"
+    # pause one that runs; detach: both go on; killed while paused
+    [ "$(code -H "$A" $D/$B/detach)" = 200 ] && grep -q '"debugged":false' "$MOND/r" || fail "debug: detach ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" $D/$B/continue)" = 409 ] || fail "debug: continue one not debugged"
+    for i in 2 3 4; do [ "$(code -H "$A" $D/breakpoints/$i/delete)" = 200 ] || fail "debug: delete breakpoint $i"; done
+    [ "$(code -H "$A" $D/breakpoints/5/delete)" = 200 ] || fail "debug: delete the recv's breakpoint"
+    [ "$(code -H "$A" $D/$W/continue)" = 200 ] || fail "debug: continue with no breakpoints"
+    sleep 0.3
+    curl -s -H "$A" $D/$W | grep -q "\"debugged\":true,\"state\":\"\(sleeping\|ready\|running\)\".*\"seq\":$N," || fail "debug: running on ($(curl -s -H "$A" $D/$W))"
+    [ "$(code -H "$A" $D/$W/pause)" = 200 ] || fail "debug: pause"
+    N=$((N + 1)); paused $W $N
+    grep -q '"reason":"pause"' "$MOND/st" || fail "debug: paused when asked ($(cat "$MOND/st"))"
+    [ "$(code -H "$A" $U/api/proc/$W/kill)" = 200 ] || fail "debug: kill one paused"
+    sleep 0.2
+    [ "$(get -H "$A" $D/$W)" = 404 ] || fail "debug: a killed process still there"
+    curl -sf -H "$A" $U/api/exits | grep -q "{\"pid\":$W,\"entry\":\"worker\",[^}]*\"failed\":true,\"code\":\"E_KILLED\"" || fail "debug: the killed process's exit"
+    LOG=$(curl -sf -H "$A" "$U/api/log")
+    echo "$LOG" | grep -q "\"event\":\"monitor.debug_attach\",\"value\":{\"by\":\"(start)\",\"pid\":$W}" || fail "debug: attach in the log"
+    echo "$LOG" | grep -q "\"event\":\"monitor.debug_detach\",\"value\":{\"by\":\"(start)\",\"pid\":$B}" || fail "debug: detach in the log"
+    echo "$LOG" | grep -q '"event":"monitor.debug_break","value":{"by":"(start)","function":"bump"}' || fail "debug: a breakpoint in the log"
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
+    # With one paused and every other waiting, the VM goes on (no deadlock);
+    # and the program ends, with one still paused, as any other.
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions tests/tools/_monitor/waits.masm >/dev/null 2>"$MOND/waits.err" &
+    VMPID=$!
+    i=0
+    until curl -sf -H "$A" $U/api/names 2>/dev/null | grep -q '"waiter"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "debug: waits.masm did not start"; sleep 0.1
+    done
+    W=$(pid_of waiter)
+    [ "$(code -H "$A" --data '{"pause":true}' $D/$W/attach)" = 200 ] && grep -q '"state":"waiting","away":false,"pausing":true' "$MOND/r" || fail "debug: pausing one that waits ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '1' $U/api/proc/$W/send)" = 200 ] || fail "debug: a message to it"
+    paused $W 1
+    curl -sf -H "$A" $U/api/proc/$W | grep -q '"messages":\[{"type":"i64","preview":1}\]' || fail "debug: paused before the message was taken"
+    i=0
+    until curl -sf -H "$A" "$U/api/log" | grep -q '"text":"main waits"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "debug: main never waited"; sleep 0.1
+    done
+    sleep 1
+    curl -sf -H "$A" $U/api/procs | grep -q '"state":"waiting".*"state":"paused"' || fail "debug: the VM with one paused and the rest waiting ($(cat "$MOND/waits.err"))"
+    [ "$(code -H "$A" --data '"end"' $U/api/proc/1/send)" = 200 ] || fail "debug: a message to main"
+    set +e
+    wait $VMPID; RC=$?
+    set -e
+    [ $RC = 7 ] || fail "debug: the program's end with a process paused (exit $RC): $(cat "$MOND/waits.err")"
+    # A process running as machine code: attached to, it is interpreted from
+    # where it was, its registers as the machine code left them; detached
+    # from, it runs on.
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions tests/tools/_monitor/hot.masm >/dev/null 2>"$MOND/hot.err" &
+    VMPID=$!
+    i=0
+    until curl -sf -H "$A" $U/api/names 2>/dev/null | grep -q '"spinner"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "debug: hot.masm did not start"; sleep 0.1
+    done
+    sleep 0.5
+    W=$(pid_of spinner)
+    count() { curl -s -H "$A" "$D/$W/vars?frame=$1" | sed 's/.*"name":"count","value":"\([0-9]*\)".*/\1/'; }
+    [ "$(code -H "$A" --data '{"pause":true}' $D/$W/attach)" = 200 ] || fail "debug: attach to machine code"
+    paused $W 1
+    FR=$(grep -o '"function":"hot.inc"' "$MOND/st" | wc -l | tr -d ' ') # (in inc: the caller is the next frame)
+    C1=$(count $FR); I6=$(curl -s -H "$A" "$D/$W/vars?frame=$FR" | sed 's/.*"name":"I6","value":"\([0-9]*\)".*/\1/')
+    [ "$C1" -gt 1000 ] 2>/dev/null && [ $((I6 / 2)) -ge $((C1 - 1)) ] && [ $((I6 / 2)) -le $((C1 + 1)) ] || fail "debug: machine code's registers (count $C1, I6 $I6)"
+    for i in 2 3 4 5 6 7; do
+        [ "$(code -H "$A" --data '{"kind":"into","by":"insn"}' $D/$W/step)" = 200 ] || fail "debug: a step from machine code"
+        paused $W $i
+    done
+    FR=$(grep -o '"function":"hot.inc"' "$MOND/st" | wc -l | tr -d ' ')
+    C2=$(count $FR)
+    [ "$C2" -ge $((C1 + 1)) ] && [ "$C2" -le $((C1 + 3)) ] || fail "debug: six instructions on ($C1, then $C2)"
+    [ "$(code -H "$A" $D/$W/detach)" = 200 ] || fail "debug: detach from it"
+    I0=$(curl -sf -H "$A" $U/api/proc/$W | sed 's/.*"insns":\([0-9]*\),"cpu_ns".*/\1/'); sleep 0.3
+    I1=$(curl -sf -H "$A" $U/api/proc/$W | sed 's/.*"insns":\([0-9]*\),"cpu_ns".*/\1/')
+    [ $((I1 - I0)) -gt 100000 ] || fail "debug: running on after a detach ($I0 to $I1 instructions)"
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
+
+    # What a debugger follows, and where it stops for an error. Following
+    # what a process spawns, its children are debugged too. One that fails
+    # with nothing to catch its error is paused where it failed, its frames
+    # and variables still there; it cannot step, and let go on it ends with
+    # the same report. One that catches its error is not stopped. A program's
+    # processes can all be paused, and all let go on; one asked to pause while
+    # it waits can be let off.
+    DF=tests/tools/_monitor/family.masm
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions $DF >/dev/null 2>"$MOND/family.err" &
+    VMPID=$!
+    i=0
+    until curl -sf -H "$A" $U/api/names 2>/dev/null | grep -q '"parent"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: the monitor did not start"; sleep 0.1
+    done
+    W=$(pid_of parent)
+    [ "$(code -H "$A" --data '{"children":true}' $D/$W/attach)" = 200 ] && grep -q '"debugged":true,"state":"waiting".*"children":true' "$MOND/r" || fail "family: attach, following what it spawns ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '2' $U/api/proc/$W/send)" = 200 ] || fail "family: a message"
+    i=0
+    until curl -sf -H "$A" "$U/api/log" | grep -q '"text":"careful: caught"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: an error caught ($(curl -sf -H "$A" $U/api/log))"; sleep 0.1
+    done
+    curl -s -H "$A" $D | grep -q '"state":"paused"' && fail "family: stopped for an error that was caught ($(curl -s -H "$A" $D))"
+    [ "$(code -H "$A" --data '1' $U/api/proc/$W/send)" = 200 ] || fail "family: a message"
+    i=0
+    until curl -s -H "$A" $D | grep -q '"state":"paused".*"entry":"crasher"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: a child not debugged ($(curl -s -H "$A" $D))"; sleep 0.1
+    done
+    C=$(curl -s -H "$A" $D | grep -o '{"pid":[0-9]*,"debugged":true,"state":"paused"' | head -1 | sed 's/{"pid":\([0-9]*\).*/\1/')
+    paused $C 1
+    grep -q "\"reason\":\"error\",\"error\":{\"code\":\"E_DIV_ZERO\",\"message\":\"integer division by zero\"},\"seq\":1,\"children\":true,\"entry\":\"crasher\"" "$MOND/st" || fail "family: paused where it failed ($(cat "$MOND/st"))"
+    grep -q "\"frames\":\[{\"function\":\"family.crasher\",\"pc\":1,\"file\":\"[^\"]*\",\"line\":$(line_of 'div I2, I1, d')}\]" "$MOND/st" || fail "family: at the instruction that failed ($(cat "$MOND/st"))"
+    curl -s -H "$A" "$D/$C/vars" | grep -q '^{"locals":\[{"name":"d","value":"0","kind":"i64"' || fail "family: its variables where it failed"
+    [ "$(code -H "$A" --data '{"kind":"over"}' $D/$C/step)" = 409 ] && grep -q 'has failed' "$MOND/r" || fail "family: a step of one that has failed"
+    [ "$(code -H "$A" $D/$C/continue)" = 200 ] || fail "family: let go on to its end"
+    i=0
+    until curl -sf -H "$A" $U/api/exits | grep -q "{\"pid\":$C,\"entry\":\"crasher\",[^}]*\"failed\":true,\"code\":\"E_DIV_ZERO\""; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: its end ($(curl -sf -H "$A" $U/api/exits))"; sleep 0.1
+    done
+    grep -q "^process $C (crasher) failed: \[E_DIV_ZERO\] integer division by zero" "$MOND/family.err" && grep -q "at family.crasher ([^)]*family.masm:$(line_of 'div I2, I1, d'))" "$MOND/family.err" || fail "family: its report ($(cat "$MOND/family.err"))"
+    # all of its program paused; one asked to pause while it waits let off; all let go on
+    [ "$(code -H "$A" --data '{"program":true}' $D/$W/pause)" = 200 ] || fail "family: pause its program"
+    [ "$(curl -s -H "$A" $D | grep -o '"debugged":true,"state":"[a-z]*","away":false,"pausing":true' | wc -l | tr -d ' ')" = 2 ] || fail "family: its program's processes asked to pause ($(curl -s -H "$A" $D))"
+    [ "$(code -H "$A" $D/1/continue)" = 200 ] && grep -q '"pausing":false' "$MOND/r" || fail "family: one asked to pause, let off ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" $D/1/continue)" = 409 ] || fail "family: let off twice"
+    [ "$(code -H "$A" --data '3' $U/api/proc/$W/send)" = 200 ] || fail "family: a message"
+    paused $W 1
+    [ "$(code -H "$A" --data '{"program":true}' $D/$W/continue)" = 200 ] || fail "family: its program let go on"
+    i=0
+    until curl -sf -H "$A" "$U/api/log" | grep -q '"text":"crasher: done"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: on, after its program was let go on"; sleep 0.1
+    done
+    # detached from, what it spawns is no longer followed: one that fails ends at once
+    [ "$(code -H "$A" $D/$W/detach)" = 200 ] && grep -q '"debugged":false.*"children":false' "$MOND/r" || fail "family: detach ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '1' $U/api/proc/$W/send)" = 200 ] || fail "family: a message"
+    i=0
+    until [ "$(curl -sf -H "$A" $U/api/exits | grep -o '"code":"E_DIV_ZERO"' | wc -l | tr -d ' ')" = 2 ]; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: one not debugged, failing ($(curl -sf -H "$A" $U/api/exits))"; sleep 0.1
+    done
+    curl -s -H "$A" $D | grep -q '"state":"paused"' && fail "family: one not debugged, stopped for its error"
+    curl -sf -H "$A" "$U/api/log" | grep -q '"event":"monitor.debug_pause","value":{"by":"(start)","program":0}' || fail "family: a program's pause in the log"
     kill $VMPID 2>/dev/null || true
     wait $VMPID 2>/dev/null || true
 
@@ -1112,6 +1473,37 @@ if command -v curl >/dev/null 2>&1; then
     until curl -sf "$U/api/log" | grep -q 'envy: from its file'; do
         i=$((i + 1)); [ $i -lt 50 ] || fail "serve: a program's environment ($(curl -sf $U/api/log))"; sleep 0.1
     done
+    # A program started paused, in its debugger: its main stops before its
+    # first instruction; it steps by the lines of the file it says it was made
+    # from, which is read from beside it; let go on, it ends as it would have.
+    # A program run again likewise. mlwsvm serve's own process is not debugged.
+    [ "$(get $U/debug)" = 200 ] && grep -q '<title>MLWSVM Debugger</title>' "$MOND/r" || fail "serve: the debugger's page"
+    [ "$(code -H "$A" --data '{"path":"located.masm","debug":true}' $U/api/programs)" = 200 ] && grep -q '^{"ok":true,"id":8,"pid":[0-9]*,"debug":true}$' "$MOND/r" || fail "serve: start paused ($(cat "$MOND/r"))"
+    LP=$(sed 's/.*"pid":\([0-9]*\).*/\1/' "$MOND/r")
+    D=$U/api/debug
+    ST=$(curl -s -H "$A" $D/$LP)
+    echo "$ST" | grep -q '"debugged":true,"state":"paused","away":false,"pausing":false,"stepping":false,"reason":"entry","error":null,"seq":1,"children":true,"entry":"main"' || fail "serve: paused at its entry, what it spawns to be debugged too ($ST)"
+    echo "$ST" | grep -q '"frames":\[{"function":"located.main","pc":0,"file":"[^"]*located.masm","line":8,"source":"located.src","source_line":1}\]' || fail "serve: where it is paused ($ST)"
+    [ "$(get -H "$A" "$D/source?file=located.src")" = 200 ] && grep -Eq '^\{"file":"located.src","text":"let n = 1 \+ 1(\\u000d)?\\u000an = n \+ 2(\\u000d)?\\u000areturn n(\\u000d)?\\u000a"\}$' "$MOND/r" || fail "serve: the source beside the program ($(cat "$MOND/r"))" # (lines end as the checkout made them)
+    [ "$(code -H "$A" --data '{"kind":"over"}' $D/$LP/step)" = 200 ] || fail "serve: a step by a line of its source"
+    sleep 0.2
+    curl -s -H "$A" $D/$LP | grep -q '"reason":"step","error":null,"seq":2,.*"pc":2,"file":"[^"]*","line":11,"source":"located.src","source_line":2}\]' || fail "serve: a line on, two instructions ($(curl -s -H "$A" $D/$LP))"
+    [ "$(code -H "$A" --data '{"file":"located.src","line":3}' $D/breakpoints)" = 200 ] && grep -q '"line_at":3,"function":null,"at":\[{"function":"located.main","pc":3,' "$MOND/r" || fail "serve: a breakpoint at a line of its source ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" $D/$LP/continue)" = 200 ] || fail "serve: continue"
+    sleep 0.2
+    curl -s -H "$A" $D/$LP | grep -q '"reason":"breakpoint","error":null,"seq":3,' || fail "serve: at its source's breakpoint ($(curl -s -H "$A" $D/$LP))"
+    [ "$(code -H "$A" $D/$LP/continue)" = 200 ] || fail "serve: continue to its end"
+    i=0
+    until curl -sf $U/api/programs | grep -q '"id":8,"path":"located.masm",[^}]*"state":"done","exit":4'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "serve: a debugged program's end ($(curl -sf $U/api/programs))"; sleep 0.1
+    done
+    [ "$(code -H "$A" --data '{"debug":true}' $U/api/programs/8/rerun)" = 200 ] && grep -q '"id":9,"pid":[0-9]*,"debug":true}$' "$MOND/r" || fail "serve: run again, paused ($(cat "$MOND/r"))"
+    LP=$(sed 's/.*"pid":\([0-9]*\).*/\1/' "$MOND/r")
+    curl -s -H "$A" $D/$LP | grep -q '"state":"paused".*"reason":"entry"' || fail "serve: run again, at its entry"
+    [ "$(code -H "$A" $U/api/programs/9/stop)" = 200 ] || fail "serve: stop one paused"
+    curl -sf $U/api/programs | grep -q '"id":9,"path":"located.masm",[^}]*"state":"failed","code":"E_KILLED"' || fail "serve: one stopped while paused"
+    [ "$(code -H "$A" $D/1/attach)" = 403 ] && grep -q "serve's own" "$MOND/r" || fail "serve: its own process debugged ($(cat "$MOND/r"))"
+    curl -sf "$U/api/log" | grep -q '"event":"monitor.start","value":{"by":"(start)","path":"located.masm","pid":[0-9]*,"debug":true}' || fail "serve: a paused start in the log"
     [ "$(code -H "$A" $U/api/shutdown)" = 200 ] || fail "serve: shutdown"
     set +e
     wait $VMPID; RC=$?
@@ -1144,6 +1536,11 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf $U/api/programs | grep -q '"path":"echo.masm","cap":null,"quota":null,"args":\["2"\],"pid":[0-9]*,"state":"done","exit":0' || fail "echo: done ($(curl -sf $U/api/programs))"
     [ "$(code -H "$A" $U/api/shutdown)" = 200 ] || fail "echo: shutdown"
     wait $VMPID || fail "echo: serve's exit"
+    # A VM run in the background here wrote its errors to a file of its own: a
+    # sanitizer's report in one would otherwise go unseen.
+    if grep -l "Sanitizer" "$MOND"/*.err >/dev/null 2>&1; then
+        fail "a sanitizer's report from a VM in the background: $(grep -h -A14 "Sanitizer" "$MOND"/*.err | head -45)"
+    fi
     rm -rf "${MOND:?}"
 fi
 echo "check-tools: profile, .loc, bundle, dap, node, names, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"
