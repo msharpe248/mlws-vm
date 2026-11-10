@@ -593,7 +593,8 @@ compiled language's own file where there is one, or the assembly, and the
 function's instructions on request), the call stack, the variables of the
 frame chosen, which open to show what they hold and are marked when a step
 changed them, the messages waiting in its mailbox, the breakpoints, and the
-process's own lines of the log. A click beside a line sets or removes a
+process's own lines of the log, and it names the other processes being
+debugged, each a click away. A click beside a line sets or removes a
 breakpoint there. Continue is F8 or `c`, step over F10 or `n`, step into `s`,
 step out `o`, pause `p`. Closing the page changes nothing: a paused process
 stays paused, and the dashboard says so. The page is compiled into the
@@ -613,7 +614,20 @@ A process is **attached** to, and from then:
   code that is not loaded waits for it, and each follows a reload. A `break`
   instruction stops an attached process too.
 * **Continue** lets it go on; **detach** as well, and from then it runs as it
-  did before, its machine code where it has some.
+  did before, its machine code where it has some. Continue also lets off one
+  that was asked to pause and is not there yet.
+* **What it spawns** can be debugged too (`children`): each process it spawns
+  from then on, and theirs, so that a breakpoint stops whichever of them
+  reaches it. A program started paused, in the debugger, is debugged so from
+  its first process.
+* **An error that nothing catches** pauses an attached process where it was
+  raised, its frames and variables still there, instead of ending it
+  (`reason` `error`, with the `error`'s `code` and `message`). It cannot step;
+  let go on, it ends as it would have, with the same report. An error that a
+  `.try` catches stops nothing.
+* **Its whole program** can be paused: every process of the program is
+  attached to and asked to pause, and what they spawn is debugged; and let go
+  on, all at once.
 
 Paused, the process keeps its mailbox: messages sent to it wait. A call to it
 may time out meanwhile, as in Erlang's debugger. It can be killed, and it ends
@@ -628,7 +642,7 @@ pausing and each new breakpoint go into the log (`monitor.debug_attach`,
 | Endpoint | Returns |
 |---|---|
 | `GET /api/debug` | `available` (false, with `why`, in a VM run under the profiler, the tracer or `mlwsvm debug`), `breakpoints`, and `processes`: each one attached to, as below without its frames |
-| `GET /api/debug/PID` | `debugged`, `state`, `away`, `pausing` (asked to pause, and not yet there), `stepping`, `reason` (why it is paused: `pause`, `step`, `breakpoint`, `break`, `entry`), `seq` (its pauses so far: a new one is a new stop), `at` (where it is) and `frames`, the innermost first, 200 at most: each a `function`, `pc`, `file` and `line` (the assembly's), and `source` and `source_line` where `.loc` gives them |
+| `GET /api/debug/PID` | `debugged`, `state`, `away`, `pausing` (asked to pause, and not yet there), `stepping`, `reason` (why it is paused: `pause`, `step`, `breakpoint`, `break`, `entry`, `error`), `error` (what it failed with, paused there: `code` and `message`; else null), `seq` (its pauses so far: a new one is a new stop), `children` (what it spawns is debugged too), `at` (where it is) and `frames`, the innermost first, 200 at most: each a `function`, `pc`, `file` and `line` (the assembly's), and `source` and `source_line` where `.loc` gives them |
 | `GET /api/debug/PID/vars?frame=N` | frame N's `locals` (the names the program gave its registers, each as its formatter shows it) and `registers` by bank: each a `name`, `value`, `kind`, how many `children` it opens to show, and its `path` |
 | `GET /api/debug/PID/vars?frame=N&path=P` | the `children` of the value at a path: a struct's fields, a list's or an array's elements, a map's values by key, a closure's captures, the registers of a variable of several; 1,000 at most, from `from=K` |
 | `GET /api/debug/PID/code?frame=N` | the frame's function as instructions: each a `pc`, `line`, `text`, `source` and `source_line`, and whether a `breakpoint` is there; with `pc`, the frame's own |
@@ -637,11 +651,11 @@ pausing and each new breakpoint go into the log (`monitor.debug_attach`,
 
 | Action | Does |
 |---|---|
-| `POST /api/debug/PID/attach` | debug it; with `{"pause": true}`, pause it too; 403 for `mlwsvm serve`'s own process |
+| `POST /api/debug/PID/attach` | debug it; with `{"pause": true}`, pause it too; with `{"children": true}` (or `false`), what it spawns from now as well (or no longer); 403 for `mlwsvm serve`'s own process |
 | `POST /api/debug/PID/detach` | no longer; it goes on if it was paused |
-| `POST /api/debug/PID/pause` | pause it before its next instruction |
-| `POST /api/debug/PID/continue` | a paused one goes on; 409 if it is not paused |
-| `POST /api/debug/PID/step` | `{"kind": "into" \| "over" \| "out", "by": "line" \| "insn"}` (`by` may be left out: `line`); 409 if it is not paused |
+| `POST /api/debug/PID/pause` | pause it before its next instruction; with `{"program": true}`, every process of its program, each attached to |
+| `POST /api/debug/PID/continue` | a paused one goes on, and one asked to pause is let off; 409 if it is neither; with `{"program": true}`, every one of its program |
+| `POST /api/debug/PID/step` | `{"kind": "into" \| "over" \| "out", "by": "line" \| "insn"}` (`by` may be left out: `line`); 409 if it is not paused, or is paused where it failed |
 | `POST /api/debug/breakpoints` | `{"file": "app.masm", "line": 12}` (a file by its name, with or without its directories) or `{"function": "mod.f"}`; answers the breakpoint, the one there already if it is the same |
 | `POST /api/debug/breakpoints/ID/delete` | it is gone |
 
@@ -650,7 +664,10 @@ without the frames.
 
 Limits to know. A process in a blocking call that is still being made
 (`away`) cannot be read until the call returns (409), and pauses then.
-Nothing stops inside a callback from C. A register its function has not
+Nothing stops inside a callback from C, and an error raised inside a
+coroutine, or in such a callback, ends its process as it always did.
+Breakpoints stop only processes being debugged: one not attached to runs
+past them. A register its function has not
 written yet shows whatever was there. Values are read, not changed.
 
 ### The program's log

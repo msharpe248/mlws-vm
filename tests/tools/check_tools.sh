@@ -1150,7 +1150,7 @@ if command -v curl >/dev/null 2>&1; then
     [ "$(code -H "$A" $D/9999/attach)" = 404 ] || fail "debug: no such process"
     [ "$(code -H "$A" --data '{"pause":true}' $D/$W/attach)" = 200 ] || fail "debug: attach ($(cat "$MOND/r"))"
     paused $W 1
-    grep -q '"debugged":true,"state":"paused","away":false,"pausing":false,"stepping":false,"reason":"pause","seq":1,"entry":"worker"' "$MOND/st" || fail "debug: paused ($(cat "$MOND/st"))"
+    grep -q '"debugged":true,"state":"paused","away":false,"pausing":false,"stepping":false,"reason":"pause","error":null,"seq":1,"children":false,"entry":"worker"' "$MOND/st" || fail "debug: paused ($(cat "$MOND/st"))"
     grep -q '"frames":\[{"function":"debugged.worker","pc":[0-9]*,"file":"[^"]*debugged.masm","line":[0-9]*}\]}$' "$MOND/st" || fail "debug: its frames ($(cat "$MOND/st"))"
     curl -sf -H "$A" $U/api/proc/$W | grep -q "^{\"pid\":$W,\"state\":\"paused\"," || fail "debug: /api/proc says paused"
     $BIN top --once 127.0.0.1:$PORT | grep -Eq "^ +$W paused " || fail "debug: top says paused"
@@ -1304,6 +1304,69 @@ if command -v curl >/dev/null 2>&1; then
     kill $VMPID 2>/dev/null || true
     wait $VMPID 2>/dev/null || true
 
+    # What a debugger follows, and where it stops for an error. Following
+    # what a process spawns, its children are debugged too. One that fails
+    # with nothing to catch its error is paused where it failed, its frames
+    # and variables still there; it cannot step, and let go on it ends with
+    # the same report. One that catches its error is not stopped. A program's
+    # processes can all be paused, and all let go on; one asked to pause while
+    # it waits can be let off.
+    DF=tests/tools/_monitor/family.masm
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions $DF >/dev/null 2>"$MOND/family.err" &
+    VMPID=$!
+    i=0
+    until curl -sf -H "$A" $U/api/names 2>/dev/null | grep -q '"parent"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: the monitor did not start"; sleep 0.1
+    done
+    W=$(pid_of parent)
+    [ "$(code -H "$A" --data '{"children":true}' $D/$W/attach)" = 200 ] && grep -q '"debugged":true,"state":"waiting".*"children":true' "$MOND/r" || fail "family: attach, following what it spawns ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '2' $U/api/proc/$W/send)" = 200 ] || fail "family: a message"
+    i=0
+    until curl -sf -H "$A" "$U/api/log" | grep -q '"text":"careful: caught"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: an error caught ($(curl -sf -H "$A" $U/api/log))"; sleep 0.1
+    done
+    curl -s -H "$A" $D | grep -q '"state":"paused"' && fail "family: stopped for an error that was caught ($(curl -s -H "$A" $D))"
+    [ "$(code -H "$A" --data '1' $U/api/proc/$W/send)" = 200 ] || fail "family: a message"
+    i=0
+    until curl -s -H "$A" $D | grep -q '"state":"paused".*"entry":"crasher"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: a child not debugged ($(curl -s -H "$A" $D))"; sleep 0.1
+    done
+    C=$(curl -s -H "$A" $D | grep -o '{"pid":[0-9]*,"debugged":true,"state":"paused"' | head -1 | sed 's/{"pid":\([0-9]*\).*/\1/')
+    paused $C 1
+    grep -q "\"reason\":\"error\",\"error\":{\"code\":\"E_DIV_ZERO\",\"message\":\"integer division by zero\"},\"seq\":1,\"children\":true,\"entry\":\"crasher\"" "$MOND/st" || fail "family: paused where it failed ($(cat "$MOND/st"))"
+    grep -q "\"frames\":\[{\"function\":\"family.crasher\",\"pc\":1,\"file\":\"[^\"]*\",\"line\":$(line_of 'div I2, I1, d')}\]" "$MOND/st" || fail "family: at the instruction that failed ($(cat "$MOND/st"))"
+    curl -s -H "$A" "$D/$C/vars" | grep -q '^{"locals":\[{"name":"d","value":"0","kind":"i64"' || fail "family: its variables where it failed"
+    [ "$(code -H "$A" --data '{"kind":"over"}' $D/$C/step)" = 409 ] && grep -q 'has failed' "$MOND/r" || fail "family: a step of one that has failed"
+    [ "$(code -H "$A" $D/$C/continue)" = 200 ] || fail "family: let go on to its end"
+    i=0
+    until curl -sf -H "$A" $U/api/exits | grep -q "{\"pid\":$C,\"entry\":\"crasher\",[^}]*\"failed\":true,\"code\":\"E_DIV_ZERO\""; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: its end ($(curl -sf -H "$A" $U/api/exits))"; sleep 0.1
+    done
+    grep -q "^process $C (crasher) failed: \[E_DIV_ZERO\] integer division by zero" "$MOND/family.err" && grep -q "at family.crasher ([^)]*family.masm:$(line_of 'div I2, I1, d'))" "$MOND/family.err" || fail "family: its report ($(cat "$MOND/family.err"))"
+    # all of its program paused; one asked to pause while it waits let off; all let go on
+    [ "$(code -H "$A" --data '{"program":true}' $D/$W/pause)" = 200 ] || fail "family: pause its program"
+    [ "$(curl -s -H "$A" $D | grep -o '"debugged":true,"state":"[a-z]*","away":false,"pausing":true' | wc -l | tr -d ' ')" = 2 ] || fail "family: its program's processes asked to pause ($(curl -s -H "$A" $D))"
+    [ "$(code -H "$A" $D/1/continue)" = 200 ] && grep -q '"pausing":false' "$MOND/r" || fail "family: one asked to pause, let off ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" $D/1/continue)" = 409 ] || fail "family: let off twice"
+    [ "$(code -H "$A" --data '3' $U/api/proc/$W/send)" = 200 ] || fail "family: a message"
+    paused $W 1
+    [ "$(code -H "$A" --data '{"program":true}' $D/$W/continue)" = 200 ] || fail "family: its program let go on"
+    i=0
+    until curl -sf -H "$A" "$U/api/log" | grep -q '"text":"crasher: done"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: on, after its program was let go on"; sleep 0.1
+    done
+    # detached from, what it spawns is no longer followed: one that fails ends at once
+    [ "$(code -H "$A" $D/$W/detach)" = 200 ] && grep -q '"debugged":false.*"children":false' "$MOND/r" || fail "family: detach ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '1' $U/api/proc/$W/send)" = 200 ] || fail "family: a message"
+    i=0
+    until [ "$(curl -sf -H "$A" $U/api/exits | grep -o '"code":"E_DIV_ZERO"' | wc -l | tr -d ' ')" = 2 ]; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "family: one not debugged, failing ($(curl -sf -H "$A" $U/api/exits))"; sleep 0.1
+    done
+    curl -s -H "$A" $D | grep -q '"state":"paused"' && fail "family: one not debugged, stopped for its error"
+    curl -sf -H "$A" "$U/api/log" | grep -q '"event":"monitor.debug_pause","value":{"by":"(start)","program":0}' || fail "family: a program's pause in the log"
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
+
     # Environments in the monitor: each one's names to a read key, values to
     # an admin's (never a secret's); an admin sets and deletes one, which its
     # watcher hears of, each in the log by name and never by value.
@@ -1419,16 +1482,16 @@ if command -v curl >/dev/null 2>&1; then
     LP=$(sed 's/.*"pid":\([0-9]*\).*/\1/' "$MOND/r")
     D=$U/api/debug
     ST=$(curl -s -H "$A" $D/$LP)
-    echo "$ST" | grep -q '"debugged":true,"state":"paused","away":false,"pausing":false,"stepping":false,"reason":"entry","seq":1,"entry":"main"' || fail "serve: paused at its entry ($ST)"
+    echo "$ST" | grep -q '"debugged":true,"state":"paused","away":false,"pausing":false,"stepping":false,"reason":"entry","error":null,"seq":1,"children":true,"entry":"main"' || fail "serve: paused at its entry, what it spawns to be debugged too ($ST)"
     echo "$ST" | grep -q '"frames":\[{"function":"located.main","pc":0,"file":"[^"]*located.masm","line":8,"source":"located.src","source_line":1}\]' || fail "serve: where it is paused ($ST)"
-    [ "$(get -H "$A" "$D/source?file=located.src")" = 200 ] && grep -q '^{"file":"located.src","text":"let n = 1 + 1\\u000an = n + 2\\u000areturn n\\u000a"}$' "$MOND/r" || fail "serve: the source beside the program ($(cat "$MOND/r"))"
+    [ "$(get -H "$A" "$D/source?file=located.src")" = 200 ] && grep -Eq '^\{"file":"located.src","text":"let n = 1 \+ 1(\\u000d)?\\u000an = n \+ 2(\\u000d)?\\u000areturn n(\\u000d)?\\u000a"\}$' "$MOND/r" || fail "serve: the source beside the program ($(cat "$MOND/r"))" # (lines end as the checkout made them)
     [ "$(code -H "$A" --data '{"kind":"over"}' $D/$LP/step)" = 200 ] || fail "serve: a step by a line of its source"
     sleep 0.2
-    curl -s -H "$A" $D/$LP | grep -q '"reason":"step","seq":2,.*"pc":2,"file":"[^"]*","line":11,"source":"located.src","source_line":2}\]' || fail "serve: a line on, two instructions ($(curl -s -H "$A" $D/$LP))"
+    curl -s -H "$A" $D/$LP | grep -q '"reason":"step","error":null,"seq":2,.*"pc":2,"file":"[^"]*","line":11,"source":"located.src","source_line":2}\]' || fail "serve: a line on, two instructions ($(curl -s -H "$A" $D/$LP))"
     [ "$(code -H "$A" --data '{"file":"located.src","line":3}' $D/breakpoints)" = 200 ] && grep -q '"line_at":3,"function":null,"at":\[{"function":"located.main","pc":3,' "$MOND/r" || fail "serve: a breakpoint at a line of its source ($(cat "$MOND/r"))"
     [ "$(code -H "$A" $D/$LP/continue)" = 200 ] || fail "serve: continue"
     sleep 0.2
-    curl -s -H "$A" $D/$LP | grep -q '"reason":"breakpoint","seq":3,' || fail "serve: at its source's breakpoint ($(curl -s -H "$A" $D/$LP))"
+    curl -s -H "$A" $D/$LP | grep -q '"reason":"breakpoint","error":null,"seq":3,' || fail "serve: at its source's breakpoint ($(curl -s -H "$A" $D/$LP))"
     [ "$(code -H "$A" $D/$LP/continue)" = 200 ] || fail "serve: continue to its end"
     i=0
     until curl -sf $U/api/programs | grep -q '"id":8,"path":"located.masm",[^}]*"state":"done","exit":4'; do

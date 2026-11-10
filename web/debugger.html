@@ -101,6 +101,7 @@ select, input[type="text"], input[type="password"] {
   border-bottom: 1px solid var(--border); background: var(--surface-1); font-size: 12px; color: var(--text-secondary);
 }
 .bar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+.bar label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 #where { font-size: 13px; color: var(--text-primary); }
 #where .why { color: var(--text-secondary); }
 main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr); gap: 12px; padding: 12px 16px; }
@@ -193,6 +194,11 @@ dd { margin: 0; font-variant-numeric: tabular-nums; }
   <button id="b-attach" type="button" hidden>Attach</button>
   <button id="b-attach-pause" type="button" hidden>Attach and pause</button>
   <button id="b-detach" type="button" title="Stop debugging it: it runs on as it did before">Detach</button>
+  <label id="children-wrap" title="The processes it spawns from now are debugged too, and theirs: a breakpoint stops whichever reaches it"><input type="checkbox" id="children"> and what it spawns</label>
+  <span class="sep"></span>
+  <span id="prog-wrap">its program: <button id="b-pause-all" type="button" title="Pause every process of its program, each debugged from now">Pause all</button>
+  <button id="b-continue-all" type="button" title="Let every paused process of its program go on">Continue all</button></span>
+  <span class="sep"></span>
   <button class="danger" id="b-kill" type="button">Kill</button>
   <span class="spacer"></span>
   <span id="act-note"></span>
@@ -325,7 +331,7 @@ let logNext = 0, logLines = [];
 
 const STATES = { ready: "running", running: "running", waiting: "waiting for a message", sleeping: "sleeping", native: "in a blocking call",
   io: "waiting for input or output", paused: "paused", done: "ended", failed: "failed" };
-const REASONS = { pause: "paused when asked", entry: "paused before its first instruction", step: "after a step", breakpoint: "at a breakpoint", break: "at a break instruction" };
+const REASONS = { pause: "paused when asked", entry: "paused before its first instruction", step: "after a step", breakpoint: "at a breakpoint", break: "at a break instruction", error: "where it failed" };
 const stable = () => st && !st.away && ["paused", "waiting", "sleeping", "io"].includes(st.state); // what it holds can be read, and will not change under us
 
 function place(f, which) { // a frame's file and line, in the program's own source or the assembly
@@ -351,7 +357,9 @@ async function tick() {
     if (r.status === 404) { await showEnded(); return; }
     if (r.status !== 200) throw new Error(r.body.error || `the monitor answered ${r.status}`);
     st = r.body;
-    $("main").hidden = false; $("bar").hidden = false; $("banner").hidden = true;
+    $("main").hidden = false; $("bar").hidden = false;
+    if (st.error) banner(`It failed here with ${st.error.code}: ${st.error.message}. Nothing catches it: when it is let go on (Continue), it ends.`, true);
+    else $("banner").hidden = true;
     renderState();
     const top = st.frames && st.frames[0];
     const key = `${st.seq}|${st.state}|${st.debugged}|${st.away}|${st.depth}|${top ? top.function + "@" + top.pc : ""}`;
@@ -405,7 +413,11 @@ function renderState() {
   const w = $("where");
   if (st.at) w.innerHTML = `<span class="mono">${esc(st.at.function)}</span> <span class="why">${esc(whereText(st.at))}${paused && st.reason ? " · " + esc(REASONS[st.reason] || st.reason) : ""}</span>`;
   else w.textContent = "";
-  for (const id of ["b-continue", "b-over", "b-into", "b-out"]) $(id).disabled = !paused;
+  $("b-continue").disabled = !paused && !st.pausing; // (one asked to pause, and not there yet, may be let off)
+  for (const id of ["b-over", "b-into", "b-out"]) $(id).disabled = !paused || !!st.error;
+  $("children-wrap").hidden = !st.debugged;
+  $("children").checked = !!st.children;
+  $("prog-wrap").hidden = st.program < 0;
   $("b-pause").disabled = !st.debugged || paused || st.pausing;
   $("b-attach").hidden = $("b-attach-pause").hidden = st.debugged;
   $("b-detach").hidden = !st.debugged;
@@ -448,7 +460,7 @@ async function loadCode(scroll) {
   let src = sources.get(p.file);
   if (!src) {
     const r = await get(`/api/debug/source?file=${encodeURIComponent(p.file)}`);
-    src = r.status === 200 ? { lines: r.body.text.split("\n") } : { error: r.body.error || "it cannot be read" };
+    src = r.status === 200 ? { lines: r.body.text.split(/\r?\n/) } : { error: r.body.error || "it cannot be read" };
     if (src.lines && src.lines[src.lines.length - 1] === "") src.lines.pop();
     sources.set(p.file, src);
   }
@@ -509,7 +521,7 @@ async function loadBreaks() {
   const others = r.body.processes.filter((p) => p.pid !== pid);
   $("others").hidden = !others.length;
   $("others").innerHTML = others.length ? "also debugged: " + others.map((p) =>
-    `<a data-pid="${p.pid}" title="${esc(p.entry)}">${p.pid}${p.state === "paused" ? " (paused)" : ""}</a>`).join(", ") : "";
+    `<a data-pid="${p.pid}" title="${esc(p.entry)}">${p.pid} ${esc(p.entry)}${p.state !== "paused" ? "" : p.reason === "error" ? " (failed, paused)" : " (paused)"}</a>`).join(", ") : "";
   const table = $("code-body").querySelector("table.src:not(.asm)");
   if (table) { // the marks beside the lines shown
     const marks = breakLines(table.dataset.file);
@@ -616,6 +628,7 @@ let sideAt = 0;
 async function pollSide() {
   if (Date.now() - sideAt < 950) return;
   sideAt = Date.now();
+  loadBreaks(); // (another page may have set one; another process may have stopped)
   const [p, me, log] = await Promise.all([get(`/api/proc/${pid}`), get("/api/vm"), get(`/api/log?since=${logNext}`)]);
   if (me.status === 200 && me.body.you) { $("who").hidden = false; $("who-text").textContent = `${me.body.you.label} · ${me.body.you.scope}`; }
   if (p.status === 200) {
@@ -656,6 +669,9 @@ $("b-out").addEventListener("click", () => step("out"));
 $("b-attach").addEventListener("click", () => act("attach"));
 $("b-attach-pause").addEventListener("click", () => act("attach", { pause: true }));
 $("b-detach").addEventListener("click", () => act("detach"));
+$("children").addEventListener("change", (ev) => act("attach", { children: ev.target.checked }));
+$("b-pause-all").addEventListener("click", () => act("pause", { program: true }));
+$("b-continue-all").addEventListener("click", () => act("continue", { program: true }));
 $("b-kill").addEventListener("click", async () => {
   if (!confirm(`Kill process ${pid}?`)) return;
   await post(`/api/proc/${pid}/kill`);
@@ -665,10 +681,11 @@ document.addEventListener("keydown", (ev) => {
   if (ev.ctrlKey || ev.metaKey || ev.altKey || /^(INPUT|SELECT|TEXTAREA)$/.test(ev.target.tagName) || !st) return;
   const paused = st.state === "paused";
   const k = ev.key;
-  if ((k === "F8" || k === "c") && paused) act("continue");
-  else if ((k === "F10" || k === "n") && paused) step("over");
-  else if (k === "s" && paused) step("into");
-  else if (k === "o" && paused) step("out");
+  const steps = paused && !st.error;
+  if ((k === "F8" || k === "c") && (paused || st.pausing)) act("continue");
+  else if ((k === "F10" || k === "n") && steps) step("over");
+  else if (k === "s" && steps) step("into");
+  else if (k === "o" && steps) step("out");
   else if (k === "p" && st.debugged && !paused) act("pause");
   else return;
   ev.preventDefault();

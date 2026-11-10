@@ -1782,13 +1782,18 @@ static void mbox_take(Process *p) {
 }
 
 /* spawnl / spawnm: link or monitor a child before it is started, so it cannot
- * end first. Nobody else can see the child yet. */
+ * end first. Nobody else can see the child yet. A process whose debugger
+ * follows what it spawns (Process.dbg.children) hands it on. */
 static void spawn_watch(Process *p, Process *child, bool link, bool monitor) {
     if (link) {
         VEC_PUSH(child->links, p->pid);
         sched_add_link(p, child->pid);
     }
     if (monitor) VEC_PUSH(child->monitors, p->pid);
+    if (p->dbg.children && atomic_load_explicit(&p->dbg.on, memory_order_relaxed)) { /* its debugger's too */
+        child->dbg.children = true;
+        atomic_store_explicit(&child->dbg.on, true, memory_order_relaxed);
+    }
 }
 
 /* The entry function, a callback or a coroutine returned: keep its results

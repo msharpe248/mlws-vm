@@ -2529,6 +2529,17 @@ paused (`"debug": true`) has its main marked, and told to stop, between its
 start and the world going on again (`pdebug_entry`), so it stops before its
 first instruction.
 
+A spawn hands the mark on where its debugger follows what a process spawns
+(`dbg.children`, in `spawn_watch`, before the child is started). An error is
+found uncaught by unwinding, which pops every frame on its way; so for a
+process being debugged `proc_run_slice` first asks whether any frame has a
+handler for where it is (`handler_waits`, the same search without the
+popping), and if none has, describes the error as it would at the end, marks
+the process (`dbg.failing`) and pauses it with its frames as they were. Let
+go on, its next slice returns `SLICE_FAILED` at once, and it ends as it would
+have. A frame's instruction is then the one before its `pc`, as it is for a
+caller's frame, since the failing instruction had been begun.
+
 `mlwsvm serve` (`vm_serve`, `vm/run.c`) runs a program of its own that only
 sleeps, so that the run, which ends with its last program, never ends of itself.
 `vm_start_program` loads a program's root as `--also` would, or takes the loaded

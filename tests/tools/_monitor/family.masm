@@ -1,0 +1,46 @@
+; Debugged by check_tools.sh for what a debugger follows and where it stops.
+; `parent` spawns a process for each number it is sent: 1, `crasher`, which
+; divides by zero with nothing to catch it; 2, `careful`, which does the same
+; inside a .try; 3, a `crasher` that divides by one and ends well. A process
+; being debugged is paused where an error nothing catches was raised, its
+; frames still there, and ends when it is let go on; one that catches its
+; error is not stopped. A debugger that follows what a process spawns debugs
+; these children too. It runs for a minute at most; the test stops it.
+.func crasher(i64 d)
+    mov I1, 10
+    div I2, I1, d
+    ncall "monitor.log" (1, "crasher: done")
+    ret
+.endf
+
+.func careful(i64 d)
+.try caught
+    mov I1, 10
+    div I2, I1, d
+.endtry
+    ncall "monitor.log" (1, "careful: no error")
+    ret
+caught:
+    catch R0
+    ncall "monitor.log" (1, "careful: caught")
+    ret
+.endf
+
+.func parent
+    ncall "proc.register" ("parent", PID)
+1:  recv I0
+    beq I0, 2, 2f
+    beq I0, 3, 3f
+    spawn crasher (0) -> (I1)
+    jmp 1b
+2:  spawn careful (0) -> (I1)
+    jmp 1b
+3:  spawn crasher (1) -> (I1)
+    jmp 1b
+.endf
+
+.func main
+    spawn parent -> (I0)
+    sleep 60000
+    ret 0
+.endf

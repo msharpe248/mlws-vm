@@ -260,6 +260,21 @@ static bool unwind(Process *p) {
     }
 }
 
+/* Would unwind find a handler? Without popping anything: for a process being
+ * debugged, which is paused where an error nothing catches was raised, its
+ * frames as they were. (Not asked of one in a coroutine, whose error goes on
+ * from the coresume that ran it.) */
+static bool handler_waits(const Process *p) {
+    for (uint32_t i = p->nframes; i-- > p->cb_base;) {
+        const Frame *fr = &p->frames[i];
+        const MFunc *mf = fr->fn->mf;
+        uint32_t pc = fr->pc ? fr->pc - 1 : 0;
+        for (uint32_t k = 0; k < mf->nhandlers; k++)
+            if (pc >= mf->handlers[k].start && pc < mf->handlers[k].end) return true;
+    }
+    return false;
+}
+
 /* The same, within the running context. */
 static bool unwind_frames(Process *p) {
     while (p->nframes > p->cb_base) { /* a callback's exceptions never unwind the code that called C */
@@ -332,6 +347,7 @@ void proc_backtrace(Process *p) { build_backtrace(p); }
 
 int proc_run_slice(Process *p, uint32_t budget) {
     jmp_buf jb;
+    if (p->dbg.failing) return SLICE_FAILED; /* its debugger let it go on from where it failed: it ends, as described then */
     if (p->insns >= p->quota[QUOTA_INSNS]) { /* a hard CPU limit: not catchable */
         snprintf(p->err.code, sizeof p->err.code, "E_QUOTA");
         snprintf(p->err.msg, sizeof p->err.msg, "instruction quota of %llu exceeded",
@@ -351,6 +367,16 @@ int proc_run_slice(Process *p, uint32_t budget) {
         if (p->pending_spawn) { /* spawn trapped while copying arguments */
             proc_free(p->pending_spawn);
             p->pending_spawn = NULL;
+        }
+        if (atomic_load_explicit(&p->dbg.on, memory_order_relaxed) && !p->cb_base && !p->co && p->nframes && !handler_waits(p)) {
+            /* Nothing will catch it. Its debugger sees it where it failed, its
+             * frames still there; it ends when it is let go on. */
+            describe_uncaught(p);
+            p->dbg.failing = true;
+            p->dbg.hold = p->dbg.step = 0;
+            p->dbg.reason = PDBG_ERROR;
+            p->dbg.seq++;
+            return SLICE_BREAK;
         }
         if (unwind(p)) return SLICE_YIELD; /* continue at the handler next turn */
         describe_uncaught(p);

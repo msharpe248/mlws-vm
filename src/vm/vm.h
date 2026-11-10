@@ -489,13 +489,15 @@ enum {
  * after VM.phook, which stops it (SLICE_BREAK, then PROC_PAUSED) when it is to
  * pause, a step is done, or a breakpoint is there. Costs a process not
  * debugged one test of `on` at each time slice. */
-enum { PDBG_NONE = 0, PDBG_PAUSE, PDBG_ENTRY, PDBG_STEP, PDBG_BREAKPOINT, PDBG_INSN };
+enum { PDBG_NONE = 0, PDBG_PAUSE, PDBG_ENTRY, PDBG_STEP, PDBG_BREAKPOINT, PDBG_INSN, PDBG_ERROR };
 typedef struct {
     _Atomic bool on;
     uint8_t hold;   /* stop before its next instruction: PDBG_PAUSE, or PDBG_ENTRY (started paused) */
     uint8_t step;   /* a step under way (STEP_*), by lines of its source or by instructions */
     bool by_line;
     bool skip;      /* resumed: the instruction it was stopped at runs before it can stop there again */
+    bool children;  /* the processes it spawns are debugged too, and theirs */
+    bool failing;   /* paused where an error nothing catches was raised (Process.err): let go on, it ends */
     uint8_t reason; /* why it is paused (PDBG_*) */
     uint32_t depth0, line0, skip_pc, skip_depth; /* where the step began; where it was resumed */
     uint32_t at_pc, at_depth;                    /* the instruction it last began */

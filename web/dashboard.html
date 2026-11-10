@@ -537,7 +537,7 @@ async function loadDebugged() {
   debugged = new Map((d ? d.processes : []).map((p) => [p.pid, p]));
   el.hidden = !debugged.size;
   el.innerHTML = debugged.size ? "Being debugged: " + [...debugged.values()].map((p) =>
-    `<button class="act" data-debug="${p.pid}" type="button">${p.pid} · ${esc(p.entry)}${p.state === "paused" ? " · paused" : ""}</button>`).join(" ") : "";
+    `<button class="act" data-debug="${p.pid}" type="button">${p.pid} · ${esc(p.entry)}${p.state !== "paused" ? "" : p.reason === "error" ? " · failed, paused" : " · paused"}</button>`).join(" ") : "";
 }
 $("debugged").addEventListener("click", (ev) => { const b = ev.target.closest("button[data-debug]"); if (b) openDebugger(Number(b.dataset.debug), false); });
 $("send-btn").addEventListener("click", async () => {

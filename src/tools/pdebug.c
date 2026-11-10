@@ -116,6 +116,7 @@ bool pdebug_entry(VM *vm, uint64_t pid) {
     Process *p = vm_proc_at(vm, pid);
     if (!p || vm->hook) return false;
     p->dbg.hold = PDBG_ENTRY;
+    p->dbg.children = true; /* the whole program: what it spawns too */
     atomic_store(&p->dbg.on, true);
     return true;
 }
@@ -280,12 +281,13 @@ static void breaks_json(StrBuf *b, PDebug *d) {
 }
 
 static const char *const STATES[] = {"ready", "running", "waiting", "sleeping", "done", "failed", "native", "io", "paused"};
-static const char *const REASONS[] = {NULL, "pause", "entry", "step", "breakpoint", "break"};
+static const char *const REASONS[] = {NULL, "pause", "entry", "step", "breakpoint", "break", "error"};
 
-/* The frame's instruction: the one it is stopped at, or the call it is in. */
+/* The frame's instruction: the one it is stopped at, or the call it is in, or
+ * (paused where it failed) the one that failed, which it is past. */
 static uint32_t frame_pc(const Process *p, uint32_t i) {
     const Frame *fr = &p->frames[i];
-    return i == p->nframes - 1 ? fr->pc : (fr->pc ? fr->pc - 1 : 0);
+    return i == p->nframes - 1 && !p->dbg.failing ? fr->pc : (fr->pc ? fr->pc - 1 : 0);
 }
 
 #define FRAMES_MAX 200
@@ -304,10 +306,20 @@ static void status_json(StrBuf *b, Process *p, bool frames) {
               d->hold && !paused ? "true" : "false", d->step && !paused ? "true" : "false");
     if (paused && d->reason < sizeof REASONS / sizeof REASONS[0] && REASONS[d->reason]) js(b, REASONS[d->reason]);
     else sb_puts(b, "null");
-    sb_printf(b, ",\"seq\":%llu,\"entry\":", (unsigned long long)d->seq);
+    sb_puts(b, ",\"error\":");
+    if (paused && d->failing) { /* what it failed with, and will end with */
+        sb_puts(b, "{\"code\":");
+        js(b, p->err.code);
+        sb_puts(b, ",\"message\":");
+        js(b, p->err.msg);
+        sb_putc(b, '}');
+    } else {
+        sb_puts(b, "null");
+    }
+    sb_printf(b, ",\"seq\":%llu,\"children\":%s,\"entry\":", (unsigned long long)d->seq, d->children ? "true" : "false");
     js(b, p->entry ? p->entry->name : "?");
     sb_printf(b, ",\"program\":%d,\"depth\":%u,\"at\":", p->prog ? (int)p->prog->id : -1, s.depth);
-    if (s.fn) where_json(b, s.fn, s.pc);
+    if (s.fn) where_json(b, s.fn, s.pc && paused && d->failing ? s.pc - 1 : s.pc);
     else sb_puts(b, "null");
     if (frames) {
         sb_puts(b, ",\"frames\":[");
@@ -711,6 +723,15 @@ static void go_on(VM *vm, Process *p) {
     sched_resume(vm, p->pid);
 }
 
+/* Does a pause or a continue ask for the whole program: {"program": true}? */
+static bool whole_program(const char *body, size_t n) {
+    static const char *const NAMES[] = {"program"};
+    char *v[1] = {0};
+    bool yes = n && tools_json_flat(body, n, NAMES, v, 1) && v[0] && !strcmp(v[0], "true");
+    free(v[0]);
+    return yes;
+}
+
 static void event(const char **ev, StrBuf *audit, const char *name, uint64_t pid) {
     *ev = name;
     sb_printf(audit, "{\"pid\":%llu}", (unsigned long long)pid);
@@ -783,28 +804,54 @@ int pdebug_post(VM *vm, const char *path, const char *body, size_t n, StrBuf *ou
     if (state == PROC_DONE || state == PROC_FAILED) return fail(out, 409, "the process has ended");
     if (!strcmp(path, "/attach")) {
         if (p->prog && !strcmp(p->prog->path, "(serve)")) return fail(out, 403, "that process is mlwsvm serve's own: it is not to be debugged");
-        static const char *const NAMES[] = {"pause"};
-        char *v[1] = {0};
-        if (n && !tools_json_flat(body, n, NAMES, v, 1)) return fail(out, 400, "expected {\"pause\": true} or nothing");
+        static const char *const NAMES[] = {"pause", "children"};
+        char *v[2] = {0};
+        if (n && !tools_json_flat(body, n, NAMES, v, 2)) return fail(out, 400, "expected {\"pause\": true, \"children\": true}, either, or nothing");
         bool pause = v[0] && !strcmp(v[0], "true");
+        if (v[1]) pd->children = !strcmp(v[1], "true");
         free(v[0]);
+        free(v[1]);
         bool was = atomic_exchange(&pd->on, true);
         if (pause && state != PROC_PAUSED) pd->hold = PDBG_PAUSE;
         if (!was) event(ev, audit, "monitor.debug_attach", p->pid);
     } else if (!strcmp(path, "/detach")) {
         bool was = atomic_exchange(&pd->on, false);
         pd->hold = pd->step = 0;
-        pd->skip = false;
+        pd->skip = pd->children = false;
         if (state == PROC_PAUSED) go_on(vm, p);
         if (was) event(ev, audit, "monitor.debug_detach", p->pid);
+    } else if (whole_program(body, n)) { /* {"program": true}: every process of its program */
+        bool pause = !strcmp(path, "/pause");
+        if (!pause && strcmp(path, "/continue")) return fail(out, 404, "no such action on a program");
+        if (!p->prog || !strcmp(p->prog->path, "(serve)")) return fail(out, 403, "that process is of no program to pause");
+        for (uint64_t q = 1, end = vm_pid_end(vm); q < end; q++) {
+            Process *o = vm_proc_at(vm, q);
+            if (!o || o->prog != p->prog) continue;
+            plat_lock(o->lock);
+            int os = o->state;
+            plat_unlock(o->lock);
+            if (os == PROC_DONE || os == PROC_FAILED) continue;
+            if (pause) { /* each debugged from now, and what it spawns: nothing of the program runs on */
+                o->dbg.children = true;
+                atomic_store(&o->dbg.on, true);
+                if (os != PROC_PAUSED) o->dbg.hold = PDBG_PAUSE;
+            } else if (os == PROC_PAUSED) {
+                go_on(vm, o);
+            } else {
+                o->dbg.hold = 0; /* (asked to pause, and not there yet: no longer) */
+            }
+        }
+        *ev = pause ? "monitor.debug_pause" : NULL;
+        if (pause) sb_printf(audit, "{\"program\":%u}", p->prog->id);
     } else if (!pd->on) {
         return fail(out, 409, "the process is not being debugged: attach first");
     } else if (!strcmp(path, "/pause")) {
         if (state != PROC_PAUSED) pd->hold = PDBG_PAUSE;
         event(ev, audit, "monitor.debug_pause", p->pid);
     } else if (!strcmp(path, "/continue")) {
-        if (state != PROC_PAUSED) return fail(out, 409, "the process is not paused");
-        go_on(vm, p);
+        if (state != PROC_PAUSED && !pd->hold) return fail(out, 409, "the process is not paused");
+        if (state == PROC_PAUSED) go_on(vm, p);
+        else pd->hold = 0; /* (asked to pause, and not there yet: no longer) */
     } else if (!strcmp(path, "/step")) {
         static const char *const NAMES[] = {"kind", "by"};
         char *v[2] = {0};
@@ -815,6 +862,7 @@ int pdebug_post(VM *vm, const char *path, const char *body, size_t n, StrBuf *ou
         free(v[1]);
         if (!kind || by < 0) return fail(out, 400, "expected {\"kind\": \"into\" | \"over\" | \"out\", \"by\": \"line\" | \"insn\"}");
         if (state != PROC_PAUSED) return fail(out, 409, "the process is not paused");
+        if (pd->failing) return fail(out, 409, "the process has failed: it can only go on to its end (continue)");
         if (!p->nframes) return fail(out, 409, "the process has not begun");
         const Frame *fr = &p->frames[p->nframes - 1];
         pd->step = (uint8_t)kind;
