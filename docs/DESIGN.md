@@ -2544,8 +2544,8 @@ What a process carries for all this is two flags and two pointers. The rest
 of its debugging state (`ProcDebug`), and the picture of it kept while a
 blocking call is made (`BlockingCall.seen`), are made the first time they are
 wanted: kept in the process itself, their 200 bytes were zeroed at every
-spawn, which made a spawn 2% slower (500,000 spawns on one thread: 142 ms
-with them inside, 140 ms with them outside).
+spawn, which made a spawn 2% slower (500,000 spawns on one thread: 139 ms in
+0.27.1, 142 ms with them inside, 140 ms with them outside).
 
 `mlwsvm serve` (`vm_serve`, `vm/run.c`) runs a program of its own that only
 sleeps, so that the run, which ends with its last program, never ends of itself.

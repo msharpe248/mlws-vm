@@ -115,6 +115,13 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 3
 .right { overflow-y: auto; }
 .right .card { flex: none; }
 .right .card > .body { max-height: 340px; }
+#log-wrap { max-height: 150px; }
+/* under a pane: dragged, it sets the pane's height */
+.grip { flex: none; height: 9px; cursor: ns-resize; touch-action: none; display: flex; align-items: center; justify-content: center; border-top: 1px solid var(--grid); }
+.grip::before { content: ""; width: 28px; height: 3px; border-radius: 2px; background: var(--border); }
+.grip:hover::before, .grip.drag::before { background: var(--series-1); }
+.send { display: flex; gap: 6px; padding: 6px 12px 8px; border-top: 1px solid var(--grid); flex: none; }
+.send input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .empty { color: var(--text-muted); font-size: 12px; padding: 6px 0; }
 .code .empty { padding: 12px; }
 /* source and instructions: a gutter for breakpoints, a number, the text */
@@ -225,22 +232,29 @@ dd { margin: 0; font-variant-numeric: tabular-nums; }
       <div class="body" id="code-body"><div class="empty">Nothing to show yet.</div></div>
     </section>
     <section class="card">
-      <div class="head"><h2>Its log</h2><span class="spacer"></span><span class="pill" id="log-count"></span></div>
-      <div class="body" style="max-height: 150px"><table class="log"><tbody id="log"></tbody></table><div class="empty" id="log-empty">This process has logged nothing.</div></div>
+      <div class="head"><h2>Its log</h2><span class="pill" id="log-count"></span><span class="spacer"></span>
+        <label>Newest <select id="log-order"><option value="bottom">at the bottom</option><option value="top">at the top</option></select></label>
+      </div>
+      <div class="body" id="log-wrap"><table class="log"><tbody id="log"></tbody></table><div class="empty" id="log-empty">This process has logged nothing.</div></div>
+      <div class="grip" data-size="log" title="Drag to make this taller or shorter; double-click for its own size"></div>
     </section>
   </div>
   <div class="col right">
     <section class="card">
       <div class="head"><h2>Call stack</h2><span class="spacer"></span><span class="pill" id="depth"></span></div>
       <div class="body"><ul class="rows" id="frames"></ul><div class="empty" id="frames-empty" hidden></div></div>
+      <div class="grip" data-size="frames" title="Drag to make this taller or shorter; double-click for its own size"></div>
     </section>
     <section class="card">
       <div class="head"><h2>Variables</h2><span class="spacer"></span><span class="pill" id="vars-of"></span></div>
       <div class="body"><div class="tree" id="vars"></div><div class="empty" id="vars-empty" hidden></div></div>
+      <div class="grip" data-size="vars" title="Drag to make this taller or shorter; double-click for its own size"></div>
     </section>
     <section class="card">
       <div class="head"><h2>Mailbox</h2><span class="spacer"></span><span class="pill" id="mbox-count"></span></div>
       <div class="body"><ul class="rows" id="mbox"></ul><div class="empty" id="mbox-empty">No messages are waiting.</div></div>
+      <form class="send" id="send-form"><input id="send-text" type="text" autocomplete="off" placeholder='A message as JSON: {"cmd": "status"}' aria-label="A message for this process, as JSON"><button type="submit">Send</button></form>
+      <div class="grip" data-size="mbox" title="Drag to make this taller or shorter; double-click for its own size"></div>
     </section>
     <section class="card">
       <div class="head"><h2>Breakpoints</h2><span class="spacer"></span>
@@ -634,7 +648,9 @@ async function pollSide() {
   if (p.status === 200) {
     const q = p.body, ms = q.messages || [];
     $("mbox-count").textContent = q.mailbox ? `${q.mailbox} waiting` : "";
-    $("mbox").innerHTML = ms.map((m) => `<li><span class="fn">${esc(m.preview != null ? JSON.stringify(m.preview) : m.type)}</span><span class="at">${esc(m.type)}${m.size != null ? " · " + m.size + " B" : ""}</span></li>`).join("") +
+    const sized = (m) => m.size == null ? "" : m.type === "map" ? `${m.size} ${m.size === 1 ? "entry" : "entries"}` // (a string's bytes; what the others hold)
+      : m.type === "list" || m.type === "array" ? `${m.size} ${m.size === 1 ? "item" : "items"}` : `${m.size} ${m.size === 1 ? "byte" : "bytes"}`;
+    $("mbox").innerHTML = ms.map((m) => `<li><span class="fn">${esc(m.preview != null ? JSON.stringify(m.preview) : "a " + m.type)}</span><span class="at">${esc([m.preview != null ? m.type : "", sized(m)].filter(Boolean).join(" · "))}</span></li>`).join("") +
       (q.mailbox > ms.length ? `<li><span class="at" style="margin:0">… ${q.mailbox - ms.length} more</span></li>` : "");
     $("mbox-empty").hidden = q.mailbox > 0;
     $("mbox-empty").textContent = q.away ? "Its mailbox can be read when its call returns." : "No messages are waiting.";
@@ -645,13 +661,71 @@ async function pollSide() {
   }
   if (log.status === 200 && log.body.entries) {
     logNext = log.body.next;
-    logLines = logLines.concat(log.body.entries.filter((e) => e.pid === pid)).slice(-200);
-    const wrap = $("log").closest(".body"), follow = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 4;
-    $("log").innerHTML = logLines.map((e) => `<tr><td class="t">${(e.t_ns / 1e9).toFixed(3)} s</td><td class="t">${esc(e.event != null ? "event" : e.level)}</td><td class="msg">${esc(e.event != null ? e.event + " " + JSON.stringify(e.value) : e.text)}</td></tr>`).join("");
-    $("log-empty").hidden = logLines.length > 0;
-    $("log-count").textContent = logLines.length ? `${logLines.length} lines` : "";
-    if (follow) wrap.scrollTop = wrap.scrollHeight;
+    const mine = log.body.entries.filter((e) => e.pid === pid);
+    if (mine.length) { logLines = logLines.concat(mine).slice(-200); renderLog(); }
   }
+}
+// The process's lines, the newest at the bottom or at the top, as the dashboard's log
+// is and by the same choice. The newest is followed while it is in view; otherwise
+// the line at the top of the view stays where it is.
+function renderLog() {
+  const wrap = $("log-wrap"), top = $("log-order").value === "top";
+  const follow = top ? wrap.scrollTop <= 4 : wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 4;
+  let anchor = null, offset = 0;
+  if (!follow) for (const tr of $("log").rows)
+    if (tr.offsetTop + tr.offsetHeight > wrap.scrollTop) { anchor = tr.dataset.seq; offset = tr.offsetTop - wrap.scrollTop; break; }
+  const shown = top ? logLines.slice().reverse() : logLines;
+  $("log").innerHTML = shown.map((e) => `<tr data-seq="${e.seq}"><td class="t">${(e.t_ns / 1e9).toFixed(3)} s</td><td class="t">${esc(e.event != null ? "event" : e.level)}</td><td class="msg">${esc(e.event != null ? e.event + " " + JSON.stringify(e.value) : e.text)}</td></tr>`).join("");
+  $("log-empty").hidden = logLines.length > 0;
+  $("log-count").textContent = logLines.length ? `${logLines.length} lines` : "";
+  if (follow) { wrap.scrollTop = top ? 0 : wrap.scrollHeight; return; }
+  const tr = anchor != null && $("log").querySelector(`tr[data-seq="${anchor}"]`);
+  if (tr) wrap.scrollTop = tr.offsetTop - offset;
+}
+try { if (localStorage.getItem("mlwsvm-log-order") === "top") $("log-order").value = "top"; } catch (e) {}
+$("log-order").addEventListener("change", (ev) => {
+  try { localStorage.setItem("mlwsvm-log-order", ev.target.value); } catch (e) {}
+  renderLog();
+  $("log-wrap").scrollTop = ev.target.value === "top" ? 0 : $("log-wrap").scrollHeight; // (a new order begins at the newest line)
+});
+
+// ---- a message for the process ------------------------------------------------------
+// As the dashboard sends one: JSON, which the process receives as a value. One sent to a
+// paused process waits in its mailbox, where it is shown.
+$("send-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const text = $("send-text").value.trim();
+  if (!text) return;
+  try { JSON.parse(text); } catch (e) { note("That is not JSON: a string needs its quotes, as in \"go\".", true); return; }
+  const r = await fetch(`/api/proc/${pid}/send`, { method: "POST", headers: token ? { Authorization: `Bearer ${token}` } : {}, body: text });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok) { $("send-text").value = ""; note(`Sent to process ${pid}.`); } else note(j.error || `refused (${r.status})`, true);
+  sideAt = 0; pollSide();
+});
+
+// ---- panes made taller or shorter -----------------------------------------------------
+// The bar under a pane, dragged, sets the height of what is above it; the browser keeps
+// each for the next time. A double-click gives the pane back its own size.
+for (const grip of document.querySelectorAll(".grip")) {
+  const pane = grip.parentElement.querySelector(".body"), key = "mlwsvm-debug-size-" + grip.dataset.size;
+  const set = (h) => { pane.style.height = h + "px"; pane.style.maxHeight = "none"; };
+  try { const h = Number(localStorage.getItem(key)); if (h >= 40) set(h); } catch (e) {}
+  grip.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    const y0 = ev.clientY, h0 = pane.getBoundingClientRect().height;
+    grip.setPointerCapture(ev.pointerId); grip.classList.add("drag");
+    const move = (e) => set(Math.max(40, Math.min(2000, Math.round(h0 + e.clientY - y0))));
+    const up = () => {
+      grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up); grip.removeEventListener("pointercancel", up);
+      grip.classList.remove("drag");
+      try { localStorage.setItem(key, String(Math.round(pane.getBoundingClientRect().height))); } catch (e) {}
+    };
+    grip.addEventListener("pointermove", move); grip.addEventListener("pointerup", up); grip.addEventListener("pointercancel", up);
+  });
+  grip.addEventListener("dblclick", () => {
+    pane.style.height = pane.style.maxHeight = "";
+    try { localStorage.removeItem(key); } catch (e) {}
+  });
 }
 
 // ---- actions ------------------------------------------------------------------------
