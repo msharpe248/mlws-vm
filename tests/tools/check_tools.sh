@@ -975,11 +975,16 @@ if command -v curl >/dev/null 2>&1; then
     $BIN token new --label ops --file "$KF" >/dev/null 2>&1; RC=$?
     set -e
     [ $RC = 1 ] || fail "token new: a label used twice (exit $RC)"
-    printf 'read bad\n' > "$MOND/badtokens"
+    # (The file is made as mlwsvm token makes one, its owner's alone, and the
+    # line that is not a key added to it: one made here by the shell is, on a
+    # Windows machine whose temporary directory others may write, a file the
+    # monitor refuses for that, before it reads a line.)
+    $BIN token new --label fine --file "$MOND/badtokens" >/dev/null 2>&1 || fail "token new: a second file"
+    printf 'read bad\n' >> "$MOND/badtokens"
     set +e
     BADERR=$($BIN run --monitor 127.0.0.1:$PORT --monitor-tokens "$MOND/badtokens" examples/hello.masm 2>&1 >/dev/null); RC=$?
     set -e
-    [ $RC = 1 ] && echo "$BADERR" | grep -q 'badtokens:1: expected SCOPE LABEL SHA256' || fail "a tokens file that is not one (exit $RC): $BADERR"
+    [ $RC = 1 ] && echo "$BADERR" | grep -q 'badtokens:3: expected SCOPE LABEL SHA256' || fail "a tokens file that is not one (exit $RC): $BADERR"
     MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions --monitor-tokens "$KF" tests/tools/_monitor/acted.masm >/dev/null 2>"$MOND/keys.err" &
     VMPID=$!
     i=0
