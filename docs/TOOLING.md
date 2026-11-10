@@ -593,9 +593,14 @@ compiled language's own file where there is one, or the assembly, and the
 function's instructions on request), the call stack, the variables of the
 frame chosen, which open to show what they hold and are marked when a step
 changed them, the messages waiting in its mailbox, the breakpoints, and the
-process's own lines of the log, and it names the other processes being
+process's own lines of the log (the newest at the bottom or at the top, by
+the dashboard's own choice), and it names the other processes being
 debugged, each a click away. A click beside a line sets or removes a
-breakpoint there. Continue is F8 or `c`, step over F10 or `n`, step into `s`,
+breakpoint there. A message can be sent to the process from its mailbox, as
+JSON; sent to a paused process, it waits there. The bar under a pane (the
+call stack, the variables, the mailbox, the log), dragged, makes it taller or
+shorter, which the browser remembers; a double-click gives it back its own
+size. Continue is F8 or `c`, step over F10 or `n`, step into `s`,
 step out `o`, pause `p`. Closing the page changes nothing: a paused process
 stays paused, and the dashboard says so. The page is compiled into the
 binary from `web/debugger.html`, and asks for the process's state five times
