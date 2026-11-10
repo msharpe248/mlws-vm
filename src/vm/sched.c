@@ -1703,7 +1703,7 @@ static void seen_now(Process *p, ProcSeen *s) {
 
 void sched_seen(Process *p, ProcSeen *s) {
     bool away = p->state == PROC_NATIVE && p->bcall.state == BCALL_PENDING; /* (DONE is set with this lock held) */
-    if (away) *s = p->bcall.seen;
+    if (away) *s = *p->bcall.seen;
     else seen_now(p, s);
     s->away = away;
     s->state = p->state;
@@ -2056,12 +2056,14 @@ static bool after_slice(Worker *w, Process *p, int r) {
     /* A debugged process that waits may do so in the middle of an instruction
      * (a recv, a blocking call; not a sleep), which runs again when it wakes:
      * its debugger let it begin that one, and is not to stop it there again. */
-    if (r != SLICE_YIELD && r != SLICE_BREAK && atomic_load_explicit(&p->dbg.on, memory_order_relaxed) && p->nframes &&
-        p->nframes == p->dbg.at_depth && p->frames[p->nframes - 1].fn == p->dbg.at_fn && p->frames[p->nframes - 1].pc == p->dbg.at_pc) {
-        p->dbg.skip = true;
-        p->dbg.skip_fn = p->dbg.at_fn;
-        p->dbg.skip_pc = p->dbg.at_pc;
-        p->dbg.skip_depth = p->dbg.at_depth;
+    if (r != SLICE_YIELD && r != SLICE_BREAK && atomic_load_explicit(&p->dbg_on, memory_order_relaxed) && p->nframes) {
+        ProcDebug *d = p->dbg;
+        if (p->nframes == d->at_depth && p->frames[p->nframes - 1].fn == d->at_fn && p->frames[p->nframes - 1].pc == d->at_pc) {
+            d->skip = true;
+            d->skip_fn = d->at_fn;
+            d->skip_pc = d->at_pc;
+            d->skip_depth = d->at_depth;
+        }
     }
     switch (r) {
     case SLICE_YIELD: ready_locked(s, p); break;
@@ -2101,7 +2103,8 @@ static bool after_slice(Worker *w, Process *p, int r) {
         break;
     case SLICE_NATIVE: /* a blocking native call: the I/O pool makes it */
         p->state = PROC_NATIVE;
-        seen_now(p, &p->bcall.seen); /* what a tool reads of it until the call is done */
+        if (!p->bcall.seen) p->bcall.seen = xmalloc(sizeof *p->bcall.seen);
+        seen_now(p, p->bcall.seen); /* what a tool reads of it until the call is done */
         s->io_inflight++;
         plat_unlock(p->lock);
         io_submit(s, p);

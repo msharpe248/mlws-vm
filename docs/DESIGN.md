@@ -2491,7 +2491,7 @@ the others. `audit` writes each action with the label of the key that did it. Wi
 **A process debugged alone** (`tools/pdebug.c`, `/api/debug`). `mlwsvm debug`
 sets the VM's hook before the run, so everything is interpreted on one thread
 and a stop stops the scheduler. The monitor's debugger instead marks one
-process (`Process.dbg.on`). The interpreter decides once per time slice
+process (`Process.dbg_on`). The interpreter decides once per time slice
 whether a tool sees each instruction (`proc_hooked`: the VM's hook, or this
 flag), so a process not debugged pays one test per slice; and the handler that
 enters machine code already runs an instruction's own form when a tool is
@@ -2530,15 +2530,22 @@ start and the world going on again (`pdebug_entry`), so it stops before its
 first instruction.
 
 A spawn hands the mark on where its debugger follows what a process spawns
-(`dbg.children`, in `spawn_watch`, before the child is started). An error is
+(`dbg->children`, in `spawn_watch`, before the child is started). An error is
 found uncaught by unwinding, which pops every frame on its way; so for a
 process being debugged `proc_run_slice` first asks whether any frame has a
 handler for where it is (`handler_waits`, the same search without the
 popping), and if none has, describes the error as it would at the end, marks
-the process (`dbg.failing`) and pauses it with its frames as they were. Let
+the process (`dbg_failing`) and pauses it with its frames as they were. Let
 go on, its next slice returns `SLICE_FAILED` at once, and it ends as it would
 have. A frame's instruction is then the one before its `pc`, as it is for a
 caller's frame, since the failing instruction had been begun.
+
+What a process carries for all this is two flags and two pointers. The rest
+of its debugging state (`ProcDebug`), and the picture of it kept while a
+blocking call is made (`BlockingCall.seen`), are made the first time they are
+wanted: kept in the process itself, their 200 bytes were zeroed at every
+spawn, which made a spawn 2% slower (500,000 spawns on one thread: 139 ms in
+0.27.1, 142 ms with them inside, 140 ms with them outside).
 
 `mlwsvm serve` (`vm_serve`, `vm/run.c`) runs a program of its own that only
 sleeps, so that the run, which ends with its last program, never ends of itself.

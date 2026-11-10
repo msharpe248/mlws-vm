@@ -485,19 +485,19 @@ enum {
 };
 
 /* A process debugged alone, from the monitor (tools/pdebug.c), while the rest
- * of the VM runs as it did. `on`: its instructions are interpreted, each
- * after VM.phook, which stops it (SLICE_BREAK, then PROC_PAUSED) when it is to
- * pause, a step is done, or a breakpoint is there. Costs a process not
- * debugged one test of `on` at each time slice. */
+ * of the VM runs as it did. Process.dbg_on: its instructions are interpreted,
+ * each after VM.phook, which stops it (SLICE_BREAK, then PROC_PAUSED) when it
+ * is to pause, a step is done, or a breakpoint is there. A process not
+ * debugged pays one test of that flag at each time slice, and has none of
+ * this: Process.dbg is made when it is first debugged (and is there whenever
+ * dbg_on is set), and lasts as long as the process. */
 enum { PDBG_NONE = 0, PDBG_PAUSE, PDBG_ENTRY, PDBG_STEP, PDBG_BREAKPOINT, PDBG_INSN, PDBG_ERROR };
 typedef struct {
-    _Atomic bool on;
     uint8_t hold;   /* stop before its next instruction: PDBG_PAUSE, or PDBG_ENTRY (started paused) */
     uint8_t step;   /* a step under way (STEP_*), by lines of its source or by instructions */
     bool by_line;
     bool skip;      /* resumed: the instruction it was stopped at runs before it can stop there again */
     bool children;  /* the processes it spawns are debugged too, and theirs */
-    bool failing;   /* paused where an error nothing catches was raised (Process.err): let go on, it ends */
     uint8_t reason; /* why it is paused (PDBG_*) */
     uint32_t depth0, line0, skip_pc, skip_depth; /* where the step began; where it was resumed */
     uint32_t at_pc, at_depth;                    /* the instruction it last began */
@@ -554,7 +554,7 @@ typedef struct {
 enum { BCALL_NONE = 0, BCALL_PENDING, BCALL_DONE };
 typedef struct {
     int state;
-    ProcSeen seen; /* the process as the call began */
+    ProcSeen *seen; /* the process as the call began (made at its first such call; NULL before) */
     const NativeDef *nd;
     const Insn *insn;
     Word args[NATIVE_MAX_ARGS], rets[NATIVE_MAX_RETS]; /* GC roots while active */
@@ -696,7 +696,9 @@ struct Process {
     BlockingCall bcall;
     int native_req;              /* NREQ_*: what the checked native just asked for */
     bool on_io_thread;           /* the native is running on the I/O pool: it may block */
-    ProcDebug dbg;               /* debugged from the monitor */
+    _Atomic bool dbg_on;         /* debugged from the monitor: its state is `dbg` */
+    bool dbg_failing;            /* paused where an error nothing catches was raised (err): let go on, it ends */
+    ProcDebug *dbg;
     bool resumed;                /* the native is being run again after a wait (not counted again) */
     FdWait fdwait;               /* PROC_IOWAIT */
     uint64_t os_calls;

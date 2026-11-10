@@ -77,7 +77,7 @@ static bool same_file(const char *have, const char *asked) {
  * true stops it there. Nothing stops inside a callback from C, which has no
  * way to wait (and may be on an I/O thread, with the world stopped). */
 static bool pdebug_hook(Process *p, uint32_t pc) {
-    ProcDebug *d = &p->dbg;
+    ProcDebug *d = p->dbg;
     if (p->cb_base) return false;
     const Function *f = p->frames[p->nframes - 1].fn;
     uint8_t why = d->hold; /* (asked to pause: here, though it be an instruction it has begun) */
@@ -112,12 +112,20 @@ static bool pdebug_hook(Process *p, uint32_t pc) {
 
 void pdebug_enable(VM *vm) { vm->phook = pdebug_hook; }
 
+/* A process's debugging state, made the first time it is wanted (before
+ * Process.dbg_on is set: whoever sees that set may read this). */
+static ProcDebug *dbg_of(Process *p) {
+    if (!p->dbg) p->dbg = xcalloc(1, sizeof *p->dbg);
+    return p->dbg;
+}
+
 bool pdebug_entry(VM *vm, uint64_t pid) {
     Process *p = vm_proc_at(vm, pid);
     if (!p || vm->hook) return false;
-    p->dbg.hold = PDBG_ENTRY;
-    p->dbg.children = true; /* the whole program: what it spawns too */
-    atomic_store(&p->dbg.on, true);
+    ProcDebug *d = dbg_of(p);
+    d->hold = PDBG_ENTRY;
+    d->children = true; /* the whole program: what it spawns too */
+    atomic_store(&p->dbg_on, true);
     return true;
 }
 
@@ -287,7 +295,7 @@ static const char *const REASONS[] = {NULL, "pause", "entry", "step", "breakpoin
  * (paused where it failed) the one that failed, which it is past. */
 static uint32_t frame_pc(const Process *p, uint32_t i) {
     const Frame *fr = &p->frames[i];
-    return i == p->nframes - 1 && !p->dbg.failing ? fr->pc : (fr->pc ? fr->pc - 1 : 0);
+    return i == p->nframes - 1 && !p->dbg_failing ? fr->pc : (fr->pc ? fr->pc - 1 : 0);
 }
 
 #define FRAMES_MAX 200
@@ -299,15 +307,16 @@ static void status_json(StrBuf *b, Process *p, bool frames) {
     ProcSeen s;
     plat_lock(p->lock);
     sched_seen(p, &s);
-    const ProcDebug *d = &p->dbg;
-    bool paused = s.state == PROC_PAUSED;
+    static const ProcDebug NONE; /* (never debugged) */
+    const ProcDebug *d = p->dbg ? p->dbg : &NONE;
+    bool paused = s.state == PROC_PAUSED, on = atomic_load(&p->dbg_on);
     sb_printf(b, "{\"pid\":%llu,\"debugged\":%s,\"state\":\"%s\",\"away\":%s,\"pausing\":%s,\"stepping\":%s,\"reason\":",
-              (unsigned long long)p->pid, d->on ? "true" : "false", STATES[s.state], s.away ? "true" : "false",
+              (unsigned long long)p->pid, on ? "true" : "false", STATES[s.state], s.away ? "true" : "false",
               d->hold && !paused ? "true" : "false", d->step && !paused ? "true" : "false");
     if (paused && d->reason < sizeof REASONS / sizeof REASONS[0] && REASONS[d->reason]) js(b, REASONS[d->reason]);
     else sb_puts(b, "null");
     sb_puts(b, ",\"error\":");
-    if (paused && d->failing) { /* what it failed with, and will end with */
+    if (paused && p->dbg_failing) { /* what it failed with, and will end with */
         sb_puts(b, "{\"code\":");
         js(b, p->err.code);
         sb_puts(b, ",\"message\":");
@@ -319,7 +328,7 @@ static void status_json(StrBuf *b, Process *p, bool frames) {
     sb_printf(b, ",\"seq\":%llu,\"children\":%s,\"entry\":", (unsigned long long)d->seq, d->children ? "true" : "false");
     js(b, p->entry ? p->entry->name : "?");
     sb_printf(b, ",\"program\":%d,\"depth\":%u,\"at\":", p->prog ? (int)p->prog->id : -1, s.depth);
-    if (s.fn) where_json(b, s.fn, s.pc && paused && d->failing ? s.pc - 1 : s.pc);
+    if (s.fn) where_json(b, s.fn, s.pc && paused && p->dbg_failing ? s.pc - 1 : s.pc);
     else sb_puts(b, "null");
     if (frames) {
         sb_puts(b, ",\"frames\":[");
@@ -654,7 +663,7 @@ int pdebug_get(VM *vm, const char *path, const char *qs, StrBuf *out) {
         bool first = true;
         for (uint64_t pid = 1, end = vm_pid_end(vm); pid < end; pid++) {
             Process *p = vm_proc_at(vm, pid);
-            if (!p || !p->dbg.on) continue;
+            if (!p || !atomic_load(&p->dbg_on)) continue;
             if (!first) sb_putc(out, ',');
             first = false;
             status_json(out, p, false);
@@ -712,7 +721,7 @@ int pdebug_get(VM *vm, const char *path, const char *qs, StrBuf *out) {
 
 /* A paused process goes on: the instruction it is stopped at runs first. */
 static void go_on(VM *vm, Process *p) {
-    ProcDebug *d = &p->dbg;
+    ProcDebug *d = p->dbg;
     if (p->nframes) {
         d->skip = true;
         d->skip_fn = p->frames[p->nframes - 1].fn;
@@ -797,7 +806,7 @@ int pdebug_post(VM *vm, const char *path, const char *body, size_t n, StrBuf *ou
     }
     Process *p = path_proc(vm, &path);
     if (!p) return fail(out, 404, "no such process");
-    ProcDebug *pd = &p->dbg;
+    ProcDebug *pd = dbg_of(p);
     plat_lock(p->lock);
     int state = p->state;
     plat_unlock(p->lock);
@@ -811,11 +820,11 @@ int pdebug_post(VM *vm, const char *path, const char *body, size_t n, StrBuf *ou
         if (v[1]) pd->children = !strcmp(v[1], "true");
         free(v[0]);
         free(v[1]);
-        bool was = atomic_exchange(&pd->on, true);
+        bool was = atomic_exchange(&p->dbg_on, true);
         if (pause && state != PROC_PAUSED) pd->hold = PDBG_PAUSE;
         if (!was) event(ev, audit, "monitor.debug_attach", p->pid);
     } else if (!strcmp(path, "/detach")) {
-        bool was = atomic_exchange(&pd->on, false);
+        bool was = atomic_exchange(&p->dbg_on, false);
         pd->hold = pd->step = 0;
         pd->skip = pd->children = false;
         if (state == PROC_PAUSED) go_on(vm, p);
@@ -832,18 +841,18 @@ int pdebug_post(VM *vm, const char *path, const char *body, size_t n, StrBuf *ou
             plat_unlock(o->lock);
             if (os == PROC_DONE || os == PROC_FAILED) continue;
             if (pause) { /* each debugged from now, and what it spawns: nothing of the program runs on */
-                o->dbg.children = true;
-                atomic_store(&o->dbg.on, true);
-                if (os != PROC_PAUSED) o->dbg.hold = PDBG_PAUSE;
+                dbg_of(o)->children = true;
+                atomic_store(&o->dbg_on, true);
+                if (os != PROC_PAUSED) o->dbg->hold = PDBG_PAUSE;
             } else if (os == PROC_PAUSED) {
                 go_on(vm, o);
             } else {
-                o->dbg.hold = 0; /* (asked to pause, and not there yet: no longer) */
+                if (o->dbg) o->dbg->hold = 0; /* (asked to pause, and not there yet: no longer) */
             }
         }
         *ev = pause ? "monitor.debug_pause" : NULL;
         if (pause) sb_printf(audit, "{\"program\":%u}", p->prog->id);
-    } else if (!pd->on) {
+    } else if (!atomic_load(&p->dbg_on)) {
         return fail(out, 409, "the process is not being debugged: attach first");
     } else if (!strcmp(path, "/pause")) {
         if (state != PROC_PAUSED) pd->hold = PDBG_PAUSE;
@@ -862,7 +871,7 @@ int pdebug_post(VM *vm, const char *path, const char *body, size_t n, StrBuf *ou
         free(v[1]);
         if (!kind || by < 0) return fail(out, 400, "expected {\"kind\": \"into\" | \"over\" | \"out\", \"by\": \"line\" | \"insn\"}");
         if (state != PROC_PAUSED) return fail(out, 409, "the process is not paused");
-        if (pd->failing) return fail(out, 409, "the process has failed: it can only go on to its end (continue)");
+        if (p->dbg_failing) return fail(out, 409, "the process has failed: it can only go on to its end (continue)");
         if (!p->nframes) return fail(out, 409, "the process has not begun");
         const Frame *fr = &p->frames[p->nframes - 1];
         pd->step = (uint8_t)kind;

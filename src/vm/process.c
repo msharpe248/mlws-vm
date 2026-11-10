@@ -112,6 +112,8 @@ void proc_free(Process *p) {
     if (p->published) sched_unpublish(p);
     if (p->state != PROC_DONE && p->state != PROC_FAILED) vm->live--;
     vm->insns_retired += p->insns;
+    free(p->bcall.seen);
+    free(p->dbg);
     VEC_FREE(p->mbox);
     for (size_t i = 0; i < p->inbox.n; i++) gc_free_list(p->inbox.v[i].objs);
     if (p->reply_ready) gc_free_list(p->reply.objs);
@@ -347,7 +349,7 @@ void proc_backtrace(Process *p) { build_backtrace(p); }
 
 int proc_run_slice(Process *p, uint32_t budget) {
     jmp_buf jb;
-    if (p->dbg.failing) return SLICE_FAILED; /* its debugger let it go on from where it failed: it ends, as described then */
+    if (p->dbg_failing) return SLICE_FAILED; /* its debugger let it go on from where it failed: it ends, as described then */
     if (p->insns >= p->quota[QUOTA_INSNS]) { /* a hard CPU limit: not catchable */
         snprintf(p->err.code, sizeof p->err.code, "E_QUOTA");
         snprintf(p->err.msg, sizeof p->err.msg, "instruction quota of %llu exceeded",
@@ -368,14 +370,14 @@ int proc_run_slice(Process *p, uint32_t budget) {
             proc_free(p->pending_spawn);
             p->pending_spawn = NULL;
         }
-        if (atomic_load_explicit(&p->dbg.on, memory_order_relaxed) && !p->cb_base && !p->co && p->nframes && !handler_waits(p)) {
+        if (atomic_load_explicit(&p->dbg_on, memory_order_relaxed) && !p->cb_base && !p->co && p->nframes && !handler_waits(p)) {
             /* Nothing will catch it. Its debugger sees it where it failed, its
              * frames still there; it ends when it is let go on. */
             describe_uncaught(p);
-            p->dbg.failing = true;
-            p->dbg.hold = p->dbg.step = 0;
-            p->dbg.reason = PDBG_ERROR;
-            p->dbg.seq++;
+            p->dbg_failing = true;
+            p->dbg->hold = p->dbg->step = 0;
+            p->dbg->reason = PDBG_ERROR;
+            p->dbg->seq++;
             return SLICE_BREAK;
         }
         if (unwind(p)) return SLICE_YIELD; /* continue at the handler next turn */
