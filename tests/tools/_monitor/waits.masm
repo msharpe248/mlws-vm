@@ -1,0 +1,20 @@
+; Debugged by check_tools.sh for what the scheduler makes of a paused process.
+; Once `main` waits for a message there is no timer anywhere: with `waiter`
+; paused by its debugger, every process is waiting or paused, and the VM must
+; go on (someone will let the paused one go on), where otherwise this is a
+; deadlock and main's recv raises E_DEADLOCK. Then a message to main ends the
+; program with `waiter` still paused: it ends as any other does, with exit 7.
+.func waiter
+    ncall "proc.register" ("waiter", PID)
+1:  recv R0
+    ncall "monitor.log" (1, "got one")
+    jmp 1b
+.endf
+
+.func main
+    spawn waiter -> (I0)
+    sleep 2000                         ; (time for the test to attach)
+    ncall "monitor.log" (1, "main waits")
+    recv R0
+    ret 7
+.endf

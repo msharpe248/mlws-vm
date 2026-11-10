@@ -63,6 +63,16 @@ typedef struct {
 #endif
 } Ctx;
 
+/* Does a tool see each of p's instructions, this time slice? The VM's hook is
+ * set before a run starts (the debugger, the tracer, the profiler); a process
+ * debugged alone from the monitor (Process.dbg) may become one at any slice. */
+static inline bool proc_hooked(Process *p) {
+    return p->vm->hook != NULL || atomic_load_explicit(&p->dbg.on, memory_order_relaxed);
+}
+
+/* The hook before an instruction: true stops the process there. */
+static inline bool tool_hook(VM *vm, Process *p, uint32_t pc) { return vm->hook ? vm->hook(p, pc) : vm->phook(p, pc); }
+
 /* The current frame, for code where `fr` names another variable (interp_run's generic forms). */
 static inline Frame *ctx_frame(const Ctx *c) { return c->fr; }
 
@@ -2123,7 +2133,7 @@ static MLWS_NOINLINE QCC int h_slice(QPARAMS) {
     QFRAME->pc = pc;
     p->insns = c->ibase - left;
     if (!c->hooked || c->hleft == 0) return SLICE_YIELD; /* time slice used up */
-    if (c->vm->hook(p, pc)) return SLICE_BREAK; /* debugger stop: pc not advanced */
+    if (tool_hook(c->vm, p, pc)) return SLICE_BREAK; /* debugger stop: pc not advanced */
     c->hleft--, c->ibase++;
     left = 0;
     MUSTTAIL return qhandlers[in->xop](QARGS);
@@ -2204,7 +2214,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
     c.p = p;
     ctx_load(&c);
     c.vm = p->vm;
-    c.hooked = p->vm->hook != NULL; /* set before a run starts (debugger, tracer, profiler) */
+    c.hooked = proc_hooked(p);
     c.insns0 = p->insns;
     c.budget = budget;
     c.hleft = c.hooked ? budget : 0;
@@ -2243,7 +2253,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
      * the end of the slice. Quickened forms neither allocate nor trap (calls and
      * returns spill first), so the safepoint for a collection or a pending kill
      * is after each generic instruction, and once at the start of the slice. */
-    const bool hooked = vm->hook != NULL; /* set before a run starts (debugger, tracer, profiler) */
+    const bool hooked = proc_hooked(p);
     const uint64_t insns0 = p->insns;
     uint32_t left = budget;
     Frame *fr = c.fr;
@@ -2292,7 +2302,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
         }
         if (hooked) {
             SPILL();
-            if (vm->hook(p, pc)) return SLICE_BREAK; /* debugger stop: pc not advanced */
+            if (tool_hook(vm, p, pc)) return SLICE_BREAK; /* debugger stop: pc not advanced */
         }
         left--;
         in = &code[pc++];

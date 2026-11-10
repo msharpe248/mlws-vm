@@ -472,7 +472,7 @@ modules, names, nodes, graph, environments and keys every five).
 | Endpoint | Returns |
 |---|---|
 | `GET /api/vm` | `vm` (`"mlwsvm"`), `uptime_ns`, `processes` (live), `spawned`, `max_live`, `slices`, `insns` (all processes), `heap_bytes`, `raw_bytes`, `modules`, `main_pid` |
-| `GET /api/procs` | an array, per live process: `pid`, `program` and `program_name` (the program it belongs to: its number, from 0, and file, as `--also` or `mlwsvm serve` started it), `env` (the named environment it is in, or null: its program's), `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket), `away` (true while an I/O thread is still making that blocking call: the rest is then as it was when the call began), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors`, and `far_links`, `far_monitors` and `far_watching`, its ties with processes on other nodes (`node` and `pid`: a whole pid can be larger than JavaScript's numbers hold exactly) |
+| `GET /api/procs` | an array, per live process: `pid`, `program` and `program_name` (the program it belongs to: its number, from 0, and file, as `--also` or `mlwsvm serve` started it), `env` (the named environment it is in, or null: its program's), `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket / `paused`: by [its debugger](#debugging-a-process)), `away` (true while an I/O thread is still making that blocking call: the rest is then as it was when the call began), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors`, and `far_links`, `far_monitors` and `far_watching`, its ties with processes on other nodes (`node` and `pid`: a whole pid can be larger than JavaScript's numbers hold exactly) |
 | `GET /api/proc/PID` | the same for one process, plus `quota` (`heap`, `raw`, `mailbox`, `insns`, `foreign`, `os`; `null` = unlimited), `messages` (the first 20 waiting: `type`, and `size` or a short `preview`) and `backtrace`. A process in a blocking call that is still being made (`away`) is shown as it was when the call began: no `messages`, and for `backtrace` where it made the call |
 | `GET /api/exits` | the last 64 finished processes, newest first: `pid`, `entry`, `program`, `program_name`, `main` (its program's main), `failed`, `code`, `exit`, `insns`, `cpu_ns`, `ago_ns` |
 | `GET /api/log?since=N` | the log's entries after number `N` (0: all it has), oldest first: `seq`, `t_ns` (since the VM started), `pid`, `program` and `program_name` (null for the monitor's own), and `level` and `text`, or `event` and `value` (JSON); with `next`, the number to ask from next time, and `lost`, how many were overwritten before being asked for |
@@ -569,6 +569,68 @@ asks for one, and the header says whose key is in use, with a way to sign out.
 
 Counters are cumulative; compute rates by differencing two samples, as the
 dashboard does. `cpu_ns` is the time spent executing that process's time slices.
+
+### Debugging a process
+
+`/api/debug` debugs one process of a VM that goes on running: the process is
+interpreted, an instruction at a time, and when it stops it alone is paused
+(`paused`, among the states); every other process runs as it did, machine code
+and all. `mlwsvm debug` and `mlwsvm dap` debug a whole program from its start,
+on one thread; this debugs what is already running, and several processes at
+once, each by itself.
+
+A process is **attached** to, and from then:
+
+* **Pause** stops it before its next instruction. One that is waiting, for a
+  message or a time, pauses when it next would run, and can be read meanwhile.
+* **Steps** go by the lines of its source (the compiled language's, where its
+  compiler marked them with `.loc`, else the assembly's) or by instructions:
+  into a call, over one, or out of the function.
+* **Breakpoints** are the VM's: at a line of a file, or at a function's first
+  instruction, they stop whichever attached process reaches one. A line
+  without code moves to the next that has some, up to ten lines on. One for
+  code that is not loaded waits for it, and each follows a reload. A `break`
+  instruction stops an attached process too.
+* **Continue** lets it go on; **detach** as well, and from then it runs as it
+  did before, its machine code where it has some.
+
+Paused, the process keeps its mailbox: messages sent to it wait. A call to it
+may time out meanwhile, as in Erlang's debugger. It can be killed, and it ends
+with its program. What it is paused in is one instruction: a breakpoint on a
+`recv` stops it once, though the `recv` runs again when a message comes.
+
+Everything here needs an admin's key, since what a process holds is shown; the
+actions also need `--monitor-actions`, as others do. Attaching, detaching,
+pausing and each new breakpoint go into the log (`monitor.debug_attach`,
+`monitor.debug_detach`, `monitor.debug_pause`, `monitor.debug_break`).
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/debug` | `available` (false, with `why`, in a VM run under the profiler, the tracer or `mlwsvm debug`), `breakpoints`, and `processes`: each one attached to, as below without its frames |
+| `GET /api/debug/PID` | `debugged`, `state`, `away`, `pausing` (asked to pause, and not yet there), `stepping`, `reason` (why it is paused: `pause`, `step`, `breakpoint`, `break`, `entry`), `seq` (its pauses so far: a new one is a new stop), `at` (where it is) and `frames`, the innermost first, 200 at most: each a `function`, `pc`, `file` and `line` (the assembly's), and `source` and `source_line` where `.loc` gives them |
+| `GET /api/debug/PID/vars?frame=N` | frame N's `locals` (the names the program gave its registers, each as its formatter shows it) and `registers` by bank: each a `name`, `value`, `kind`, how many `children` it opens to show, and its `path` |
+| `GET /api/debug/PID/vars?frame=N&path=P` | the `children` of the value at a path: a struct's fields, a list's or an array's elements, a map's values by key, a closure's captures, the registers of a variable of several; 1,000 at most, from `from=K` |
+| `GET /api/debug/PID/code?frame=N` | the frame's function as instructions: each a `pc`, `line`, `text`, `source` and `source_line`, and whether a `breakpoint` is there; with `pc`, the frame's own |
+| `GET /api/debug/source?file=F` | the `text` of a file that loaded code came from, as the frames name it; 404 for any other file, or one that has moved |
+| `GET /api/debug/breakpoints` | each breakpoint: `id`, `file` and `line`, or `function`; `line_at` (the line with code it is at) and `at`, the places it is at now (none: waiting for its code) |
+
+| Action | Does |
+|---|---|
+| `POST /api/debug/PID/attach` | debug it; with `{"pause": true}`, pause it too |
+| `POST /api/debug/PID/detach` | no longer; it goes on if it was paused |
+| `POST /api/debug/PID/pause` | pause it before its next instruction |
+| `POST /api/debug/PID/continue` | a paused one goes on; 409 if it is not paused |
+| `POST /api/debug/PID/step` | `{"kind": "into" \| "over" \| "out", "by": "line" \| "insn"}` (`by` may be left out: `line`); 409 if it is not paused |
+| `POST /api/debug/breakpoints` | `{"file": "app.masm", "line": 12}` (a file by its name, with or without its directories) or `{"function": "mod.f"}`; answers the breakpoint, the one there already if it is the same |
+| `POST /api/debug/breakpoints/ID/delete` | it is gone |
+
+Each action on a process answers its state as `GET /api/debug/PID` does,
+without the frames.
+
+Limits to know. A process in a blocking call that is still being made
+(`away`) cannot be read until the call returns (409), and pauses then.
+Nothing stops inside a callback from C. A register its function has not
+written yet shows whatever was there. Values are read, not changed.
 
 ### The program's log
 

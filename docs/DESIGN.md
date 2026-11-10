@@ -1613,7 +1613,8 @@ quota and a pending reply (the fields marked `[L]` in `vm.h`).
                         ├─ its timer ──────────────── SLEEPING ◄─ SLEEP
                         ├─ the descriptor, or timeout ── IOWAIT ◄─ IOWAIT (§15)
                         ├─ the call returns ──────────── NATIVE ◄─ NATIVE (§15)
-                        └─ (the debugger continues)               BREAK
+                        ├─ (mlwsvm debug continues)               BREAK
+                        └─ its debugger lets it go on ── PAUSED ◄─ BREAK (a process debugged alone)
                                                          DONE / FAILED ◄─ DONE, FAILED
 ```
 
@@ -1712,7 +1713,8 @@ work, no timer is pending, no I/O is in progress or awaited, and nothing
 outside the VM can send a message (an embedding host's `mlws_start`, or a
 live asynchronous callback), then no process can ever be woken. Every
 program `main` that is waiting is then woken with a flag, and its `recv` (or
-`proc.call`) raises `E_DEADLOCK`.
+`proc.call`) raises `E_DEADLOCK`. A process paused by its debugger counts as
+something that can still happen (`Sched.npaused`): someone will let it go on.
 
 ### 13.7 Stopping the world
 
@@ -2485,6 +2487,39 @@ token is hashed and compared with every key's hash whole, so the time taken
 says nothing of it, and the key found is copied, since revoking one may move
 the others. `audit` writes each action with the label of the key that did it. With `--monitor-cert`, each connection is a TLS session first
 (`native/tls.c`'s, as `std.tls` uses), on the same non-blocking socket.
+
+**A process debugged alone** (`tools/pdebug.c`, `/api/debug`). `mlwsvm debug`
+sets the VM's hook before the run, so everything is interpreted on one thread
+and a stop stops the scheduler. The monitor's debugger instead marks one
+process (`Process.dbg.on`). The interpreter decides once per time slice
+whether a tool sees each instruction (`proc_hooked`: the VM's hook, or this
+flag), so a process not debugged pays one test per slice; and the handler that
+enters machine code already runs an instruction's own form when a tool is
+watching, so a process attached to while its functions are compiled goes on
+interpreted from where it was, its registers as the machine code left them at
+the slice's end. `pdebug_hook` (`VM.phook`) stops it when it is asked to pause,
+when a step is done, or at a marked instruction (`Function.bp`); the slice
+ends with `SLICE_BREAK`, and the scheduler, seeing no VM-wide hook, makes the
+process `PROC_PAUSED`: in no queue, woken by nothing, until `sched_resume`. A
+kill claims it as it would one that waits.
+
+An instruction that waits (a `recv`, a blocking call) runs again when the
+process wakes, and the hook would meet it twice. So the hook notes the
+instruction a process begins (`at_fn`, `at_pc`), and the scheduler, when the
+process leaves a slice to wait still at that instruction, tells the hook to
+pass it once more (`skip`); a `sleep`, which is done when the process wakes,
+has moved on and is not passed. Being asked to pause comes before that: a
+process that waits is paused where it waits, its message still in its mailbox.
+
+Breakpoints are kept as they were asked for (a file and a line, or a
+function), and placed again whenever the modules change (`mods_sig`: a load, a
+reload, a purge), in every version of a module that still runs; so one may be
+set for code not loaded yet. A request reads a process through `sched_seen`,
+and one whose blocking call is still being made not at all. Named variables
+are shown by `dbg_show_var`, as `mlwsvm dap` shows them, the program's
+formatter run in a process of its own; a value is opened by its path from a
+register or a named variable, a child's number at each step, so no request
+depends on another and nothing is held between them.
 
 `mlwsvm serve` (`vm_serve`, `vm/run.c`) runs a program of its own that only
 sleeps, so that the run, which ends with its last program, never ends of itself.

@@ -213,6 +213,7 @@ void tools_free(VM *vm) {
     Tools *t = vm->tools;
     if (!t) return;
     tools_monitor_close(vm);
+    pdebug_free(vm);
     if (t->trace && t->trace != stderr && t->trace != stdout) fclose(t->trace);
     VEC_FREE(t->prof_funcs);
     smap_free(&t->stacks);

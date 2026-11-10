@@ -341,6 +341,7 @@ typedef struct VM {
     void *err_ctx;
     /* tools */
     InsnHook hook;
+    InsnHook phook;              /* the same, for a process being debugged alone (Process.dbg; tools/pdebug.c) */
     PollHook poll;
     void *tools;                 /* tool state, owned by src/tools */
     void (*tools_free)(struct VM *vm);
@@ -478,7 +479,30 @@ typedef struct ObjCoro {
 
 /* PROC_NATIVE: in a blocking native call on the I/O pool. PROC_IOWAIT: waiting
  * for a descriptor (Process.fdwait), woken by the poller. */
-enum { PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED, PROC_NATIVE, PROC_IOWAIT };
+enum {
+    PROC_READY = 0, PROC_RUNNING, PROC_WAITING, PROC_SLEEPING, PROC_DONE, PROC_FAILED, PROC_NATIVE, PROC_IOWAIT,
+    PROC_PAUSED, /* stopped by its debugger (Process.dbg): not run until sched_resume */
+};
+
+/* A process debugged alone, from the monitor (tools/pdebug.c), while the rest
+ * of the VM runs as it did. `on`: its instructions are interpreted, each
+ * after VM.phook, which stops it (SLICE_BREAK, then PROC_PAUSED) when it is to
+ * pause, a step is done, or a breakpoint is there. Costs a process not
+ * debugged one test of `on` at each time slice. */
+enum { PDBG_NONE = 0, PDBG_PAUSE, PDBG_ENTRY, PDBG_STEP, PDBG_BREAKPOINT, PDBG_INSN };
+typedef struct {
+    _Atomic bool on;
+    uint8_t hold;   /* stop before its next instruction: PDBG_PAUSE, or PDBG_ENTRY (started paused) */
+    uint8_t step;   /* a step under way (STEP_*), by lines of its source or by instructions */
+    bool by_line;
+    bool skip;      /* resumed: the instruction it was stopped at runs before it can stop there again */
+    uint8_t reason; /* why it is paused (PDBG_*) */
+    uint32_t depth0, line0, skip_pc, skip_depth; /* where the step began; where it was resumed */
+    uint32_t at_pc, at_depth;                    /* the instruction it last began */
+    const struct Function *fn0, *skip_fn, *at_fn;
+    const char *file0;
+    uint64_t seq; /* its pauses so far */
+} ProcDebug;
 
 /* How a time slice ended. SLICE_NATIVE: a blocking native call is to be made
  * on the I/O thread pool (Process.bcall). SLICE_IOWAIT: wait for Process.fdwait.
@@ -670,6 +694,7 @@ struct Process {
     BlockingCall bcall;
     int native_req;              /* NREQ_*: what the checked native just asked for */
     bool on_io_thread;           /* the native is running on the I/O pool: it may block */
+    ProcDebug dbg;               /* debugged from the monitor */
     bool resumed;                /* the native is being run again after a wait (not counted again) */
     FdWait fdwait;               /* PROC_IOWAIT */
     uint64_t os_calls;
@@ -958,6 +983,8 @@ void sched_stop_world(VM *vm);
 void sched_start_world(VM *vm);
 /* A process as a tool may read it, the world stopped and p->lock held (ProcSeen). */
 void sched_seen(Process *p, ProcSeen *out);
+/* A process paused by its debugger goes on: false if it is not paused. */
+bool sched_resume(VM *vm, uint64_t pid);
 /* The process table, for tools: only while the world is stopped. */
 Process *vm_proc_at(VM *vm, uint64_t pid); /* any process still in the table */
 uint64_t vm_pid_end(VM *vm);               /* one past the highest pid assigned */

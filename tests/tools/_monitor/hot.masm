@@ -1,0 +1,25 @@
+; Debugged by check_tools.sh while it runs as machine code: `spinner` loops
+; without ever waiting, calling `inc`, so the JIT compiles both within a
+; moment. Attached to, it is interpreted from its next time slice, where it was;
+; detached from, it runs its machine code again. It ends after a minute's
+; worth of instructions at most; the test stops it.
+.func inc(i64 n) -> i64
+    add I1, n, 1
+    ret I1
+.endf
+
+.func spinner
+    ncall "proc.register" ("spinner", PID)
+    mov I5, 0
+    .local count, I5
+1:  call inc (I5) -> (I5)
+    add I6, I6, 2
+    blt I5, 60000000000, 1b
+    ret
+.endf
+
+.func main
+    spawn spinner -> (I0)
+    sleep 60000
+    ret 0
+.endf

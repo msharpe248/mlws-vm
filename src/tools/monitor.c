@@ -82,7 +82,7 @@ static void prog_json(StrBuf *b, const Monitor *mon, VM *vm, int32_t id) {
     json_str(b, prog_name(mon, vm->progs.v[id]));
 }
 
-static const char *const STATE_NAMES[] = {"ready", "running", "waiting", "sleeping", "done", "failed", "native", "io"};
+static const char *const STATE_NAMES[] = {"ready", "running", "waiting", "sleeping", "done", "failed", "native", "io", "paused"};
 
 static void json_str(StrBuf *b, const char *s) {
     sb_putc(b, '"');
@@ -1014,12 +1014,20 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *key) 
         respond(k, 200, "text/html; charset=utf-8", DASHBOARD_HTML, DASHBOARD_HTML_LEN, true);
         return;
     }
-    int need = !strcmp(path, "/api/keys") ? SCOPE_ADMIN : SCOPE_READ;
+    bool debug = !strncmp(path, "/api/debug", 10) && (!path[10] || path[10] == '/'); /* (what a process holds: an admin's to see) */
+    int need = !strcmp(path, "/api/keys") || debug ? SCOPE_ADMIN : SCOPE_READ;
     if (scope < need) {
         if (key) respond_json(k, 403, "{\"error\":\"this key may only read: an admin's is needed\"}");
         else respond_json(k, 401, "{\"error\":\"a key is needed: Authorization: Bearer KEY\"}");
         return;
     }
+    if (debug) {
+        int status = pdebug_get(vm, path + 10, qs, &b);
+        respond(k, status, json, b.s ? b.s : "", b.n, false);
+        sb_free(&b);
+        return;
+    }
+    pdebug_refresh(vm); /* (breakpoints follow a reload, though no debugger is asking) */
     if (!strcmp(path, "/api/keys")) {
         keys_json(&b, mon);
     } else if (!strcmp(path, "/api/envs")) {
@@ -1373,8 +1381,19 @@ static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *
     sb_free(&b);
 }
 
-/* A JSON object of strings only, each named in names, into vals (malloc'd;
- * NULL for one not there). */
+/* A string, or a number, true or false as its text. */
+static bool jt_scalar(JText *t, char **out) {
+    jt_ws(t);
+    if (t->s < t->end && *t->s == '"') return jt_str(t, out);
+    const char *from = t->s;
+    while (t->s < t->end && (isalnum((unsigned char)*t->s) || *t->s == '-' || *t->s == '+' || *t->s == '.')) t->s++;
+    if (t->s == from) return false;
+    *out = xstrndup(from, (size_t)(t->s - from));
+    return true;
+}
+
+/* A JSON object of strings (and numbers, true and false, as their text), each
+ * named in names, into vals (malloc'd; NULL for one not there). */
 static bool flat_strings(const char *body, size_t n, const char *const *names, char **vals, size_t nnames) {
     JText t = {body, body + n};
     jt_ws(&t);
@@ -1385,7 +1404,7 @@ static bool flat_strings(const char *body, size_t n, const char *const *names, c
         char *key = NULL, *v = NULL;
         if (!jt_str(&t, &key)) return false;
         jt_ws(&t);
-        bool ok = t.s < t.end && *t.s++ == ':' && jt_str(&t, &v);
+        bool ok = t.s < t.end && *t.s++ == ':' && jt_scalar(&t, &v);
         size_t at = nnames;
         for (size_t i = 0; ok && i < nnames; i++)
             if (!strcmp(key, names[i])) at = i;
@@ -1404,6 +1423,16 @@ static bool flat_strings(const char *body, size_t n, const char *const *names, c
     t.s++;
     jt_ws(&t);
     return t.s == t.end;
+}
+
+/* For the monitor's debugger (pdebug.c). */
+void tools_json_str(StrBuf *b, const char *s) { json_str(b, s); }
+void tools_json_strn(StrBuf *b, const char *s, size_t n, size_t max) { json_strn(b, s, n, max); }
+void tools_url_decode(char *s) { url_decode(s); }
+bool tools_json_flat(const char *body, size_t n, const char *const *names, char **vals, size_t nnames) {
+    bool ok = flat_strings(body, n, names, vals, nnames);
+    for (size_t i = 0; !ok && i < nnames; i++) free(vals[i]), vals[i] = NULL;
+    return ok;
 }
 
 /* POST /api/keys {"label", "scope"}: a new key, its token in the answer only
@@ -1513,6 +1542,18 @@ static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *by
     }
     if (keys) {
         serve_keys(mon, vm, k, q, by);
+        return;
+    }
+    if (!strncmp(q->path, "/api/debug", 10) && (!q->path[10] || q->path[10] == '/')) { /* a process's debugger: the world stopped */
+        StrBuf out = {0}, what = {0};
+        const char *ev = NULL;
+        sched_stop_world(vm);
+        int status = pdebug_post(vm, q->path + 10, q->body ? q->body : "", q->nbody, &out, &ev, &what);
+        sched_start_world(vm);
+        if (ev) audit(vm, by, ev, what.s ? what.s : "{}");
+        respond_json(k, status, out.s ? out.s : "{}");
+        sb_free(&out);
+        sb_free(&what);
         return;
     }
     if (mon->programs && (!strncmp(q->path, "/api/programs", 13) || !strcmp(q->path, "/api/shutdown"))) {
@@ -1750,6 +1791,7 @@ bool tools_monitor(VM *vm, const char *addr, char *err, size_t errlen) {
     snprintf(t->mon->host, sizeof t->mon->host, "%s", host);
     t->mon->port = port;
     vm->poll = monitor_poll;
+    pdebug_enable(vm);
     vm_mlog_enable(vm, 1000); /* monitor.log and monitor.event keep what they are given */
     return true;
 }
