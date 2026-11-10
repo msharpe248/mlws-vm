@@ -120,6 +120,9 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 3
 .grip { flex: none; height: 9px; cursor: ns-resize; touch-action: none; display: flex; align-items: center; justify-content: center; border-top: 1px solid var(--grid); }
 .grip::before { content: ""; width: 28px; height: 3px; border-radius: 2px; background: var(--border); }
 .grip:hover::before, .grip.drag::before { background: var(--series-1); }
+#env .k { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--series-1); flex: none; }
+#env .v { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; min-width: 0; }
+#env .v.muted { font-family: inherit; color: var(--text-muted); }
 .send { display: flex; gap: 6px; padding: 6px 12px 8px; border-top: 1px solid var(--grid); flex: none; }
 .send input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .empty { color: var(--text-muted); font-size: 12px; padding: 6px 0; }
@@ -255,6 +258,11 @@ dd { margin: 0; font-variant-numeric: tabular-nums; }
       <div class="body"><ul class="rows" id="mbox"></ul><div class="empty" id="mbox-empty">No messages are waiting.</div></div>
       <form class="send" id="send-form"><input id="send-text" type="text" autocomplete="off" placeholder='A message as JSON: {"cmd": "status"}' aria-label="A message for this process, as JSON"><button type="submit">Send</button></form>
       <div class="grip" data-size="mbox" title="Drag to make this taller or shorter; double-click for its own size"></div>
+    </section>
+    <section class="card">
+      <div class="head"><h2>Environment</h2><span class="spacer"></span><span class="pill" id="env-of"></span></div>
+      <div class="body"><ul class="rows" id="env"></ul><div class="empty" id="env-empty">Nothing to show yet.</div></div>
+      <div class="grip" data-size="env" title="Drag to make this taller or shorter; double-click for its own size"></div>
     </section>
     <section class="card">
       <div class="head"><h2>Breakpoints</h2><span class="spacer"></span>
@@ -643,7 +651,7 @@ async function pollSide() {
   if (Date.now() - sideAt < 950) return;
   sideAt = Date.now();
   loadBreaks(); // (another page may have set one; another process may have stopped)
-  const [p, me, log] = await Promise.all([get(`/api/proc/${pid}`), get("/api/vm"), get(`/api/log?since=${logNext}`)]);
+  const [p, me, log, envs] = await Promise.all([get(`/api/proc/${pid}`), get("/api/vm"), get(`/api/log?since=${logNext}`), get("/api/envs")]);
   if (me.status === 200 && me.body.you) { $("who").hidden = false; $("who-text").textContent = `${me.body.you.label} · ${me.body.you.scope}`; }
   if (p.status === 200) {
     const q = p.body, ms = q.messages || [];
@@ -654,7 +662,8 @@ async function pollSide() {
       (q.mailbox > ms.length ? `<li><span class="at" style="margin:0">… ${q.mailbox - ms.length} more</span></li>` : "");
     $("mbox-empty").hidden = q.mailbox > 0;
     $("mbox-empty").textContent = q.away ? "Its mailbox can be read when its call returns." : "No messages are waiting.";
-    const rows = [["Program", q.program_name ?? "–"], ["Entry", q.entry], ["Environment", q.env ?? "its program's"], ["Instructions", human(q.insns)],
+    renderEnv(q, envs.status === 200 && Array.isArray(envs.body) ? envs.body : null);
+    const rows = [["Program", q.program_name ?? "–"], ["Entry", q.entry], ["Instructions", human(q.insns)],
       ["Heap", human(q.heap_bytes) + "B"], ["Stack depth", q.depth], ["Messages", `${q.msgs_received} in, ${q.msgs_sent} out`],
       ["Linked with", q.links.length ? q.links.join(", ") : "none"], ["Watched by", q.monitors.length ? q.monitors.join(", ") : "none"]];
     $("proc").innerHTML = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
@@ -665,6 +674,24 @@ async function pollSide() {
     if (mine.length) { logLines = logLines.concat(mine).slice(-200); renderLog(); }
   }
 }
+// The environment the process reads (env.get): a named one it has joined, or else its
+// program's. Its values as JSON; one marked secret is named and never shown, as on the dashboard.
+function renderEnv(q, envs) {
+  const mine = envs && envs.find((e) => q.env != null ? e.env === q.env : e.env == null && e.program === q.program);
+  const el = $("env"), none = $("env-empty");
+  if (!mine) {
+    el.innerHTML = ""; none.hidden = false; $("env-of").textContent = "";
+    none.textContent = envs ? "This process has no environment to show." : "Its environment cannot be read now.";
+    return;
+  }
+  $("env-of").textContent = (mine.env != null ? mine.env : "its program's") + (mine.watchers ? ` · ${mine.watchers} watching` : "");
+  el.innerHTML = mine.values.map((v) => `<li><span class="k">${esc(v.key)}</span>` +
+    (v.secret ? `<span class="v muted">secret: not shown</span>` : v.note ? `<span class="v muted">${esc(v.note)}</span>`
+      : `<span class="v">${esc(JSON.stringify(v.value))}</span>`) + `</li>`).join("");
+  none.hidden = mine.values.length > 0;
+  none.textContent = "It has no values.";
+}
+
 // The process's lines, the newest at the bottom or at the top, as the dashboard's log
 // is and by the same choice. The newest is followed while it is in view; otherwise
 // the line at the top of the view stays where it is.
