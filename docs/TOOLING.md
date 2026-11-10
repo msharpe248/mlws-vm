@@ -13,6 +13,7 @@ run before a release.
 | Tracer | `mlwsvm run --trace FILE\|- [--trace-limit N] prog.masm` | none |
 | Debugger | `mlwsvm debug prog.masm` | — |
 | Debugger for editors | `mlwsvm dap` (Debug Adapter Protocol) | — |
+| Debugger for a running process | the monitor's dashboard: **Debug**, or `/debug#pid=N` | none |
 | Monitor + dashboard | `mlwsvm run --monitor [HOST:]PORT [--hold] [--monitor-actions] prog.masm` | none |
 | A VM that stays up | `mlwsvm serve --programs DIR [--monitor [HOST:]PORT]` | — |
 | Terminal view | `mlwsvm top [https://]HOST:PORT [--ca FILE] [--once] [--interval MS] [--log]` | — |
@@ -465,7 +466,10 @@ to anyone who may read; values, and setting and deleting them, to an admin),
 the keys (to an admin), and the most recent
 exits with their results. It is a single self-contained page, compiled into the
 binary from `web/dashboard.html`, and it polls the JSON API once a second (the
-modules, names, nodes, graph, environments and keys every five).
+modules, names, nodes, graph, environments and keys every five). To an admin,
+a process's details have **Debug**, which opens [its
+debugger](#debugging-a-process), and the processes being debugged are listed
+above the table.
 
 ### JSON API
 
@@ -579,6 +583,23 @@ and all. `mlwsvm debug` and `mlwsvm dap` debug a whole program from its start,
 on one thread; this debugs what is already running, and several processes at
 once, each by itself.
 
+**The debugger's page**, `/debug#pid=N`, is the way to use it: a page for
+one process, in a tab of its own, so that several can be debugged side by
+side with the dashboard still there. **Debug**, in a process's details on the
+dashboard, pauses the process and opens it; under `mlwsvm serve`, a program
+can be started *paused, in the debugger*, its main stopped before its first
+instruction. The page shows the source with the line the process is at (the
+compiled language's own file where there is one, or the assembly, and the
+function's instructions on request), the call stack, the variables of the
+frame chosen, which open to show what they hold and are marked when a step
+changed them, the messages waiting in its mailbox, the breakpoints, and the
+process's own lines of the log. A click beside a line sets or removes a
+breakpoint there. Continue is F8 or `c`, step over F10 or `n`, step into `s`,
+step out `o`, pause `p`. Closing the page changes nothing: a paused process
+stays paused, and the dashboard says so. The page is compiled into the
+binary from `web/debugger.html`, and asks for the process's state five times
+a second while it runs, once a second while it is paused.
+
 A process is **attached** to, and from then:
 
 * **Pause** stops it before its next instruction. One that is waiting, for a
@@ -611,12 +632,12 @@ pausing and each new breakpoint go into the log (`monitor.debug_attach`,
 | `GET /api/debug/PID/vars?frame=N` | frame N's `locals` (the names the program gave its registers, each as its formatter shows it) and `registers` by bank: each a `name`, `value`, `kind`, how many `children` it opens to show, and its `path` |
 | `GET /api/debug/PID/vars?frame=N&path=P` | the `children` of the value at a path: a struct's fields, a list's or an array's elements, a map's values by key, a closure's captures, the registers of a variable of several; 1,000 at most, from `from=K` |
 | `GET /api/debug/PID/code?frame=N` | the frame's function as instructions: each a `pc`, `line`, `text`, `source` and `source_line`, and whether a `breakpoint` is there; with `pc`, the frame's own |
-| `GET /api/debug/source?file=F` | the `text` of a file that loaded code came from, as the frames name it; 404 for any other file, or one that has moved |
+| `GET /api/debug/source?file=F` | the `text` of a file that loaded code came from, as the frames name it: the file of that name, or one beside the module's own file (a compiler names a program's file as it was given it); 404 for any other file, or one that is not there |
 | `GET /api/debug/breakpoints` | each breakpoint: `id`, `file` and `line`, or `function`; `line_at` (the line with code it is at) and `at`, the places it is at now (none: waiting for its code) |
 
 | Action | Does |
 |---|---|
-| `POST /api/debug/PID/attach` | debug it; with `{"pause": true}`, pause it too |
+| `POST /api/debug/PID/attach` | debug it; with `{"pause": true}`, pause it too; 403 for `mlwsvm serve`'s own process |
 | `POST /api/debug/PID/detach` | no longer; it goes on if it was paused |
 | `POST /api/debug/PID/pause` | pause it before its next instruction |
 | `POST /api/debug/PID/continue` | a paused one goes on; 409 if it is not paused |
@@ -679,9 +700,9 @@ apply to all of them. `--monitor-cert` and
 |---|---|
 | `GET /api/programs` | the programs started: `id`, `path` (in the programs' directory), `cap` and `quota` (as started, or null), `args`, `pid` (of its main), `state` (`running`, `done` with `exit`, `failed` with `code` and `message`) |
 | `GET /api/programs/files` | the programs in the directory, for the dashboard's picker: each `.masm` or `.mlwso` file by its path within it, at most four directories down |
-| `POST /api/programs` | start one: `{"path": "app.masm", "args": ["-v"], "cap": "read=/data", "quota": "heap=64M"}` (all but `path` may be left out); answers its `id` and `pid`; 400 for a program that does not load or a bad `cap` or `quota`, 403 for a path not in the directory |
+| `POST /api/programs` | start one: `{"path": "app.masm", "args": ["-v"], "cap": "read=/data", "quota": "heap=64M"}` (all but `path` may be left out); with `"debug": true`, its main is paused before its first instruction, [its debugger's](#debugging-a-process); answers its `id` and `pid`; 400 for a program that does not load or a bad `cap` or `quota`, 403 for a path not in the directory |
 | `POST /api/programs/ID/stop` | its main fails with `E_KILLED`, and its other processes stop, as when a program's main ends |
-| `POST /api/programs/ID/rerun` | the same file again, with the same arguments, capabilities and quotas, as a new program; answers its `id` and `pid` |
+| `POST /api/programs/ID/rerun` | the same file again, with the same arguments, capabilities and quotas, as a new program (paused, with `{"debug": true}`); answers its `id` and `pid` |
 | `POST /api/shutdown` | every program is stopped, and `mlwsvm serve` exits 0 |
 
 These need an admin's key, as every action does, and each is written to the log

@@ -76,6 +76,7 @@ h2 { font-size: 13px; margin: 0 0 10px; font-weight: 600; color: var(--text-seco
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
 .dot.good { background: var(--good); }
 .dot.critical { background: var(--critical); }
+.dot.warn { background: var(--warning); }
 .spacer { flex: 1; }
 button.theme {
   font: inherit; font-size: 12px; color: var(--text-secondary); background: transparent;
@@ -196,6 +197,7 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12
       <input id="start-args" placeholder="arguments, separated by spaces" aria-label="Arguments">
       <input id="start-cap" placeholder="--cap, e.g. none" aria-label="Capabilities">
       <input id="start-quota" placeholder="--quota, e.g. heap=64M" aria-label="Quotas">
+      <label class="check" title="Its main process pauses before its first instruction, and its debugger opens"><input type="checkbox" id="start-debug"> paused, in the debugger</label>
       <button class="act" id="start-btn" type="button">Start</button>
     </div>
     <div class="table-wrap"><table class="mini" id="programs"><thead><tr><th>#</th><th class="text">Program</th><th class="text">Arguments</th><th class="text">Limits</th><th>PID</th><th class="text">State</th><th></th></tr></thead><tbody></tbody></table></div>
@@ -203,6 +205,7 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12
   </section>
   <section class="card">
     <h2>Processes</h2>
+    <div class="note" id="debugged" hidden></div>
     <div class="table-wrap"><table id="procs"><thead></thead><tbody></tbody></table></div>
     <div class="empty" id="procs-empty" hidden>No live processes.</div>
   </section>
@@ -220,6 +223,7 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12
     <div class="acts" id="detail-acts" hidden>
       <input id="send-text" placeholder='A message as JSON: {"cmd": "status"}' aria-label="Message as JSON">
       <button class="act" id="send-btn" type="button">Send</button>
+      <button class="act" id="debug-btn" type="button" title="Pause it, and open its debugger in a tab of its own">Debug</button>
       <button class="act danger" id="kill-btn" type="button">Kill</button>
     </div>
   </section>
@@ -385,7 +389,7 @@ const COLS = [
   ["msgs", "Msgs in / out"], ["gc_count", "GCs"], ["function", "Current function", "text"],
 ];
 function stateCell(s) {
-  const cls = s === "failed" ? "critical" : s === "done" ? "good" : "";
+  const cls = s === "failed" ? "critical" : s === "done" ? "good" : s === "paused" ? "warn" : "";
   return `<span class="state"><span class="dot ${cls}"></span>${esc(s)}</span>`;
 }
 function renderProcs() {
@@ -439,6 +443,7 @@ async function loadDetail() {
     $("detail-stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
     $("detail-bt").textContent = p.backtrace.join("\n") || "(no frames)";
     $("detail-acts").hidden = !canAct();
+    $("debug-btn").hidden = p.program_name === "(serve)"; // (mlwsvm serve's own process)
     detailProc = p;
     $("log-prog-btn").hidden = p.program == null;
     $("log-prog-btn").textContent = p.program == null ? "" : `Log of ${p.program_name}`;
@@ -518,6 +523,23 @@ $("kill-btn").addEventListener("click", async () => {
   if (selectedPid == null || !confirm(`Kill process ${selectedPid}? It fails with E_KILLED, and its links go with it.`)) return;
   await act(`/api/proc/${selectedPid}/kill`, null, `killed ${selectedPid}`); loadDetail();
 });
+// A process's debugger: a page of its own (/debug), in a tab named for the
+// process, so that asking again shows the one there. Opened as the click is
+// handled (a browser may refuse a window opened later); it begins with a copy
+// of this tab's key.
+function openDebugger(pid, attach) { return window.open(`/debug#pid=${pid}${attach ? "&attach=pause" : ""}`, `mlwsvm-debug-${pid}`); }
+$("debug-btn").addEventListener("click", () => { if (selectedPid != null) openDebugger(selectedPid, !debugged.has(selectedPid)); });
+let debugged = new Map(); // pid -> its state, for those being debugged (an admin's to know)
+async function loadDebugged() {
+  const el = $("debugged");
+  if (!isAdmin()) { debugged = new Map(); el.hidden = true; return; }
+  const d = await apiJson("/api/debug").catch(() => null);
+  debugged = new Map((d ? d.processes : []).map((p) => [p.pid, p]));
+  el.hidden = !debugged.size;
+  el.innerHTML = debugged.size ? "Being debugged: " + [...debugged.values()].map((p) =>
+    `<button class="act" data-debug="${p.pid}" type="button">${p.pid} · ${esc(p.entry)}${p.state === "paused" ? " · paused" : ""}</button>`).join(" ") : "";
+}
+$("debugged").addEventListener("click", (ev) => { const b = ev.target.closest("button[data-debug]"); if (b) openDebugger(Number(b.dataset.debug), false); });
 $("send-btn").addEventListener("click", async () => {
   const text = $("send-text").value.trim();
   if (selectedPid == null || !text) return;
@@ -573,7 +595,18 @@ $("start-btn").addEventListener("click", async () => {
   const body = { path, args: $("start-args").value.split(/\s+/).filter(Boolean) };
   if ($("start-cap").value.trim()) body.cap = $("start-cap").value.trim();
   if ($("start-quota").value.trim()) body.quota = $("start-quota").value.trim();
-  await act("/api/programs", JSON.stringify(body), `started ${path}`); loadPrograms();
+  if (!$("start-debug").checked) { await act("/api/programs", JSON.stringify(body), `started ${path}`); loadPrograms(); return; }
+  // Paused, in the debugger: its page is opened now, and told which process once the program has started.
+  body.debug = true;
+  const w = window.open("/debug#starting", "_blank");
+  try {
+    const r = await fetch("/api/programs", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    showStatus(r.ok, r.ok ? `started ${path}, paused` : `started ${path}: ${j.error || r.status}`);
+    if (r.ok && w) w.location.hash = `pid=${j.pid}`;
+    else if (w) w.close();
+  } catch (e) { showStatus(false, `started ${path}: no answer`); if (w) w.close(); }
+  loadPrograms(); loadDebugged();
 });
 $("shutdown-btn").addEventListener("click", async () => {
   if (!confirm("Shut down this VM? Every program is stopped.")) return;
@@ -714,6 +747,7 @@ function drawGraph(g) {
   }
 }
 async function slowTick() {
+  loadDebugged();
   try {
     const [mods, names, nodes, graph] = await Promise.all(["/api/modules", "/api/names", "/api/nodes", "/api/graph"].map(apiJson));
     $("mods-acts-h").hidden = !canAct();

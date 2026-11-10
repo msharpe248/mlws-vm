@@ -989,6 +989,7 @@ if command -v curl >/dev/null 2>&1; then
     get() { curl -s -o "$MOND/r" -w '%{http_code}' "$@"; }
     [ "$(get $U/api/procs)" = 401 ] || fail "keys: a read without a key"
     [ "$(get $U/)" = 200 ] || fail "keys: the page without a key"
+    [ "$(get $U/debug)" = 200 ] || fail "keys: the debugger's page without a key"
     [ "$(get -H 'Authorization: Bearer nope' $U/api/procs)" = 401 ] || fail "keys: a read with no such key"
     R="Authorization: Bearer $RK"
     [ "$(get -H "$R" $U/api/procs)" = 200 ] || fail "keys: a read with a read key"
@@ -1409,6 +1410,37 @@ if command -v curl >/dev/null 2>&1; then
     until curl -sf "$U/api/log" | grep -q 'envy: from its file'; do
         i=$((i + 1)); [ $i -lt 50 ] || fail "serve: a program's environment ($(curl -sf $U/api/log))"; sleep 0.1
     done
+    # A program started paused, in its debugger: its main stops before its
+    # first instruction; it steps by the lines of the file it says it was made
+    # from, which is read from beside it; let go on, it ends as it would have.
+    # A program run again likewise. mlwsvm serve's own process is not debugged.
+    [ "$(get $U/debug)" = 200 ] && grep -q '<title>MLWSVM Debugger</title>' "$MOND/r" || fail "serve: the debugger's page"
+    [ "$(code -H "$A" --data '{"path":"located.masm","debug":true}' $U/api/programs)" = 200 ] && grep -q '^{"ok":true,"id":8,"pid":[0-9]*,"debug":true}$' "$MOND/r" || fail "serve: start paused ($(cat "$MOND/r"))"
+    LP=$(sed 's/.*"pid":\([0-9]*\).*/\1/' "$MOND/r")
+    D=$U/api/debug
+    ST=$(curl -s -H "$A" $D/$LP)
+    echo "$ST" | grep -q '"debugged":true,"state":"paused","away":false,"pausing":false,"stepping":false,"reason":"entry","seq":1,"entry":"main"' || fail "serve: paused at its entry ($ST)"
+    echo "$ST" | grep -q '"frames":\[{"function":"located.main","pc":0,"file":"[^"]*located.masm","line":8,"source":"located.src","source_line":1}\]' || fail "serve: where it is paused ($ST)"
+    [ "$(get -H "$A" "$D/source?file=located.src")" = 200 ] && grep -q '^{"file":"located.src","text":"let n = 1 + 1\\u000an = n + 2\\u000areturn n\\u000a"}$' "$MOND/r" || fail "serve: the source beside the program ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"kind":"over"}' $D/$LP/step)" = 200 ] || fail "serve: a step by a line of its source"
+    sleep 0.2
+    curl -s -H "$A" $D/$LP | grep -q '"reason":"step","seq":2,.*"pc":2,"file":"[^"]*","line":11,"source":"located.src","source_line":2}\]' || fail "serve: a line on, two instructions ($(curl -s -H "$A" $D/$LP))"
+    [ "$(code -H "$A" --data '{"file":"located.src","line":3}' $D/breakpoints)" = 200 ] && grep -q '"line_at":3,"function":null,"at":\[{"function":"located.main","pc":3,' "$MOND/r" || fail "serve: a breakpoint at a line of its source ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" $D/$LP/continue)" = 200 ] || fail "serve: continue"
+    sleep 0.2
+    curl -s -H "$A" $D/$LP | grep -q '"reason":"breakpoint","seq":3,' || fail "serve: at its source's breakpoint ($(curl -s -H "$A" $D/$LP))"
+    [ "$(code -H "$A" $D/$LP/continue)" = 200 ] || fail "serve: continue to its end"
+    i=0
+    until curl -sf $U/api/programs | grep -q '"id":8,"path":"located.masm",[^}]*"state":"done","exit":4'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "serve: a debugged program's end ($(curl -sf $U/api/programs))"; sleep 0.1
+    done
+    [ "$(code -H "$A" --data '{"debug":true}' $U/api/programs/8/rerun)" = 200 ] && grep -q '"id":9,"pid":[0-9]*,"debug":true}$' "$MOND/r" || fail "serve: run again, paused ($(cat "$MOND/r"))"
+    LP=$(sed 's/.*"pid":\([0-9]*\).*/\1/' "$MOND/r")
+    curl -s -H "$A" $D/$LP | grep -q '"state":"paused".*"reason":"entry"' || fail "serve: run again, at its entry"
+    [ "$(code -H "$A" $U/api/programs/9/stop)" = 200 ] || fail "serve: stop one paused"
+    curl -sf $U/api/programs | grep -q '"id":9,"path":"located.masm",[^}]*"state":"failed","code":"E_KILLED"' || fail "serve: one stopped while paused"
+    [ "$(code -H "$A" $D/1/attach)" = 403 ] && grep -q "serve's own" "$MOND/r" || fail "serve: its own process debugged ($(cat "$MOND/r"))"
+    curl -sf "$U/api/log" | grep -q '"event":"monitor.start","value":{"by":"(start)","path":"located.masm","pid":[0-9]*,"debug":true}' || fail "serve: a paused start in the log"
     [ "$(code -H "$A" $U/api/shutdown)" = 200 ] || fail "serve: shutdown"
     set +e
     wait $VMPID; RC=$?

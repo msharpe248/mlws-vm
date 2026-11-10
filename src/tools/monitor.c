@@ -18,6 +18,8 @@
 
 extern const char DASHBOARD_HTML[];
 extern const size_t DASHBOARD_HTML_LEN;
+extern const char DEBUGGER_HTML[];
+extern const size_t DEBUGGER_HTML_LEN;
 
 #define CONNS_MAX 32 /* connections at once; others wait to be accepted */
 
@@ -1014,6 +1016,10 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *key) 
         respond(k, 200, "text/html; charset=utf-8", DASHBOARD_HTML, DASHBOARD_HTML_LEN, true);
         return;
     }
+    if (!strcmp(path, "/debug")) { /* the debugger's page: what it asks for needs an admin's key */
+        respond(k, 200, "text/html; charset=utf-8", DEBUGGER_HTML, DEBUGGER_HTML_LEN, false);
+        return;
+    }
     bool debug = !strncmp(path, "/api/debug", 10) && (!path[10] || path[10] == '/'); /* (what a process holds: an admin's to see) */
     int need = !strcmp(path, "/api/keys") || debug ? SCOPE_ADMIN : SCOPE_READ;
     if (scope < need) {
@@ -1205,9 +1211,13 @@ bad:
     return false;
 }
 
+static bool jt_scalar(JText *t, char **out);
+static bool flat_strings(const char *body, size_t n, const char *const *names, char **vals, size_t nnames);
+
 typedef struct {
     char *path, *cap, *quota;
     StrVec args;
+    bool debug; /* "debug": true: its main paused before its first instruction, for its debugger */
 } StartReq;
 
 static void start_req_free(StartReq *r) {
@@ -1247,6 +1257,11 @@ static bool start_req_parse(const char *body, size_t n, StartReq *r) {
                         break;
                     } else ok = false;
                 }
+        } else if (!strcmp(key, "debug")) {
+            char *v = NULL;
+            ok = jt_scalar(&t, &v) && (!strcmp(v, "true") || !strcmp(v, "false"));
+            r->debug = ok && !strcmp(v, "true");
+            free(v);
         } else {
             char **slot = !strcmp(key, "path") ? &r->path : !strcmp(key, "cap") ? &r->cap : !strcmp(key, "quota") ? &r->quota : NULL;
             char *v = NULL;
@@ -1303,12 +1318,13 @@ static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *
         MlwsError e = {{0}, {0}};
         sched_stop_world(vm); /* (loading and starting while nothing else runs) */
         Program *pr = vm_start_program(vm, file, &r.args, r.cap, r.quota, &e);
+        bool debug = pr && r.debug && pdebug_entry(vm, pr->main_pid); /* (before it has run) */
         sched_start_world(vm);
         if (pr) {
-            sb_printf(&b, "{\"ok\":true,\"id\":%zu,\"pid\":%llu}", vm->progs.n - 1, (unsigned long long)pr->main_pid);
+            sb_printf(&b, "{\"ok\":true,\"id\":%zu,\"pid\":%llu,\"debug\":%s}", vm->progs.n - 1, (unsigned long long)pr->main_pid, debug ? "true" : "false");
             sb_puts(&a, "{\"path\":");
             json_str(&a, r.path);
-            sb_printf(&a, ",\"pid\":%llu}", (unsigned long long)pr->main_pid);
+            sb_printf(&a, ",\"pid\":%llu%s}", (unsigned long long)pr->main_pid, debug ? ",\"debug\":true" : "");
             audit(vm, by, "monitor.start", a.s);
             respond_json(k, 200, b.s);
         } else {
@@ -1337,13 +1353,18 @@ static void serve_programs(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *
         if (!file) {
             respond_json(k, 404, "{\"error\":\"no such program\"}");
         } else {
+            static const char *const NAMES[] = {"debug"};
+            char *dv[1] = {0};
+            bool want = q->nbody && flat_strings(q->body, q->nbody, NAMES, dv, 1) && dv[0] && !strcmp(dv[0], "true");
+            free(dv[0]);
             MlwsError e = {{0}, {0}};
             sched_stop_world(vm);
             Program *pr = vm_start_program(vm, file, &args, cap, quota, &e);
+            bool debug = pr && want && pdebug_entry(vm, pr->main_pid);
             sched_start_world(vm);
             if (pr) {
-                sb_printf(&b, "{\"ok\":true,\"id\":%u,\"pid\":%llu}", pr->id, (unsigned long long)pr->main_pid);
-                sb_printf(&a, "{\"id\":%zu,\"as\":%u,\"pid\":%llu}", id, pr->id, (unsigned long long)pr->main_pid);
+                sb_printf(&b, "{\"ok\":true,\"id\":%u,\"pid\":%llu,\"debug\":%s}", pr->id, (unsigned long long)pr->main_pid, debug ? "true" : "false");
+                sb_printf(&a, "{\"id\":%zu,\"as\":%u,\"pid\":%llu%s}", id, pr->id, (unsigned long long)pr->main_pid, debug ? ",\"debug\":true" : "");
                 audit(vm, by, "monitor.rerun", a.s);
                 respond_json(k, 200, b.s);
             } else {
@@ -1638,7 +1659,7 @@ static void serve(Monitor *mon, VM *vm, Conn *k, Req *q, uint64_t now) {
         return;
     }
     keys_refresh(mon, vm);
-    bool page = !strcmp(q->method, "GET") && (!strcmp(q->path, "/") || !strcmp(q->path, "/index.html"));
+    bool page = !strcmp(q->method, "GET") && (!strcmp(q->path, "/") || !strcmp(q->path, "/index.html") || !strcmp(q->path, "/debug"));
     MonKey *found = NULL, key; /* (a copy: the keys may change as it is served) */
     if (q->auth[0] && !page) {
         if (!wrong_room(mon, k->ip, now)) {

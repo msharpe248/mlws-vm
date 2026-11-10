@@ -1,0 +1,14 @@
+; Started paused by check_tools.sh under mlwsvm serve, in its debugger: a
+; program that says (`.loc`) it was made from located.src, a file named as a
+; compiler names one, with no directory, and found beside this one. Its
+; debugger steps by that file's lines, two instructions for the first, and
+; shows its text. It ends with 4.
+.func main
+    .loc "located.src", 1
+    mov I0, 1
+    add I0, I0, 1
+    .loc "located.src", 2
+    add I0, I0, 2
+    .loc "located.src", 3
+    ret I0
+.endf

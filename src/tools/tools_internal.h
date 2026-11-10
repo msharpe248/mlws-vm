@@ -116,6 +116,10 @@ void dbg_var_regs(StrBuf *b, const MVar *v); /* "I3, F3, R3" */
 void pdebug_enable(VM *vm);
 void pdebug_free(VM *vm);
 void pdebug_refresh(VM *vm); /* the breakpoints placed again, if the modules have changed */
+/* A process just started is its debugger's from its first instruction, where
+ * it pauses (the world stopped, before it has run): false in a VM that cannot
+ * debug one. */
+bool pdebug_entry(VM *vm, uint64_t pid);
 int pdebug_get(VM *vm, const char *path, const char *query, StrBuf *out);
 int pdebug_post(VM *vm, const char *path, const char *body, size_t n, StrBuf *out, const char **event, StrBuf *audit);
 /* (monitor.c) JSON for it: a string; n bytes cut at max; a flat object's

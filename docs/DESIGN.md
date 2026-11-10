@@ -2519,7 +2519,15 @@ and one whose blocking call is still being made not at all. Named variables
 are shown by `dbg_show_var`, as `mlwsvm dap` shows them, the program's
 formatter run in a process of its own; a value is opened by its path from a
 register or a named variable, a child's number at each step, so no request
-depends on another and nothing is held between them.
+depends on another and nothing is held between them. That is what lets the
+debugger be a page (`web/debugger.html`, at `/debug#pid=N`): it holds no
+connection and no state the VM must remember, asks for the process's state a
+few times a second, and reads the rest when that changes (`seq`, the count of
+its pauses, says a stop is a new one). A paused process is paused in the VM,
+not in the page, so a page closed or reloaded loses nothing. A program started
+paused (`"debug": true`) has its main marked, and told to stop, between its
+start and the world going on again (`pdebug_entry`), so it stops before its
+first instruction.
 
 `mlwsvm serve` (`vm_serve`, `vm/run.c`) runs a program of its own that only
 sleeps, so that the run, which ends with its last program, never ends of itself.

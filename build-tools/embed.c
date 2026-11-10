@@ -1,6 +1,6 @@
 /* embed.c - build helper: turn a file into a C source file defining
  *   const char NAME[] (NUL-terminated) and const size_t NAME_LEN.
- * Used to compile web/dashboard.html into the mlwsvm binary.
+ * Used to compile web/dashboard.html and web/debugger.html into the mlwsvm binary.
  * Usage: embed INPUT NAME > OUTPUT.c */
 #include <stdio.h>
 

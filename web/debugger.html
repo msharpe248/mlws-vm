@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MLWSVM Debugger</title>
+<!-- Served at /debug by `mlwsvm run --monitor` and `mlwsvm serve`. Self-contained:
+     no external assets. One page debugs one process (#pid=N), through
+     /api/debug: it asks for the process's state a few times a second, and when
+     that changes reads its frames, its variables, its function's instructions
+     and its source. Everything here needs an admin's key, which comes from the
+     dashboard that opened the page (the tab's session), from the address's
+     #token=, or is typed in. -->
+<style>
+:root {
+  color-scheme: light;
+  --surface-0: #f5f5f3;
+  --surface-1: #fcfcfb;
+  --border: #e2e1dc;
+  --grid: #ecebe7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7a7974;
+  --series-1: #2a78d6;
+  --good: #0ca30c;
+  --critical: #d03b3b;
+  --warning: #fab219;
+  --row-hover: #f0efec;
+  --selected: #e4eefb;
+  --current: #fff3c4;
+  --changed: #a05a00;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-0: #121211;
+    --surface-1: #1a1a19;
+    --border: #2f2f2c;
+    --grid: #262624;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --text-muted: #8f8e86;
+    --series-1: #3987e5;
+    --row-hover: #232321;
+    --selected: #1d2c40;
+    --current: #4a3f12;
+    --changed: #f0b45a;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #121211;
+  --surface-1: #1a1a19;
+  --border: #2f2f2c;
+  --grid: #262624;
+  --text-primary: #f0efec;
+  --text-secondary: #c3c2b7;
+  --text-muted: #8f8e86;
+  --series-1: #3987e5;
+  --row-hover: #232321;
+  --selected: #1d2c40;
+  --current: #4a3f12;
+  --changed: #f0b45a;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--surface-0); color: var(--text-primary); display: flex; flex-direction: column;
+  font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header {
+  display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; flex: none;
+  padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface-1);
+}
+h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
+h2 { font-size: 12px; margin: 0; font-weight: 600; color: var(--text-secondary); }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
+.dot.good { background: var(--good); }
+.dot.critical { background: var(--critical); }
+.dot.warn { background: var(--warning); }
+.spacer { flex: 1; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+button {
+  font: inherit; font-size: 12px; color: var(--text-primary); background: var(--surface-0); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 10px; cursor: pointer;
+}
+button:hover:not(:disabled) { background: var(--row-hover); }
+button:disabled { color: var(--text-muted); cursor: default; }
+button.primary { border-color: var(--series-1); }
+button.danger { color: var(--critical); }
+button.plain { background: transparent; }
+kbd { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); margin-left: 4px; }
+select, input[type="text"], input[type="password"] {
+  font: inherit; font-size: 12px; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 6px;
+}
+.bar {
+  display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; flex: none; padding: 8px 16px;
+  border-bottom: 1px solid var(--border); background: var(--surface-1); font-size: 12px; color: var(--text-secondary);
+}
+.bar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+#where { font-size: 13px; color: var(--text-primary); }
+#where .why { color: var(--text-secondary); }
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr); gap: 12px; padding: 12px 16px; }
+.col { min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; min-height: 0; display: flex; flex-direction: column; }
+.card > .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--grid); flex: none; }
+.card > .head label { font-size: 12px; color: var(--text-secondary); }
+.card > .body { overflow: auto; min-height: 0; padding: 6px 12px 10px; }
+.card.grow { flex: 1; }
+.card.code > .body { padding: 0; flex: 1; }
+.right { overflow-y: auto; }
+.right .card { flex: none; }
+.right .card > .body { max-height: 340px; }
+.empty { color: var(--text-muted); font-size: 12px; padding: 6px 0; }
+.code .empty { padding: 12px; }
+/* source and instructions: a gutter for breakpoints, a number, the text */
+table.src { border-collapse: collapse; width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+table.src td { padding: 0 8px; white-space: pre; vertical-align: top; }
+table.src td.g { width: 18px; padding: 0 0 0 6px; cursor: pointer; user-select: none; }
+table.src td.n { width: 1%; text-align: right; color: var(--text-muted); user-select: none; padding-right: 10px; }
+table.src td.g::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: middle; }
+table.src tr:hover td.g::before { background: color-mix(in srgb, var(--critical) 30%, transparent); }
+table.src tr.bp td.g::before { background: var(--critical); }
+table.src tr.bp.waiting td.g::before { background: transparent; border: 2px solid var(--critical); }
+table.src.asm td.g { cursor: default; }
+table.src.asm tr:hover td.g::before { background: transparent; }
+table.src.asm tr.bp td.g::before { background: var(--critical); }
+table.src tr.cur td { background: var(--current); }
+table.src tr.cur td.n { color: var(--text-primary); font-weight: 600; }
+table.src tr.cur.outer td { background: var(--selected); }
+table.src td.l { color: var(--text-muted); width: 1%; }
+/* lists */
+ul.rows { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+ul.rows li { display: flex; gap: 8px; align-items: baseline; padding: 3px 6px; border-radius: 6px; }
+ul.rows li.pick { cursor: pointer; }
+ul.rows li.pick:hover { background: var(--row-hover); }
+ul.rows li.sel { background: var(--selected); }
+ul.rows .fn { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+ul.rows .at { color: var(--text-muted); margin-left: auto; white-space: nowrap; }
+ul.rows button { padding: 0 6px; }
+/* variables: a tree */
+.tree { font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tree .v { display: flex; gap: 6px; align-items: baseline; padding-left: calc(var(--d, 0) * 14px); border-radius: 4px; }
+.tree .v:hover { background: var(--row-hover); }
+.tree .tw { width: 12px; flex: none; color: var(--text-muted); cursor: pointer; user-select: none; text-align: center; }
+.tree .name { color: var(--series-1); flex: none; }
+.tree .val { color: var(--text-primary); white-space: pre-wrap; word-break: break-word; }
+.tree .val.changed { color: var(--changed); font-weight: 600; }
+.tree .kind { color: var(--text-muted); margin-left: auto; padding-left: 8px; flex: none; }
+.tree .group { font: 600 11px ui-sans-serif, system-ui, sans-serif; color: var(--text-secondary); margin: 6px 0 2px; cursor: pointer; user-select: none; }
+.log td { padding: 2px 8px 2px 0; font-size: 12px; vertical-align: top; }
+.log td.msg { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; width: 100%; }
+.log td.t { color: var(--text-muted); white-space: nowrap; }
+dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 12px; }
+dt { color: var(--text-secondary); }
+dd { margin: 0; font-variant-numeric: tabular-nums; }
+#banner { padding: 8px 16px; font-size: 13px; border-bottom: 1px solid var(--border); background: var(--surface-1); flex: none; }
+#banner.bad { color: var(--critical); }
+#signin { max-width: 520px; margin: 40px auto; padding: 16px; }
+#signin form { display: flex; gap: 8px; margin-top: 10px; }
+#signin input { flex: 1; }
+.others a { color: var(--series-1); cursor: pointer; text-decoration: none; }
+@media (max-width: 900px) {
+  html, body { height: auto; }
+  main { grid-template-columns: minmax(0, 1fr); }
+  .card.code > .body { max-height: 60vh; }
+  .right { overflow: visible; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>MLWSVM debugger</h1>
+  <span class="pill"><span class="dot" id="state-dot"></span><span id="state-text">connecting</span></span>
+  <span id="where"></span>
+  <span class="spacer"></span>
+  <span class="pill others" id="others" hidden></span>
+  <span class="pill" id="who" hidden><span id="who-text"></span></span>
+  <button class="plain" id="theme" type="button">Theme</button>
+</header>
+<div class="bar" id="bar" hidden>
+  <button class="primary" id="b-continue" type="button" title="Let it go on (F8, or c)">Continue<kbd>F8</kbd></button>
+  <button id="b-pause" type="button" title="Stop it before its next instruction (p)">Pause<kbd>p</kbd></button>
+  <span class="sep"></span>
+  <button id="b-over" type="button" title="Step over a call (F10, or n)">Step over<kbd>F10</kbd></button>
+  <button id="b-into" type="button" title="Step into a call (s)">Step into<kbd>s</kbd></button>
+  <button id="b-out" type="button" title="Run until this function returns (o)">Step out<kbd>o</kbd></button>
+  <label>by <select id="step-by"><option value="line">line</option><option value="insn">instruction</option></select></label>
+  <span class="sep"></span>
+  <button id="b-attach" type="button" hidden>Attach</button>
+  <button id="b-attach-pause" type="button" hidden>Attach and pause</button>
+  <button id="b-detach" type="button" title="Stop debugging it: it runs on as it did before">Detach</button>
+  <button class="danger" id="b-kill" type="button">Kill</button>
+  <span class="spacer"></span>
+  <span id="act-note"></span>
+</div>
+<div id="banner" hidden></div>
+<section class="card" id="signin" hidden>
+  <div class="body">
+    <h2>A key is needed</h2>
+    <div class="empty" id="signin-note">Debugging needs an admin's key: the token printed when the VM started, or one made with mlwsvm token new --scope admin.</div>
+    <form id="signin-form"><input id="signin-key" type="password" autocomplete="off" placeholder="key"><button type="submit">Use it</button></form>
+  </div>
+</section>
+<main id="main" hidden>
+  <div class="col">
+    <section class="card code grow">
+      <div class="head">
+        <h2 id="code-title">Source</h2>
+        <span class="mono" id="code-file"></span>
+        <span class="spacer"></span>
+        <label id="lang-wrap" hidden>Show <select id="lang"><option value="source">the program's source</option><option value="asm">the assembly</option></select></label>
+        <button id="v-source" type="button">Source</button>
+        <button id="v-asm" type="button">Instructions</button>
+      </div>
+      <div class="body" id="code-body"><div class="empty">Nothing to show yet.</div></div>
+    </section>
+    <section class="card">
+      <div class="head"><h2>Its log</h2><span class="spacer"></span><span class="pill" id="log-count"></span></div>
+      <div class="body" style="max-height: 150px"><table class="log"><tbody id="log"></tbody></table><div class="empty" id="log-empty">This process has logged nothing.</div></div>
+    </section>
+  </div>
+  <div class="col right">
+    <section class="card">
+      <div class="head"><h2>Call stack</h2><span class="spacer"></span><span class="pill" id="depth"></span></div>
+      <div class="body"><ul class="rows" id="frames"></ul><div class="empty" id="frames-empty" hidden></div></div>
+    </section>
+    <section class="card">
+      <div class="head"><h2>Variables</h2><span class="spacer"></span><span class="pill" id="vars-of"></span></div>
+      <div class="body"><div class="tree" id="vars"></div><div class="empty" id="vars-empty" hidden></div></div>
+    </section>
+    <section class="card">
+      <div class="head"><h2>Mailbox</h2><span class="spacer"></span><span class="pill" id="mbox-count"></span></div>
+      <div class="body"><ul class="rows" id="mbox"></ul><div class="empty" id="mbox-empty">No messages are waiting.</div></div>
+    </section>
+    <section class="card">
+      <div class="head"><h2>Breakpoints</h2><span class="spacer"></span>
+        <form id="bp-form" style="display: flex; gap: 6px"><input id="bp-fn" type="text" placeholder="function, or file:line" size="18"><button type="submit">Add</button></form>
+      </div>
+      <div class="body"><ul class="rows" id="bps"></ul><div class="empty" id="bps-empty">None. Click beside a line of the source to set one: it stops every process being debugged that reaches it.</div></div>
+    </section>
+    <section class="card">
+      <div class="head"><h2>Process</h2></div>
+      <div class="body"><dl id="proc"></dl></div>
+    </section>
+  </div>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const base = (f) => String(f).replace(/^.*[\\/]/, "");
+const human = (n) => n >= 1e9 ? (n / 1e9).toFixed(1) + "G" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(n);
+
+// ---- theme, as the dashboard's ---------------------------------------------------
+{
+  let saved = null;
+  try { saved = localStorage.getItem("mlwsvm-theme"); } catch (e) {}
+  if (saved) document.documentElement.dataset.theme = saved;
+  $("theme").addEventListener("click", () => {
+    const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    const next = dark ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("mlwsvm-theme", next); } catch (e) {}
+  });
+}
+
+// ---- which process, and the key ---------------------------------------------------
+const params = new URLSearchParams(location.hash.slice(1));
+const pid = Number(params.get("pid")) || 0;
+let token = params.get("token");
+try { /* kept for this tab; a tab the dashboard opens begins with a copy of its own */
+  if (token) sessionStorage.setItem("mlwsvm-token", token);
+  else token = sessionStorage.getItem("mlwsvm-token");
+} catch (e) {}
+let attach = params.get("attach"); // "pause": opened to begin debugging it, paused
+if (params.get("token") || attach) window.history.replaceState(null, "", `${location.pathname}#pid=${pid}`);
+document.title = `Debug ${pid} · MLWSVM`;
+window.addEventListener("hashchange", () => location.reload()); // (the dashboard says which process, once it has started one)
+
+class NeedKey extends Error { constructor(status) { super(); this.status = status; } }
+async function get(path) {
+  const r = await fetch(path, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+  if (r.status === 401 || r.status === 403 || r.status === 429) throw new NeedKey(r.status);
+  return { status: r.status, body: await r.json().catch(() => ({})) };
+}
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: token ? { Authorization: `Bearer ${token}` } : {}, body: body == null ? "" : JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) note(j.error || `refused (${r.status})`, true);
+  return { ok: r.ok, status: r.status, body: j };
+}
+let noteTimer = 0;
+function note(text, bad) {
+  const el = $("act-note");
+  el.textContent = text; el.style.color = bad ? "var(--critical)" : "";
+  clearTimeout(noteTimer); noteTimer = setTimeout(() => { el.textContent = ""; }, 6000);
+}
+$("signin-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const k = $("signin-key").value.trim();
+  if (!k) return;
+  token = k; $("signin-key").value = "";
+  try { sessionStorage.setItem("mlwsvm-token", token); } catch (e) {}
+  tick();
+});
+
+// ---- state ------------------------------------------------------------------------
+const D = `/api/debug/${pid}`;
+let st = null;            // the process's status, as /api/debug/PID gives it
+let shownKey = "";        // what the panels show: a stop (seq), a state, a place
+let frame = 0;            // the frame selected, the innermost 0
+let view = "source";      // or "asm": the function's instructions
+let lang = "source";      // which file of a frame that has two: the program's own, or the assembly
+let bps = [];
+let ended = null;         // how it ended, once it has
+const sources = new Map();          // file -> {text} | {error}
+const open = new Set();             // the variables opened: "function path"
+let vars = null, kids = new Map();  // the frame's variables; path -> children
+let before = new Map(), now = new Map(); // a value's text at the stop before, and at this one: by frame's function and path
+let logNext = 0, logLines = [];
+
+const STATES = { ready: "running", running: "running", waiting: "waiting for a message", sleeping: "sleeping", native: "in a blocking call",
+  io: "waiting for input or output", paused: "paused", done: "ended", failed: "failed" };
+const REASONS = { pause: "paused when asked", entry: "paused before its first instruction", step: "after a step", breakpoint: "at a breakpoint", break: "at a break instruction" };
+const stable = () => st && !st.away && ["paused", "waiting", "sleeping", "io"].includes(st.state); // what it holds can be read, and will not change under us
+
+function place(f, which) { // a frame's file and line, in the program's own source or the assembly
+  return (which ?? lang) === "source" && f.source ? { file: f.source, line: f.source_line } : { file: f.file, line: f.line };
+}
+function whereText(f) { const p = place(f); return `${base(p.file)}:${p.line}`; }
+
+// ---- the loop ---------------------------------------------------------------------
+let timer = 0;
+async function tick() {
+  clearTimeout(timer);
+  let delay = 1000;
+  try {
+    if (!pid && location.hash === "#starting") { banner("Starting the program…", false); setState("starting", ""); timer = setTimeout(tick, 500); return; }
+    if (!pid) throw new Error("no process: open this page from the dashboard, or with #pid=N");
+    if (attach) { // opened to debug it: attached to and paused, unless it is being debugged already
+      const how = attach; attach = null;
+      const cur = await get(D);
+      if (cur.status === 200 && !cur.body.debugged) await post(`${D}/attach`, { pause: how === "pause" });
+    }
+    const r = await get(D);
+    $("signin").hidden = true;
+    if (r.status === 404) { await showEnded(); return; }
+    if (r.status !== 200) throw new Error(r.body.error || `the monitor answered ${r.status}`);
+    st = r.body;
+    $("main").hidden = false; $("bar").hidden = false; $("banner").hidden = true;
+    renderState();
+    const top = st.frames && st.frames[0];
+    const key = `${st.seq}|${st.state}|${st.debugged}|${st.away}|${st.depth}|${top ? top.function + "@" + top.pc : ""}`;
+    if (key !== shownKey) {
+      const stopped = st.state === "paused" && !shownKey.startsWith(`${st.seq}|paused|`);
+      shownKey = key;
+      if (stopped) { frame = 0; before = now; now = new Map(); }
+      if (frame >= (st.frames || []).length) frame = 0;
+      await refresh(stopped);
+    }
+    pollSide();
+    delay = st.state === "paused" ? 1000 : 200;
+  } catch (e) {
+    if (e instanceof NeedKey) {
+      $("signin").hidden = false; $("main").hidden = true; $("bar").hidden = true;
+      $("signin-note").textContent = e.status === 403 ? "That key may only read. Debugging needs an admin's key."
+        : e.status === 429 ? "Too many wrong keys came from this address. Wait a few seconds, then paste the key again."
+        : token ? "That key is not one this monitor knows. Paste an admin's."
+        : "Debugging needs an admin's key: the token printed when the VM started, or one made with mlwsvm token new --scope admin.";
+      setState("needs a key", "");
+    } else {
+      banner(e.message && !/fetch/i.test(e.message) ? e.message : "The monitor does not answer: has the VM stopped?", true);
+      setState("disconnected", "critical");
+    }
+    delay = 2000;
+  }
+  timer = setTimeout(tick, document.hidden ? Math.max(delay, 2000) : delay);
+}
+function banner(text, bad) { const b = $("banner"); b.hidden = false; b.textContent = text; b.className = bad ? "bad" : ""; }
+function setState(text, dot) { $("state-text").textContent = text; $("state-dot").className = "dot " + dot; }
+
+async function showEnded() {
+  if (!ended) {
+    const r = await get("/api/exits");
+    const e = (Array.isArray(r.body) ? r.body : []).find((x) => x.pid === pid);
+    ended = e ? (e.failed ? `Process ${pid} failed: ${e.code}.` : `Process ${pid} ended, with ${e.exit}.`) : `There is no process ${pid}: it has ended, or never was.`;
+  }
+  banner(ended, false);
+  setState("ended", "");
+  $("bar").hidden = true; $("where").textContent = "";
+  timer = setTimeout(tick, 5000); // (a pid is not used again: only to notice a VM gone)
+}
+
+function renderState() {
+  const paused = st.state === "paused";
+  let text = STATES[st.state] || st.state;
+  if (!st.debugged) text += " · not attached";
+  else if (st.pausing) text += " · will pause when it next runs";
+  else if (st.stepping) text += " · stepping";
+  setState(`process ${pid} · ${st.entry} · ${text}`, paused ? "warn" : st.debugged ? "good" : "");
+  const w = $("where");
+  if (st.at) w.innerHTML = `<span class="mono">${esc(st.at.function)}</span> <span class="why">${esc(whereText(st.at))}${paused && st.reason ? " · " + esc(REASONS[st.reason] || st.reason) : ""}</span>`;
+  else w.textContent = "";
+  for (const id of ["b-continue", "b-over", "b-into", "b-out"]) $(id).disabled = !paused;
+  $("b-pause").disabled = !st.debugged || paused || st.pausing;
+  $("b-attach").hidden = $("b-attach-pause").hidden = st.debugged;
+  $("b-detach").hidden = !st.debugged;
+  document.title = `${paused ? "⏸ " : ""}Debug ${pid} · ${st.entry}`;
+}
+
+// Everything that follows from where the process is: its frames, the code there, its variables.
+async function refresh(stopped) {
+  renderFrames();
+  await Promise.all([loadCode(stopped), loadVars(), loadBreaks()]);
+}
+
+// ---- the call stack ---------------------------------------------------------------
+function renderFrames() {
+  const fs = st.frames || [];
+  $("depth").textContent = st.depth > fs.length ? `${fs.length} of ${st.depth}` : "";
+  $("frames").innerHTML = fs.map((f, i) =>
+    `<li class="pick${i === frame ? " sel" : ""}" data-frame="${i}"><span class="fn">${esc(f.function)}</span><span class="at">${esc(whereText(f))}</span></li>`).join("");
+  $("frames-empty").hidden = fs.length > 0;
+  $("frames-empty").textContent = st.away ? "It is in a blocking call: its frames can be read when the call returns." : "It has no frames.";
+}
+$("frames").addEventListener("click", (ev) => {
+  const li = ev.target.closest("li[data-frame]");
+  if (!li || !st) return;
+  frame = Number(li.dataset.frame);
+  renderFrames(); loadCode(true); loadVars();
+});
+
+// ---- source and instructions --------------------------------------------------------
+async function loadCode(scroll) {
+  const f = st.frames && st.frames[frame];
+  $("lang-wrap").hidden = !(f && f.source);
+  $("v-source").classList.toggle("primary", view === "source");
+  $("v-asm").classList.toggle("primary", view === "asm");
+  if (!f) { $("code-file").textContent = ""; $("code-body").innerHTML = `<div class="empty">Nothing to show: the process has no frame to read.</div>`; return; }
+  if (view === "asm") return loadAsm(f, scroll);
+  const p = place(f);
+  $("code-title").textContent = "Source";
+  $("code-file").textContent = p.file;
+  let src = sources.get(p.file);
+  if (!src) {
+    const r = await get(`/api/debug/source?file=${encodeURIComponent(p.file)}`);
+    src = r.status === 200 ? { lines: r.body.text.split("\n") } : { error: r.body.error || "it cannot be read" };
+    if (src.lines && src.lines[src.lines.length - 1] === "") src.lines.pop();
+    sources.set(p.file, src);
+  }
+  if (src.error) { // no text to show: the instructions always can be
+    $("code-body").innerHTML = `<div class="empty">${esc(base(p.file))}: ${esc(src.error)}. Its instructions are shown instead.</div>`;
+    return loadAsm(f, scroll, true);
+  }
+  const marks = breakLines(p.file);
+  const outer = frame > 0;
+  $("code-body").innerHTML = `<table class="src" data-file="${esc(p.file)}"><tbody>` + src.lines.map((t, i) => {
+    const n = i + 1, m = marks.get(n);
+    return `<tr data-line="${n}" class="${n === p.line ? "cur" + (outer ? " outer" : "") : ""}${m ? " bp" + (m.waiting ? " waiting" : "") : ""}"><td class="g" title="${m ? "Remove the breakpoint" : "Set a breakpoint here"}"></td><td class="n">${n}</td><td>${esc(t) || " "}</td></tr>`;
+  }).join("") + `</tbody></table>`;
+  if (scroll) reveal();
+}
+async function loadAsm(f, scroll, keepNote) {
+  $("code-title").textContent = "Instructions";
+  $("code-file").textContent = f.function;
+  if (!stable() && st.state !== "ready" && st.state !== "running") { if (!keepNote) $("code-body").innerHTML = `<div class="empty">Its instructions can be read when its call returns.</div>`; return; }
+  const r = await get(`${D}/code?frame=${frame}`);
+  if (r.status !== 200) { if (!keepNote) $("code-body").innerHTML = `<div class="empty">${esc(r.body.error || "The instructions cannot be read now.")}</div>`; return; }
+  const c = r.body, outer = frame > 0;
+  const html = `<table class="src asm"><tbody>` + c.insns.map((x) =>
+    `<tr class="${x.pc === c.pc ? "cur" + (outer ? " outer" : "") : ""}${x.breakpoint ? " bp" : ""}"><td class="g"></td><td class="n">${x.pc}</td><td>${esc(x.text)}</td><td class="l">${x.source_line ? esc(base(x.source)) + ":" + x.source_line + "  " : ""}${x.line ? "line " + x.line : ""}</td></tr>`).join("") + `</tbody></table>`;
+  if (keepNote) $("code-body").insertAdjacentHTML("beforeend", html); else $("code-body").innerHTML = html;
+  if (scroll) reveal();
+}
+function reveal() {
+  const cur = $("code-body").querySelector("tr.cur");
+  if (cur) cur.scrollIntoView({ block: "center" });
+}
+$("v-source").addEventListener("click", () => { view = "source"; loadCode(true); });
+$("v-asm").addEventListener("click", () => { view = "asm"; loadCode(true); });
+$("lang").addEventListener("change", (ev) => { lang = ev.target.value; renderFrames(); renderState(); loadCode(true); });
+
+// ---- breakpoints ------------------------------------------------------------------
+function breakLines(file) { // line -> {id, waiting}: the breakpoints of a file, by the line each is at
+  const m = new Map();
+  for (const b of bps) {
+    if (b.file && base(b.file) === base(file)) m.set(b.line_at || b.line, { id: b.id, waiting: !b.at.length });
+    for (const a of b.at) { // one set at a function, or in the other of a function's two files
+      if (a.file === file && !m.has(a.line)) m.set(a.line, { id: b.id });
+      if (a.source === file && !m.has(a.source_line)) m.set(a.source_line, { id: b.id });
+    }
+  }
+  return m;
+}
+async function loadBreaks() {
+  const r = await get("/api/debug");
+  if (r.status !== 200) return;
+  bps = r.body.breakpoints;
+  $("bps").innerHTML = bps.map((b) => {
+    const what = b.function ? `${esc(b.function)}` : `${esc(base(b.file))}:${b.line_at || b.line}`;
+    const sub = !b.at.length ? "waiting for its code" : b.function ? "a function" : b.line_at !== b.line ? `asked for line ${b.line}` : b.at.length > 1 ? `${b.at.length} places` : "";
+    return `<li><span class="dot ${b.at.length ? "critical" : ""}"></span><span class="fn">${what}</span><span class="at">${esc(sub)}</span><button type="button" data-bp="${b.id}" aria-label="Remove this breakpoint">×</button></li>`;
+  }).join("");
+  $("bps-empty").hidden = bps.length > 0;
+  const others = r.body.processes.filter((p) => p.pid !== pid);
+  $("others").hidden = !others.length;
+  $("others").innerHTML = others.length ? "also debugged: " + others.map((p) =>
+    `<a data-pid="${p.pid}" title="${esc(p.entry)}">${p.pid}${p.state === "paused" ? " (paused)" : ""}</a>`).join(", ") : "";
+  const table = $("code-body").querySelector("table.src:not(.asm)");
+  if (table) { // the marks beside the lines shown
+    const marks = breakLines(table.dataset.file);
+    for (const tr of table.rows) {
+      const m = marks.get(Number(tr.dataset.line));
+      tr.classList.toggle("bp", !!m); tr.classList.toggle("waiting", !!(m && m.waiting));
+    }
+  }
+}
+$("others").addEventListener("click", (ev) => { const a = ev.target.closest("a[data-pid]"); if (a) window.open(`/debug#pid=${a.dataset.pid}`, `mlwsvm-debug-${a.dataset.pid}`); });
+$("code-body").addEventListener("click", async (ev) => {
+  const g = ev.target.closest("td.g"), table = ev.target.closest("table.src");
+  if (!g || !table || table.classList.contains("asm")) return;
+  const line = Number(g.parentElement.dataset.line), file = table.dataset.file;
+  const m = breakLines(file).get(line);
+  if (m) await post(`/api/debug/breakpoints/${m.id}/delete`);
+  else {
+    const r = await post("/api/debug/breakpoints", { file, line });
+    if (r.ok && !r.body.at.length) note(`No code is at line ${line} or the ten after it: the breakpoint waits for some.`);
+    else if (r.ok && r.body.line_at !== line) note(`Line ${line} has no code: the breakpoint is at line ${r.body.line_at}.`);
+  }
+  loadBreaks();
+});
+$("bps").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-bp]");
+  if (!b) return;
+  await post(`/api/debug/breakpoints/${b.dataset.bp}/delete`);
+  loadBreaks();
+});
+$("bp-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const v = $("bp-fn").value.trim(), m = v.match(/^(.+):(\d+)$/);
+  if (!v) return;
+  const r = await post("/api/debug/breakpoints", m ? { file: m[1], line: Number(m[2]) } : { function: v });
+  if (r.ok) { $("bp-fn").value = ""; if (!r.body.at.length) note("No code loaded matches that yet: the breakpoint waits for some."); }
+  loadBreaks();
+});
+
+// ---- variables --------------------------------------------------------------------
+async function loadVars() {
+  const f = st.frames && st.frames[frame];
+  $("vars-of").textContent = f ? f.function : "";
+  if (!f || !stable()) {
+    vars = null;
+    $("vars").innerHTML = "";
+    $("vars-empty").hidden = false;
+    $("vars-empty").textContent = !f ? "Nothing to read." : st.away ? "It is in a blocking call: its variables can be read when the call returns."
+      : "It is running. Pause it to read its variables.";
+    return;
+  }
+  const r = await get(`${D}/vars?frame=${frame}`);
+  if (r.status !== 200) { vars = null; $("vars").innerHTML = ""; $("vars-empty").hidden = false; $("vars-empty").textContent = r.body.error || "They cannot be read now."; return; }
+  vars = r.body; kids = new Map();
+  const fn = f.function + " "; // (what was opened in this function before is opened again)
+  await Promise.all([...open].filter((k) => k.startsWith(fn)).map((k) => loadKids(f.function, k.slice(fn.length))));
+  renderVars();
+}
+async function loadKids(fn, path) {
+  const r = await get(`${D}/vars?frame=${frame}&path=${encodeURIComponent(path)}`);
+  if (r.status === 200) kids.set(path, r.body); else open.delete(fn + " " + path); // (no longer there: closed)
+}
+function varRow(v, depth, fn) {
+  const key = fn + " " + v.path;
+  const isOpen = open.has(key) && kids.has(v.path);
+  now.set(key, v.value);
+  const changed = st.state === "paused" && before.has(key) && before.get(key) !== v.value;
+  let html = `<div class="v" style="--d:${depth}"><span class="tw" data-path="${esc(v.path)}">${v.children ? (isOpen ? "▾" : "▸") : ""}</span>` +
+    `<span class="name">${esc(v.name)}</span><span class="val${changed ? " changed" : ""}">${esc(v.value)}</span><span class="kind">${esc(v.kind)}</span></div>`;
+  if (isOpen) {
+    const k = kids.get(v.path);
+    html += k.children.map((c) => varRow(c, depth + 1, fn)).join("");
+    if (k.count > k.from + k.children.length) html += `<div class="v" style="--d:${depth + 1}"><span class="tw"></span><span class="kind" style="margin:0">… ${k.count - k.children.length} more</span></div>`;
+  }
+  return html;
+}
+const shut = new Set(["F", "P"]); // the banks not shown until asked for
+function renderVars() {
+  if (!vars) return;
+  const fn = st.frames[frame].function;
+  let html = vars.locals.map((v) => varRow(v, 0, fn)).join("");
+  if (!vars.locals.length) html += `<div class="empty">This function names none of its registers here.</div>`;
+  for (const bank of ["I", "F", "R", "P"]) {
+    const regs = vars.registers[bank];
+    if (!regs.length) continue;
+    html += `<div class="group" data-bank="${bank}">${shut.has(bank) ? "▸" : "▾"} ${bank} registers (${regs.length})</div>`;
+    if (!shut.has(bank)) html += regs.map((v) => varRow(v, 0, fn)).join("");
+  }
+  $("vars").innerHTML = html;
+  $("vars-empty").hidden = true;
+}
+$("vars").addEventListener("click", async (ev) => {
+  const g = ev.target.closest(".group");
+  if (g) { const b = g.dataset.bank; if (shut.has(b)) shut.delete(b); else shut.add(b); renderVars(); return; }
+  const tw = ev.target.closest(".tw[data-path]");
+  if (!tw || !tw.textContent) return;
+  const path = tw.dataset.path, fn = st.frames[frame].function, key = fn + " " + path;
+  if (open.has(key)) open.delete(key);
+  else { open.add(key); await loadKids(fn, path); }
+  renderVars();
+});
+
+// ---- the mailbox, the process and its log: once a second ----------------------------
+let sideAt = 0;
+async function pollSide() {
+  if (Date.now() - sideAt < 950) return;
+  sideAt = Date.now();
+  const [p, me, log] = await Promise.all([get(`/api/proc/${pid}`), get("/api/vm"), get(`/api/log?since=${logNext}`)]);
+  if (me.status === 200 && me.body.you) { $("who").hidden = false; $("who-text").textContent = `${me.body.you.label} · ${me.body.you.scope}`; }
+  if (p.status === 200) {
+    const q = p.body, ms = q.messages || [];
+    $("mbox-count").textContent = q.mailbox ? `${q.mailbox} waiting` : "";
+    $("mbox").innerHTML = ms.map((m) => `<li><span class="fn">${esc(m.preview != null ? JSON.stringify(m.preview) : m.type)}</span><span class="at">${esc(m.type)}${m.size != null ? " · " + m.size + " B" : ""}</span></li>`).join("") +
+      (q.mailbox > ms.length ? `<li><span class="at" style="margin:0">… ${q.mailbox - ms.length} more</span></li>` : "");
+    $("mbox-empty").hidden = q.mailbox > 0;
+    $("mbox-empty").textContent = q.away ? "Its mailbox can be read when its call returns." : "No messages are waiting.";
+    const rows = [["Program", q.program_name ?? "–"], ["Entry", q.entry], ["Environment", q.env ?? "its program's"], ["Instructions", human(q.insns)],
+      ["Heap", human(q.heap_bytes) + "B"], ["Stack depth", q.depth], ["Messages", `${q.msgs_received} in, ${q.msgs_sent} out`],
+      ["Linked with", q.links.length ? q.links.join(", ") : "none"], ["Watched by", q.monitors.length ? q.monitors.join(", ") : "none"]];
+    $("proc").innerHTML = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+  }
+  if (log.status === 200 && log.body.entries) {
+    logNext = log.body.next;
+    logLines = logLines.concat(log.body.entries.filter((e) => e.pid === pid)).slice(-200);
+    const wrap = $("log").closest(".body"), follow = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 4;
+    $("log").innerHTML = logLines.map((e) => `<tr><td class="t">${(e.t_ns / 1e9).toFixed(3)} s</td><td class="t">${esc(e.event != null ? "event" : e.level)}</td><td class="msg">${esc(e.event != null ? e.event + " " + JSON.stringify(e.value) : e.text)}</td></tr>`).join("");
+    $("log-empty").hidden = logLines.length > 0;
+    $("log-count").textContent = logLines.length ? `${logLines.length} lines` : "";
+    if (follow) wrap.scrollTop = wrap.scrollHeight;
+  }
+}
+
+// ---- actions ------------------------------------------------------------------------
+async function act(what, body) {
+  const r = await post(`${D}/${what}`, body);
+  if (r.ok) { st = Object.assign({}, st, r.body); renderState(); }
+  clearTimeout(timer); timer = setTimeout(tick, 60); // (and see what came of it)
+}
+const step = (kind) => act("step", { kind, by: $("step-by").value });
+$("b-continue").addEventListener("click", () => act("continue"));
+$("b-pause").addEventListener("click", () => act("pause"));
+$("b-over").addEventListener("click", () => step("over"));
+$("b-into").addEventListener("click", () => step("into"));
+$("b-out").addEventListener("click", () => step("out"));
+$("b-attach").addEventListener("click", () => act("attach"));
+$("b-attach-pause").addEventListener("click", () => act("attach", { pause: true }));
+$("b-detach").addEventListener("click", () => act("detach"));
+$("b-kill").addEventListener("click", async () => {
+  if (!confirm(`Kill process ${pid}?`)) return;
+  await post(`/api/proc/${pid}/kill`);
+  clearTimeout(timer); timer = setTimeout(tick, 100);
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.ctrlKey || ev.metaKey || ev.altKey || /^(INPUT|SELECT|TEXTAREA)$/.test(ev.target.tagName) || !st) return;
+  const paused = st.state === "paused";
+  const k = ev.key;
+  if ((k === "F8" || k === "c") && paused) act("continue");
+  else if ((k === "F10" || k === "n") && paused) step("over");
+  else if (k === "s" && paused) step("into");
+  else if (k === "o" && paused) step("out");
+  else if (k === "p" && st.debugged && !paused) act("pause");
+  else return;
+  ev.preventDefault();
+});
+document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+tick();
+</script>
+</body>
+</html>

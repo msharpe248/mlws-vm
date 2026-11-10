@@ -112,6 +112,14 @@ static bool pdebug_hook(Process *p, uint32_t pc) {
 
 void pdebug_enable(VM *vm) { vm->phook = pdebug_hook; }
 
+bool pdebug_entry(VM *vm, uint64_t pid) {
+    Process *p = vm_proc_at(vm, pid);
+    if (!p || vm->hook) return false;
+    p->dbg.hold = PDBG_ENTRY;
+    atomic_store(&p->dbg.on, true);
+    return true;
+}
+
 /* ---- breakpoints --------------------------------------------------------------- */
 
 static uint64_t mods_sig(VM *vm) {
@@ -537,18 +545,30 @@ static void code_json(StrBuf *b, const Process *p, uint32_t fi) {
 
 #define SOURCE_MAX ((size_t)4 << 20)
 
-/* Is file the text of some code loaded: a module's assembly, or a file its
- * `.loc`s name? Only those are read, for whoever may debug. */
-static bool is_source(VM *vm, const char *file) {
+/* The module some loaded code in `file` belongs to: a module's assembly, or a
+ * file its `.loc`s name. Only such files are read, for whoever may debug. */
+static const LModule *source_module(VM *vm, const char *file) {
     for (size_t m = 0; m < vm->mods.n; m++) {
         LModule *lm = vm->mods.v[m];
         if (lm->state != LM_READY) continue;
         for (uint32_t i = 0; i < lm->m->nsrcfiles; i++)
-            if (!strcmp(lm->m->srcfiles[i], file)) return true;
+            if (!strcmp(lm->m->srcfiles[i], file)) return lm;
         for (uint32_t i = 0; i < lm->m->nfuncs; i++)
-            if (lm->funcs[i].target == &lm->funcs[i] && lm->funcs[i].ncode && !strcmp(fn_file(&lm->funcs[i]), file)) return true;
+            if (lm->funcs[i].target == &lm->funcs[i] && lm->funcs[i].ncode && !strcmp(fn_file(&lm->funcs[i]), file)) return lm;
     }
-    return false;
+    return NULL;
+}
+
+/* Its text: the file as named, or (a compiler names a program's file as it was
+ * given it) one of that name beside the module's own file. NULL if neither reads. */
+static char *source_text(const LModule *lm, const char *file, size_t *len) {
+    char *text = read_file(file, len);
+    if (text || !lm->path) return text;
+    char *dir = path_dirname(lm->path), *beside = path_join(dir, file);
+    text = read_file(beside, len);
+    free(dir);
+    free(beside);
+    return text;
 }
 
 /* ---- requests ------------------------------------------------------------------ */
@@ -637,9 +657,10 @@ int pdebug_get(VM *vm, const char *path, const char *qs, StrBuf *out) {
     if (!strcmp(path, "/source")) {
         char file[1024];
         if (!qparam(qs, "file", file, sizeof file)) return fail(out, 400, "file=NAME is needed");
-        if (!is_source(vm, file)) return fail(out, 404, "no code loaded came from that file");
+        const LModule *lm = source_module(vm, file);
+        if (!lm) return fail(out, 404, "no code loaded came from that file");
         size_t len = 0;
-        char *text = read_file(file, &len);
+        char *text = source_text(lm, file, &len);
         if (!text) return fail(out, 404, "the file cannot be read: it may have moved since the code was made");
         if (len > SOURCE_MAX) {
             free(text);
@@ -761,6 +782,7 @@ int pdebug_post(VM *vm, const char *path, const char *body, size_t n, StrBuf *ou
     plat_unlock(p->lock);
     if (state == PROC_DONE || state == PROC_FAILED) return fail(out, 409, "the process has ended");
     if (!strcmp(path, "/attach")) {
+        if (p->prog && !strcmp(p->prog->path, "(serve)")) return fail(out, 403, "that process is mlwsvm serve's own: it is not to be debugged");
         static const char *const NAMES[] = {"pause"};
         char *v[1] = {0};
         if (n && !tools_json_flat(body, n, NAMES, v, 1)) return fail(out, 400, "expected {\"pause\": true} or nothing");
