@@ -594,7 +594,9 @@ function's instructions on request), the call stack, the variables of the
 frame chosen, which open to show what they hold and are marked when a step
 changed them, the messages waiting in its mailbox, the
 [environment](STDLIB.md#environments-env) it reads (the named one it has
-joined, or its program's: each value as JSON, a secret's never), the
+joined, or its program's: each value as JSON, a secret's never; values can
+be set, changed and deleted there, and it says how many other processes are
+in that environment, since a change is theirs too), the
 breakpoints, and the process's own lines of the log (the newest at the bottom or at the top, by
 the dashboard's own choice), and it names the other processes being
 debugged, each a click away. A click beside a line sets or removes a
