@@ -67,6 +67,7 @@ jobs:
         run: make CC=$CC check-fuzz
 
       - name: Tools (monitor, top, profiler, tracer)
+        timeout-minutes: 15 # (a run that hangs fails with its log, which one cancelled does not keep)
         run: make CC=$CC check-tools
 
       - name: Bindings generator (clang)
