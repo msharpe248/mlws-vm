@@ -443,7 +443,9 @@ $ mlwsvm run --monitor 0.0.0.0:7443 --monitor-cert cert.pem --monitor-key key.pe
   seconds to arrive and its answer 10 to be taken, and then the connection is
   dropped. The monitor serves 32 connections at once (others wait their turn),
   takes 8 KiB of headers (431 for more) and a 64 KiB body (413), and answers
-  503 while more than 64 MiB of answers wait to be taken.
+  503 while more than 64 MiB of answers wait to be taken. After a 431 or 413
+  it lets the rest of the request come for a second, unread, so that the
+  answer reaches its client.
 * **The page** is sent with headers that keep it out of any other site's
   frame, and let it run and fetch only what is its own
   (`Content-Security-Policy`, `X-Frame-Options`).

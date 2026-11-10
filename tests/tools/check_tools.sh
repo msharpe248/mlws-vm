@@ -1054,7 +1054,10 @@ if command -v curl >/dev/null 2>&1; then
     kill $SLOW1 $SLOW2 2>/dev/null || true
     wait $SLOW1 $SLOW2 2>/dev/null || true
     BIG=$(printf 'a%.0s' $(seq 1 900))
-    [ "$(get -H "$A" -H "X-A: $BIG$BIG$BIG$BIG$BIG" -H "X-B: $BIG$BIG$BIG$BIG$BIG" $U/api/vm)" = 431 ] || fail "net: headers over 8 KiB"
+    GOT=$(get -H "$A" -H "X-A: $BIG$BIG$BIG$BIG$BIG" -H "X-B: $BIG$BIG$BIG$BIG$BIG" $U/api/vm)
+    [ "$GOT" = 431 ] || fail "net: headers over 8 KiB ($GOT)"
+    GOT=$(head -c 70000 /dev/zero | tr '\0' 'a' | code -H "$A" --data-binary @- $U/api/proc/1/send)
+    [ "$GOT" = 413 ] && grep -q 'over 64 KiB' "$MOND/r" || fail "net: a body over 64 KiB ($GOT)"
     HEAD=$(curl -s -D - -o /dev/null $U/ | tr -d '\r')
     echo "$HEAD" | grep -qi '^X-Frame-Options: DENY$' || fail "net: the page's frame header ($HEAD)"
     echo "$HEAD" | grep -qi "^Content-Security-Policy: default-src 'none'; .*frame-ancestors 'none'$" || fail "net: the page's policy ($HEAD)"

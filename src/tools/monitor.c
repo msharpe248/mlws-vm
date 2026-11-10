@@ -608,9 +608,10 @@ static void top_text(StrBuf *b, Monitor *mon, VM *vm) {
 #define WRITE_DEADLINE_NS 10000000000ull /* and its answer taken within 10 s */
 #define HEAD_MAX 8192
 #define BODY_MAX 65536
+#define DRAIN_NS 1000000000ull           /* after an answer to a request not all read: the rest is let come for 1 s */
 #define OUT_MAX ((size_t)64 << 20) /* answers not yet taken: past this, a request is answered 503 */
 
-enum { CONN_HANDSHAKE, CONN_READ, CONN_WRITE };
+enum { CONN_HANDSHAKE, CONN_READ, CONN_WRITE, CONN_DRAIN };
 enum { IO_WAIT = -1, IO_FAIL = -2 }; /* conn_read and conn_write: not now; never */
 
 typedef struct Conn {
@@ -622,6 +623,7 @@ typedef struct Conn {
     StrBuf in;   /* the request, as far as it has come */
     StrBuf out;  /* the answer */
     size_t sent;
+    bool unread; /* answered before all of the request was read (too big, or none) */
 } Conn;
 
 /* Bytes read (0: the client has closed), or IO_WAIT, or IO_FAIL. */
@@ -1645,6 +1647,7 @@ static bool conn_step(Monitor *mon, VM *vm, Conn *c, uint64_t now) {
                 respond_json(c, status, status == 413   ? "{\"error\":\"the body is over 64 KiB\"}"
                                         : status == 431 ? "{\"error\":\"the request's headers are over 8 KiB\"}"
                                                         : "{\"error\":\"not a request\"}");
+                c->unread = true;
                 break;
             }
             char buf[4096];
@@ -1662,7 +1665,24 @@ static bool conn_step(Monitor *mon, VM *vm, Conn *c, uint64_t now) {
         if (r < 0) return false;
         c->sent += (size_t)r;
     }
-    return false;
+    if (!c->unread) return false;
+    /* The rest of what the client sent is still coming, or waiting to be read.
+     * A socket closed with that unread is reset, and the reset can reach the
+     * client before it has read the answer (on Windows it does). So the
+     * answer's end is marked, and what comes is read and dropped until the
+     * client closes, for a second at most, and so much at a step. */
+    if (c->state != CONN_DRAIN) {
+        c->state = CONN_DRAIN;
+        if (c->deadline > now + DRAIN_NS) c->deadline = now + DRAIN_NS;
+        if (!c->tls) plat_sock_shutdown_write(c->fd);
+    }
+    for (int i = 0; i < 16; i++) {
+        char buf[4096];
+        long r = conn_read(c, buf, sizeof buf);
+        if (r == IO_WAIT) return true;
+        if (r <= 0) return false;
+    }
+    return true;
 }
 
 static void monitor_poll(VM *vm, uint64_t wait_ns) {
