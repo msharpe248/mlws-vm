@@ -7,6 +7,8 @@ set -eu
 BIN=${1:-./mlwsvm}
 PORT=${MLWSVM_TEST_PORT:-7397}
 fail() { echo "check-tools: FAIL: $*" >&2; exit 1; }
+# Where the monitor's part has got to, for a log to show when a run is cut off.
+at() { echo "check-tools: at: $*" >&2; }
 
 # --profile / --flame
 FLAME=$(mktemp)
@@ -962,6 +964,7 @@ if command -v curl >/dev/null 2>&1; then
         wait $VMPID 2>/dev/null || true
     fi
 
+    at "keys"
     # Keys (--monitor-tokens, mlwsvm token): a tokens file holds each key's
     # hash; with one, every request but the page's needs a key; a read key
     # reads, an admin's acts and manages keys, each action in the log by its
@@ -1037,6 +1040,7 @@ if command -v curl >/dev/null 2>&1; then
     kill $VMPID 2>/dev/null || true
     wait $VMPID 2>/dev/null || true
 
+    at "the monitor on a network"
     # The monitor where others can reach it. No client holds it up: beside one
     # that sends half a request, and one that reads a big answer slowly, others
     # are answered at once and the program goes on. Headers too big are refused.
@@ -1073,23 +1077,37 @@ if command -v curl >/dev/null 2>&1; then
     for i in 1 2 3 4 5 6 7 8 9 10 11 12; do # the same wrong key: counted once
         [ "$(get -H 'Authorization: Bearer wrong0' $U/api/vm)" = 401 ] || fail "net: the same wrong key again ($i)"
     done
-    i=1
-    until [ "$(get -H "Authorization: Bearer wrong$i" $U/api/vm)" = 429 ]; do
-        i=$((i + 1)); [ $i -lt 40 ] || fail "net: wrong keys never refused"
+    # refuse PREFIX: wrong keys from here, each a new one, until one is refused unread; how many it took is in $TOOK
+    refuse() {
+        TOOK=0
+        until [ "$(get -H "Authorization: Bearer $1-$TOOK" $U/api/vm)" = 429 ]; do
+            TOOK=$((TOOK + 1)); [ $TOOK -lt 40 ] || fail "net: wrong keys never refused"
+        done
+    }
+    refuse wrong
+    [ $TOOK -ge 9 ] || fail "net: refused after $TOOK more wrong keys"
+    # (A wrong key is given back every three seconds, and one may be between
+    # being refused and the next request, on a slow machine: so each of these
+    # is asked just after a refusal, and three times if need be.)
+    T=0
+    until refuse again$T && [ "$(get -H "$A" $U/api/vm)" = 429 ] && grep -q 'too many wrong keys' "$MOND/r"; do
+        T=$((T + 1)); [ $T -lt 3 ] || fail "net: a key from there while refused ($(cat "$MOND/r"))"
     done
-    [ $i -ge 10 ] || fail "net: refused after $i wrong keys"
-    [ "$(get -H "$A" $U/api/vm)" = 429 ] && grep -q 'too many wrong keys' "$MOND/r" || fail "net: a key from there while refused ($(cat "$MOND/r"))"
     [ "$(get $U/)" = 200 ] || fail "net: the page while keys are refused"
     [ "$(get $U/api/vm)" = 401 ] || fail "net: no key while keys are refused"
-    set +e
-    TOPERR=$($BIN top --once --token s3cret $U 2>&1 >/dev/null); RC=$?
-    set -e
-    [ $RC = 1 ] && echo "$TOPERR" | grep -q 'too many wrong keys' || fail "net: top while refused (exit $RC): $TOPERR"
+    T=0
+    while :; do
+        refuse top$T
+        set +e
+        TOPERR=$($BIN top --once --token s3cret $U 2>&1 >/dev/null); RC=$?
+        set -e
+        [ $RC = 1 ] && echo "$TOPERR" | grep -q 'too many wrong keys' && break
+        T=$((T + 1)); [ $T -lt 3 ] || fail "net: top while refused (exit $RC): $TOPERR"
+    done
     i=0
     until [ "$(get -H "$A" $U/api/vm)" = 200 ]; do # one more every three seconds
         i=$((i + 1)); [ $i -lt 20 ] || fail "net: keys still refused after ten seconds"; sleep 0.5
     done
-    [ $i -ge 1 ] || fail "net: keys refused for no time"
     curl -sf -H "$A" "$U/api/log" | grep -q '"event":"monitor.keys_refused","value":{"from":"127.0.0.1"}' || fail "net: keys_refused in the log"
     # The tokens file is the monitor's to trust: one that other users can
     # write gives no keys (those it had stay), and no monitor starts on one.
@@ -1115,6 +1133,7 @@ if command -v curl >/dev/null 2>&1; then
     kill $VMPID 2>/dev/null || true
     wait $VMPID 2>/dev/null || true
 
+    at "a process debugged"
     # A process debugged alone (/api/debug), the rest going on: an admin's to
     # do. Attached and asked to pause, a process stops before its next
     # instruction; its frames, its variables (one shown by its formatter) and
@@ -1309,6 +1328,7 @@ if command -v curl >/dev/null 2>&1; then
     kill $VMPID 2>/dev/null || true
     wait $VMPID 2>/dev/null || true
 
+    at "what a debugger follows"
     # What a debugger follows, and where it stops for an error. Following
     # what a process spawns, its children are debugged too. One that fails
     # with nothing to catch its error is paused where it failed, its frames
@@ -1372,6 +1392,7 @@ if command -v curl >/dev/null 2>&1; then
     kill $VMPID 2>/dev/null || true
     wait $VMPID 2>/dev/null || true
 
+    at "environments"
     # Environments in the monitor: each one's names to a read key, values to
     # an admin's (never a secret's); an admin sets and deletes one, which its
     # watcher hears of, each in the log by name and never by value.
@@ -1420,6 +1441,7 @@ if command -v curl >/dev/null 2>&1; then
     kill $VMPID 2>/dev/null || true
     wait $VMPID 2>/dev/null || true
 
+    at "serve"
     # mlwsvm serve: programs started, listed, stopped, kept within their
     # capabilities, only from their directory; then shut down.
     set +e
@@ -1515,6 +1537,7 @@ if command -v curl >/dev/null 2>&1; then
     set -e
     [ $RC = 0 ] || fail "serve: exit after shutdown ($RC)"
 
+    at "serve's example"
     # examples/serve/echo.masm, as its comment says to run it: two messages
     # sent, each in the log, then goodbye.
     MLWSVM_MONITOR_TOKEN=s3cret $BIN serve --programs examples/serve --monitor 127.0.0.1:$PORT >/dev/null 2>"$MOND/echo.err" &

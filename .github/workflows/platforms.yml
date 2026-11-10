@@ -56,6 +56,7 @@ jobs:
 
       - name: Tools
         if: ${{ !cancelled() }}
+        timeout-minutes: 15 # (a run that hangs fails with its log, which one cancelled does not keep)
         run: make CC=clang check-tools
 
   windows-arm64:
@@ -117,6 +118,7 @@ jobs:
 
       - name: Tools
         if: ${{ !cancelled() }}
+        timeout-minutes: 15 # (a run that hangs fails with its log, which one cancelled does not keep)
         run: make CC=clang check-tools
 
   # Each check runs after a failed one; the job fails if any did.
@@ -196,6 +198,7 @@ jobs:
 
       - name: Tools
         if: ${{ !cancelled() }}
+        timeout-minutes: 15 # (a run that hangs fails with its log, which one cancelled does not keep)
         run: make CC="gcc -m32" check-tools
 
   # Debian under QEMU's user-mode emulation: slow, so the tests, GC stress,

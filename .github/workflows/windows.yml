@@ -104,6 +104,7 @@ jobs:
 
       - name: Tools (monitor, top, profiler, tracer)
         if: ${{ !cancelled() }}
+        timeout-minutes: 15 # (a run that hangs fails with its log, which one cancelled does not keep)
         run: make CC=clang check-tools
 
       - name: Bindings generator (clang)
