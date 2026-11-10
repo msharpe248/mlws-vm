@@ -197,8 +197,8 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12
       <input id="start-args" placeholder="arguments, separated by spaces" aria-label="Arguments">
       <input id="start-cap" placeholder="--cap, e.g. none" aria-label="Capabilities">
       <input id="start-quota" placeholder="--quota, e.g. heap=64M" aria-label="Quotas">
-      <label class="check" title="Its main process pauses before its first instruction, and its debugger opens"><input type="checkbox" id="start-debug"> paused, in the debugger</label>
       <button class="act" id="start-btn" type="button">Start</button>
+      <button class="act" id="start-debug-btn" type="button" title="Start it paused before its first instruction, and open its debugger">Debug</button>
     </div>
     <div class="table-wrap"><table class="mini" id="programs"><thead><tr><th>#</th><th class="text">Program</th><th class="text">Arguments</th><th class="text">Limits</th><th>PID</th><th class="text">State</th><th></th></tr></thead><tbody></tbody></table></div>
     <div class="empty" id="programs-empty">No program started yet.</div>
@@ -589,14 +589,15 @@ async function loadProgramFiles() {
     }).join("");
   sel.value = keep;
 }
-$("start-btn").addEventListener("click", async () => {
+// Start: the program chosen runs. Debug: it starts paused before its first instruction, in its debugger.
+async function startProgram(debug) {
   const path = $("start-path").value.trim();
   if (!path) return;
   const body = { path, args: $("start-args").value.split(/\s+/).filter(Boolean) };
   if ($("start-cap").value.trim()) body.cap = $("start-cap").value.trim();
   if ($("start-quota").value.trim()) body.quota = $("start-quota").value.trim();
-  if (!$("start-debug").checked) { await act("/api/programs", JSON.stringify(body), `started ${path}`); loadPrograms(); return; }
-  // Paused, in the debugger: its page is opened now, and told which process once the program has started.
+  if (!debug) { await act("/api/programs", JSON.stringify(body), `started ${path}`); loadPrograms(); return; }
+  // Its debugger's page is opened now, as the click is handled, and told which process once the program has started.
   body.debug = true;
   const w = window.open("/debug#starting", "_blank");
   try {
@@ -607,7 +608,9 @@ $("start-btn").addEventListener("click", async () => {
     else if (w) w.close();
   } catch (e) { showStatus(false, `started ${path}: no answer`); if (w) w.close(); }
   loadPrograms(); loadDebugged();
-});
+}
+$("start-btn").addEventListener("click", () => startProgram(false));
+$("start-debug-btn").addEventListener("click", () => startProgram(true));
 $("shutdown-btn").addEventListener("click", async () => {
   if (!confirm("Shut down this VM? Every program is stopped.")) return;
   await act("/api/shutdown", null, "shutting down");

@@ -586,9 +586,9 @@ once, each by itself.
 **The debugger's page**, `/debug#pid=N`, is the way to use it: a page for
 one process, in a tab of its own, so that several can be debugged side by
 side with the dashboard still there. **Debug**, in a process's details on the
-dashboard, pauses the process and opens it; under `mlwsvm serve`, a program
-can be started *paused, in the debugger*, its main stopped before its first
-instruction. The page shows the source with the line the process is at (the
+dashboard, pauses the process and opens it; under `mlwsvm serve`, **Debug**
+beside **Start** starts a program paused, its main stopped before its first
+instruction, in its debugger. The page shows the source with the line the process is at (the
 compiled language's own file where there is one, or the assembly, and the
 function's instructions on request), the call stack, the variables of the
 frame chosen, which open to show what they hold and are marked when a step
