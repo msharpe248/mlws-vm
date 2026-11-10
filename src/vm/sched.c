@@ -1680,6 +1680,35 @@ static void park_locked(Sched *s, PlatCond *cv, uint64_t timeout_ns) {
     s->nparked--;
 }
 
+/* A process as it is now: for the thread whose it is to read. */
+static void seen_now(Process *p, ProcSeen *s) {
+    const Frame *fr = p->nframes ? &p->frames[p->nframes - 1] : NULL;
+    s->fn = fr ? fr->fn : NULL;
+    s->pc = fr ? fr->pc : 0;
+    s->depth = p->nframes;
+    s->stack_bytes = PTR_SEG(p->sp) == SEG_STACK && PTR_OFF(p->sp) <= p->stack.size ? p->stack.size - PTR_OFF(p->sp) : 0;
+    s->insns = p->insns;
+    s->cpu_ns = p->cpu_ns;
+    s->heap_bytes = p->heap_bytes;
+    s->heap_peak = gc_heap_peak(p);
+    s->raw_bytes = p->raw_bytes;
+    s->objects = p->objects_allocated - p->gc_freed_objects;
+    s->gc_count = p->gc_count;
+    s->gc_ns = p->gc_ns;
+    s->thrown = p->exceptions_thrown;
+    s->msgs_sent = p->msgs_sent;
+}
+
+void sched_seen(Process *p, ProcSeen *s) {
+    bool away = p->state == PROC_NATIVE && p->bcall.state == BCALL_PENDING; /* (DONE is set with this lock held) */
+    if (away) *s = p->bcall.seen;
+    else seen_now(p, s);
+    s->away = away;
+    s->state = p->state;
+    s->mailbox = (size_t)atomic_load(&p->mcount);
+    s->msgs_received = p->msgs_received;
+}
+
 void sched_stop_world(VM *vm) {
     Sched *s = vm->sched;
     if (!s || !s->running || s->nrun <= 1) return;
@@ -2042,6 +2071,7 @@ static bool after_slice(Worker *w, Process *p, int r) {
         break;
     case SLICE_NATIVE: /* a blocking native call: the I/O pool makes it */
         p->state = PROC_NATIVE;
+        seen_now(p, &p->bcall.seen); /* what a tool reads of it until the call is done */
         s->io_inflight++;
         plat_unlock(p->lock);
         io_submit(s, p);

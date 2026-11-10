@@ -76,6 +76,8 @@ static bool fetch(const Target *t, const char *path, StrBuf *body, char *why, si
     if (good) sb_puts(body, start + 4);
     else if (ok && !why[0] && resp.s && !strncmp(resp.s, "HTTP/1.0 401", 12))
         snprintf(why, whylen, t->token[0] ? "the monitor does not know that key" : "the monitor needs a key: --token KEY");
+    else if (ok && !why[0] && resp.s && !strncmp(resp.s, "HTTP/1.0 429", 12))
+        snprintf(why, whylen, "too many wrong keys from this address: wait a few seconds");
     else if (ok && !why[0])
         snprintf(why, whylen, "the monitor did not answer %.*s%s", (int)strcspn(path, "?"), path,
                  !t->tls && (!resp.s || strncmp(resp.s, "HTTP/", 5)) ? " (one over TLS is https://HOST:PORT)" : "");

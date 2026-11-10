@@ -425,7 +425,7 @@ async function loadDetail() {
     $("detail-title").textContent = `Process ${p.pid} · ${p.entry}` + (p.program_name ? ` · ${p.program_name}` : "");
     const q = (v, f) => v == null ? "unlimited" : f(v);
     const rows = [
-      ["State", p.state], ["Instructions", human(p.insns)], ["CPU time", ms(p.cpu_ns)],
+      ["State", p.away ? p.state + " (in a blocking call: shown as it was when the call began)" : p.state], ["Instructions", human(p.insns)], ["CPU time", ms(p.cpu_ns)],
       ["Heap", `${bytes(p.heap_bytes)} (peak ${bytes(p.heap_peak)}, ${human(p.objects)} objects)`],
       ["Raw memory", bytes(p.raw_bytes)], ["Stack", bytes(p.stack_bytes) + `, ${p.depth} frames`],
       ["Mailbox", `${p.mailbox} waiting · ${human(p.msgs_received)} received · ${human(p.msgs_sent)} sent`],
@@ -481,9 +481,9 @@ function canAct() { return actionsOn && isAdmin(); }
 function isAdmin() { return !!(you && you.scope === "admin"); }
 function api(path) { return fetch(path, token ? { headers: { Authorization: `Bearer ${token}` } } : {}); }
 function apiJson(path) {
-  return api(path).then((r) => { if (r.status === 401) throw new NeedKey(); return r.json(); });
+  return api(path).then((r) => { if (r.status === 401 || r.status === 429) throw new NeedKey(r.status === 429); return r.json(); });
 }
-class NeedKey extends Error {}
+class NeedKey extends Error { constructor(wait) { super(); this.wait = wait; } }   // (wait: too many wrong keys came from here)
 function setToken(t) {
   token = t || null;
   try { if (token) sessionStorage.setItem("mlwsvm-token", token); else sessionStorage.removeItem("mlwsvm-token"); } catch (e) {}
@@ -859,7 +859,8 @@ async function tick() {
   } catch (e) {
     if (e instanceof NeedKey) {
       $("signin-card").hidden = false;
-      $("signin-note").textContent = token ? "That key is not one this monitor knows (or it was revoked). Paste another."
+      $("signin-note").textContent = e.wait ? "Too many wrong keys came from this address. Wait a few seconds, then paste the key again."
+        : token ? "That key is not one this monitor knows (or it was revoked). Paste another."
         : "Paste a key: the token printed when the VM started, or one made with mlwsvm token new.";
       $("conn").textContent = "needs a key"; $("conn-dot").className = "dot";
       return;

@@ -2458,8 +2458,20 @@ starts (`vm_mlog_enable`), and until then the natives check their arguments
 and look at one flag. An event's value becomes JSON as it is written, so the
 ring holds only text.
 
-A request is read before anything is stopped, within two seconds, so a slow
-client never holds the other workers. Reads are served with the world stopped;
+No client is waited for. A connection is a small state machine (`Conn`:
+handshake, read, write) stepped at each poll as far as its socket lets it: the
+request gathers in a buffer, the answer is written into another, and that is
+sent as its client takes it. So the world is stopped only while an answer is
+made, never while it is sent, and a client that sends slowly or does not read
+holds one of 32 places for 2 or 10 seconds and nothing else. Stopping the
+world stops the workers, not an I/O thread making a blocking native call,
+which allocates in its process's heap and, in a callback, runs its code; so a
+process is read through `sched_seen`, under its lock, and one whose call is
+still being made is read as it was when the call began (`BlockingCall.seen`,
+taken as the call is handed to the pool). Wrong keys are counted by address
+(`Wrong`: ten, and one back every three seconds; the last one's hash, so the
+same again is not counted), and past that a key from there is not looked at.
+Reads are served with the world stopped;
 actions (`--monitor-actions`) with it going, since a reload stops it itself:
 a kill claims the process as `kill` does, a message is parsed from JSON into
 the scratch heap that embedding hosts post from (`sched_post_json`, with the
@@ -2467,7 +2479,8 @@ JSON reader's errors returned rather than raised, since no process is there to
 raise them in), and reload and purge are the natives' own `vm_reload` and
 `vm_purge`. A key (`tools/keys.c`) is kept as its token's SHA-256, with a
 scope and a label; the tokens file holds the same, and is read again when its
-size or time changes, checked at each request (`keys_refresh`). A request's
+size, time or mode changes, checked at each request (`keys_refresh`), and only
+if no other user can write it (`plat_path_trusted`). A request's
 token is hashed and compared with every key's hash whole, so the time taken
 says nothing of it, and the key found is copied, since revoking one may move
 the others. `audit` writes each action with the label of the key that did it. With `--monitor-cert`, each connection is a TLS session first

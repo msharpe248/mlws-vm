@@ -336,6 +336,7 @@ MINGW* | MSYS* | CYGWIN*) ;;
     if command -v curl >/dev/null 2>&1; then
         NODES=$(curl -sf http://127.0.0.1:$PORT/api/nodes) || NODES="(no answer)"
         TOPN=$(curl -sf http://127.0.0.1:$PORT/top) || TOPN="(no answer)"
+        AWAY=$(curl -sf http://127.0.0.1:$PORT/api/proc/1) || AWAY="(no answer)"
     fi
     kill -CONT $FAR
     echo going >&4
@@ -352,6 +353,11 @@ MINGW* | MSYS* | CYGWIN*) ;;
         [ -n "$QUEUED" ] && [ "$QUEUED" -gt 1048576 ] || fail "/api/nodes: the backlog: $NODES"
         echo "$TOPN" | grep -q '^nodes (this VM: node 1):' || fail "/top: no nodes: $TOPN"
         echo "$TOPN" | grep -Eq '^ +2 - .* 1 +[0-9]+$' || fail "/top: node 2's line: $TOPN"
+        # Its main is reading a line meanwhile, a blocking call an I/O thread
+        # makes: it is shown as it was when the call began, where it made it.
+        echo "$AWAY" | grep -q '^{"pid":1,"state":"native","away":true,' || fail "/api/proc: a process in a blocking call: $AWAY"
+        echo "$AWAY" | grep -q '"messages":\[\],"backtrace":\["near.main+[0-9]* ([^"]*near.masm:50)"\]}$' || fail "/api/proc: where its call was made: $AWAY"
+        echo "$TOPN" | grep -Eq '^ +1 native .* near\.main\+[0-9]+ \(near\.masm:50\)$' || fail "/top: a process in a blocking call: $TOPN"
     fi
     rm -rf "${BUSYD:?}"
     ;;
@@ -934,13 +940,13 @@ if command -v curl >/dev/null 2>&1; then
     set -e
     if [ $TLS_HERE = 1 ]; then
         MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions --monitor-cert tests/net/_tls/cert.pem \
-            --monitor-key tests/net/_tls/key.pem tests/tools/_monitor/acted.masm >/dev/null 2>"$MOND/acted.err" &
+            --monitor-key tests/net/_tls/key.pem tests/tools/_monitor/acted.masm >/dev/null 2>"$MOND/tls.err" &
         VMPID=$!
         i=0
         until curl -sf --cacert tests/net/_tls/cert.pem https://localhost:$PORT/api/names 2>/dev/null | grep -q '"receiver"'; do
             i=$((i + 1)); [ $i -lt 50 ] || fail "monitor over TLS did not start"; sleep 0.1
         done
-        grep -q "^mlwsvm: monitor at https://" "$MOND/acted.err" || fail "TLS: https printed"
+        grep -q "^mlwsvm: monitor at https://" "$MOND/tls.err" || fail "TLS: https printed"
         [ "$(curl -s -o /dev/null -w '%{http_code}' --cacert tests/net/_tls/cert.pem -X POST -H "$A" https://localhost:$PORT/api/proc/2/kill)" = 200 ] || fail "TLS: an action"
         [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/api/vm)" != 200 ] || fail "TLS: plain HTTP answered"
         # mlwsvm top over HTTPS: with the authority, from the address the run
@@ -1020,6 +1026,81 @@ if command -v curl >/dev/null 2>&1; then
     echo "$LOG" | grep -q '"event":"monitor.kill","value":{"by":"ci","pid":2}' || fail "keys: an action's key in the log"
     $BIN token revoke --label late --file "$KF" || fail "token revoke"
     [ "$($BIN token list --file "$KF")" = "admin  ci" ] || fail "token revoke: the file ($(cat "$KF"))"
+    kill $VMPID 2>/dev/null || true
+    wait $VMPID 2>/dev/null || true
+
+    # The monitor where others can reach it. No client holds it up: beside one
+    # that sends half a request, and one that reads a big answer slowly, others
+    # are answered at once and the program goes on. Headers too big are refused.
+    # The page says it is for no frame and runs only its own script. Wrong keys
+    # from an address are counted, the same one again once: past ten, a key from
+    # there is refused unread for a few seconds, which the log says.
+    MLWSVM_MONITOR_TOKEN=s3cret $BIN run --monitor 127.0.0.1:$PORT --monitor-actions --monitor-tokens "$KF" tests/tools/_monitor/many.masm >/dev/null 2>"$MOND/net.err" &
+    VMPID=$!
+    i=0
+    until curl -sf -H "$A" $U/api/names 2>/dev/null | grep -q '"ticker"'; do
+        i=$((i + 1)); [ $i -lt 100 ] || fail "net: the monitor did not start"; sleep 0.1
+    done
+    curl -s --max-time 10 -o /dev/null -H "$A" -H 'Content-Length: 5000' --data 'x' $U/api/proc/1/send &
+    SLOW1=$!
+    curl -s --max-time 10 --limit-rate 2000 -o /dev/null -H "$A" $U/api/procs &
+    SLOW2=$!
+    sleep 0.5 # (each asked with a second to answer in: a monitor held up fails here, not later)
+    [ "$(curl -s --max-time 1 -o "$MOND/r" -w '%{http_code}' -H "$A" $U/api/vm)" = 200 ] || fail "net: a request beside a slow sender and a slow reader"
+    T0=$(curl -s --max-time 1 -H "$A" "$U/api/log" | sed 's/.*"next":\([0-9]*\).*/\1/')
+    sleep 1
+    T1=$(curl -s --max-time 1 -H "$A" "$U/api/log" | sed 's/.*"next":\([0-9]*\).*/\1/')
+    [ $((T1 - T0)) -ge 5 ] || fail "net: the program held up by slow clients ($T0 to $T1 log lines in a second)"
+    kill $SLOW1 $SLOW2 2>/dev/null || true
+    wait $SLOW1 $SLOW2 2>/dev/null || true
+    BIG=$(printf 'a%.0s' $(seq 1 900))
+    [ "$(get -H "$A" -H "X-A: $BIG$BIG$BIG$BIG$BIG" -H "X-B: $BIG$BIG$BIG$BIG$BIG" $U/api/vm)" = 431 ] || fail "net: headers over 8 KiB"
+    HEAD=$(curl -s -D - -o /dev/null $U/ | tr -d '\r')
+    echo "$HEAD" | grep -qi '^X-Frame-Options: DENY$' || fail "net: the page's frame header ($HEAD)"
+    echo "$HEAD" | grep -qi "^Content-Security-Policy: default-src 'none'; .*frame-ancestors 'none'$" || fail "net: the page's policy ($HEAD)"
+    curl -s -D - -o /dev/null -H "$A" $U/api/vm | grep -qi '^X-Content-Type-Options: nosniff' || fail "net: nosniff"
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12; do # the same wrong key: counted once
+        [ "$(get -H 'Authorization: Bearer wrong0' $U/api/vm)" = 401 ] || fail "net: the same wrong key again ($i)"
+    done
+    i=1
+    until [ "$(get -H "Authorization: Bearer wrong$i" $U/api/vm)" = 429 ]; do
+        i=$((i + 1)); [ $i -lt 40 ] || fail "net: wrong keys never refused"
+    done
+    [ $i -ge 10 ] || fail "net: refused after $i wrong keys"
+    [ "$(get -H "$A" $U/api/vm)" = 429 ] && grep -q 'too many wrong keys' "$MOND/r" || fail "net: a key from there while refused ($(cat "$MOND/r"))"
+    [ "$(get $U/)" = 200 ] || fail "net: the page while keys are refused"
+    [ "$(get $U/api/vm)" = 401 ] || fail "net: no key while keys are refused"
+    set +e
+    TOPERR=$($BIN top --once --token s3cret $U 2>&1 >/dev/null); RC=$?
+    set -e
+    [ $RC = 1 ] && echo "$TOPERR" | grep -q 'too many wrong keys' || fail "net: top while refused (exit $RC): $TOPERR"
+    i=0
+    until [ "$(get -H "$A" $U/api/vm)" = 200 ]; do # one more every three seconds
+        i=$((i + 1)); [ $i -lt 20 ] || fail "net: keys still refused after ten seconds"; sleep 0.5
+    done
+    [ $i -ge 1 ] || fail "net: keys refused for no time"
+    curl -sf -H "$A" "$U/api/log" | grep -q '"event":"monitor.keys_refused","value":{"from":"127.0.0.1"}' || fail "net: keys_refused in the log"
+    # The tokens file is the monitor's to trust: one that other users can
+    # write gives no keys (those it had stay), and no monitor starts on one.
+    # mlwsvm token writes one that only its owner can, whatever the umask.
+    case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*) ;;
+    *)
+        chmod 666 "$KF"
+        [ "$(get -H "$A" $U/api/vm)" = 200 ] || fail "net: the keys it had, with the file open to others"
+        curl -sf -H "$A" "$U/api/log" | grep -q '"event":"monitor.keys_unread","value":{"error":"[^"]*tokens is writable by other users (mode 666)"}' || fail "net: keys_unread in the log"
+        set +e
+        BADERR=$($BIN run --monitor 127.0.0.1:$((PORT + 1)) --monitor-tokens "$KF" examples/hello.masm 2>&1 >/dev/null); RC=$?
+        set -e
+        [ $RC = 1 ] && echo "$BADERR" | grep -q 'tokens is writable by other users' || fail "a tokens file others can write (exit $RC): $BADERR"
+        chmod 600 "$KF"
+        (umask 000; $BIN token new --label open --file "$MOND/tokens2" >/dev/null 2>&1; $BIN token new --label two --file "$MOND/tokens2" >/dev/null 2>&1)
+        case "$(ls -l "$MOND/tokens2")" in
+        -rw-r--r--*) ;;
+        *) fail "token new: the file's mode ($(ls -l "$MOND/tokens2"))" ;;
+        esac
+        ;;
+    esac
     kill $VMPID 2>/dev/null || true
     wait $VMPID 2>/dev/null || true
 
@@ -1161,6 +1242,11 @@ if command -v curl >/dev/null 2>&1; then
     curl -sf $U/api/programs | grep -q '"path":"echo.masm","cap":null,"quota":null,"args":\["2"\],"pid":[0-9]*,"state":"done","exit":0' || fail "echo: done ($(curl -sf $U/api/programs))"
     [ "$(code -H "$A" $U/api/shutdown)" = 200 ] || fail "echo: shutdown"
     wait $VMPID || fail "echo: serve's exit"
+    # A VM run in the background here wrote its errors to a file of its own: a
+    # sanitizer's report in one would otherwise go unseen.
+    if grep -l "Sanitizer" "$MOND"/*.err >/dev/null 2>&1; then
+        fail "a sanitizer's report from a VM in the background: $(grep -h -A14 "Sanitizer" "$MOND"/*.err | head -45)"
+    fi
     rm -rf "${MOND:?}"
 fi
 echo "check-tools: profile, .loc, bundle, dap, node, names, cache, lib, --also, opt, fuzz, trace, jit, monitor, top OK"

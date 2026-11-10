@@ -509,11 +509,26 @@ typedef struct {
     struct PlatLock *lock;
 } DeferredFinalizer;
 
+/* What a tool reads of a process with the world stopped (sched_seen). The
+ * world stopped is the workers: a blocking native call of the process may
+ * still be running on an I/O thread, which allocates in its heap and, in a
+ * callback, runs its code. Then (away) these are as they were when the call
+ * began, and its frames, stack, heap and mailbox are not to be read. */
+typedef struct {
+    bool away;
+    int state;
+    const Function *fn; /* where it is: NULL with no frame */
+    uint32_t pc, depth, stack_bytes;
+    uint64_t insns, cpu_ns, heap_bytes, heap_peak, raw_bytes, objects, gc_count, gc_ns, thrown, msgs_sent, msgs_received;
+    size_t mailbox;
+} ProcSeen;
+
 /* A blocking native call in progress: made by an I/O thread, then completed
  * when the ncall instruction runs again. */
 enum { BCALL_NONE = 0, BCALL_PENDING, BCALL_DONE };
 typedef struct {
     int state;
+    ProcSeen seen; /* the process as the call began */
     const NativeDef *nd;
     const Insn *insn;
     Word args[NATIVE_MAX_ARGS], rets[NATIVE_MAX_RETS]; /* GC roots while active */
@@ -941,6 +956,8 @@ bool sched_abandoned(VM *vm); /* a blocking native call never returned: the VM c
  * other processes' state), and let them continue. No-ops when single-threaded. */
 void sched_stop_world(VM *vm);
 void sched_start_world(VM *vm);
+/* A process as a tool may read it, the world stopped and p->lock held (ProcSeen). */
+void sched_seen(Process *p, ProcSeen *out);
 /* The process table, for tools: only while the world is stopped. */
 Process *vm_proc_at(VM *vm, uint64_t pid); /* any process still in the table */
 uint64_t vm_pid_end(VM *vm);               /* one past the highest pid assigned */

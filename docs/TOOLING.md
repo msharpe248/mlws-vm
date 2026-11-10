@@ -437,6 +437,16 @@ $ mlwsvm run --monitor 0.0.0.0:7443 --monitor-cert cert.pem --monitor-key key.pe
 * **TLS** (`--monitor-cert FILE --monitor-key FILE`, PEM): the dashboard and the
   API over HTTPS, and nothing over plain HTTP. It needs OpenSSL or LibreSSL at
   run time, as `std.tls` does; so does `mlwsvm top https://HOST:PORT`.
+* **Clients** hold nothing up. A request is read as its bytes come and its
+  answer written as its client takes it, between the program's time slices, so
+  one that sends slowly, or does not read, waits by itself: a request has 2
+  seconds to arrive and its answer 10 to be taken, and then the connection is
+  dropped. The monitor serves 32 connections at once (others wait their turn),
+  takes 8 KiB of headers (431 for more) and a 64 KiB body (413), and answers
+  503 while more than 64 MiB of answers wait to be taken.
+* **The page** is sent with headers that keep it out of any other site's
+  frame, and let it run and fetch only what is its own
+  (`Content-Security-Policy`, `X-Frame-Options`).
 
 ### Web dashboard: `GET /`
 
@@ -460,8 +470,8 @@ modules, names, nodes, graph, environments and keys every five).
 | Endpoint | Returns |
 |---|---|
 | `GET /api/vm` | `vm` (`"mlwsvm"`), `uptime_ns`, `processes` (live), `spawned`, `max_live`, `slices`, `insns` (all processes), `heap_bytes`, `raw_bytes`, `modules`, `main_pid` |
-| `GET /api/procs` | an array, per live process: `pid`, `program` and `program_name` (the program it belongs to: its number, from 0, and file, as `--also` or `mlwsvm serve` started it), `env` (the named environment it is in, or null: its program's), `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors`, and `far_links`, `far_monitors` and `far_watching`, its ties with processes on other nodes (`node` and `pid`: a whole pid can be larger than JavaScript's numbers hold exactly) |
-| `GET /api/proc/PID` | the same for one process, plus `quota` (`heap`, `raw`, `mailbox`, `insns`, `foreign`, `os`; `null` = unlimited), `messages` (the first 20 waiting: `type`, and `size` or a short `preview`) and `backtrace` |
+| `GET /api/procs` | an array, per live process: `pid`, `program` and `program_name` (the program it belongs to: its number, from 0, and file, as `--also` or `mlwsvm serve` started it), `env` (the named environment it is in, or null: its program's), `state` (`ready` / `running` / `waiting` / `sleeping` / `native`: in a blocking native call / `io`: waiting for a pipe or socket), `away` (true while an I/O thread is still making that blocking call: the rest is then as it was when the call began), `entry`, `function`, `line`, `insns`, `cpu_ns`, `heap_bytes`, `heap_peak`, `raw_bytes`, `stack_bytes`, `depth`, `mailbox`, `msgs_sent`, `msgs_received`, `gc_count`, `gc_ns`, `exceptions`, `objects`, `links`, `monitors`, and `far_links`, `far_monitors` and `far_watching`, its ties with processes on other nodes (`node` and `pid`: a whole pid can be larger than JavaScript's numbers hold exactly) |
+| `GET /api/proc/PID` | the same for one process, plus `quota` (`heap`, `raw`, `mailbox`, `insns`, `foreign`, `os`; `null` = unlimited), `messages` (the first 20 waiting: `type`, and `size` or a short `preview`) and `backtrace`. A process in a blocking call that is still being made (`away`) is shown as it was when the call began: no `messages`, and for `backtrace` where it made the call |
 | `GET /api/exits` | the last 64 finished processes, newest first: `pid`, `entry`, `program`, `program_name`, `main` (its program's main), `failed`, `code`, `exit`, `insns`, `cpu_ns`, `ago_ns` |
 | `GET /api/log?since=N` | the log's entries after number `N` (0: all it has), oldest first: `seq`, `t_ns` (since the VM started), `pid`, `program` and `program_name` (null for the monitor's own), and `level` and `text`, or `event` and `value` (JSON); with `next`, the number to ask from next time, and `lost`, how many were overwritten before being asked for |
 | `GET /api/modules` | every module loaded, each version in the order loaded: `name`, `path`, `version` (1, 2, ...), `current`, `state` (`ready`, `failed`, `purged`), `functions`, `globals_bytes` |
@@ -520,6 +530,19 @@ request). The monitor reads the file again whenever it changes, so a key added
 or removed takes effect at once; a file that no longer reads leaves the keys as
 they were, and the log says why (`monitor.keys_unread`). A file that is not
 there yet has no keys.
+
+Whoever can write the file can make a key. So the monitor takes none from a
+file that other users can write, or that another user owns (the administrator
+aside): it does not start on one, and one that becomes so while it runs leaves
+the keys as they were. `mlwsvm token` writes a file that only its owner can
+write, whatever the umask. Keep its directory yours as well.
+
+**Wrong keys** are counted by the address they come from. An address may send
+ten, and one more every three seconds; past that, a request with a key from
+there is refused unread (429) until the next is due, so a key cannot be found
+by trying, and the log says so once a minute (`monitor.keys_refused`, with
+`from`). The same wrong key again counts once, so a page left open with a key
+since revoked uses up nothing. A request with no key is not counted.
 
 `mlwsvm token` keeps the file:
 

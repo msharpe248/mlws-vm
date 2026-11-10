@@ -1,8 +1,11 @@
 /* monitor.c - `--monitor HOST:PORT`: a tiny HTTP/1.0 server polled by the
- * first worker thread between time slices, so it needs no thread of its own.
- * Each request is served with the other workers paused (sched_stop_world), so
- * it can read every process. It serves read-only JSON statistics, a plain-text
- * table for `mlwsvm top`, and the embedded web dashboard. See docs/TOOLING.md. */
+ * first worker thread between time slices, so it needs no thread of its own,
+ * and it waits for no client: a connection is read and written as far as it
+ * goes at each poll. A read is answered with the other workers paused
+ * (sched_stop_world), so it can read every process (one in a blocking call an
+ * I/O thread is making, as it was when the call began: sched_seen). It serves
+ * JSON statistics, a plain-text table for `mlwsvm top`, the embedded web
+ * dashboard, and, to an admin's key, actions. See docs/TOOLING.md. */
 #include <ctype.h>
 #include <math.h>
 
@@ -16,8 +19,31 @@
 extern const char DASHBOARD_HTML[];
 extern const size_t DASHBOARD_HTML_LEN;
 
+#define CONNS_MAX 32 /* connections at once; others wait to be accepted */
+
+/* Wrong keys, counted by the address they came from: WRONG_MAX at once, and
+ * one more every WRONG_AGAIN_NS. Past that, a request with a key is refused
+ * unread (429), so a key cannot be found by trying. The same wrong key again
+ * (a page left open with a key since revoked) counts once. */
+#define WRONG_ADDRS 16
+#define WRONG_MAX 10
+#define WRONG_AGAIN_NS 3000000000ull
+#define WRONG_LOG_NS 60000000000ull /* the log says so once a minute for an address */
+typedef struct {
+    char ip[64];
+    uint32_t n;        /* wrong keys counted, less those the time since has given back */
+    uint64_t since_ns; /* when the count was last brought up to date */
+    uint64_t logged_ns;
+    uint8_t last[32];  /* the last wrong key's hash */
+} Wrong;
+
+struct Conn;
+
 typedef struct Monitor {
     int fd;
+    struct Conn *conns[CONNS_MAX];
+    int nconns;
+    Wrong wrong[WRONG_ADDRS];
     char addr[96]; /* HOST:PORT */
     char host[64];
     int port;
@@ -26,6 +52,7 @@ typedef struct Monitor {
     MonKeyVec keys;    /* every key: its own, the tokens file's, and those made with no file */
     char *keyfile;     /* --monitor-tokens: NULL none */
     int64_t keyfile_mtime, keyfile_size;
+    uint32_t keyfile_mode;
     bool keyfile_seen;
     bool need_key;     /* (a tokens file) every request but the page's needs a key */
     char *cert, *key;  /* --monitor-cert, --monitor-key: TLS */
@@ -143,16 +170,16 @@ static void value_brief(StrBuf *b, Word v, uint8_t tag) {
     sb_putc(b, '}');
 }
 
-static uint32_t stack_bytes(const Process *p) {
-    return PTR_SEG(p->sp) == SEG_STACK && PTR_OFF(p->sp) <= p->stack.size ? p->stack.size - PTR_OFF(p->sp) : 0;
-}
-
-static void proc_json(StrBuf *b, const Monitor *mon, VM *vm, const Process *p, bool detail) {
-    const Frame *fr = p->nframes ? &p->frames[p->nframes - 1] : NULL;
-    uint32_t pc = fr ? fr->pc : 0;
+/* A process, read as sched_seen gives it: one whose blocking call an I/O
+ * thread is still making is shown as it was when the call began (`away`), with
+ * where it made the call for a backtrace, and no messages. */
+static void proc_json(StrBuf *b, const Monitor *mon, VM *vm, Process *p, bool detail) {
+    ProcSeen s;
+    plat_lock(p->lock);
+    sched_seen(p, &s);
     sb_printf(b, "{\"pid\":%llu,\"state\":", (unsigned long long)p->pid);
-    json_str(b, STATE_NAMES[p->state]);
-    sb_puts(b, ",\"entry\":");
+    json_str(b, STATE_NAMES[s.state]);
+    sb_printf(b, ",\"away\":%s,\"entry\":", s.away ? "true" : "false");
     json_str(b, p->entry ? p->entry->name : "?");
     prog_json(b, mon, vm, p->prog ? (int32_t)p->prog->id : -1);
     const char *env = p->env ? env_name(p->env) : NULL; /* (NULL: its program's own) */
@@ -160,17 +187,17 @@ static void proc_json(StrBuf *b, const Monitor *mon, VM *vm, const Process *p, b
     if (env) json_str(b, env);
     else sb_puts(b, "null");
     sb_puts(b, ",\"function\":");
-    if (fr) {
+    if (s.fn) {
         StrBuf f = {0};
-        fn_qualname(&f, fr->fn);
+        fn_qualname(&f, s.fn);
         json_str(b, f.s);
         sb_free(&f);
         sb_puts(b, ",\"file\":");
-        json_str(b, fn_file(fr->fn));
-        sb_printf(b, ",\"line\":%u", fr->fn->mf->lines && pc < fr->fn->mf->ninsns ? fr->fn->mf->lines[pc] : 0);
+        json_str(b, fn_file(s.fn));
+        sb_printf(b, ",\"line\":%u", s.fn->mf->lines && s.pc < s.fn->mf->ninsns ? s.fn->mf->lines[s.pc] : 0);
         const char *file;
         uint32_t sline;
-        if (module_srcpos(fr->fn->mod->m, fr->fn->mf, pc, &file, &sline)) { /* `.loc`: the program's own line */
+        if (module_srcpos(s.fn->mod->m, s.fn->mf, s.pc, &file, &sline)) { /* `.loc`: the program's own line */
             sb_puts(b, ",\"source\":");
             json_str(b, file);
             sb_printf(b, ",\"source_line\":%u", sline);
@@ -182,11 +209,10 @@ static void proc_json(StrBuf *b, const Monitor *mon, VM *vm, const Process *p, b
               ",\"insns\":%llu,\"cpu_ns\":%llu,\"heap_bytes\":%llu,\"heap_peak\":%llu,\"raw_bytes\":%llu,"
               "\"stack_bytes\":%u,\"depth\":%u,\"mailbox\":%zu,\"msgs_sent\":%llu,\"msgs_received\":%llu,"
               "\"gc_count\":%llu,\"gc_ns\":%llu,\"exceptions\":%llu,\"objects\":%llu",
-              (unsigned long long)p->insns, (unsigned long long)p->cpu_ns, (unsigned long long)p->heap_bytes,
-              (unsigned long long)gc_heap_peak(p), (unsigned long long)p->raw_bytes, stack_bytes(p), p->nframes,
-              (size_t)p->mcount, (unsigned long long)p->msgs_sent, (unsigned long long)p->msgs_received,
-              (unsigned long long)p->gc_count, (unsigned long long)p->gc_ns, (unsigned long long)p->exceptions_thrown,
-              (unsigned long long)(p->objects_allocated - p->gc_freed_objects));
+              (unsigned long long)s.insns, (unsigned long long)s.cpu_ns, (unsigned long long)s.heap_bytes,
+              (unsigned long long)s.heap_peak, (unsigned long long)s.raw_bytes, s.stack_bytes, s.depth, s.mailbox,
+              (unsigned long long)s.msgs_sent, (unsigned long long)s.msgs_received, (unsigned long long)s.gc_count,
+              (unsigned long long)s.gc_ns, (unsigned long long)s.thrown, (unsigned long long)s.objects);
     sb_puts(b, ",\"links\":[");
     for (size_t i = 0; i < p->links.n; i++) sb_printf(b, "%s%llu", i ? "," : "", (unsigned long long)p->links.v[i]);
     sb_puts(b, "],\"monitors\":[");
@@ -207,16 +233,22 @@ static void proc_json(StrBuf *b, const Monitor *mon, VM *vm, const Process *p, b
         /* The first messages waiting: taken into its heap, then delivered. */
         sb_puts(b, "},\"messages\":[");
         size_t shown = 0;
-        for (size_t i = p->mbox_head; i < p->mbox.n && shown < 20; i++, shown++) {
+        for (size_t i = p->mbox_head; !s.away && i < p->mbox.n && shown < 20; i++, shown++) {
             if (shown) sb_putc(b, ',');
             value_brief(b, p->mbox.v[i].v, p->mbox.v[i].tag);
         }
-        for (size_t i = 0; i < p->inbox.n && shown < 20; i++, shown++) {
+        for (size_t i = 0; !s.away && i < p->inbox.n && shown < 20; i++, shown++) {
             if (shown) sb_putc(b, ',');
             value_brief(b, p->inbox.v[i].v, p->inbox.v[i].tag);
         }
         sb_puts(b, "],\"backtrace\":[");
-        for (uint32_t i = p->nframes; i-- > 0;) {
+        if (s.away && s.fn) { /* (its frames are its call's thread's: where the call was made) */
+            StrBuf loc = {0};
+            fmt_location(&loc, s.fn, s.pc);
+            json_str(b, loc.s);
+            sb_free(&loc);
+        }
+        for (uint32_t i = s.away ? 0 : p->nframes; i-- > 0;) {
             const Frame *f = &p->frames[i];
             uint32_t fpc = i == p->nframes - 1 ? f->pc : (f->pc ? f->pc - 1 : 0);
             StrBuf loc = {0};
@@ -228,16 +260,26 @@ static void proc_json(StrBuf *b, const Monitor *mon, VM *vm, const Process *p, b
         sb_puts(b, "]");
     }
     sb_putc(b, '}');
+    plat_unlock(p->lock);
+}
+
+/* A process's counters alone. */
+static void proc_seen(Process *p, ProcSeen *s) {
+    plat_lock(p->lock);
+    sched_seen(p, s);
+    plat_unlock(p->lock);
 }
 
 static void vm_json(StrBuf *b, VM *vm) {
     uint64_t insns = vm->insns_retired, heap = 0, raw = 0;
     for (uint64_t pid = 1, end = vm_pid_end(vm); pid < end; pid++) {
-        const Process *p = vm_proc_at(vm, pid);
+        Process *p = vm_proc_at(vm, pid);
         if (!p) continue;
-        insns += p->insns;
-        heap += p->heap_bytes;
-        raw += p->raw_bytes;
+        ProcSeen s;
+        proc_seen(p, &s);
+        insns += s.insns;
+        heap += s.heap_bytes;
+        raw += s.raw_bytes;
     }
     sb_printf(b,
               "{\"vm\":\"mlwsvm\",\"uptime_ns\":%llu,\"processes\":%llu,\"spawned\":%llu,\"max_live\":%llu,"
@@ -450,23 +492,30 @@ static void human(char *buf, size_t n, double v) {
     snprintf(buf, n, *u ? "%.1f%s" : "%.0f%s", v, u);
 }
 
+typedef struct {
+    uint64_t pid;
+    ProcSeen s;
+} TopRow;
+
 static int cmp_cpu(const void *a, const void *b) {
-    const Process *x = *(Process *const *)a, *y = *(Process *const *)b;
-    return x->cpu_ns < y->cpu_ns ? 1 : x->cpu_ns > y->cpu_ns ? -1 : 0;
+    const TopRow *x = a, *y = b;
+    return x->s.cpu_ns < y->s.cpu_ns ? 1 : x->s.cpu_ns > y->s.cpu_ns ? -1 : 0;
 }
 
 static void top_text(StrBuf *b, Monitor *mon, VM *vm) {
     uint64_t now = plat_now_ns(), insns = vm->insns_retired, heap = 0;
-    VEC(Process *) ps = {0};
+    VEC(TopRow) ps = {0};
     uint64_t end = vm_pid_end(vm);
     for (uint64_t pid = 1; pid < end; pid++) {
         Process *p = vm_proc_at(vm, pid);
         if (!p) continue;
-        insns += p->insns;
-        heap += p->heap_bytes;
-        VEC_PUSH(ps, p);
+        TopRow row = {.pid = p->pid};
+        proc_seen(p, &row.s);
+        insns += row.s.insns;
+        heap += row.s.heap_bytes;
+        VEC_PUSH(ps, row);
     }
-    qsort(ps.v, ps.n, sizeof *ps.v, cmp_cpu);
+    if (ps.n) qsort(ps.v, ps.n, sizeof *ps.v, cmp_cpu);
     char ib[16], hb[16];
     human(ib, sizeof ib, (double)insns);
     human(hb, sizeof hb, (double)heap);
@@ -477,28 +526,28 @@ static void top_text(StrBuf *b, Monitor *mon, VM *vm) {
               "STACK", "MBOX", "MSGS IN/OUT", "GC", "FUNCTION");
     double dt = mon->last_top_ns ? (double)(now - mon->last_top_ns) : 0;
     for (size_t i = 0; i < ps.n && i < 40; i++) {
-        Process *p = ps.v[i];
+        const ProcSeen *s = &ps.v[i].s;
+        uint64_t pid = ps.v[i].pid;
         /* %CPU since the previous /top sample; the first sample uses the whole uptime. */
-        bool have = dt > 0 && p->pid - 1 < mon->last_cpu.n;
-        uint64_t prev = have ? mon->last_cpu.v[p->pid - 1] : 0;
+        bool have = dt > 0 && pid - 1 < mon->last_cpu.n;
+        uint64_t prev = have ? mon->last_cpu.v[pid - 1] : 0;
         double span = have ? dt : (double)(now - vm->start_ns);
-        double cpu = span > 0 ? 100.0 * (double)(p->cpu_ns - prev) / span : 0;
-        char in[16], h[16], r[16], msgs[32];
-        human(in, sizeof in, (double)p->insns);
-        human(h, sizeof h, (double)p->heap_bytes);
-        human(r, sizeof r, (double)p->raw_bytes);
-        snprintf(msgs, sizeof msgs, "%llu/%llu", (unsigned long long)p->msgs_received, (unsigned long long)p->msgs_sent);
-        const Frame *fr = p->nframes ? &p->frames[p->nframes - 1] : NULL;
+        double cpu = span > 0 ? 100.0 * (double)(s->cpu_ns - prev) / span : 0;
+        char in[16], h[16], r[16], msgs[48];
+        human(in, sizeof in, (double)s->insns);
+        human(h, sizeof h, (double)s->heap_bytes);
+        human(r, sizeof r, (double)s->raw_bytes);
+        snprintf(msgs, sizeof msgs, "%llu/%llu", (unsigned long long)s->msgs_received, (unsigned long long)s->msgs_sent);
         StrBuf loc = {0};
-        if (fr) { /* compact: module.function+pc (file:line), file without its directory */
-            fn_qualname(&loc, fr->fn);
-            sb_printf(&loc, "+%u (", fr->pc);
-            fn_where(&loc, fr->fn, fr->pc, true);
+        if (s->fn) { /* compact: module.function+pc (file:line), file without its directory */
+            fn_qualname(&loc, s->fn);
+            sb_printf(&loc, "+%u (", s->pc);
+            fn_where(&loc, s->fn, s->pc, true);
             sb_putc(&loc, ')');
         }
-        sb_printf(b, "%6llu %-8s %5.1f %8s %8s %8s %7u %5zu %11s %4llu  %s\n", (unsigned long long)p->pid,
-                  STATE_NAMES[p->state], cpu, in, h, r, stack_bytes(p), (size_t)p->mcount, msgs,
-                  (unsigned long long)p->gc_count, loc.s ? loc.s : "-");
+        sb_printf(b, "%6llu %-8s %5.1f %8s %8s %8s %7u %5zu %11s %4llu  %s\n", (unsigned long long)pid,
+                  STATE_NAMES[s->state], cpu, in, h, r, s->stack_bytes, s->mailbox, msgs,
+                  (unsigned long long)s->gc_count, loc.s ? loc.s : "-");
         sb_free(&loc);
     }
     if (ps.n > 40) sb_printf(b, "   ... %zu more\n", ps.n - 40);
@@ -506,7 +555,7 @@ static void top_text(StrBuf *b, Monitor *mon, VM *vm) {
     VEC_GROW(mon->last_cpu, end - 1);
     for (size_t i = mon->last_cpu.n; i < end - 1; i++) mon->last_cpu.v[i] = 0;
     mon->last_cpu.n = end - 1;
-    for (size_t i = 0; i < ps.n; i++) mon->last_cpu.v[ps.v[i]->pid - 1] = ps.v[i]->cpu_ns;
+    for (size_t i = 0; i < ps.n; i++) mon->last_cpu.v[ps.v[i].pid - 1] = ps.v[i].s.cpu_ns;
     mon->last_top_ns = now;
     /* The nodes this VM is connected to: each connection's traffic. */
     bool head = false;
@@ -549,54 +598,62 @@ static void top_text(StrBuf *b, Monitor *mon, VM *vm) {
     VEC_FREE(ps);
 }
 
-/* ---- connections: plain, or TLS (--monitor-cert, --monitor-key) ---------------------- */
+/* ---- connections: plain, or TLS (--monitor-cert, --monitor-key) ----------------------
+ * No connection is ever waited for. Each is read as its bytes come, answered
+ * into a buffer (a read with the world stopped) and written as its client takes
+ * it, a step at each poll. So a client that sends slowly, or does not read,
+ * holds one of the places until its time is up, and holds nothing else up. */
 
-#define REQ_DEADLINE_NS 2000000000u /* a request read and answered within 2 s, or dropped */
+#define READ_DEADLINE_NS 2000000000ull   /* a request is read within 2 s, or dropped */
+#define WRITE_DEADLINE_NS 10000000000ull /* and its answer taken within 10 s */
+#define HEAD_MAX 8192
 #define BODY_MAX 65536
+#define OUT_MAX ((size_t)64 << 20) /* answers not yet taken: past this, a request is answered 503 */
 
-typedef struct {
+enum { CONN_HANDSHAKE, CONN_READ, CONN_WRITE };
+enum { IO_WAIT = -1, IO_FAIL = -2 }; /* conn_read and conn_write: not now; never */
+
+typedef struct Conn {
     int fd;
     Tls *tls;
+    int state;
     uint64_t deadline;
+    char ip[64]; /* the client's address */
+    StrBuf in;   /* the request, as far as it has come */
+    StrBuf out;  /* the answer */
+    size_t sent;
 } Conn;
 
-static uint64_t left_ns(const Conn *c) {
-    uint64_t now = plat_now_ns();
-    return now < c->deadline ? c->deadline - now : 0;
-}
-
-/* A TLS call's progress: wait for what it wants, false once out of time. */
-static bool tls_wait(Conn *c, long r) {
-    if (!left_ns(c)) return false;
-    if (r == TLS_WANT_READ) return plat_wait_readable(c->fd, left_ns(c));
-    plat_sleep_ns(1000000); /* TLS_WANT_WRITE: rare for answers this small */
-    return true;
-}
-
+/* Bytes read (0: the client has closed), or IO_WAIT, or IO_FAIL. */
 static long conn_read(Conn *c, char *buf, size_t n) {
-    if (!c->tls) return plat_sock_read(c->fd, buf, n, left_ns(c));
-    char err[160];
-    for (;;) {
+    if (c->tls) {
+        char err[160];
         long r = tls_read(c->tls, buf, n, err, sizeof err);
-        if (r >= 0) return r;
-        if (r == TLS_FAILED || !tls_wait(c, r)) return -1;
+        return r >= 0 ? r : r == TLS_FAILED ? IO_FAIL : IO_WAIT;
     }
+    int e = 0;
+    long r = plat_fd_read(c->fd, buf, n, &e);
+    return r >= 0 ? r : r == PLAT_IO_AGAIN ? IO_WAIT : IO_FAIL;
 }
 
-static bool conn_write(Conn *c, const char *buf, size_t n) {
-    if (!c->tls) return plat_sock_write_all(c->fd, buf, n);
-    char err[160];
-    while (n) {
+/* Bytes written (some), or IO_WAIT, or IO_FAIL. */
+static long conn_write(Conn *c, const char *buf, size_t n) {
+    if (c->tls) {
+        char err[160];
         long r = tls_write(c->tls, buf, n, err, sizeof err);
-        if (r > 0) buf += r, n -= (size_t)r;
-        else if (r == TLS_FAILED || !tls_wait(c, r)) return false;
+        return r > 0 ? r : r == TLS_FAILED ? IO_FAIL : IO_WAIT;
     }
-    return true;
+    int e = 0;
+    long r = plat_fd_write(c->fd, buf, n, &e);
+    return r > 0 ? r : r == PLAT_IO_AGAIN || r == 0 ? IO_WAIT : IO_FAIL;
 }
 
 static void conn_close(Conn *c) {
     if (c->tls) tls_release(c->tls); /* (and its descriptor) */
     else plat_sock_close(c->fd);
+    sb_free(&c->in);
+    sb_free(&c->out);
+    free(c);
 }
 
 static const char *status_text(int status) {
@@ -608,19 +665,29 @@ static const char *status_text(int status) {
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 413: return "Payload Too Large";
+    case 429: return "Too Many Requests";
+    case 431: return "Request Header Fields Too Large";
+    case 503: return "Service Unavailable";
     default: return "Error";
     }
 }
 
-/* Reads may be shown to any page (Access-Control-Allow-Origin: *), as they
- * always were; an action's answer is for the monitor's own page only. */
+/* The page: in no other site's frame, and running and fetching only what is its own. */
+#define PAGE_HEADERS                                                                                                   \
+    "X-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n"                                                        \
+    "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "            \
+    "connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\n"
+
+/* An answer, into the connection's buffer: conn_step writes it. Reads may be
+ * shown to any page (Access-Control-Allow-Origin: *), as they always were; an
+ * action's answer is for the monitor's own page only. */
 static void respond(Conn *c, int status, const char *type, const char *body, size_t n, bool any_origin) {
-    StrBuf h = {0};
-    sb_printf(&h, "HTTP/1.0 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nCache-Control: no-store\r\n%s"
-                  "Connection: close\r\n\r\n",
-              status, status_text(status), type, n, any_origin ? "Access-Control-Allow-Origin: *\r\n" : "");
-    if (conn_write(c, h.s, h.n)) conn_write(c, body, n);
-    sb_free(&h);
+    c->out.n = 0; /* (one answer to a request) */
+    sb_printf(&c->out, "HTTP/1.0 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nCache-Control: no-store\r\n%s"
+                       "X-Content-Type-Options: nosniff\r\n%sConnection: close\r\n\r\n",
+              status, status_text(status), type, n, any_origin ? "Access-Control-Allow-Origin: *\r\n" : "",
+              !strncmp(type, "text/html", 9) ? PAGE_HEADERS : "");
+    sb_putn(&c->out, body, n);
 }
 
 static void respond_json(Conn *c, int status, const char *json) { respond(c, status, "application/json", json, strlen(json), false); }
@@ -629,72 +696,63 @@ static void respond_json(Conn *c, int status, const char *json) { respond(c, sta
 
 typedef struct {
     char method[8], path[512], host[160], origin[200], auth[200];
-    size_t clen;
-    bool bad_len; /* a Content-Length past BODY_MAX */
-    char *body;
+    char *body; /* (in the connection's buffer) */
     size_t nbody;
 } Req;
 
-/* Whether s starts with p, case blind (ASCII). */
-static bool starts_ci(const char *s, const char *p) {
-    for (; *p; s++, p++)
-        if (tolower((unsigned char)*s) != tolower((unsigned char)*p)) return false;
+/* Whether the n bytes at s start with p, case blind (ASCII). */
+static bool starts_ci(const char *s, size_t n, const char *p) {
+    for (; *p; s++, n--, p++)
+        if (!n || tolower((unsigned char)*s) != tolower((unsigned char)*p)) return false;
     return true;
 }
 
-/* A header's value (name ending in ':'), case blind, into out. */
-static void header(const char *head, const char *name, char *out, size_t n) {
+/* A header's value (name ending in ':'), case blind, into out: head is the
+ * request's lines, n bytes of them. */
+static void header(const char *head, size_t n, const char *name, char *out, size_t outlen) {
     size_t k = strlen(name);
     out[0] = 0;
-    for (const char *l = strchr(head, '\n'); l; l = strchr(l, '\n')) {
+    const char *z = head + n;
+    for (const char *l = memchr(head, '\n', n); l; l = memchr(l, '\n', (size_t)(z - l))) {
         l++;
-        if (!starts_ci(l, name)) continue;
+        if (!starts_ci(l, (size_t)(z - l), name)) continue;
         l += k;
-        while (*l == ' ' || *l == '\t') l++;
-        size_t m = strcspn(l, "\r\n");
-        if (m >= n) m = n - 1;
+        while (l < z && (*l == ' ' || *l == '\t')) l++;
+        size_t m = 0;
+        while (l + m < z && l[m] != '\r' && l[m] != '\n') m++;
+        if (m >= outlen) m = outlen - 1;
         memcpy(out, l, m);
         out[m] = 0;
         return;
     }
 }
 
-static bool read_request(Conn *c, Req *q) {
-    char head[8192];
-    size_t n = 0;
-    char *end = NULL;
-    while (n < sizeof head - 1) {
-        long r = conn_read(c, head + n, sizeof head - 1 - n);
-        if (r <= 0) return false;
-        n += (size_t)r;
-        head[n] = 0;
-        if ((end = strstr(head, "\r\n\r\n"))) {
-            end += 4;
-            break;
-        }
+/* The request in what has come: 1 with it in q, 0 if there is more to come, or
+ * -1 for what is none, with the status to answer (0: nothing to say). */
+static int request_of(Conn *c, Req *q, int *status) {
+    *status = 0;
+    if (!c->in.n) return 0;
+    const char *end = strstr(c->in.s, "\r\n\r\n"); /* (a NUL before it: no request) */
+    if (!end || (size_t)(end - c->in.s) + 4 > HEAD_MAX) {
+        if (end || c->in.n >= HEAD_MAX) return *status = 431, -1;
+        return strlen(c->in.s) < c->in.n ? -1 : 0;
     }
-    if (!end) return false;
-    if (sscanf(head, "%7s %511s", q->method, q->path) != 2) return false;
-    header(head, "Host:", q->host, sizeof q->host);
-    header(head, "Origin:", q->origin, sizeof q->origin);
-    header(head, "Authorization:", q->auth, sizeof q->auth);
+    size_t head = (size_t)(end - c->in.s) + 4;
+    char first[600];
+    snprintf(first, sizeof first, "%.*s", (int)strcspn(c->in.s, "\r\n"), c->in.s);
+    if (sscanf(first, "%7s %511s", q->method, q->path) != 2) return *status = 400, -1;
+    header(c->in.s, head, "Host:", q->host, sizeof q->host);
+    header(c->in.s, head, "Origin:", q->origin, sizeof q->origin);
+    header(c->in.s, head, "Authorization:", q->auth, sizeof q->auth);
     char len[32];
-    header(head, "Content-Length:", len, sizeof len);
-    q->clen = len[0] ? strtoull(len, NULL, 10) : 0;
-    if (q->clen > BODY_MAX) {
-        q->bad_len = true;
-        return true;
-    }
-    q->body = xmalloc(q->clen + 1);
-    q->nbody = n - (size_t)(end - head) < q->clen ? n - (size_t)(end - head) : q->clen;
-    memcpy(q->body, end, q->nbody);
-    while (q->nbody < q->clen) {
-        long r = conn_read(c, q->body + q->nbody, q->clen - q->nbody);
-        if (r <= 0) return false;
-        q->nbody += (size_t)r;
-    }
-    q->body[q->nbody] = 0;
-    return true;
+    header(c->in.s, head, "Content-Length:", len, sizeof len);
+    unsigned long long clen = len[0] ? strtoull(len, NULL, 10) : 0;
+    if (clen > BODY_MAX) return *status = 413, -1;
+    if (c->in.n - head < clen) return 0;
+    q->body = c->in.s + head;
+    q->nbody = (size_t)clen;
+    q->body[q->nbody] = 0; /* (within the buffer: at most its own terminator) */
+    return 1;
 }
 
 /* GET /api/envs: each environment, the programs' and then the named ones,
@@ -743,6 +801,15 @@ static void envs_json(StrBuf *b, const Monitor *mon, VM *vm, bool values) {
 
 static void audit(VM *vm, const MonKey *by, const char *what, const char *json);
 
+/* The tokens file's keys, if it is one to trust: whoever can write it can make
+ * a key, so a file that other users can write, or own, gives none. */
+static bool keyfile_load(const char *path, MonKeyVec *out, char *err, size_t errlen) {
+    PlatStat st;
+    int e;
+    if (plat_stat(path, true, &st, &e) && !plat_path_trusted(path, err, errlen)) return false;
+    return keyfile_read(path, out, err, errlen);
+}
+
 /* The tokens file's keys again, if it has changed since they were read: those
  * made otherwise stay, and each keeps when it was last used. If it no longer
  * reads, the keys stay as they were, and the log says why. */
@@ -751,10 +818,12 @@ static void keys_refresh(Monitor *mon, VM *vm) {
     PlatStat st;
     int e;
     bool seen = plat_stat(mon->keyfile, true, &st, &e);
-    if (seen == mon->keyfile_seen && (!seen || (st.mtime_ns == mon->keyfile_mtime && st.size == mon->keyfile_size))) return;
+    if (seen == mon->keyfile_seen &&
+        (!seen || (st.mtime_ns == mon->keyfile_mtime && st.size == mon->keyfile_size && st.mode == mon->keyfile_mode)))
+        return;
     MonKeyVec fresh = {0};
     char err[600];
-    if (!keyfile_read(mon->keyfile, &fresh, err, sizeof err)) {
+    if (!keyfile_load(mon->keyfile, &fresh, err, sizeof err)) {
         StrBuf a = {0};
         sb_puts(&a, "{\"error\":");
         json_str(&a, err);
@@ -775,14 +844,15 @@ static void keys_refresh(Monitor *mon, VM *vm) {
     mon->keyfile_seen = seen;
     mon->keyfile_mtime = seen ? st.mtime_ns : 0;
     mon->keyfile_size = seen ? st.size : 0;
+    mon->keyfile_mode = seen ? st.mode : 0;
 }
 
 /* The key an Authorization: Bearer TOKEN names, or NULL. Every key's hash is
  * compared whole, so the time taken says nothing of the token. */
-static MonKey *key_of(Monitor *mon, const char *auth) {
-    if (strncmp(auth, "Bearer ", 7)) return NULL;
-    uint8_t h[32];
-    key_hash(auth + 7, strlen(auth + 7), h);
+static MonKey *key_of(Monitor *mon, const char *auth, uint8_t h[32]) {
+    if (strncmp(auth, "Bearer ", 7)) auth = "", memset(h, 0, 32); /* (no token: no key's hash) */
+    else key_hash(auth + 7, strlen(auth + 7), h);
+    if (!*auth) return NULL;
     MonKey *found = NULL;
     for (size_t i = 0; i < mon->keys.n; i++) {
         unsigned diff = 0;
@@ -791,6 +861,49 @@ static MonKey *key_of(Monitor *mon, const char *auth) {
     }
     if (found) found->used_ns = plat_now_ns();
     return found;
+}
+
+/* The count kept for an address, brought up to date; NULL if none is. */
+static Wrong *wrong_of(Monitor *mon, const char *ip, uint64_t now) {
+    for (int i = 0; i < WRONG_ADDRS; i++) {
+        Wrong *w = &mon->wrong[i];
+        if (!w->n) continue;
+        uint64_t back = (now - w->since_ns) / WRONG_AGAIN_NS;
+        if (back >= w->n) w->n = 0; /* (all given back: the place is free) */
+        else w->n -= (uint32_t)back, w->since_ns += back * WRONG_AGAIN_NS;
+        if (w->n && !strcmp(w->ip, ip)) return w;
+    }
+    return NULL;
+}
+
+/* May a key from this address be looked at? */
+static bool wrong_room(Monitor *mon, const char *ip, uint64_t now) {
+    Wrong *w = wrong_of(mon, ip, now);
+    return !w || w->n < WRONG_MAX;
+}
+
+/* A wrong key came from an address: counted, unless it is the one that came
+ * last. With no place free, the address with the fewest gives up its own. */
+static void wrong_count(Monitor *mon, VM *vm, const char *ip, const uint8_t h[32], uint64_t now) {
+    Wrong *w = wrong_of(mon, ip, now);
+    if (w && !memcmp(w->last, h, 32)) return;
+    if (!w) {
+        w = &mon->wrong[0];
+        for (int i = 1; i < WRONG_ADDRS; i++)
+            if (mon->wrong[i].n < w->n) w = &mon->wrong[i];
+        memset(w, 0, sizeof *w);
+        snprintf(w->ip, sizeof w->ip, "%s", ip);
+        w->since_ns = now;
+    }
+    memcpy(w->last, h, 32);
+    if (++w->n < WRONG_MAX || (w->logged_ns && now - w->logged_ns < WRONG_LOG_NS)) return;
+    w->logged_ns = now;
+    StrBuf a = {0};
+    sb_puts(&a, "{\"from\":");
+    json_str(&a, ip);
+    sb_putc(&a, '}');
+    audit(vm, NULL, "monitor.keys_refused", a.s);
+    sb_free(&a);
 }
 
 static MonKey *key_labelled(Monitor *mon, const char *label) {
@@ -932,7 +1045,7 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *key) 
         sb_putc(&b, '[');
         bool first = true;
         for (uint64_t pid = 1, end = vm_pid_end(vm); pid < end; pid++) {
-            const Process *p = vm_proc_at(vm, pid);
+            Process *p = vm_proc_at(vm, pid);
             if (!p) continue;
             if (!first) sb_putc(&b, ',');
             first = false;
@@ -941,7 +1054,7 @@ static void serve_get(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *key) 
         sb_putc(&b, ']');
     } else if (!strncmp(path, "/api/proc/", 10)) {
         uint64_t pid = strtoull(path + 10, NULL, 10);
-        const Process *p = vm_proc_at(vm, pid);
+        Process *p = vm_proc_at(vm, pid);
         if (!p) {
             respond(k, 404, json, "{\"error\":\"no such process\"}", 27, true);
             return;
@@ -1473,50 +1586,122 @@ static void serve_action(Monitor *mon, VM *vm, Conn *k, Req *q, const MonKey *by
     sb_free(&b);
 }
 
+/* A whole request, answered into its connection's buffer. */
+static void serve(Monitor *mon, VM *vm, Conn *k, Req *q, uint64_t now) {
+    size_t waiting = 0; /* answers not yet taken */
+    for (int i = 0; i < mon->nconns; i++) waiting += mon->conns[i]->out.n - mon->conns[i]->sent;
+    if (waiting > OUT_MAX) {
+        respond_json(k, 503, "{\"error\":\"too many answers are waiting to be taken\"}");
+        return;
+    }
+    keys_refresh(mon, vm);
+    bool page = !strcmp(q->method, "GET") && (!strcmp(q->path, "/") || !strcmp(q->path, "/index.html"));
+    MonKey *found = NULL, key; /* (a copy: the keys may change as it is served) */
+    if (q->auth[0] && !page) {
+        if (!wrong_room(mon, k->ip, now)) {
+            respond_json(k, 429, "{\"error\":\"too many wrong keys from this address: wait a few seconds\"}");
+            return;
+        }
+        uint8_t h[32];
+        if (!(found = key_of(mon, q->auth, h))) {
+            wrong_count(mon, vm, k->ip, h, now);
+            respond_json(k, 401, "{\"error\":\"no such key\"}");
+            return;
+        }
+        key = *found;
+    }
+    if (!strcmp(q->method, "GET")) {
+        sched_stop_world(vm); /* other worker threads pause while we read their processes */
+        serve_get(mon, vm, k, q, found ? &key : NULL);
+        sched_start_world(vm);
+    } else if (!strcmp(q->method, "POST")) {
+        serve_action(mon, vm, k, q, found ? &key : NULL);
+    } else {
+        respond(k, 405, "text/plain", "GET, or POST for an action\n", 27, false);
+    }
+}
+
+/* A step of a connection, as far as it goes without waiting: false once it is
+ * over (answered, failed, or out of time). */
+static bool conn_step(Monitor *mon, VM *vm, Conn *c, uint64_t now) {
+    if (now >= c->deadline) return false;
+    if (c->state == CONN_HANDSHAKE) {
+        char err[256];
+        int r = tls_handshake(c->tls, err, sizeof err);
+        if (r == TLS_FAILED) return false;
+        if (r != TLS_OK) return true;
+        c->state = CONN_READ;
+    }
+    if (c->state == CONN_READ) {
+        for (;;) {
+            Req q = {0};
+            int status = 0, got = request_of(c, &q, &status);
+            if (got > 0) {
+                serve(mon, vm, c, &q, now);
+                break;
+            }
+            if (got < 0) {
+                if (!status) return false;
+                respond_json(c, status, status == 413   ? "{\"error\":\"the body is over 64 KiB\"}"
+                                        : status == 431 ? "{\"error\":\"the request's headers are over 8 KiB\"}"
+                                                        : "{\"error\":\"not a request\"}");
+                break;
+            }
+            char buf[4096];
+            long r = conn_read(c, buf, sizeof buf);
+            if (r == IO_WAIT) return true;
+            if (r <= 0) return false; /* gone before a whole request came */
+            sb_putn(&c->in, buf, (size_t)r);
+        }
+        c->state = CONN_WRITE;
+        c->deadline = now + WRITE_DEADLINE_NS;
+    }
+    while (c->sent < c->out.n) {
+        long r = conn_write(c, c->out.s + c->sent, c->out.n - c->sent);
+        if (r == IO_WAIT) return true;
+        if (r < 0) return false;
+        c->sent += (size_t)r;
+    }
+    return false;
+}
+
 static void monitor_poll(VM *vm, uint64_t wait_ns) {
     Monitor *mon = ((Tools *)vm->tools)->mon;
-    if (wait_ns) plat_wait_readable(mon->fd, wait_ns); /* idle: sleep until a request or the timer */
-    int c;
-    while ((c = plat_tcp_accept(mon->fd)) >= 0) {
-        Conn k = {c, NULL, plat_now_ns() + REQ_DEADLINE_NS};
-        if (mon->cert) { /* TLS first */
-            char err[256];
-            plat_fd_set_nonblocking(c, true);
-            k.tls = tls_server(c, mon->cert, mon->key, err, sizeof err);
-            if (!k.tls) {
-                plat_sock_close(c);
-                continue;
-            }
-            int r;
-            while ((r = tls_handshake(k.tls, err, sizeof err)) != TLS_OK)
-                if (r == TLS_FAILED || !tls_wait(&k, r)) break;
-            if (r != TLS_OK) {
-                conn_close(&k);
+    if (wait_ns) { /* idle: sleep until a request or the timer (or, with connections under way, a millisecond) */
+        if (mon->nconns && wait_ns > 1000000) wait_ns = 1000000;
+        plat_wait_readable(mon->fd, wait_ns);
+    }
+    int fd;
+    uint64_t now = plat_now_ns();
+    while (mon->nconns < CONNS_MAX && (fd = plat_tcp_accept(mon->fd)) >= 0) {
+        Conn *c = xcalloc(1, sizeof *c);
+        c->fd = fd;
+        c->deadline = now + READ_DEADLINE_NS;
+        c->state = CONN_READ;
+        int port;
+        if (!plat_sock_peer(fd, c->ip, sizeof c->ip, &port)) snprintf(c->ip, sizeof c->ip, "?");
+        char err[256];
+        bool ok = plat_fd_set_nonblocking(fd, true);
+        if (ok && mon->cert) { /* TLS first */
+            c->tls = tls_server(fd, mon->cert, mon->key, err, sizeof err);
+            c->state = CONN_HANDSHAKE;
+            if (!c->tls) {
+                plat_sock_close(fd);
+                free(c);
                 continue;
             }
         }
-        Req q = {0};
-        if (read_request(&k, &q)) {
-            keys_refresh(mon, vm);
-            MonKey *found = q.auth[0] ? key_of(mon, q.auth) : NULL, key; /* (a copy: the keys may change as it is served) */
-            if (found) key = *found;
-            bool page = !strcmp(q.method, "GET") && (!strcmp(q.path, "/") || !strcmp(q.path, "/index.html"));
-            if (q.bad_len) {
-                respond_json(&k, 413, "{\"error\":\"the body is over 64 KiB\"}");
-            } else if (q.auth[0] && !found && !page) {
-                respond_json(&k, 401, "{\"error\":\"no such key\"}");
-            } else if (!strcmp(q.method, "GET")) {
-                sched_stop_world(vm); /* other worker threads pause while we read their processes */
-                serve_get(mon, vm, &k, &q, found ? &key : NULL);
-                sched_start_world(vm);
-            } else if (!strcmp(q.method, "POST")) {
-                serve_action(mon, vm, &k, &q, found ? &key : NULL);
-            } else {
-                respond(&k, 405, "text/plain", "GET, or POST for an action\n", 27, false);
-            }
+        if (!ok) {
+            conn_close(c);
+            continue;
         }
-        free(q.body);
-        conn_close(&k);
+        mon->conns[mon->nconns++] = c;
+    }
+    for (int i = mon->nconns - 1; i >= 0; i--) {
+        Conn *c = mon->conns[i];
+        if (conn_step(mon, vm, c, now)) continue;
+        mon->conns[i] = mon->conns[--mon->nconns]; /* (before it is closed: serve counts those there) */
+        conn_close(c);
     }
 }
 
@@ -1554,7 +1739,7 @@ void tools_monitor_actions(VM *vm) { ((Tools *)vm->tools)->mon->actions = true; 
 bool tools_monitor_tokens(VM *vm, const char *path, char *err, size_t errlen) {
     Monitor *mon = ((Tools *)vm->tools)->mon;
     MonKeyVec ks = {0};
-    bool ok = keyfile_read(path, &ks, err, errlen);
+    bool ok = keyfile_load(path, &ks, err, errlen);
     VEC_FREE(ks);
     if (!ok) return false;
     mon->keyfile = xstrdup(path);
@@ -1615,6 +1800,7 @@ void tools_monitor_close(VM *vm) {
     Tools *t = vm->tools;
     if (!t || !t->mon) return;
     plat_sock_close(t->mon->fd);
+    for (int i = 0; i < t->mon->nconns; i++) conn_close(t->mon->conns[i]);
     VEC_FREE(t->mon->last_cpu);
     free(t->mon->token);
     VEC_FREE(t->mon->keys);

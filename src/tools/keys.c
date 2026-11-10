@@ -135,12 +135,13 @@ bool keyfile_read(const char *path, MonKeyVec *out, char *err, size_t errlen) {
     return ok;
 }
 
-/* text written over path, through a file beside it renamed over it. */
+/* text written over path, through a file beside it renamed over it: one that
+ * only its owner can write, whatever the umask, as the monitor needs it. */
 static bool replace_file(const char *path, const StrBuf *text, char *err, size_t errlen) {
     StrBuf tmp = {0};
     sb_printf(&tmp, "%s.new", path);
     int e = 0;
-    bool ok = write_file(tmp.s, text->s ? text->s : "", text->n) && plat_rename(tmp.s, path, &e);
+    bool ok = write_file(tmp.s, text->s ? text->s : "", text->n) && plat_restrict_writes(tmp.s) && plat_rename(tmp.s, path, &e);
     if (!ok) {
         plat_remove(tmp.s, &e);
         snprintf(err, errlen, "%s: cannot write it", path);
