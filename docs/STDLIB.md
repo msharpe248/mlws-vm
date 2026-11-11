@@ -13,6 +13,7 @@ restricts them.
 | `path` | names of files as text: joining, normalizing, the directory, name and extension |
 | `os` | arguments, the environment, exit, running commands |
 | `net`, `tls` | TCP, UDP, DNS, TLS |
+| `std.http` | HTTP/1.1: a server with a handler, its parts, and a client |
 | `text`, `json`, `regex` | formatting, string utilities, UTF-8, JSON, regular expressions |
 | `proc`, `std.supervisor`, `std.server`, `std.pool` | the process count, a name registry, request/reply calls, supervisors, generic servers, worker pools |
 | `std.node` | processes on other VMs |
@@ -803,6 +804,46 @@ the worker answers the caller itself. Jobs and results are references.
 
 It is MLWSVM assembly (`lib/std/pool.masm`), built on `proc.call` and
 `proc.reply` as `std.server` is.
+
+### HTTP (`std.http`)
+
+```asm
+.import std.http as http
+    closure handle -> (R0)                                 ; handle(request) -> response
+    call http.start ("127.0.0.1", 8080, R0) -> (I0, I1)  ; the server's pid, and its port
+    call http.get ("https://example.org/", 5000) -> (R1)  ; {"status", "headers", "body"}
+    call http.post (url, "application/json", text, 5000) -> (R2)
+```
+
+* **Requests and responses are maps.** A request has `method`, `path`,
+  `query` (after the `?`, or `""`), `version`, `headers` (names in lower
+  case; a header said twice is one value, joined with `", "`), `body` (a
+  string) and `keep_alive`. A handler returns a map of `status` (200 if it
+  has none), `headers` and `body`, or just a string, which is a 200 of text.
+  `http.query(text)` makes a map of a query string or a form's body.
+* **The server** listens where `start` is called (so `E_ADDR_IN_USE` is
+  raised there), and serves each connection in a process of its own, request
+  after request, until the client closes it or it is idle for 30 s. It adds
+  `Content-Length`, a text `Content-Type` if a body has none, and
+  `Connection`. A handler that raises makes a 500, and its error goes to the
+  monitor's log; the connection closes and the server goes on. Killing its
+  pid stops it taking connections.
+* **Limits:** a request line or header of 16 KiB, 100 headers, a body of 16
+  MiB (by `Content-Length` or chunked); beyond them, a 400 or 413. These come
+  from `fs.set_line_max`, which makes `fs.read_line` on a handle refuse a
+  longer line (`E_RANGE`): without it, a peer that never ends a line makes
+  it read for ever.
+* **The client** sends one request on a connection of its own (`Connection:
+  close`), over TLS for `https`, the certificate checked against the
+  system's authorities. Its timeout is for connecting and for each wait. It
+  reads a body by `Content-Length`, in chunks, or up to the connection's end,
+  and skips `100 Continue`. `request(method, url, headers, body, timeout)`
+  does any method.
+* `http.read_request` and `http.write_response` are the server's parts, for
+  a server of your own (one that hands a connection over to WebSocket, say).
+
+It is MLWSVM assembly (`lib/std/http.masm`). [`examples/web.masm`](../examples/web.masm)
+is a small service built on it.
 
 ### Example: `examples/http_server.masm`
 

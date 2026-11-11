@@ -37,6 +37,7 @@ typedef struct {
     bool owned; /* close the descriptor when the handle goes */
     bool eof;
     int64_t timeout_ms;      /* for waits on streams; -1 = none */
+    size_t line_max;         /* fs.read_line refuses a longer line (E_RANGE); 0 = none */
     uint8_t *rbuf;           /* input read ahead (read_line, read_all) */
     size_t rpos, rlen, rcap;
     const void *wobj;        /* a write in progress across waits: the data, and how much is done */
@@ -273,6 +274,11 @@ static void fs_read_line(Process *p, Word *a, Word *r) {
     if (!h) return;
     for (;;) {
         uint8_t *start = unread(h), *nl = h->rlen > h->rpos ? memchr(start, '\n', h->rlen - h->rpos) : NULL;
+        size_t have = nl ? (size_t)(nl - start) : h->rlen - h->rpos;
+        if (h->line_max && have > h->line_max + 1) { /* (+1: a \r before the \n) */
+            native_fail(p, "E_RANGE", "fs.read_line: a line longer than %zu bytes (fs.set_line_max)", h->line_max);
+            return;
+        }
         if (nl || h->eof) {
             size_t n = nl ? (size_t)(nl - start) : h->rlen - h->rpos;
             if (!nl && !n) {
@@ -378,6 +384,12 @@ static void fs_set_timeout(Process *p, Word *a, Word *r) {
     (void)r;
     FileH *h = get_file(p, a[0]);
     if (h) h->timeout_ms = a[1].i < 0 ? -1 : a[1].i;
+}
+
+static void fs_set_line_max(Process *p, Word *a, Word *r) {
+    (void)r;
+    FileH *h = get_file(p, a[0]);
+    if (h) h->line_max = a[1].i > 0 ? (size_t)a[1].i : 0;
 }
 
 static void fs_stdin(Process *p, Word *a, Word *r) {
@@ -1302,6 +1314,8 @@ static const NativeDef OS_NATIVES[] = {
       "Move in a file: whence 0 from the start, 1 from here, 2 from the end; returns the new offset."),
     N("fs.set_timeout", 2, T(T_R, T_I64), 0, T(0), fs_set_timeout, F,
       "Give later reads and writes on a pipe or socket a timeout in ms (E_TIMEOUT); negative: none."),
+    N("fs.set_line_max", 2, T(T_R, T_I64), 0, T(0), fs_set_line_max, F,
+      "Make fs.read_line on this handle refuse a line of more than n bytes (E_RANGE), so that a peer cannot make it read without end; 0: no limit (the default)."),
     N("fs.stdin", 0, T(0), 1, T(T_R), fs_stdin, F, "The program's standard input."),
     N("fs.stdout", 0, T(0), 1, T(T_R), fs_stdout, F, "The program's standard output (the same output as io.print)."),
     N("fs.stderr", 0, T(0), 1, T(T_R), fs_stderr, F, "The program's standard error."),

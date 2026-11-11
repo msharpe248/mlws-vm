@@ -1,0 +1,537 @@
+; std.http - HTTP/1.1: a server that runs a handler for each request, a
+; process per connection; the pieces it is made of, for servers of your own;
+; and a client.
+;
+;     .import std.http as http
+;     closure hello -> (R0)                      ; handler(request) -> response
+;     call http.start ("127.0.0.1", 8080, R0) -> (I0, I1)  ; its pid, and the port
+;
+;     call http.get ("http://127.0.0.1:8080/hi?x=1", 5000) -> (R1)
+;     mget I2, R1, "status"                      ; 200
+;     mget R2, R1, "body"
+;
+; A request is a map: "method", "path", "query" (after the ?, or ""),
+; "version", "headers" (a map, names in lower case, repeated ones joined with
+; ", "), "body" (a string), and "keep_alive" (1 or 0). A handler returns a
+; response: a map of "status" (200 if not there), "headers" (a map, or null)
+; and "body" (a string or byte buffer), or just a string, which is a 200 of
+; text. The server adds Content-Length, Content-Type (text, if a body has none)
+; and Connection. A handler that raises gets the client a 500, and its error
+; goes to the monitor's log; the server goes on.
+;
+; Each connection is a process of its own, which serves its requests one
+; after another (keep-alive) until the client closes it or is idle for 30 s.
+; Request lines and headers are at most 16 KiB each, at most 100 headers, and
+; bodies at most 16 MiB, by Content-Length or chunked: more is a 400 or 413.
+; Kill the server's pid to stop it taking connections.
+;
+; The client: request(method, url, headers, body, timeout_ms), and get and
+; post. An https URL is TLS, its certificate checked as tls.connect checks
+; one. The timeout is for connecting and for each wait to read or write. It
+; reads a body by Content-Length, chunked, or up to the end of the
+; connection, and gives a map of "status", "headers" and "body". Each request
+; has a connection of its own.
+
+.module std.http
+.export start, read_request, write_response, query, request, get, post
+
+.const MAX_LINE = 16384
+.const MAX_HEADERS = 100
+.const MAX_BODY = 16777216
+
+; ---- reading ----
+
+; fail(code, message): raise an Error
+.func fail(ref code, ref msg)
+    new R2, Error
+    mov R2->Error.code, code
+    strcat R3, "std.http: ", msg
+    mov R2->Error.message, R3
+    throw R2
+.endf
+
+; read_headers(conn) -> a map of the header lines up to a blank one
+.func read_headers(ref conn) -> ref
+    .alias headers, R2
+    mnew headers
+    mov I1, 0
+1:  ncall "fs.read_line" (conn) -> (R3)
+    bnz.r R3, 2f
+    call fail ("E_PARSE", "the connection ended in the headers")
+2:  len I2, R3
+    bz I2, 9f
+    inc I1
+    ble I1, MAX_HEADERS, 3f
+    call fail ("E_RANGE", "more than 100 headers")
+3:  ncall "text.find" (R3, ":", 0) -> (I3)
+    bgt I3, 0, 4f
+    call fail ("E_PARSE", "a header line without a name")
+4:  substr R4, R3, 0, I3
+    ncall "text.lower" (R4) -> (R4)
+    inc I3
+    sub I4, I2, I3
+    substr R5, R3, I3, I4
+    ncall "text.trim" (R5) -> (R5)
+    mhas I5, headers, R4
+    bz I5, 5f
+    mget R6, headers, R4               ; said again: one value, joined
+    strcat R5, R6, ", ", R5
+5:  mset headers, R4, R5
+    jmp 1b
+9:  ret headers
+.endf
+
+; read_exact(conn, n) -> a byte buffer of the next n bytes
+.func read_exact(ref conn, i64 n) -> ref
+    bufnew R2, 0
+1:  len I2, R2
+    bge I2, n, 2f
+    sub I3, n, I2
+    ncall "fs.read" (conn, I3) -> (R3)
+    len I4, R3
+    bnz I4, 3f
+    call fail ("E_PARSE", "the connection ended in a body")
+3:  bufcat R2, R3
+    jmp 1b
+2:  ret R2
+.endf
+
+; read_chunked(conn) -> the body in chunks (RFC 9112 7.1), as a byte buffer
+.func read_chunked(ref conn) -> ref
+    .alias body, R2
+    bufnew body, 0
+next:
+    ncall "fs.read_line" (conn) -> (R3)
+    bnz.r R3, 1f
+    call fail ("E_PARSE", "the connection ended in a chunked body")
+1:  ncall "text.find" (R3, ";", 0) -> (I2)  ; (a chunk's extensions: ignored)
+    blt I2, 0, 2f
+    substr R3, R3, 0, I2
+2:  ncall "text.trim" (R3) -> (R3)
+    strcat R3, "0x", R3
+.try bad
+    parse.i64 I3, R3
+.endtry
+    blt I3, 0, bad
+    bz I3, trailer
+    len I4, body
+    add I5, I4, I3
+    bgt I5, MAX_BODY, big
+    call read_exact (conn, I3) -> (R4)
+    bufcat body, R4
+    ncall "fs.read_line" (conn) -> (R5)  ; the line's end after a chunk
+    jmp next
+trailer:                               ; (trailer fields: read past)
+    ncall "fs.read_line" (conn) -> (R5)
+    bz.r R5, 3f
+    len I6, R5
+    bnz I6, trailer
+3:  ret body
+bad:
+    call fail ("E_PARSE", "a chunk's size is not hexadecimal")
+big:
+    call fail ("E_RANGE", "a body of more than 16 MiB")
+    ret null                           ; (not reached: fail raises)
+.endf
+
+; read_body(conn, headers, to_end) -> the body, as a string: chunked, by
+; Content-Length, else (to_end: a response) up to the end of the connection
+.func read_body(ref conn, ref headers, i64 to_end) -> ref
+    mget R3, headers, "transfer-encoding", null
+    bz.r R3, 1f
+    ncall "text.lower" (R3) -> (R3)
+    ncall "text.find" (R3, "chunked", 0) -> (I2)
+    blt I2, 0, 1f
+    call read_chunked (conn) -> (R4)
+    jmp done
+1:  mget R3, headers, "content-length", null
+    bz.r R3, 3f
+    ncall "text.trim" (R3) -> (R3)
+.try bad
+    parse.i64 I2, R3
+.endtry
+    blt I2, 0, bad
+    bgt I2, MAX_BODY, big
+    call read_exact (conn, I2) -> (R4)
+    jmp done
+3:  bz to_end, 4f
+    ncall "fs.read_all" (conn) -> (R4)
+    len I3, R4
+    bgt I3, MAX_BODY, big
+    jmp done
+4:  bufnew R4, 0
+done:
+    strcat R5, R4                      ; as a string
+    ret R5
+bad:
+    call fail ("E_PARSE", "Content-Length is not a number")
+big:
+    call fail ("E_RANGE", "a body of more than 16 MiB")
+    ret null                           ; (not reached: fail raises)
+.endf
+
+; read_request(conn) -> the next request on a connection, as a map, or null
+; at its end. A request that cannot be read raises E_PARSE (E_RANGE: too large).
+.func read_request(ref conn) -> ref
+    .alias req, R9
+    ncall "fs.set_line_max" (conn, MAX_LINE)
+1:  ncall "fs.read_line" (conn) -> (R2)
+    bnz.r R2, 2f
+    ret null                           ; the end of the connection
+2:  len I2, R2
+    bz I2, 1b                          ; (blank lines before a request are allowed)
+    ncall "text.split" (R2, " ") -> (R3)
+    len I3, R3
+    beq I3, 3, 3f
+    call fail ("E_PARSE", "a request line is METHOD TARGET VERSION")
+3:  mov R5, R3[2]
+    ncall "text.starts_with" (R5, "HTTP/1.") -> (I4)
+    bnz I4, 4f
+    call fail ("E_PARSE", "not HTTP/1")
+4:  mnew req
+    mov R4, R3[0]
+    mset req, "method", R4
+    mov R6, R3[1]                      ; the target: path?query
+    mov R7, ""
+    ncall "text.find" (R6, "?", 0) -> (I5)
+    blt I5, 0, 5f
+    len I6, R6
+    add I7, I5, 1
+    sub I8, I6, I7
+    substr R7, R6, I7, I8
+    substr R6, R6, 0, I5
+5:  mset req, "path", R6
+    mset req, "query", R7
+    mset req, "version", R5
+    call read_headers (conn) -> (R8)
+    mset req, "headers", R8
+    call read_body (conn, R8, 0) -> (R10)
+    mset req, "body", R10
+    strcmp I9, R5, "HTTP/1.0"          ; keep-alive: 1.1's default, 1.0's if asked for
+    mget R11, R8, "connection", ""
+    ncall "text.lower" (R11) -> (R11)
+    bz I9, 6f
+    ncall "text.find" (R11, "close", 0) -> (I10)
+    slt I10, I10, 0
+    jmp 7f
+6:  ncall "text.find" (R11, "keep-alive", 0) -> (I10)
+    sge I10, I10, 0
+7:  mset req, "keep_alive", I10
+    ret req
+.endf
+
+; query(text) -> a map of a query string's names and values ("a=1&b=x+y"),
+; decoded (+ is a space); a name said twice keeps the last value
+.func query(ref text) -> ref
+    mnew R2
+    len I1, text
+    bz I1, 9f
+    ncall "text.split" (text, "&") -> (R3)
+    len I2, R3
+    mov I3, 0
+1:  bge I3, I2, 9f
+    mov R4, R3[I3]
+    inc I3
+    len I4, R4
+    bz I4, 1b
+    ncall "text.find" (R4, "=", 0) -> (I5)
+    mov R6, ""
+    blt I5, 0, 2f
+    add I6, I5, 1
+    sub I7, I4, I6
+    substr R6, R4, I6, I7
+    substr R4, R4, 0, I5
+2:  ncall "url.decode" (R4, true) -> (R4)
+    ncall "url.decode" (R6, true) -> (R6)
+    mset R2, R4, R6
+    jmp 1b
+9:  ret R2
+.endf
+
+; ---- writing ----
+
+; reason(status) -> its reason phrase
+.func reason(i64 s) -> ref
+    beq s, 200, 1f
+    beq s, 201, 2f
+    beq s, 204, 3f
+    beq s, 301, 4f
+    beq s, 302, 5f
+    beq s, 304, 6f
+    beq s, 400, 7f
+    beq s, 401, 8f
+    beq s, 403, 9f
+    beq s, 404, 10f
+    beq s, 405, 11f
+    beq s, 413, 12f
+    beq s, 500, 13f
+    beq s, 503, 14f
+    ret "Status"
+1:  ret "OK"
+2:  ret "Created"
+3:  ret "No Content"
+4:  ret "Moved Permanently"
+5:  ret "Found"
+6:  ret "Not Modified"
+7:  ret "Bad Request"
+8:  ret "Unauthorized"
+9:  ret "Forbidden"
+10: ret "Not Found"
+11: ret "Method Not Allowed"
+12: ret "Content Too Large"
+13: ret "Internal Server Error"
+14: ret "Service Unavailable"
+.endf
+
+; has(headers, name) -> whether a map of headers has one, by its lower-case name
+.func has(ref headers, ref name) -> i64
+    bz.r headers, 2f
+    mkeys R2, headers
+    len I1, R2
+    mov I2, 0
+1:  bge I2, I1, 2f
+    mov R3, R2[I2]
+    inc I2
+    ncall "text.lower" (R3) -> (R3)
+    strcmp I3, R3, name
+    bnz I3, 1b
+    ret 1
+2:  ret 0
+.endf
+
+; write_response(conn, status, headers, body): a response, its Content-Length
+; added (and a text Content-Type, if a body has none); headers may be null,
+; and body a string, a byte buffer or null.
+.func write_response(ref conn, i64 status, ref headers, ref body)
+    .alias head, R4
+    bnz.r body, 1f
+    mov body, ""
+1:  call reason (status) -> (R5)
+    lnew R6
+    lpush R6, status, R5
+    ncall "text.format" ("HTTP/1.1 {} {}\r\n", R6) -> (head)
+    bz.r headers, 3f
+    mkeys R7, headers
+    len I1, R7
+    mov I2, 0
+2:  bge I2, I1, 3f
+    mov R8, R7[I2]
+    inc I2
+    mget R9, headers, R8
+    strcat head, head, R8, ": ", R9, "\r\n"
+    jmp 2b
+3:  len I3, body
+    tostr R10, I3
+    strcat head, head, "Content-Length: ", R10, "\r\n"
+    bz I3, 4f
+    call has (headers, "content-type") -> (I4)
+    bnz I4, 4f
+    strcat head, head, "Content-Type: text/plain; charset=utf-8\r\n"
+4:  strcat head, head, "\r\n"
+    ncall "fs.write" (conn, head)
+    bz I3, 5f
+    ncall "fs.write" (conn, body)
+5:  ret
+.endf
+
+; ---- the server ----
+
+; start(host, port, handler) -> (the server's pid, its port): it listens here
+; (port 0: any free one; an error, such as E_ADDR_IN_USE, raised here)
+.func start(ref host, i64 port, ref handler) -> (i64, i64)
+    ncall "net.listen" (host, port) -> (R3)
+    ncall "net.port" (R3) -> (I2)
+    ncall "fs.give" (R3) -> (I3)
+    spawn accept_loop (I3, handler) -> (I4)
+    ret I4, I2
+.endf
+
+.func accept_loop(i64 ticket, ref handler)
+    ncall "fs.take" (ticket) -> (R2)
+1:  ncall "net.accept" (R2) -> (R3)
+    ncall "fs.give" (R3) -> (I2)
+    spawn connection (I2, handler)
+    jmp 1b
+.endf
+
+; refuse(conn, status, text): an error response, and the connection closed
+.func refuse(ref conn, i64 status, ref text)
+    mnew R3
+    mset R3, "Connection", "close"
+    call write_response (conn, status, R3, text)
+    ret
+.endf
+
+; connection(ticket, handler): a connection's requests, one after another
+.func connection(i64 ticket, ref handler)
+    .alias conn, R2
+    .alias req, R3
+    .alias resp, R4
+    ncall "fs.take" (ticket) -> (conn)
+    ncall "fs.set_timeout" (conn, 30000)  ; an idle connection is dropped after 30 s
+.try gone
+next:
+.try unread
+    call read_request (conn) -> (req)
+.endtry
+    bz.r req, done
+.try failed
+    calli handler (req) -> (resp)
+.endtry
+    typeof I2, resp
+    bne I2, 1, 1f                      ; a string: 200, that text
+    mov R5, resp
+    mnew resp
+    mset resp, "body", R5
+1:  mget I3, resp, "status", 200
+    mget R6, resp, "headers", null
+    mget R7, resp, "body", null
+    bnz.r R6, 2f
+    mnew R6
+2:  mget I4, req, "keep_alive"
+    mov R8, "keep-alive"
+    bnz I4, 3f
+    mov R8, "close"
+3:  mset R6, "Connection", R8
+    call write_response (conn, I3, R6, R7)
+    bnz I4, next
+done:
+    ncall "fs.close" (conn)
+    ret
+unread:                                ; not a request it can read
+    catch R9
+    mov I5, 400
+    strcmp I6, R9->Error.code, "E_RANGE"
+    bnz I6, 4f
+    mov I5, 413
+    ncall "text.find" (R9->Error.message, "line", 0) -> (I7)
+    blt I7, 0, 4f
+    mov I5, 400                        ; (a line too long: 400, as a bad request)
+4:  call refuse (conn, I5, "bad request\n")
+    jmp done
+failed:                                ; the handler raised
+    catch R9
+    isa I8, R9, Error
+    bz I8, 5f
+    mget R11, req, "path"
+    strcat R10, "std.http: a handler failed on ", R11
+    jmp 6f
+5:  mov R10, "std.http: a handler raised"
+6:  strcat R10, R10, ": ", R9->Error.code, " ", R9->Error.message
+    ncall "monitor.log" (3, R10)
+    call refuse (conn, 500, "internal server error\n")
+    jmp done
+.endtry
+gone:                                  ; the client went, or was idle too long
+    catch R9
+    ret
+.endf
+
+; ---- the client ----
+
+; request(method, url, headers, body, timeout_ms) -> {"status", "headers", "body"}
+.func request(ref method, ref url, ref headers, ref body, i64 timeout_ms) -> ref
+    .alias conn, R6
+    .alias head, R7
+    ncall "regex.compile" ("^(https?)://(\\[[^\\]]+\\]|[^/:?#]+)(?::([0-9]+))?([^#]*)", "i") -> (R5)
+    ncall "regex.groups" (R5, url, 0) -> (R8)
+    bnz.r R8, 1f
+    call fail ("E_PARSE", "not an http or https URL")
+1:  mov R9, R8[1]                      ; scheme
+    ncall "text.lower" (R9) -> (R9)
+    mov R10, R8[2]                     ; host, [::1] as written
+    mov R11, R8[3]                     ; port, or null
+    mov R12, R8[4]                     ; path?query
+    strcmp I2, R9, "https"
+    seq I2, I2, 0                      ; TLS?
+    mov I3, 80
+    bz I2, 2f
+    mov I3, 443
+2:  mov R13, R10                       ; Host: as written, with its port if one was
+    bz.r R11, 3f
+    parse.i64 I3, R11
+    strcat R13, R10, ":", R11
+3:  len I4, R12
+    bnz I4, 4f
+    mov R12, "/"
+4:  mov I5, R12[0]
+    beq I5, '/', 5f
+    strcat R12, "/", R12               ; (http://host?x)
+5:  mov R14, R10                       ; to connect to: [::1] without its brackets
+    mov I6, R10[0]
+    bne I6, '[', 6f
+    len I7, R10
+    sub I7, I7, 2
+    substr R14, R10, 1, I7
+6:  ncall "net.connect" (R14, I3, timeout_ms) -> (conn)
+    ncall "fs.set_timeout" (conn, timeout_ms)
+.try failed
+    bz I2, 7f
+    ncall "tls.connect" (conn, R14, "")
+7:  lnew R15
+    lpush R15, method, R12, R13
+    ncall "text.format" ("{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: mlwsvm\r\nConnection: close\r\n", R15) -> (head)
+    bz.r headers, 9f
+    mkeys R16, headers
+    len I8, R16
+    mov I9, 0
+8:  bge I9, I8, 9f
+    mov R17, R16[I9]
+    inc I9
+    mget R18, headers, R17
+    strcat head, head, R17, ": ", R18, "\r\n"
+    jmp 8b
+9:  bz.r body, 10f
+    len I10, body
+    tostr R19, I10
+    strcat head, head, "Content-Length: ", R19, "\r\n"
+10: strcat head, head, "\r\n"
+    ncall "fs.write" (conn, head)
+    bz.r body, 11f
+    ncall "fs.write" (conn, body)
+11: ncall "fs.set_line_max" (conn, MAX_LINE)
+status:
+    ncall "fs.read_line" (conn) -> (R20)
+    bnz.r R20, 12f
+    call fail ("E_PARSE", "the connection ended before a response")
+12: ncall "text.split" (R20, " ") -> (R21)
+    len I11, R21
+    bge I11, 2, 13f
+    call fail ("E_PARSE", "not an HTTP status line")
+13: mov R22, R21[1]
+    parse.i64 I12, R22
+    call read_headers (conn) -> (R23)
+    blt I12, 100, 14f
+    blt I12, 200, status               ; (100 Continue and the like: the real one follows)
+14: mov R24, ""
+    beq I12, 204, 15f                  ; no body for these, nor for HEAD
+    beq I12, 304, 15f
+    strcmp I13, method, "HEAD"
+    bz I13, 15f
+    call read_body (conn, R23, 1) -> (R24)
+15: ncall "fs.close" (conn)
+    mnew R25
+    mset R25, "status", I12
+    mset R25, "headers", R23
+    mset R25, "body", R24
+    ret R25
+.endtry
+failed:
+    catch R26
+    ncall "fs.close" (conn)
+    throw R26
+.endf
+
+; get(url, timeout_ms) -> the response
+.func get(ref url, i64 timeout_ms) -> ref
+    call request ("GET", url, null, null, timeout_ms) -> (R1)
+    ret R1
+.endf
+
+; post(url, content_type, body, timeout_ms) -> the response
+.func post(ref url, ref ctype, ref body, i64 timeout_ms) -> ref
+    mnew R3
+    mset R3, "Content-Type", ctype
+    call request ("POST", url, R3, body, timeout_ms) -> (R4)
+    ret R4
+.endf

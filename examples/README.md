@@ -60,6 +60,7 @@ Run one from the repository's top directory:
 
 | Example | Shows |
 |---|---|
+| [web.masm](web.masm) | A web service with `std.http`: a page, a JSON API with a query string, a form posted to it. `./mlwsvm run examples/web.masm 8080` |
 | [http_server.masm](http_server.masm) | An HTTP/1.1 server under a supervisor, a process per connection. `./mlwsvm run examples/http_server.masm 8080` |
 | [http_load.masm](http_load.masm) | An HTTP load generator, a process per connection. |
 | [serve/echo.masm](serve/echo.masm) | An echo server to start and send messages to from the monitor's dashboard (`./mlwsvm serve --programs examples/serve`). |

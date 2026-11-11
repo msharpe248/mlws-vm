@@ -125,6 +125,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `fs.write` | r, r | - | Write all of a string or byte buffer. |
 | `fs.seek` | r, i64, i64 | i64 | Move in a file: whence 0 from the start, 1 from here, 2 from the end; returns the new offset. |
 | `fs.set_timeout` | r, i64 | - | Give later reads and writes on a pipe or socket a timeout in ms (E_TIMEOUT); negative: none. |
+| `fs.set_line_max` | r, i64 | - | Make fs.read_line on this handle refuse a line of more than n bytes (E_RANGE), so that a peer cannot make it read without end; 0: no limit (the default). |
 | `fs.stdin` | - | r | The program's standard input. |
 | `fs.stdout` | - | r | The program's standard output (the same output as io.print). |
 | `fs.stderr` | - | r | The program's standard error. |
