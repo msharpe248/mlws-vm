@@ -186,6 +186,22 @@ is 3 ms for MLWSVM (with the module cache) and 2 ms for Lua.
 machines, the JIT's effect on each, the collector, and comparisons with the
 JVM and CPython.
 
+## Download
+
+Each release's page has an archive for Linux (x86-64 and arm64, glibc 2.35
+and later), macOS (Apple silicon and Intel, macOS 12 and later) and Windows
+(x86-64 and arm64): `mlwsvm` with its `lib` directory, the examples, and a
+`.sha256` file to check it by. Unpack it anywhere and run it from there:
+
+```sh
+tar xzf mlwsvm-VERSION-linux-x86_64.tar.gz && cd mlwsvm-VERSION-linux-x86_64
+./mlwsvm run examples/hello.masm
+```
+
+It is not signed: macOS keeps a file a browser downloaded from running until
+`xattr -d com.apple.quarantine mlwsvm` (one fetched with `curl` is not held),
+and Windows' SmartScreen may ask once.
+
 ## Build and run
 
 ```sh
@@ -306,7 +322,7 @@ passes its tests.
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks and results, how the interpreter and scheduler are made fast, and what is left alone (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M117 and what remains: the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M118 and what remains: the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout

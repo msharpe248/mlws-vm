@@ -1,0 +1,193 @@
+# The executables attached to a release: for each system, an archive of a
+# directory holding mlwsvm, its lib/ (the standard library, found beside the
+# executable), the examples, README.md and LICENSE, and the archive's SHA-256.
+#
+# When a release is published, the archives are attached to it. Run by hand
+# (Actions, "Release binaries", Run workflow), they are only kept as the run's
+# artifacts, to try before a release.
+#
+# Each one is tried as a user would: unpacked elsewhere, then run from there
+# with a short PATH (version, hello, the JIT, a few tests). Linux's links
+# libffi in, built on Ubuntu 22.04, so it runs with glibc 2.35 and later;
+# macOS's runs on macOS 12 and later; Windows' needs no DLL but Windows' own.
+name: Release binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unix:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-22.04 }
+          - { name: linux-arm64, os: ubuntu-22.04-arm }
+          - { name: macos-arm64, os: macos-14 }
+          - { name: macos-x86_64, os: macos-15-intel }
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libffi (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libffi-dev pkg-config
+
+      - name: Version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = release ]; then v="${{ github.event.release.tag_name }}"; v="${v#v}"
+          else v="dev-$(git rev-parse --short HEAD)"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "dir=mlwsvm-$v-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            make CC=clang -j4 FFI_LIBS="$(pkg-config --variable=libdir libffi)/libffi.a" > build.log 2>&1 || { cat build.log; exit 1; }
+          else
+            make CC=clang -j4 > build.log 2>&1 || { cat build.log; exit 1; }
+          fi
+          cat build.log
+          ! grep -E 'warning:|error:' build.log
+
+      - name: What it needs
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            ldd mlwsvm | tee needs.txt
+            ! grep -i ffi needs.txt
+          else
+            otool -L mlwsvm
+            otool -l mlwsvm | grep -A3 -E 'LC_BUILD_VERSION|LC_VERSION_MIN' | grep -E 'minos|version'
+          fi
+
+      - name: Package
+        run: |
+          d="${{ steps.v.outputs.dir }}"
+          mkdir -p "dist/$d"
+          cp mlwsvm README.md LICENSE "dist/$d/"
+          cp -R lib examples "dist/$d/"
+          rm -rf "dist/$d/lib/ext"
+          strip "dist/$d/mlwsvm"
+          tar -C dist -czf "dist/$d.tar.gz" "$d"
+          (cd dist && shasum -a 256 "$d.tar.gz" > "$d.tar.gz.sha256")
+          cat "dist/$d.tar.gz.sha256"
+
+      - name: Runs on its own
+        run: |
+          d="${{ steps.v.outputs.dir }}"
+          t="$RUNNER_TEMP/try"; mkdir -p "$t"
+          tar -C "$t" -xzf "dist/$d.tar.gz"
+          cd "$t/$d"
+          PATH=/usr/bin:/bin ./mlwsvm version
+          PATH=/usr/bin:/bin ./mlwsvm run examples/hello.masm
+          PATH=/usr/bin:/bin ./mlwsvm run --jit on examples/fib.masm
+          echo hello | PATH=/usr/bin:/bin ./mlwsvm run examples/cat.masm
+          PATH=/usr/bin:/bin ./mlwsvm test examples
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.v.outputs.dir }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/*.tar.gz dist/*.sha256 --clobber
+
+  windows:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x86_64, os: windows-latest, msystem: CLANG64, pkg: x86_64 }
+          - { name: windows-arm64, os: windows-11-arm, msystem: CLANGARM64, pkg: aarch64 }
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: false
+          install: >-
+            make
+            zip
+            mingw-w64-clang-${{ matrix.pkg }}-clang
+            mingw-w64-clang-${{ matrix.pkg }}-libffi
+            mingw-w64-clang-${{ matrix.pkg }}-pkgconf
+
+      - name: Version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = release ]; then v="${{ github.event.release.tag_name }}"; v="${v#v}"
+          else v="dev-$(git rev-parse --short HEAD)"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "dir=mlwsvm-$v-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          make CC=clang -j4 > build.log 2>&1 || { cat build.log; exit 1; }
+          cat build.log
+          ! grep -E 'warning:|error:' build.log
+
+      - name: What it needs (Windows' own DLLs only)
+        run: |
+          llvm-objdump -p mlwsvm.exe | grep "DLL Name" | tee dlls.txt
+          ! grep -vi -E "DLL Name: (kernel32|advapi32|ws2_32|bcrypt|api-ms-win-crt-[a-z0-9-]+)\.dll" dlls.txt
+
+      - name: Package
+        run: |
+          d="${{ steps.v.outputs.dir }}"
+          mkdir -p "dist/$d"
+          cp mlwsvm.exe README.md LICENSE "dist/$d/"
+          cp -R lib examples "dist/$d/"
+          rm -rf "dist/$d/lib/ext"
+          llvm-strip "dist/$d/mlwsvm.exe"
+          (cd dist && zip -qr "$d.zip" "$d" && sha256sum "$d.zip" > "$d.zip.sha256")
+          cat "dist/$d.zip.sha256"
+
+      - name: Runs on its own (PowerShell, Windows' PATH)
+        shell: pwsh
+        run: |
+          $d = "${{ steps.v.outputs.dir }}"
+          $t = Join-Path $env:RUNNER_TEMP "try"
+          Expand-Archive -Path "dist\$d.zip" -DestinationPath $t
+          Set-Location (Join-Path $t $d)
+          $env:PATH = "C:\Windows\system32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0"
+          .\mlwsvm.exe version; if ($LASTEXITCODE) { exit 1 }
+          .\mlwsvm.exe run examples\hello.masm; if ($LASTEXITCODE) { exit 1 }
+          .\mlwsvm.exe run --jit on examples\fib.masm; if ($LASTEXITCODE) { exit 1 }
+          # (not walk.masm, which runs POSIX's sort)
+          .\mlwsvm.exe test examples\hello.masm examples\cat.masm examples\grep.masm examples\wc.masm examples\sales.masm examples\tasks.masm examples\numbers.masm examples\generators.masm examples\pipeline.masm examples\kvstore.masm examples\errors.masm; if ($LASTEXITCODE) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.v.outputs.dir }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" (Get-ChildItem dist -File).FullName --clobber
