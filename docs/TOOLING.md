@@ -463,7 +463,9 @@ $ mlwsvm run --monitor 0.0.0.0:7443 --monitor-cert cert.pem --monitor-key key.pe
 
 Summary tiles (live processes, instructions per second, heap, time slices per
 second), two-minute charts of instructions per second and heap size, a sortable
-process table (click a row for details: quotas, links and monitors, here and on
+process table that can be narrowed to a group of states (running, waiting,
+in I/O, paused, ended) and to the processes whose pid, program or function
+holds some text (click a row for details: quotas, links and monitors, here and on
 other nodes, a backtrace, and the first messages waiting), the program's log
 (below; filtered by level and by text, with the newest line at the bottom or the
 top, which the browser remembers; it can be paused, and the lines shown

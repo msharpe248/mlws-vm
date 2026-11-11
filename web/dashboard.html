@@ -204,7 +204,12 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12
     <div class="empty" id="programs-empty">No program started yet.</div>
   </section>
   <section class="card">
-    <h2>Processes</h2>
+    <div class="toolbar"><h2>Processes</h2>
+      <span class="note" id="procs-count"></span>
+      <span class="spacer"></span>
+      <label>State <select id="procs-state"><option value="">any</option><option value="running">running or ready</option><option value="waiting">waiting or sleeping</option><option value="io">in I/O or a native call</option><option value="paused">paused</option><option value="ended">done or failed</option></select></label>
+      <label>Find <input id="procs-find" type="search" autocomplete="off" placeholder="pid, program or function"></label>
+    </div>
     <div class="note" id="debugged" hidden></div>
     <div class="table-wrap"><table id="procs"><thead></thead><tbody></tbody></table></div>
     <div class="empty" id="procs-empty" hidden>No live processes.</div>
@@ -402,7 +407,9 @@ function renderProcs() {
     renderProcs();
   }));
   const val = (p) => sortKey === "msgs" ? p.msgs_received + p.msgs_sent : p[sortKey];
-  const rows = procs.slice().sort((a, b) => {
+  const shown = procs.filter(procShown);
+  $("procs-count").textContent = shown.length === procs.length ? "" : `showing ${shown.length} of ${procs.length}`;
+  const rows = shown.sort((a, b) => {
     const x = val(a), y = val(b);
     return (typeof x === "string" || typeof y === "string" ? String(x ?? "").localeCompare(String(y ?? "")) : x - y) * sortDir;
   });
@@ -415,8 +422,23 @@ function renderProcs() {
   tbody.querySelectorAll("tr").forEach((tr) => tr.addEventListener("click", () => {
     selectedPid = Number(tr.dataset.pid); renderProcs(); loadDetail();
   }));
-  $("procs-empty").hidden = procs.length > 0;
+  $("procs-empty").hidden = shown.length > 0;
+  $("procs-empty").textContent = procs.length ? "No process matches." : "No live processes.";
 }
+/* The filters above the table: a group of states, and text found in the
+ * pid (whole), the program's name or the function (anywhere, any case). */
+const STATE_GROUPS = { running: ["running", "ready"], waiting: ["waiting", "sleeping"], io: ["io", "native"],
+  paused: ["paused"], ended: ["done", "failed"] };
+function procShown(p) {
+  const group = STATE_GROUPS[$("procs-state").value];
+  if (group && !group.includes(p.state)) return false;
+  const find = $("procs-find").value.trim().toLowerCase();
+  if (!find) return true;
+  if (/^\d+$/.test(find) && String(p.pid) === find) return true;
+  return String(p.program_name ?? "").toLowerCase().includes(find) || String(p.function ?? "").toLowerCase().includes(find);
+}
+$("procs-state").addEventListener("change", renderProcs);
+$("procs-find").addEventListener("input", renderProcs);
 
 async function loadDetail() {
   if (selectedPid == null) return;

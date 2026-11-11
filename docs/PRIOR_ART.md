@@ -351,6 +351,7 @@ of the instructions in call-heavy code.
 | M110 | Unix's `cat`, `grep` and `wc` as the first programs to read (Kernighan and Pike's *The Unix Programming Environment*, Kernighan and Ritchie's *The C Programming Language*); the shortest float that reads back (Steele and White, and Gay, 1990), printed as Python's `repr` chooses its form; Java's `BigDecimal.setScale` with a `RoundingMode`, and Python's `Decimal.quantize`, whose modes `dec.round` takes |
 | M111 | TextMate's grammars (2004), which VS Code, Sublime Text and GitHub's Linguist read; the grammars of other assemblers' extensions, which likewise tell a mnemonic from its operands by its place on the line |
 | M112 | Go's `path/filepath` (`Clean`, which follows Rob Pike's lexical rules from Plan 9, `Dir`, `Base`, and its volume names for drives and shares); Python's `os.path.splitext`; POSIX's `mkdtemp`, and the temporary-file races it answers |
+| M113 | `top`'s and `htop`'s filters (by user, and htop's `F4` filter on the command), and Erlang's `observer`, whose process list filters likewise |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References
