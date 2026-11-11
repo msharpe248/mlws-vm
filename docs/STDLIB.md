@@ -189,7 +189,9 @@ as in Python and Rust:
 | type `q` | a string quoted, with escapes |
 
 Without a type, every value has a natural form: integers in decimal, floats
-in the shortest form that round-trips, `true`/`false`, characters as
+in the fewest digits that read back as the same float (plain from 1e-4 up to
+1e16, `210` and `0.001`, and with an exponent outside it, `1e+16` and
+`1e-05`), `true`/`false`, characters as
 themselves, BigInts and decimals exactly, and other objects as a description.
 The arguments are typed list elements, so a mismatch (`{:x}` of a string, a
 missing argument) is an error (`E_TYPE`, `E_BOUNDS`), never a crash. This

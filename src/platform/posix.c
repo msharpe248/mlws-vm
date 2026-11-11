@@ -143,6 +143,35 @@ long plat_stdin_read(void *buf, size_t n, uint64_t timeout_ns) {
     return r < 0 ? 0 : (long)r;
 }
 
+static int saved_stdin = -2; /* plat_stdin_feed: the first stdin (-1: none), or -2: not fed */
+
+bool plat_stdin_feed(const char *data, size_t n) {
+    int fds[2];
+    if (saved_stdin != -2 || pipe(fds) != 0) return false;
+    fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL) | O_NONBLOCK); /* never wait: all of it fits, or none */
+    ssize_t w = n ? write(fds[1], data, n) : 0;
+    close(fds[1]);
+    if (w != (ssize_t)n) {
+        close(fds[0]);
+        return false;
+    }
+    saved_stdin = fcntl(0, F_DUPFD_CLOEXEC, 3);
+    dup2(fds[0], 0);
+    close(fds[0]);
+    return true;
+}
+
+void plat_stdin_restore(void) {
+    if (saved_stdin == -2) return;
+    if (saved_stdin >= 0) {
+        dup2(saved_stdin, 0);
+        close(saved_stdin);
+    } else {
+        close(0);
+    }
+    saved_stdin = -2;
+}
+
 /* Elsewhere (OpenBSD) from argv[0], found through $PATH if it has no '/'. main
  * passes it before any thread starts; later calls without it get the same. */
 char *plat_exe_path(const char *argv0) {

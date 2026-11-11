@@ -1,0 +1,9 @@
+{
+  "owner": "Sam",
+  "tasks": [
+    {"title": "Write the report", "done": false, "minutes": 90, "tags": ["work"]},
+    {"title": "Buy bread", "done": true, "minutes": 15, "tags": ["home", "errand"]},
+    {"title": "Fix the bike", "done": false, "minutes": 45, "tags": ["home"]},
+    {"title": "Call the bank", "done": false, "minutes": 10, "tags": ["errand", "work"]}
+  ]
+}

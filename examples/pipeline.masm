@@ -1,0 +1,73 @@
+; pipeline.masm - processes in a chain, each a stage that receives values,
+; works on them, and sends them on, as a Unix pipeline's commands do.
+;
+;     numbers 1..1000  ->  squares  ->  keep_odd  ->  total
+;
+; Each stage is a process with its own heap; a message is copied into the
+; receiver's mailbox, so the stages share nothing and need no locks. They run
+; at once, on as many threads as the machine has, and each waits (holding no
+; thread) when its mailbox is empty. 0 marks the end of the stream: each
+; stage passes it on and stops. The last stage sends its result to main.
+;
+;     mlwsvm run examples/pipeline.masm
+;
+; expect-stdout: 500 odd squares, adding up to 166666500
+.include "std/io.inc"
+
+; numbers(next, n): send 1, 2, ... n to the next stage, then the end
+.func numbers(i64 next, i64 n)
+    mov I2, 1
+1:  bgt I2, n, 2f
+    send next, I2
+    inc I2
+    jmp 1b
+2:  send next, 0
+    ret
+.endf
+
+; squares(next): each number squared (the end, 0, squares to 0)
+.func squares(i64 next)
+1:  recv I1
+    mul I2, I1, I1
+    send next, I2
+    bnz I1, 1b
+    ret
+.endf
+
+; keep_odd(next): only the odd numbers
+.func keep_odd(i64 next)
+1:  recv I1
+    bz I1, 2f
+    and I2, I1, 1
+    bz I2, 1b
+    send next, I1
+    jmp 1b
+2:  send next, 0
+    ret
+.endf
+
+; total(parent): count and add up, then send [count, sum] to parent
+.func total(i64 parent)
+    mov I2, 0
+    mov I3, 0
+1:  recv I1
+    bz I1, 2f
+    inc I2
+    add I3, I1
+    jmp 1b
+2:  lnew R0
+    lpush R0, I2, I3
+    send parent, R0
+    ret
+.endf
+
+.func main
+    spawn total (PID) -> (I0)          ; built from the end, so each knows the next
+    spawn keep_odd (I0) -> (I1)
+    spawn squares (I1) -> (I2)
+    spawn numbers (I2, 1000)
+    recv R0                            ; [count, sum]
+    ncall "text.format" ("{} odd squares, adding up to {}", R0) -> (R1)
+    PRINTLN_S R1
+    ret 0
+.endf

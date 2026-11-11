@@ -537,6 +537,55 @@ Obj *num_arith(Process *p, int op, const Obj *x, const Obj *y) {
     return make_num(p, t, &r, er);
 }
 
+Obj *num_round(Process *p, const Obj *x, int64_t places, int mode) {
+    if (places > MAX_EXP || places < -MAX_EXP) vm_trap(p, "E_BOUNDS", "%lld places is out of range", (long long)places);
+    const ObjDec *d = (const ObjDec *)x;
+    int32_t e = (int32_t)-places;
+    BN a = {0, 0, 0, NULL};
+    as_bn(x, &a, NULL);
+    if (d->exp >= e) { /* no digits to drop: the same value, at the new scale */
+        bn_mul_pow10(&a, (uint32_t)(d->exp - e));
+        a.sign = a.n ? d->sign : 0;
+        return make_num(p, T_DEC, &a, e);
+    }
+    if ((int64_t)e - d->exp > MAX_EXP) { /* far below a unit of the last place: 0, or one unit */
+        bn_free(&a);
+        bn_set_u64(&a, 1, d->sign);
+        bool up = d->sign && (mode == NUM_UP || (mode == NUM_FLOOR && d->sign < 0) || (mode == NUM_CEILING && d->sign > 0));
+        if (!up) a.n = 0, a.sign = 0;
+        return make_num(p, T_DEC, &a, e);
+    }
+    BN unit = {0, 0, 0, NULL}, q = {0, 0, 0, NULL}, r = {0, 0, 0, NULL};
+    bn_set_u64(&unit, 1, 1);
+    bn_mul_pow10(&unit, (uint32_t)(e - d->exp)); /* the digits dropped: q = a / unit, r = a % unit */
+    if (a.n) mag_divmod(&q, &r, a.d, a.n, unit.d, unit.n);
+    bn_norm(&q);
+    bn_norm(&r);
+    bool up = false;
+    if (r.n) {
+        switch (mode) {
+        case NUM_DOWN: break;
+        case NUM_UP: up = true; break;
+        case NUM_FLOOR: up = d->sign < 0; break;
+        case NUM_CEILING: up = d->sign > 0; break;
+        default: { /* to the nearest; a tie by the mode: compare 2r with the unit */
+            bn_muladd_small(&r, 2, 0);
+            int c = mag_cmp(r.d, r.n, unit.d, unit.n);
+            up = c > 0 || (c == 0 && (mode == NUM_HALF_UP || (mode == NUM_HALF_EVEN && q.n && (q.d[0] & 1))));
+        }
+        }
+    }
+    if (up) {
+        if (!q.n) bn_set_u64(&q, 1, 1);
+        else bn_muladd_small(&q, 1, 1);
+    }
+    q.sign = q.n ? d->sign : 0;
+    bn_free(&a);
+    bn_free(&unit);
+    bn_free(&r);
+    return make_num(p, T_DEC, &q, e);
+}
+
 Obj *num_unary(Process *p, int op, const Obj *x) {
     MlwsType t = x->kind == OBJ_BIG ? T_BIG : T_DEC;
     BN a = {0, 0, 0, NULL};

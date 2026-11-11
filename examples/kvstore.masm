@@ -1,0 +1,138 @@
+; kvstore.masm - a key-value store as a server process (std.server, like
+; Erlang's gen_server), found by name, used by several clients at once.
+;
+;     mlwsvm run examples/kvstore.masm
+;
+; The store's map belongs to one process, the server, and no other process
+; can touch it: a client asks with proc.call, which sends a request and
+; waits for the reply. The server takes requests one at a time, so they
+; never race, and no lock is needed. std.server runs the loop; this module
+; gives it init (the first state) and handle_call (a reply and the next
+; state). Being registered, the server is found by name with proc.whereis.
+;
+; expect-stdout: 3 clients put 100 keys each
+; expect-stdout: size: 300
+; expect-stdout: client2/key7 = 207
+; expect-stdout: deleted client1/key0: true
+; expect-stdout: client1/key0 = null
+; expect-stdout: size: 299
+.include "std/io.inc"
+.import std.server as server
+.export init, handle_call
+
+; ---- the server's callbacks ----
+
+; init(arg) -> the first state: an empty map
+.func init(ref arg) -> ref
+    mnew R1
+    ret R1
+.endf
+
+; handle_call(request, store) -> (reply, store). Requests are lists:
+; ["put", key, value], ["get", key], ["delete", key], ["size"].
+.func handle_call(ref req, ref store) -> (ref, ref)
+    mov R2, req[0]
+    strcmp I0, R2, "put"
+    bz I0, put
+    strcmp I0, R2, "get"
+    bz I0, get
+    strcmp I0, R2, "delete"
+    bz I0, delete
+    strcmp I0, R2, "size"
+    bz I0, size
+    ret "unknown request", store
+put:
+    mov R3, req[1]
+    mov R4, req[2]
+    mset store, R3, R4
+    ret "ok", store
+get:
+    mov R3, req[1]
+    mget R4, store, R3, null           ; null if it has no such key
+    ret R4, store
+delete:
+    mov R3, req[1]
+    mhas I1, store, R3
+    mdel store, R3
+    lnew R4
+    lpush R4, I1                       ; replies are references: [whether it had it]
+    ret R4, store
+size:
+    len I1, store
+    lnew R4
+    lpush R4, I1
+    ret R4, store
+.endf
+
+; ---- clients ----
+
+; ask(request) -> the store's reply
+.func ask(ref req) -> ref
+    ncall "proc.whereis" ("kv") -> (I1)
+    ncall "proc.call" (I1, req, 5000) -> (R2)   ; E_TIMEOUT after 5 s
+    ret R2
+.endf
+
+; client(parent, n): put "clientN/keyI" = N*100+I for I in 0..99
+.func client(i64 parent, i64 n)
+    tostr R5, n
+    mov I2, 0
+1:  tostr R6, I2
+    strcat R7, "client", R5, "/key", R6
+    mul I3, n, 100
+    add I3, I2
+    tostr R8, I3                       ; the value: a string, as any reference would do
+    lnew R9
+    lpush R9, "put", R7, R8
+    call ask (R9) -> (R10)
+    inc I2
+    blt I2, 100, 1b
+    send parent, n
+    ret
+.endf
+
+.func print_get(ref key)
+    lnew R2
+    lpush R2, "get", key
+    call ask (R2) -> (R3)
+    bnz.r R3, 1f
+    mov R3, "null"
+1:  strcat R4, key, " = ", R3
+    PRINTLN_S R4
+    ret
+.endf
+
+.func print_size()
+    lnew R2
+    lpush R2, "size"
+    call ask (R2) -> (R3)
+    tostr R4, R3[0]
+    strcat R4, "size: ", R4
+    PRINTLN_S R4
+    ret
+.endf
+
+.func main
+    closure init -> (R0)               ; std.server finds the other callbacks from it
+    call server.start (R0, null) -> (I0)
+    ncall "proc.register" ("kv", I0)
+
+    spawn client (PID, 1)
+    spawn client (PID, 2)
+    spawn client (PID, 3)
+    recv I1                            ; each says when it is done
+    recv I1
+    recv I1
+    PRINTLN_S "3 clients put 100 keys each"
+    call print_size ()
+    call print_get ("client2/key7")
+    lnew R2
+    lpush R2, "delete", "client1/key0"
+    call ask (R2) -> (R3)
+    tostr.b R4, R3[0]
+    strcat R4, "deleted client1/key0: ", R4
+    PRINTLN_S R4
+    call print_get ("client1/key0")
+    call print_size ()
+    ret 0
+.endf

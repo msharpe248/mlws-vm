@@ -206,9 +206,16 @@ void fmt_double(double d, char *buf, size_t n) {
         snprintf(buf, n, d < 0 ? "-inf" : "inf");
         return;
     }
+    /* The fewest digits that read back, then the form: plain from 1e-4 up to
+     * 1e16, as Python's repr chooses, and an exponent outside that (%g would
+     * choose by the number of digits, and so write 210 as 2.1e+02). */
     for (int prec = 1; prec <= 17; prec++) {
-        snprintf(buf, n, "%.*g", prec, d);
-        if (strtod(buf, NULL) == d) return;
+        snprintf(buf, n, "%.*e", prec - 1, d);
+        if (strtod(buf, NULL) != d) continue;
+        int x = atoi(strchr(buf, 'e') + 1); /* the decimal exponent */
+        if (x >= -4 && x < 16) snprintf(buf, n, "%.*f", prec - 1 - x > 0 ? prec - 1 - x : 0, d);
+        else snprintf(buf, n, "%.*g", prec, d);
+        return;
     }
 }
 

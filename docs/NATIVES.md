@@ -12,7 +12,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `io.print_i` | i64 | - | Print a signed integer. |
 | `io.print_u` | u64 | - | Print an unsigned integer. |
 | `io.print_hex` | u64 | - | Print an integer in hexadecimal with a 0x prefix. |
-| `io.print_f` | f64 | - | Print a float using the shortest representation that round-trips. |
+| `io.print_f` | f64 | - | Print a float in the fewest digits that read back as the same float: plain from 1e-4 up to 1e16, with an exponent outside it. |
 | `io.print_s` | r | - | Print a string or byte buffer (null prints `null`). |
 | `io.print_c` | c | - | Print a character (UTF-8 encoded). |
 | `io.print_b` | b | - | Print `true` or `false`. |
@@ -34,6 +34,8 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `gc.finalize` | r, r | - | Call a closure with an object, once, after a collection finds nothing else holds it; the closure must not hold the object itself. It runs in this process between two instructions (or when it calls gc.run_finalizers, if it holds them), cannot wait, and what it throws is dropped. Strings, BigInts and decimals are values and cannot be finalized. |
 | `gc.hold_finalizers` | i64 | - | 1: this process's finalizers wait, once their objects are found dead, until it calls gc.run_finalizers, so they never interrupt it. 0: they run between instructions again, and those waiting run now. |
 | `gc.run_finalizers` | - | i64 | Call the finalizers waiting to run, and those their own collections find, now; returns how many ran (0 inside a finalizer). |
+| `dec.round` | r, i64, r | r | A decimal rounded to n fractional digits (negative: to tens, hundreds, ...), with exactly that many: dec.round(2.345d, 2, null) is 2.34, of 2.5d it is 2.50. The mode: null or "half_even" (a tie goes to the even digit, as division rounds), "half_up" (away from zero), "half_down", "down" (toward zero), "up", "floor" or "ceiling". |
+| `dec.scale` | r | i64 | A decimal's fractional digits as written or computed: 2 for 1.50d, 0 for 15d, -1 for 1.5e2d (150). |
 | `weak.ref` | r | r | A weak reference to an object: it does not keep the object alive. Strings, BigInts and decimals are values, and it holds them like any other value. |
 | `weak.get` | r | r | What a weak reference refers to, or null once a collection has found nothing else holds it. |
 | `weak.map` | r, i64 | - | Make a map weak: 1 weak keys (a value is held only while its key lives, even if the value refers to the key), 2 weak values, 3 both, 0 neither. An entry goes when a collection finds a weak key or value dead. Strings, BigInts, decimals and non-references are held as in any map. |

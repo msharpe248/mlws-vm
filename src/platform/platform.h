@@ -23,6 +23,11 @@ bool plat_make_executable(const char *path); /* a file just written, as a progra
 /* Bytes from stdin, without buffering: up to n, 0 at its end, or, waiting no
  * more than timeout_ns, -1 if none came (UINT64_MAX: waits as long as it takes). */
 long plat_stdin_read(void *buf, size_t n, uint64_t timeout_ns);
+/* For the test runner: standard input becomes the n bytes of data (a pipe that
+ * holds them, its other end closed) until plat_stdin_restore. False if it
+ * cannot (n is kept small: the pipe must hold all of it). */
+bool plat_stdin_feed(const char *data, size_t n);
+void plat_stdin_restore(void);
 char *plat_find_in_path(const char *name); /* POSIX: an executable in $PATH, or NULL */
 /* Path list separator for MLWSVM_PATH (':' on POSIX, ';' on Windows). */
 char plat_path_sep(void);

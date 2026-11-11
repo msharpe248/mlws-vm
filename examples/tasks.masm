@@ -1,0 +1,112 @@
+; tasks.masm - read a JSON document, walk it, and write a summary as JSON.
+;
+;     mlwsvm run examples/tasks.masm [FILE.json]    (default examples/data/tasks.json)
+;     mlwsvm run examples/tasks.masm - < tasks.json
+;
+; json.parse makes maps of objects (in the order of their keys), lists of
+; arrays, i64 of integers, f64 of fractions, bools and null. Each value keeps
+; its type, so the program reads one with the type it expects: `mget.b` for
+; "done", plain `mget` into an integer register for "minutes". A field of the
+; wrong type, or a missing one, raises an error (E_TYPE, E_KEY) instead of
+; reading garbage. json.stringify writes maps and lists back, here indented.
+;
+; expect-stdout: Sam has 3 open tasks, 145 minutes:
+; expect-stdout:   Write the report (work)
+; expect-stdout:   Fix the bike (home)
+; expect-stdout:   Call the bank (errand, work)
+; expect-stdout: {
+; expect-stdout:   "open": 3,
+; expect-stdout:   "done": 1,
+; expect-stdout:   "minutes": 145,
+; expect-stdout:   "tags": {
+; expect-stdout:     "work": 2,
+; expect-stdout:     "home": 1,
+; expect-stdout:     "errand": 1
+; expect-stdout:   }
+; expect-stdout: }
+.include "std/io.inc"
+
+; read_input(name) -> the text of a file, or of standard input for "-"
+.func read_input(ref name) -> ref
+    strcmp I0, name, "-"
+    bz I0, 1f
+    ncall "fs.read_file" (name) -> (R1)
+    ret R1
+1:  ncall "fs.stdin" () -> (R1)
+    ncall "fs.read_all" (R1) -> (R2)   ; a byte buffer
+    strcat R3, R2                      ; as a string
+    ret R3
+.endf
+
+.func main
+    .alias doc, R0
+    .alias tasks, R1
+    .alias task, R2
+    .alias tags, R3
+    .alias summary, R4
+    .alias n, I0
+    .alias i, I1
+    .alias open, I2
+    .alias done, I3
+    .alias minutes, I4
+    ncall "os.args" () -> (R5)
+    mov R6, "examples/data/tasks.json"
+    len I5, R5
+    bz I5, 1f
+    mov R6, R5[0]
+1:  call read_input (R6) -> (R7)
+    ncall "json.parse" (R7) -> (doc)
+    mget tasks, doc, "tasks"
+    mnew tags                          ; tag -> how many open tasks have it
+
+    mov open, 0
+    mov done, 0
+    mov minutes, 0
+    lnew R8                            ; the lines to print, after the heading
+    len n, tasks
+    mov i, 0
+each:
+    bge i, n, report
+    mov task, tasks[i]
+    inc i
+    mget.b I5, task, "done"
+    bz I5, 2f
+    inc done
+    jmp each
+2:  inc open
+    mget I6, task, "minutes"
+    add minutes, I6
+    mget R9, task, "tags"
+    len I7, R9
+    mov I8, 0
+3:  bge I8, I7, 4f                     ; count each tag
+    mov R10, R9[I8]
+    mget I9, tags, R10, 0
+    inc I9
+    mset tags, R10, I9
+    inc I8
+    jmp 3b
+4:  ncall "text.join" (R9, ", ") -> (R10)
+    mget R11, task, "title"
+    strcat R12, "  ", R11, " (", R10, ")"
+    lpush R8, R12
+    jmp each
+
+report:
+    mget R9, doc, "owner"
+    lnew R10
+    lpush R10, R9, open, minutes
+    ncall "text.format" ("{} has {} open tasks, {} minutes:", R10) -> (R11)
+    PRINTLN_S R11
+    ncall "text.join" (R8, "\n") -> (R11)
+    PRINTLN_S R11
+
+    mnew summary                       ; keys come out in the order they went in
+    mset summary, "open", open
+    mset summary, "done", done
+    mset summary, "minutes", minutes
+    mset summary, "tags", tags
+    ncall "json.stringify" (summary, 2) -> (R11)
+    PRINTLN_S R11
+    ret 0
+.endf

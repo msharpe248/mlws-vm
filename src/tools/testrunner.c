@@ -7,6 +7,8 @@
  *   ; skip: <reason>
  *   ; threads: <n>                                   (run on n worker threads)
  *   ; option: --<name> <value>                       (repeatable: a VM option, as on the command line)
+ *   ; args: <word> ...                               (the program's arguments, os.args: words split at spaces)
+ *   ; stdin: <one line of input>                     (repeatable: standard input is these lines, then its end)
  *   ; requires: ffi                                  (skipped in a build without libffi)
  *   ; requires: posix | windows                      (skipped on other systems)
  *   ; debug-script: <debugger command>                (repeatable: run under
@@ -54,6 +56,9 @@ typedef struct {
     StrVec insns_want; /* "function n" */
     bool no_opt;
     StrVec jit_want; /* "compiled function n", "steps n" */
+    StrVec args;     /* `; args:` */
+    StrBuf input;    /* `; stdin:` lines */
+    bool has_input;
 } Expect;
 
 static void capture(void *ctx, const char *s, size_t n) { sb_putn(ctx, s, n); }
@@ -151,6 +156,17 @@ static void parse_expect(const char *text, Expect *e) {
             e->no_opt = true;
         } else if ((v = after_key(line, "debug-script:"))) {
             VEC_PUSH(e->script, xstrdup(v));
+        } else if ((v = after_key(line, "args:"))) {
+            for (const char *a = v; *a;) {
+                while (*a == ' ' || *a == '\t') a++;
+                size_t k = strcspn(a, " \t");
+                if (k) VEC_PUSH(e->args, xstrndup(a, k));
+                a += k;
+            }
+        } else if ((v = after_key(line, "stdin:"))) {
+            sb_puts(&e->input, v);
+            sb_putc(&e->input, '\n');
+            e->has_input = true;
         } else if ((v = after_key(line, "threads:"))) {
             e->threads = atoi(v);
         } else if ((v = after_key(line, "option:"))) {
@@ -266,6 +282,9 @@ static void free_expect(Expect *e) {
     VEC_FREE(e->opt_want);
     for (size_t k = 0; k < e->insns_want.n; k++) free(e->insns_want.v[k]);
     VEC_FREE(e->insns_want);
+    for (size_t k = 0; k < e->args.n; k++) free(e->args.v[k]);
+    VEC_FREE(e->args);
+    sb_free(&e->input);
 }
 
 /* The watchdog: which test is running, and since when. */
@@ -353,6 +372,10 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         vm->err_out = capture;
         vm->err_ctx = &errs;
         tool_env_libpaths(env, vm);
+        for (size_t k = 0; k < e.args.n; k++) VEC_PUSH(vm->prog_args, xstrdup(e.args.v[k]));
+        bool fed = false;
+        if (e.has_input && !why.n && !(fed = plat_stdin_feed(e.input.s, e.input.n)))
+            sb_printf(&why, "'; stdin:' could not be given (%zu bytes: too many?)", e.input.n);
         RunResult r;
         memset(&r, 0, sizeof r);
         atomic_store(&wd_start, plat_now_ns());
@@ -361,6 +384,7 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         } else if (e.script.n) run_debug_script(vm, path, &e, &out, &r);
         else vm_run_file(vm, path, &r);
         atomic_store(&wd_path, NULL);
+        if (fed) plat_stdin_restore();
         const char *got_code = r.status == RUN_OK ? "" : r.err.code;
         if (why.n) {
         } else if (e.error_want[0]) {

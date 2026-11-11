@@ -1,0 +1,114 @@
+; errors.masm - raising, catching and passing on errors, in one process and
+; across processes.
+;
+;     mlwsvm run examples/errors.masm
+;
+; A `.try LABEL ... .endtry` region sends anything raised inside it (here,
+; or in a function it calls) to LABEL, where `catch` takes it. What is raised
+; can be any reference: the VM's own faults are Error structs, with a code
+; ("E_DIV_ZERO") and a message; a program may raise an Error of its own, a
+; struct of its own type, or a string. A handler that cannot deal with it
+; raises it again. An error nothing catches ends the process; a process that
+; monitors it gets a Down message saying how it ended.
+;
+; expect-stdout: 10 / 0: E_DIV_ZERO: integer division by zero
+; expect-stdout: parse "12x": E_PARSE
+; expect-stdout: a ParseError at line 3: expected a number
+; expect-stdout: cleaned up, and passed on: E_APP
+; expect-stdout: the worker ended with E_KEY
+; expect-stdout: done
+.include "std/io.inc"
+
+.struct ParseError                     ; an error type of the program's own
+    line: i64
+    what: ref
+.ends
+
+; divide(a, b) -> a / b: raises E_DIV_ZERO for b = 0
+.func divide(i64 a, i64 b) -> i64
+    div I2, a, b
+    ret I2
+.endf
+
+; check_line(n, text): raises a ParseError unless text is a number
+.func check_line(i64 n, ref text)
+.try 1f
+    parse.i64 I2, text
+.endtry
+    ret
+1:  catch R2                           ; (the E_PARSE, replaced by our own)
+    new R3, ParseError
+    mov R3->ParseError.line, n
+    mov R3->ParseError.what, "expected a number"
+    throw R3
+.endf
+
+; step(): raises an Error of the program's own
+.func step()
+    new R0, Error
+    mov R0->Error.code, "E_APP"
+    mov R0->Error.message, "the step failed"
+    throw R0
+.endf
+
+; with_cleanup(): cleans up whatever happens in step, then passes the error on
+.func with_cleanup()
+.try 1f
+    call step ()
+.endtry
+    PRINTLN_S "unexpected: step returned"
+    ret
+1:  catch R0
+    PRINT_S "cleaned up, "              ; (closing files, telling someone)
+    throw R0                           ; and raise it again for the caller
+.endf
+
+; worker(): reads a key that is not there
+.func worker()
+    mnew R0
+    mget I0, R0, "missing"             ; E_KEY, and nothing here catches it
+    ret
+.endf
+
+.func main
+.try 1f
+    call divide (10, 0) -> (I0)
+.endtry
+1:  catch R0
+    strcat R1, "10 / 0: ", R0->Error.code, ": ", R0->Error.message
+    PRINTLN_S R1
+
+.try 2f
+    parse.i64 I0, "12x"
+.endtry
+2:  catch R0
+    strcat R1, "parse \"12x\": ", R0->Error.code
+    PRINTLN_S R1
+
+.try 3f
+    call check_line (3, "abc")
+.endtry
+3:  catch R0
+    isa I0, R0, ParseError             ; which kind of error is it?
+    bz I0, 9f
+    tostr R2, R0->ParseError.line
+    strcat R1, "a ParseError at line ", R2, ": ", R0->ParseError.what
+    PRINTLN_S R1
+
+.try 4f
+    call with_cleanup ()
+.endtry
+4:  catch R0
+    strcat R1, "and passed on: ", R0->Error.code
+    PRINTLN_S R1
+
+    spawnm worker () -> (I1)           ; spawned and monitored at once
+    recv R0                            ; its Down
+    mov R2, R0->Down.code              ; null if it ended normally
+    strcat R1, "the worker ended with ", R2
+    PRINTLN_S R1
+    PRINTLN_S "done"
+    ret 0
+9:  PRINTLN_S "unexpected: another kind of error"
+    ret 1
+.endf

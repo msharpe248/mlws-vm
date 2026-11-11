@@ -1,0 +1,67 @@
+; timers.masm - waiting with a time limit, sleeping, and a ticker process.
+;
+;     mlwsvm run examples/timers.masm
+;
+; `recvt dst, ms, label` waits for a message for up to ms milliseconds and
+; jumps to label if none came; `sleep ms` suspends a process. Neither holds a
+; thread: a sleeping or waiting process is only an entry in the scheduler's
+; timers, so a program can have thousands. A ticker is a process that sleeps
+; and sends, over and over, until it is killed.
+;
+; expect-stdout: the slow answer did not come within 50 ms
+; expect-stdout: the fast answer: fast
+; expect-stdout: tick 1
+; expect-stdout: tick 2
+; expect-stdout: tick 3
+; expect-stdout: 3 ticks took at least 60 ms: true
+.include "std/io.inc"
+
+; answer(parent, ms, text): send text to parent after ms milliseconds
+.func answer(i64 parent, i64 ms, ref text)
+    sleep ms
+    send parent, text
+    ret
+.endf
+
+; ticker(parent, ms): send "tick" every ms milliseconds, for ever
+.func ticker(i64 parent, i64 ms)
+1:  sleep ms
+    send parent, "tick"
+    jmp 1b
+.endf
+
+.func main
+    spawn answer (PID, 500, "slow")
+    recvt R0, 50, 1f                   ; give up after 50 ms
+    PRINTLN_S "unexpected: the slow answer came"
+    ret 1
+1:  PRINTLN_S "the slow answer did not come within 50 ms"
+    spawn answer (PID, 10, "fast")
+2:  recvt R0, 5000, 9f
+    strcmp I0, R0, "fast"              ; (the slow one may come in between)
+    bnz I0, 2b
+    strcat R1, "the fast answer: ", R0
+    PRINTLN_S R1
+
+    ncall "time.monotonic" () -> (I1)  ; nanoseconds, from any start: for durations
+    spawn ticker (PID, 20) -> (I2)
+    mov I3, 0
+3:  recvt R0, 5000, 9f
+    strcmp I0, R0, "tick"
+    bnz I0, 3b
+    inc I3
+    tostr R1, I3
+    strcat R1, "tick ", R1
+    PRINTLN_S R1
+    blt I3, 3, 3b
+    kill I2                            ; it never ends by itself
+    ncall "time.monotonic" () -> (I4)
+    sub I4, I1
+    sge I5, I4, 60000000               ; 3 sleeps of 20 ms
+    tostr.b R1, I5
+    strcat R1, "3 ticks took at least 60 ms: ", R1
+    PRINTLN_S R1
+    ret 0
+9:  PRINTLN_S "unexpected: nothing came for 5 s"
+    ret 1
+.endf

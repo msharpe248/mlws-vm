@@ -5,6 +5,7 @@
 
 #include "../platform/platform.h"
 #include "../heap/heap.h"
+#include "../heap/numeric.h"
 #include "../vm/vm.h"
 
 static void out_str(Process *p, const char *s) { proc_write(p, s, strlen(s)); }
@@ -160,6 +161,33 @@ static void n_weak_ref(Process *p, Word *a, Word *r) {
     r[0].r = &w->h;
 }
 
+/* ---- decimals ---- */
+
+static const Obj *dec_arg(Process *p, Word w, const char *fn) {
+    const Obj *o = w.r;
+    if (!o || o->kind != OBJ_DEC) vm_trap(p, "E_TYPE", "%s needs a decimal, not %s", fn, o ? obj_kind_name(o->kind) : "null");
+    return o;
+}
+
+static void n_dec_round(Process *p, Word *a, Word *r) {
+    static const char *const MODES[] = {"half_even", "half_up", "half_down", "down", "up", "floor", "ceiling"};
+    const Obj *x = dec_arg(p, a[0], "dec.round");
+    const Obj *m = a[2].r;
+    int mode = NUM_HALF_EVEN;
+    if (m) {
+        if (m->kind != OBJ_STRING) vm_trap(p, "E_TYPE", "dec.round: the mode is a string");
+        const ObjString *s = (const ObjString *)m;
+        for (mode = 0; mode < 7 && strcmp(s->data, MODES[mode]); mode++) {}
+        if (mode == 7)
+            vm_trap(p, "E_BOUNDS", "dec.round: no rounding mode '%s' (half_even, half_up, half_down, down, up, floor, ceiling)", s->data);
+    }
+    r[0].r = num_round(p, x, a[1].i, mode);
+}
+
+static void n_dec_scale(Process *p, Word *a, Word *r) {
+    r[0].i = -(int64_t)((const ObjDec *)dec_arg(p, a[0], "dec.scale"))->exp;
+}
+
 static void n_weak_get(Process *p, Word *a, Word *r) {
     Obj *o = a[0].r;
     if (!o) vm_trap(p, "E_NULL", "weak.get of null");
@@ -267,7 +295,7 @@ static const NativeDef BUILTINS[] = {
     {"io.print_i", 1, {T_I64}, 0, {0}, n_print_i, "Print a signed integer."},
     {"io.print_u", 1, {T_U64}, 0, {0}, n_print_u, "Print an unsigned integer."},
     {"io.print_hex", 1, {T_U64}, 0, {0}, n_print_hex, "Print an integer in hexadecimal with a 0x prefix."},
-    {"io.print_f", 1, {T_F64}, 0, {0}, n_print_f, "Print a float using the shortest representation that round-trips."},
+    {"io.print_f", 1, {T_F64}, 0, {0}, n_print_f, "Print a float in the fewest digits that read back as the same float: plain from 1e-4 up to 1e16, with an exponent outside it."},
     {"io.print_s", 1, {T_R}, 0, {0}, n_print_s, "Print a string or byte buffer (null prints `null`)."},
     {"io.print_c", 1, {T_C}, 0, {0}, n_print_c, "Print a character (UTF-8 encoded)."},
     {"io.print_b", 1, {T_B}, 0, {0}, n_print_b, "Print `true` or `false`."},
@@ -289,6 +317,8 @@ static const NativeDef BUILTINS[] = {
     {"gc.finalize", 2, {T_R, T_R}, 0, {0}, n_gc_finalize, "Call a closure with an object, once, after a collection finds nothing else holds it; the closure must not hold the object itself. It runs in this process between two instructions (or when it calls gc.run_finalizers, if it holds them), cannot wait, and what it throws is dropped. Strings, BigInts and decimals are values and cannot be finalized."},
     {"gc.hold_finalizers", 1, {T_I64}, 0, {0}, n_gc_hold_finalizers, "1: this process's finalizers wait, once their objects are found dead, until it calls gc.run_finalizers, so they never interrupt it. 0: they run between instructions again, and those waiting run now."},
     {"gc.run_finalizers", 0, {0}, 1, {T_I64}, n_gc_run_finalizers, "Call the finalizers waiting to run, and those their own collections find, now; returns how many ran (0 inside a finalizer)."},
+    {"dec.round", 3, {T_R, T_I64, T_R}, 1, {T_R}, n_dec_round, "A decimal rounded to n fractional digits (negative: to tens, hundreds, ...), with exactly that many: dec.round(2.345d, 2, null) is 2.34, of 2.5d it is 2.50. The mode: null or \"half_even\" (a tie goes to the even digit, as division rounds), \"half_up\" (away from zero), \"half_down\", \"down\" (toward zero), \"up\", \"floor\" or \"ceiling\"."},
+    {"dec.scale", 1, {T_R}, 1, {T_I64}, n_dec_scale, "A decimal's fractional digits as written or computed: 2 for 1.50d, 0 for 15d, -1 for 1.5e2d (150)."},
     {"weak.ref", 1, {T_R}, 1, {T_R}, n_weak_ref, "A weak reference to an object: it does not keep the object alive. Strings, BigInts and decimals are values, and it holds them like any other value."},
     {"weak.get", 1, {T_R}, 1, {T_R}, n_weak_get, "What a weak reference refers to, or null once a collection has found nothing else holds it."},
     {"weak.map", 2, {T_R, T_I64}, 0, {0}, n_weak_map, "Make a map weak: 1 weak keys (a value is held only while its key lives, even if the value refers to the key), 2 weak values, 3 both, 0 neither. An entry goes when a collection finds a weak key or value dead. Strings, BigInts, decimals and non-references are held as in any map."},

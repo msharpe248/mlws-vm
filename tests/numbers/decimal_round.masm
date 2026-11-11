@@ -1,0 +1,85 @@
+; dec.round: a decimal to n places in each rounding mode, with exactly that
+; scale (2.5 to 2 places is 2.50), negative places, zero, a number far below
+; the last place, and a bad mode; dec.scale. (3,000 random cases matched
+; Python's Decimal.quantize when it was written.)
+; expect-stdout: 2.34 2.36 2.35 2.34 2.35 -2.35
+; expect-stdout: -2.35 -2.34 2.35 2.34
+; expect-stdout: 2.50 0 2 0.00 0.01 0.00 1200 0.000 100.00 0.01
+; expect-stdout: 2 0 -1 3
+; expect-stdout: E_BOUNDS E_TYPE
+.include "std/test.inc"
+.include "std/io.inc"
+
+.func r(ref d, i64 n, ref mode)
+    ncall "dec.round" (d, n, mode) -> (R3)
+    tostr R4, R3
+    PRINT_S R4
+    ret
+.endf
+
+.func main
+    call r (2.345d, 2, null)
+    PRINT_S " "
+    call r (2.355d, 2, "half_even")
+    PRINT_S " "
+    call r (2.345d, 2, "half_up")
+    PRINT_S " "
+    call r (2.345d, 2, "half_down")
+    PRINT_S " "
+    call r (2.3451d, 2, "half_down")   ; above the half: up
+    PRINT_S " "
+    neg.dec R0, 2.345d
+    call r (R0, 2, "half_up")          ; away from zero
+    NL
+    neg.dec R0, 2.341d
+    call r (R0, 2, "floor")
+    PRINT_S " "
+    call r (R0, 2, "ceiling")
+    PRINT_S " "
+    call r (2.341d, 2, "up")
+    PRINT_S " "
+    call r (2.349d, 2, "down")
+    NL
+    call r (2.5d, 2, null)             ; more places: the same value, at that scale
+    PRINT_S " "
+    call r (0.5d, 0, null)
+    PRINT_S " "
+    call r (1.5d, 0, null)
+    PRINT_S " "
+    call r (0.004d, 2, null)
+    PRINT_S " "
+    call r (0.005d, 2, "half_up")
+    PRINT_S " "
+    neg.dec R0, 0.004d
+    call r (R0, 2, null)               ; no negative zero
+    PRINT_S " "
+    call r (1234.5d, -2, null)         ; to hundreds
+    PRINT_S " "
+    call r (0d, 3, null)
+    PRINT_S " "
+    call r (99.995d, 2, "half_up")     ; a carry into a new digit
+    PRINT_S " "
+    call r (1e-30d, 2, "ceiling")
+    NL
+    ncall "dec.scale" (1.50d) -> (I0)
+    ncall "dec.scale" (15d) -> (I1)
+    ncall "dec.scale" (1.5e2d) -> (I2)
+    div.dec R0, 1, 8                   ; 0.125
+    ncall "dec.scale" (R0) -> (I3)
+    lnew R2
+    lpush R2, I0, I1, I2, I3
+    ncall "text.format" ("{} {} {} {}", R2) -> (R3)
+    PRINTLN_S R3
+.try 1f
+    ncall "dec.round" (1d, 2, "sideways")
+.endtry
+1:  catch R1
+    PRINT_S R1->Error.code
+    PRINT_S " "
+.try 2f
+    ncall "dec.round" (1n, 2, null)    ; a BigInt is not a decimal
+.endtry
+2:  catch R1
+    PRINTLN_S R1->Error.code
+    ret 0
+.endf

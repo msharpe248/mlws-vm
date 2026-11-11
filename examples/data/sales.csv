@@ -1,0 +1,8 @@
+date,region,product,amount
+2026-01-03,North,Widget,120.50
+2026-01-04,South,"Gadget, large",75.00
+2026-01-04,North,Gadget,30.25
+2026-01-05,East,Widget,200.00
+2026-01-06,South,Widget,99.75
+2026-01-07,East,Gizmo,10.00
+2026-01-07,West,"Sprocket ""deluxe""",42.00

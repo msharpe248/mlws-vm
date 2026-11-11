@@ -547,7 +547,10 @@ every instruction.
   terminates within 28 fractional digits (or the operands' scale, if larger);
   otherwise it is rounded half-to-even to that many digits. Trailing zeros of a
   quotient are removed. Converting from a float uses its shortest form, so `0.1`
-  becomes exactly `0.1d`.
+  becomes exactly `0.1d`. `dec.round(d, places, mode)` rounds to a number of
+  places, with exactly that many (`2.5d` to 2 places is `2.50`), half to even
+  or in another of Java's and Python's modes; `dec.scale` says how many a
+  decimal has.
 * Values compare by value: `1.0d == 1.00d`, and maps treat them as the same key.
   A BigInt and a decimal are never equal to each other without a `cvt`.
 
@@ -846,6 +849,8 @@ Expectations are written as comments in the test file:
 ; skip: reason
 ; threads: 4                              (run on this many worker threads, whatever --threads says)
 ; option: --max-frames 500               (repeatable: a VM option, as on the command line)
+; args: -n poem.txt                       (the program's arguments, os.args, split at spaces)
+; stdin: a line of input                  (repeatable: standard input is these lines, then its end)
 ; requires: ffi                           (skip unless built with libffi)
 ; requires: posix                         (skip on Windows; `windows`: skip elsewhere)
 ; debug-script: break main               (repeatable: run under the debugger; stdout = transcript)
@@ -853,6 +858,10 @@ Expectations are written as comments in the test file:
 ; expect-insns: main 7                    (repeatable: main's instructions once optimized)
 ; no-opt: reason                          (not optimized by MLWSVM_OPT or --opt on the command line)
 ```
+
+Without `; stdin:` lines, a test's standard input is the runner's own. With
+them it is a pipe holding just those lines, so a program that reads its input
+(`examples/cat.masm`) is tested like any other.
 
 Tests run on one worker thread per core unless `--threads N`, `MLWSVM_THREADS` or
 a `; threads:` line says otherwise, so a test should not depend on the order in
