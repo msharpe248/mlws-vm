@@ -52,6 +52,7 @@ Run one from the repository's top directory:
 |---|---|
 | [pipeline.masm](pipeline.masm) | Processes in a chain, each a stage that receives, works and sends on. |
 | [timers.masm](timers.masm) | Waiting for a message with a time limit, sleeping, and a ticker process. |
+| [primes.masm](primes.masm) | A pool of four workers (`std.pool`) counting primes in twenty ranges, never more than four at once. |
 | [workers.masm](workers.masm) | A job split across processes, each monitored, its failure seen and handled. |
 | [kvstore.masm](kvstore.masm) | A key-value store as a server process (`std.server`), found by name, called by several clients at once. |
 

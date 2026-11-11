@@ -305,7 +305,7 @@ passes its tests.
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks and results, how the interpreter and scheduler are made fast, and what is left alone (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M114 and what remains: the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M115 and what remains: the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout

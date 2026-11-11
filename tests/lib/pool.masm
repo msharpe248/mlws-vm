@@ -1,0 +1,160 @@
+; std.pool: jobs run by a fixed number of workers. run gives one job's
+; result, or raises what it raised, and its worker goes on; a worker that ends
+; is replaced, and its caller hears why; map runs a list of jobs at once and
+; gives the results in order, with no more running at a time than there are
+; workers (6 jobs of 50 ms on 2 workers take three rounds); "stop" ends it.
+; expect-stdout: run: 49
+; expect-stdout: map: 1 4 9 16 25 36 49 64 81 100
+; expect-stdout: raised: E_APP odd job
+; expect-stdout: after it: 4
+; expect-stdout: a worker that ended: E_EXITED
+; expect-stdout: after that: 9
+; expect-stdout: 6 slow jobs on 2 workers: 0 1 2 3 4 5, in three rounds at least: true
+; expect-stdout: map of nothing: 0
+; expect-stdout: map with a failing job: E_APP
+; expect-stdout: stopped: true
+.include "std/test.inc"
+.include "std/io.inc"
+.import std.pool as pool
+
+; square([n]) -> [n * n]; [-1]: raises; [-2]: ends its process
+.func square(ref job) -> ref
+    mov I1, job[0]
+    bne I1, -1, 1f
+    new R2, Error
+    mov R2->Error.code, "E_APP"
+    mov R2->Error.message, "odd job"
+    throw R2
+1:  bne I1, -2, 2f
+    halt 0
+2:  mul I1, I1
+    lnew R2
+    lpush R2, I1
+    ret R2
+.endf
+
+; slow([n]) -> [n], after 50 ms
+.func slow(ref job) -> ref
+    sleep 50
+    ret job
+.endf
+
+.func one(i64 n) -> ref
+    lnew R1
+    lpush R1, n
+    ret R1
+.endf
+
+.func main
+    closure square -> (R0)
+    call pool.start (R0, 3) -> (I0)
+    call one (7) -> (R1)
+    call pool.run (I0, R1, 5000) -> (R2)
+    tostr R3, R2[0]
+    strcat R3, "run: ", R3
+    PRINTLN_S R3
+
+    lnew R4
+    mov I1, 1
+1:  call one (I1) -> (R1)
+    lpush R4, R1
+    inc I1
+    ble I1, 10, 1b
+    call pool.map (I0, R4, 5000) -> (R5)
+    PRINT_S "map:"
+    len I2, R5
+    mov I1, 0
+2:  bge I1, I2, 3f
+    mov R6, R5[I1]
+    tostr R7, R6[0]
+    strcat R7, " ", R7
+    PRINT_S R7
+    inc I1
+    jmp 2b
+3:  NL
+
+    call one (-1) -> (R1)
+.try 4f
+    call pool.run (I0, R1, 5000) -> (R2)
+.endtry
+    PRINTLN_S "not raised"
+4:  catch R8
+    strcat R9, "raised: ", R8->Error.code, " ", R8->Error.message
+    PRINTLN_S R9
+    call one (2) -> (R1)
+    call pool.run (I0, R1, 5000) -> (R2)
+    tostr R3, R2[0]
+    strcat R3, "after it: ", R3
+    PRINTLN_S R3
+
+    call one (-2) -> (R1)
+.try 5f
+    call pool.run (I0, R1, 5000) -> (R2)
+.endtry
+    PRINTLN_S "not raised"
+5:  catch R8
+    strcat R9, "a worker that ended: ", R8->Error.code
+    PRINTLN_S R9
+    call one (3) -> (R1)
+    call pool.run (I0, R1, 5000) -> (R2)
+    tostr R3, R2[0]
+    strcat R3, "after that: ", R3
+    PRINTLN_S R3
+
+    closure slow -> (R0)
+    call pool.start (R0, 2) -> (I3)
+    lnew R4
+    mov I1, 0
+6:  call one (I1) -> (R1)
+    lpush R4, R1
+    inc I1
+    blt I1, 6, 6b
+    ncall "time.monotonic" () -> (I4)
+    call pool.map (I3, R4, 5000) -> (R5)
+    ncall "time.monotonic" () -> (I5)
+    sub I5, I4
+    PRINT_S "6 slow jobs on 2 workers:"
+    mov I1, 0
+7:  mov R6, R5[I1]
+    tostr R7, R6[0]
+    strcat R7, " ", R7
+    PRINT_S R7
+    inc I1
+    blt I1, 6, 7b
+    sge I6, I5, 150000000
+    tostr.b R7, I6
+    strcat R7, ", in three rounds at least: ", R7
+    PRINTLN_S R7
+
+    lnew R4
+    call pool.map (I0, R4, 5000) -> (R5)
+    len I1, R5
+    tostr R7, I1
+    strcat R7, "map of nothing: ", R7
+    PRINTLN_S R7
+
+    lnew R4
+    call one (1) -> (R1)
+    lpush R4, R1
+    call one (-1) -> (R1)
+    lpush R4, R1
+    call one (3) -> (R1)
+    lpush R4, R1
+.try 8f
+    call pool.map (I0, R4, 5000) -> (R5)
+.endtry
+    PRINTLN_S "not raised"
+8:  catch R8
+    strcat R9, "map with a failing job: ", R8->Error.code
+    PRINTLN_S R9
+
+    monitor I0
+    send I0, "stop"
+    recv R8                            ; its Down
+    isa I7, R8, Down
+    tostr.b R7, I7
+    strcat R7, "stopped: ", R7
+    PRINTLN_S R7
+    send I3, "stop"
+    ret 0
+.endf

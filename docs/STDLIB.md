@@ -14,7 +14,7 @@ restricts them.
 | `os` | arguments, the environment, exit, running commands |
 | `net`, `tls` | TCP, UDP, DNS, TLS |
 | `text`, `json`, `regex` | formatting, string utilities, UTF-8, JSON, regular expressions |
-| `proc`, `std.supervisor`, `std.server` | the process count, a name registry, request/reply calls, supervisors, generic servers |
+| `proc`, `std.supervisor`, `std.server`, `std.pool` | the process count, a name registry, request/reply calls, supervisors, generic servers, worker pools |
 | `std.node` | processes on other VMs |
 | `env` | environments: values a set of processes shares, from `.mlws.env` files |
 | `weak` | weak references and weak maps (and `gc.finalize`) |
@@ -772,6 +772,37 @@ any message the new version's code sends. Messages are references (a number
 sent to it fails it with `E_TYPE`), and a callback that raises ends it with
 that error, as a failure, for its links and monitors. It is MLWSVM assembly
 (`lib/std/server.masm`).
+
+### Worker pools (`std.pool`)
+
+```asm
+.import std.pool as pool
+    closure resize -> (R0)                    ; the work: resize(ref job) -> ref
+    call pool.start (R0, 4) -> (I0)          ; four workers
+    call pool.run (I0, job, 5000) -> (R1)    ; one job: its result, or what it raised
+    call pool.map (I0, jobs, 60000) -> (R2)  ; a list of jobs at once: their results, in order
+    send I0, "stop"
+```
+
+A pool runs one function on many jobs with no more running at a time than
+it has workers: a bound on how much of a machine (or of a database, or of
+another service) a program uses at once. The pool is a process; each job is
+a call to it, which it hands to a free worker or keeps until one is free, and
+the worker answers the caller itself. Jobs and results are references.
+
+* A job that raises raises the same error in the caller of `pool.run`, and
+  its worker goes on to the next.
+* A worker that ends (killed, or out of a quota) is replaced at once, and its
+  caller gets the error that ended it (`E_EXITED` if it simply returned).
+* The timeout covers waiting for a worker as well as the work.
+* `pool.map` gives each job to a process of its own, which calls the pool,
+  and gathers the answers in another, so nothing is taken from the caller's
+  mailbox (there is no selective receive). If jobs raise, it raises the first
+  error once all have finished.
+* `"stop"` ends the pool and its workers; they also end if the pool fails.
+
+It is MLWSVM assembly (`lib/std/pool.masm`), built on `proc.call` and
+`proc.reply` as `std.server` is.
 
 ### Example: `examples/http_server.masm`
 
