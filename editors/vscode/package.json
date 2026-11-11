@@ -1,34 +1,105 @@
 {
-  "name": "mlwsvm-debug",
-  "displayName": "MLWSVM Debug",
-  "description": "Debug programs on MLWSVM, in assembly or in any language compiled to it (mlwsvm dap).",
-  "version": "0.1.0",
+  "name": "mlwsvm",
+  "displayName": "MLWSVM",
+  "description": "MLWSVM assembly (.masm): highlighting, comments, brackets and folding; and debugging programs on MLWSVM, in assembly or in any language compiled to it (mlwsvm dap).",
+  "version": "0.2.0",
   "publisher": "mlwsvm",
-  "engines": { "vscode": "^1.80.0" },
-  "categories": ["Debuggers"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/msharpe248/mlws-vm",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers"
+  ],
+  "files": [
+    "language-configuration.json",
+    "syntaxes/**",
+    "LICENSE"
+  ],
   "contributes": {
-    "languages": [{ "id": "masm-mlwsvm", "extensions": [".masm"], "aliases": ["MLWSVM assembly"] }],
-    "breakpoints": [{ "language": "masm-mlwsvm" }],
+    "languages": [
+      {
+        "id": "masm-mlwsvm",
+        "extensions": [
+          ".masm"
+        ],
+        "aliases": [
+          "MLWSVM assembly",
+          "masm-mlwsvm"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "masm-mlwsvm",
+        "scopeName": "source.masm-mlwsvm",
+        "path": "./syntaxes/masm.tmLanguage.json"
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "masm-mlwsvm"
+      }
+    ],
     "debuggers": [
       {
         "type": "mlwsvm",
         "label": "MLWSVM",
-        "languages": ["masm-mlwsvm"],
+        "languages": [
+          "masm-mlwsvm"
+        ],
         "program": "mlwsvm",
-        "args": ["dap"],
+        "args": [
+          "dap"
+        ],
         "configurationAttributes": {
           "launch": {
-            "required": ["program"],
+            "required": [
+              "program"
+            ],
             "properties": {
-              "program": { "type": "string", "description": "The program: a .masm or .mlwso file." },
-              "args": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Its arguments." },
-              "stopOnEntry": { "type": "boolean", "default": false, "description": "Stop at the start of main." },
-              "vmOptions": { "type": "array", "items": { "type": "string" }, "default": [], "description": "VM options, as on the command line, e.g. [\"--max-frames\", \"50000000\"]." }
+              "program": {
+                "type": "string",
+                "description": "The program: a .masm or .mlwso file."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "Its arguments."
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "default": false,
+                "description": "Stop at the start of main."
+              },
+              "vmOptions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "VM options, as on the command line, e.g. [\"--max-frames\", \"50000000\"]."
+              }
             }
           }
         },
         "initialConfigurations": [
-          { "type": "mlwsvm", "request": "launch", "name": "Debug", "program": "${file}" }
+          {
+            "type": "mlwsvm",
+            "request": "launch",
+            "name": "Debug",
+            "program": "${file}"
+          }
         ]
       }
     ]

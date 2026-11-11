@@ -373,9 +373,17 @@ The `launch` request takes `program`, `args` (a list), `stopOnEntry`, and
 options too, applied before a launch's own, and like `mlwsvm debug` ignores
 `MLWSVM_OPT`.
 
-`editors/vscode/` is a small VS Code extension that declares the debugger:
-copy it into `~/.vscode/extensions/`, or run it from there with `code
---extensionDevelopmentPath`. With `mlwsvm` on your `PATH`, this goes in
+`editors/vscode/` is a small VS Code extension for `.masm` files: it
+highlights them (directives, instructions and their type suffixes, labels,
+registers, strings, numbers, signatures' types, a test's `; expect-stdout:`
+lines), knows `;` comments and brackets, folds `.func` and `.struct`, and
+declares the debugger. Package and install it with `npx @vscode/vsce package
+--no-dependencies` and `code --install-extension mlwsvm-0.2.0.vsix` in that
+directory, or copy it into `~/.vscode/extensions/`. Included files (`.inc`) are
+assembly too: `"files.associations": {"*.inc": "masm-mlwsvm"}` in a project's
+settings highlights them. The grammar is a TextMate grammar
+(`syntaxes/masm.tmLanguage.json`), which other editors that read those, such
+as Sublime Text, can use as well. With `mlwsvm` on your `PATH`, this goes in
 `launch.json`:
 
 ```json
