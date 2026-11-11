@@ -46,14 +46,18 @@ jobs:
         id: v
         run: |
           if [ "${{ github.event_name }}" = release ]; then v="${{ github.event.release.tag_name }}"; v="${v#v}"
-          else v="dev-$(git rev-parse --short HEAD)"; fi
+          else v="dev-${GITHUB_SHA:0:7}"; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "dir=mlwsvm-$v-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
 
       - name: Build
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
-            make CC=clang -j4 FFI_LIBS="$(pkg-config --variable=libdir libffi)/libffi.a" > build.log 2>&1 || { cat build.log; exit 1; }
+            ffi=$(clang -print-file-name=libffi.a)                      # (in the multiarch directory)
+            [ -f "$ffi" ] || ffi=$(find /usr/lib -name libffi.a | head -1)
+            [ -f "$ffi" ] || { echo "no libffi.a"; exit 1; }
+            echo "libffi: $ffi"
+            make CC=clang -j4 FFI_LIBS="$ffi" > build.log 2>&1 || { cat build.log; exit 1; }
           else
             make CC=clang -j4 > build.log 2>&1 || { cat build.log; exit 1; }
           fi
@@ -138,7 +142,7 @@ jobs:
         id: v
         run: |
           if [ "${{ github.event_name }}" = release ]; then v="${{ github.event.release.tag_name }}"; v="${v#v}"
-          else v="dev-$(git rev-parse --short HEAD)"; fi
+          else v="dev-${GITHUB_SHA:0:7}"; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "dir=mlwsvm-$v-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
 

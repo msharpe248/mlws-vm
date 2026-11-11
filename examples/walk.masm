@@ -1,6 +1,7 @@
 ; walk.masm - files, directories and commands, with a process per directory.
 ;
-; Builds a small directory tree, then walks it in parallel: every directory is
+; Builds a small directory tree in a new temporary directory (fs.make_temp_dir),
+; then walks it in parallel: every directory is
 ; handled by its own process, which counts its files and bytes, spawns a child
 ; for each subdirectory, and reports the total to its parent. Then it sorts
 ; some text by piping it through the `sort` command, and cleans up.
@@ -9,9 +10,8 @@
 ; expect-stdout: sorted: apple banana cherry
 .include "std/io.inc"
 
-; Create ROOT with 1 file, ROOT/a with 2, ROOT/a/x with 3, ROOT/b with 1.
+; Fill ROOT (made already) with 1 file, ROOT/a with 2, ROOT/a/x with 3, ROOT/b with 1.
 .func make_tree(ref root)
-    ncall "fs.mkdir" (root)
     strcat R1, root, "/a"
     ncall "fs.mkdir" (R1)
     strcat R2, root, "/a/x"
@@ -85,11 +85,8 @@
 .endf
 
 .func main
-    mov R0, "build/walk-example"
-    ncall "fs.exists" (R0) -> (I0)
-    bz I0, 1f
-    call remove_tree (R0)              ; left over from an interrupted run
-1:  call make_tree (R0)
+    ncall "fs.make_temp_dir" ("walk-") -> (R0)  ; new each time, only ours
+    call make_tree (R0)
     spawn walk (PID, R0)
     recv R1
     PRINT_I R1[0]
