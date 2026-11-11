@@ -131,6 +131,10 @@ bool plat_rmdir(const char *path, int *err);
 bool plat_rename(const char *from, const char *to, int *err);
 bool plat_mkdir_err(const char *path, int *err);
 char *plat_getcwd(void); /* malloc'd */
+char *plat_temp_dir(void); /* malloc'd: $TMPDIR or /tmp; Windows' GetTempPath; without a trailing separator */
+/* A new directory, private to its owner, in `dir` (the temp directory if NULL),
+ * named prefix + random characters; malloc'd, or NULL with *err set. */
+char *plat_make_temp_dir(const char *dir, const char *prefix, int *err);
 char *const *plat_environ(void); /* NAME=VALUE strings, NULL-terminated */
 void plat_unsetenv(const char *name); /* for the children this process starts */
 const char *plat_os_name(void);  /* "macos", "linux", "freebsd", "windows", ... */

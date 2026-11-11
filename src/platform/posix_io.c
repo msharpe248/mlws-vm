@@ -201,6 +201,24 @@ bool plat_mkdir_err(const char *path, int *err) {
     return false;
 }
 
+char *plat_temp_dir(void) {
+    const char *t = getenv("TMPDIR");
+    char *d = xstrdup(t && *t ? t : "/tmp");
+    for (size_t n = strlen(d); n > 1 && d[n - 1] == '/'; n--) d[n - 1] = 0;
+    return d;
+}
+
+char *plat_make_temp_dir(const char *dir, const char *prefix, int *err) {
+    char *base = dir ? xstrdup(dir) : plat_temp_dir();
+    StrBuf s = {0};
+    sb_printf(&s, "%s%s%sXXXXXX", base, base[strlen(base) - 1] == '/' ? "" : "/", prefix);
+    free(base);
+    if (mkdtemp(s.s)) return s.s; /* made with mode 0700, atomically: never one that was there */
+    *err = errno;
+    sb_free(&s);
+    return NULL;
+}
+
 char *plat_getcwd(void) {
     char buf[4096];
     return getcwd(buf, sizeof buf) ? xstrdup(buf) : NULL;

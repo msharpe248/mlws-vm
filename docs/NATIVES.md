@@ -140,6 +140,18 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `fs.rmdir` | r | - | Delete an empty directory. |
 | `fs.rename` | r, r | - | Rename or move a file or directory. |
 | `fs.cwd` | - | r | The current directory. |
+| `fs.copy` | r, r | - | Copy a file's contents to a new file, or over one (not its permissions or times). |
+| `fs.temp_dir` | - | r | The directory for temporary files: $TMPDIR or /tmp, or Windows' temp directory. |
+| `fs.make_temp_dir` | r | r | Make a new directory in the temporary one, named the prefix and random characters, that only its owner can use; returns its path. |
+| `path.join` | r, r | r | Two paths joined with a separator, as written; the second if it is absolute (path.normalize tidies). |
+| `path.normalize` | r | r | A path without doubled separators, "." names, or ".." after a name it undoes (as Go's filepath.Clean): a/./b/../c is a/c, "" is ".". |
+| `path.dirname` | r | r | All but the last name, normalized: a/b/c.txt gives a/b, c.txt gives ".", /a gives /. |
+| `path.basename` | r | r | The last name, trailing separators ignored: a/b/ gives b; "" gives "." and a root the separator. |
+| `path.ext` | r | r | The last name's extension, with its dot: ".gz" for a.tar.gz, "" for README or .bashrc. |
+| `path.stem` | r | r | The last name without its extension: a.tar for a.tar.gz, .bashrc for .bashrc. |
+| `path.is_absolute` | r | b | Whether a path starts at a root (/x; on Windows also C:\x, \\server\share and \x). |
+| `path.absolute` | r | r | A path from the root: a relative one joined to the current directory, then normalized (links are not followed). |
+| `path.sep` | - | r | The separator this system writes: / or (on Windows) \. |
 | `os.args` | - | r | The program's arguments (after the program file on the command line), as a list of strings. |
 | `os.env` | r | r | An environment variable, or null. |
 | `os.environ` | - | r | The whole environment, as a map of strings. |

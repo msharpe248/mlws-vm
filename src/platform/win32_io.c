@@ -359,6 +359,40 @@ bool plat_mkdir_err(const char *path, int *err) {
     return ok;
 }
 
+char *plat_temp_dir(void) {
+    wchar_t buf[MAX_PATH + 2];
+    DWORD n = GetTempPathW(MAX_PATH + 2, buf);
+    if (n == 0 || n > MAX_PATH + 1) return xstrdup(".");
+    while (n > 3 && (buf[n - 1] == L'\\' || buf[n - 1] == L'/')) buf[--n] = 0; /* (not C:\'s) */
+    return u_str(buf);
+}
+
+/* The user's temp directory is the user's own: the name is made unguessable,
+ * and CreateDirectory fails rather than reuse one that is there. */
+char *plat_make_temp_dir(const char *dir, const char *prefix, int *err) {
+    static const char ALNUM[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    char *base = dir ? xstrdup(dir) : plat_temp_dir();
+    for (int tries = 0; tries < 100; tries++) {
+        uint8_t r[10];
+        if (!plat_random_bytes(r, sizeof r)) {
+            *err = ERROR_GEN_FAILURE;
+            break;
+        }
+        StrBuf s = {0};
+        char last = base[strlen(base) - 1];
+        sb_printf(&s, "%s%s%s", base, last == '\\' || last == '/' ? "" : "\\", prefix);
+        for (size_t i = 0; i < sizeof r; i++) sb_putc(&s, ALNUM[r[i] % 36]);
+        if (plat_mkdir_err(s.s, err)) {
+            free(base);
+            return s.s;
+        }
+        sb_free(&s);
+        if (*err != ERROR_ALREADY_EXISTS) break;
+    }
+    free(base);
+    return NULL;
+}
+
 char *plat_getcwd(void) {
     wchar_t buf[32768];
     DWORD n = GetCurrentDirectoryW(32768, buf);

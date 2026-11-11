@@ -570,6 +570,283 @@ static void fs_cwd(Process *p, Word *a, Word *r) {
     free(d);
 }
 
+static void fs_copy(Process *p, Word *a, Word *r) {
+    (void)r;
+    const char *from = get_str(p, a[0], "the file to copy"), *to = get_str(p, a[1], "the new file");
+    if (!from || !to || !may_path(p, CAP_READ, from) || !may_path(p, CAP_WRITE, to)) return;
+    PlatStat st;
+    int err = 0;
+    if (!plat_stat(from, true, &st, &err)) {
+        fail_os(p, err, from);
+        return;
+    }
+    if (st.kind != 1) {
+        native_fail(p, st.kind == 2 ? "E_IS_DIR" : "E_IO", "fs.copy: %s is not a file", from);
+        return;
+    }
+    int in = plat_file_open(from, PLAT_O_READ, &err);
+    if (in < 0) {
+        fail_os(p, err, from);
+        return;
+    }
+    int out = plat_file_open(to, PLAT_O_WRITE | PLAT_O_CREATE | PLAT_O_TRUNCATE, &err);
+    if (out < 0) {
+        fail_os(p, err, to);
+        plat_fd_close(in);
+        return;
+    }
+    uint8_t buf[CHUNK];
+    for (;;) {
+        long n = plat_fd_read(in, buf, sizeof buf, &err);
+        if (n < 0) {
+            fail_os(p, err, from);
+            break;
+        }
+        if (n == 0) break;
+        long done = 0;
+        while (done < n) {
+            long w = plat_fd_write(out, buf + done, (size_t)(n - done), &err);
+            if (w < 0) break;
+            done += w;
+        }
+        if (done < n) {
+            fail_os(p, err, to);
+            break;
+        }
+    }
+    plat_fd_close(in);
+    if (!plat_fd_close(out)) fail_os(p, plat_last_error(), to);
+}
+
+static void fs_temp_dir(Process *p, Word *a, Word *r) {
+    (void)a;
+    char *d = plat_temp_dir();
+    r[0].r = str_new(p, d, strlen(d));
+    free(d);
+}
+
+static void fs_make_temp_dir(Process *p, Word *a, Word *r) {
+    const char *prefix = get_str(p, a[0], "the prefix");
+    if (!prefix) return;
+    if (strchr(prefix, '/') || strchr(prefix, '\\')) {
+        native_fail(p, "E_BOUNDS", "fs.make_temp_dir: the prefix is part of a name, without separators");
+        return;
+    }
+    char *dir = plat_temp_dir();
+    bool ok = may_path(p, CAP_WRITE, dir);
+    int err = 0;
+    char *made = ok ? plat_make_temp_dir(dir, prefix, &err) : NULL;
+    if (ok && !made) fail_os(p, err, dir);
+    free(dir);
+    if (!made) return;
+    r[0].r = str_new(p, made, strlen(made));
+    free(made);
+}
+
+/* ---- std.path: names of files, as text (nothing here looks at the disk) ------------------- */
+
+#ifdef _WIN32
+#define PSEP '\\'
+static bool is_psep(char c) { return c == '/' || c == '\\'; }
+/* "C:", or "\\\\server\\share" (the whole name of a share); 0 for none */
+static size_t volume_len(const char *s, size_t n) {
+    if (n >= 2 && s[1] == ':' && ((s[0] | 32) >= 'a' && (s[0] | 32) <= 'z')) return 2;
+    if (n >= 5 && is_psep(s[0]) && is_psep(s[1]) && !is_psep(s[2]) && s[2] != '.' && s[2] != '?') {
+        size_t i = 3;
+        while (i < n && !is_psep(s[i])) i++; /* the server */
+        if (i >= n - 1) return 0;
+        i++;
+        if (is_psep(s[i])) return 0;
+        while (i < n && !is_psep(s[i])) i++; /* the share */
+        return i;
+    }
+    return 0;
+}
+#else
+#define PSEP '/'
+static bool is_psep(char c) { return c == '/'; }
+static size_t volume_len(const char *s, size_t n) {
+    (void)s, (void)n;
+    return 0;
+}
+#endif
+
+static const ObjString *path_arg(Process *p, Word v) {
+    Obj *o = v.r;
+    if (o && o->kind == OBJ_STRING) return (ObjString *)o;
+    native_fail(p, "E_TYPE", "%s: the path must be a string", p->cur_native->name);
+    return NULL;
+}
+
+/* As Go's filepath.Clean: one separator between names, no "." names, a ".."
+ * taken back with the name before it (or dropped after the root), "." if
+ * nothing is left. On Windows the separators are all backslashes. */
+static void path_clean(StrBuf *out, const char *s, size_t n) {
+    size_t vol = volume_len(s, n);
+    for (size_t i = 0; i < vol; i++) sb_putc(out, s[i] == '/' ? PSEP : s[i]);
+    s += vol, n -= vol;
+    bool rooted = n && is_psep(s[0]);
+    if (rooted) sb_putc(out, PSEP);
+    size_t start = out->n, dotdots = start; /* names before dotdots are "..", which stay */
+    for (size_t i = 0; i < n;) {
+        while (i < n && is_psep(s[i])) i++;
+        size_t j = i;
+        while (j < n && !is_psep(s[j])) j++;
+        size_t k = j - i;
+        if (k == 0 || (k == 1 && s[i] == '.')) {
+        } else if (k == 2 && s[i] == '.' && s[i + 1] == '.') {
+            if (out->n > dotdots) { /* back over the last name */
+                size_t b = out->n;
+                while (b > dotdots && out->s[b - 1] != PSEP) b--;
+                out->n = b > start ? b - 1 : b;
+                out->s[out->n] = 0;
+            } else if (!rooted) { /* climbs above the start: kept */
+                if (out->n > start) sb_putc(out, PSEP);
+                sb_puts(out, "..");
+                dotdots = out->n;
+            }
+        } else {
+            if (out->n > start) sb_putc(out, PSEP);
+            sb_putn(out, s + i, k);
+        }
+        i = j;
+    }
+    if (out->n == start && !rooted) sb_putc(out, '.');
+}
+
+static void path_normalize(Process *p, Word *a, Word *r) {
+    const ObjString *s = path_arg(p, a[0]);
+    if (!s) return;
+    StrBuf b = {0};
+    path_clean(&b, s->data, s->len);
+    r[0].r = str_new(p, b.s, b.n);
+    sb_free(&b);
+}
+
+static bool path_abs(const char *s, size_t n) {
+    size_t vol = volume_len(s, n);
+#ifdef _WIN32
+    if (vol > 2) return true; /* a share */
+    if (!vol && n && is_psep(s[0])) return true; /* \x: the current drive's root */
+#endif
+    return n > vol && is_psep(s[vol]);
+}
+
+static void path_is_absolute_n(Process *p, Word *a, Word *r) {
+    const ObjString *s = path_arg(p, a[0]);
+    if (s) r[0].i = path_abs(s->data, s->len);
+}
+
+static void path_join_n(Process *p, Word *a, Word *r) {
+    const ObjString *x = path_arg(p, a[0]), *y = x ? path_arg(p, a[1]) : NULL;
+    if (!y) return;
+    if (!x->len || path_abs(y->data, y->len) || volume_len(y->data, y->len)) {
+        r[0].r = (Obj *)y;
+        return;
+    }
+    StrBuf b = {0};
+    sb_putn(&b, x->data, x->len);
+    if (y->len && !is_psep(x->data[x->len - 1])) sb_putc(&b, PSEP);
+    sb_putn(&b, y->data, y->len);
+    r[0].r = str_new(p, b.s, b.n);
+    sb_free(&b);
+}
+
+/* The last name: trailing separators ignored; "." for "", the separator for a root. */
+static void base_of(const char *s, size_t n, size_t *from, size_t *len) {
+    size_t vol = volume_len(s, n);
+    while (n > vol && is_psep(s[n - 1])) n--;
+    size_t i = n;
+    while (i > vol && !is_psep(s[i - 1])) i--;
+    *from = i, *len = n - i;
+}
+
+static void path_basename_n(Process *p, Word *a, Word *r) {
+    const ObjString *s = path_arg(p, a[0]);
+    if (!s) return;
+    size_t from, len;
+    base_of(s->data, s->len, &from, &len);
+    if (len) r[0].r = str_new(p, s->data + from, len);
+    else if (s->len > volume_len(s->data, s->len)) r[0].r = str_new(p, (char[]){PSEP}, 1); /* a root */
+    else r[0].r = str_new(p, ".", 1);
+}
+
+static void path_dirname_n(Process *p, Word *a, Word *r) {
+    const ObjString *s = path_arg(p, a[0]);
+    if (!s) return;
+    size_t vol = volume_len(s->data, s->len), i = s->len;
+    while (i > vol && !is_psep(s->data[i - 1])) i--; /* everything before the last name */
+    StrBuf b = {0};
+    for (size_t k = 0; k < vol; k++) sb_putc(&b, s->data[k] == '/' ? PSEP : s->data[k]);
+    StrBuf rest = {0};
+    path_clean(&rest, s->data + vol, i - vol);
+    if (!(vol > 2 && !strcmp(rest.s, "."))) sb_putn(&b, rest.s, rest.n); /* a share's own name is its directory */
+    r[0].r = str_new(p, b.s, b.n);
+    sb_free(&b);
+    sb_free(&rest);
+}
+
+/* The extension's start in a name, as Python's splitext: its last ".", unless
+ * only dots come before it (".bashrc" has none); len if there is none. */
+static size_t ext_at(const char *name, size_t len) {
+    size_t dot = len;
+    for (size_t i = len; i-- > 0;)
+        if (name[i] == '.') {
+            dot = i;
+            break;
+        }
+    if (dot == len) return len;
+    for (size_t i = 0; i < dot; i++)
+        if (name[i] != '.') return dot;
+    return len;
+}
+
+static void path_ext_n(Process *p, Word *a, Word *r) {
+    const ObjString *s = path_arg(p, a[0]);
+    if (!s) return;
+    size_t from, len;
+    base_of(s->data, s->len, &from, &len);
+    size_t at = ext_at(s->data + from, len);
+    r[0].r = str_new(p, s->data + from + at, len - at);
+}
+
+static void path_stem_n(Process *p, Word *a, Word *r) {
+    const ObjString *s = path_arg(p, a[0]);
+    if (!s) return;
+    size_t from, len;
+    base_of(s->data, s->len, &from, &len);
+    r[0].r = str_new(p, s->data + from, ext_at(s->data + from, len));
+}
+
+static void path_absolute_n(Process *p, Word *a, Word *r) {
+    const ObjString *s = path_arg(p, a[0]);
+    if (!s) return;
+    StrBuf b = {0};
+    if (path_abs(s->data, s->len)) {
+        path_clean(&b, s->data, s->len);
+    } else {
+        char *cwd = plat_getcwd();
+        if (!cwd) {
+            native_fail(p, "E_IO", "path.absolute: the current directory is not available");
+            return;
+        }
+        StrBuf j = {0};
+        sb_puts(&j, cwd);
+        sb_putc(&j, PSEP);
+        sb_putn(&j, s->data, s->len);
+        free(cwd);
+        path_clean(&b, j.s, j.n);
+        sb_free(&j);
+    }
+    r[0].r = str_new(p, b.s, b.n);
+    sb_free(&b);
+}
+
+static void path_sep_n(Process *p, Word *a, Word *r) {
+    (void)a;
+    r[0].r = str_new(p, (char[]){PSEP}, 1);
+}
+
 /* ---- std.os ------------------------------------------------------------------------------ */
 
 static void os_args(Process *p, Word *a, Word *r) {
@@ -1007,6 +1284,7 @@ static void net_recv_from(Process *p, Word *a, Word *r) {
 
 #define F (NF_CHECKED | NF_OS)
 #define B (NF_CHECKED | NF_OS | NF_BLOCKING)
+#define P NF_CHECKED /* works on text only */
 #define N(name, np, pt, nr, rt, fn, flags, doc) {name, np, pt, nr, rt, fn, doc, flags, NULL, NULL, NULL}
 #define T(...) {__VA_ARGS__}
 
@@ -1043,6 +1321,29 @@ static const NativeDef OS_NATIVES[] = {
     N("fs.rmdir", 1, T(T_R), 0, T(0), fs_rmdir, B, "Delete an empty directory."),
     N("fs.rename", 2, T(T_R, T_R), 0, T(0), fs_rename, B, "Rename or move a file or directory."),
     N("fs.cwd", 0, T(0), 1, T(T_R), fs_cwd, F, "The current directory."),
+    N("fs.copy", 2, T(T_R, T_R), 0, T(0), fs_copy, B,
+      "Copy a file's contents to a new file, or over one (not its permissions or times)."),
+    N("fs.temp_dir", 0, T(0), 1, T(T_R), fs_temp_dir, F,
+      "The directory for temporary files: $TMPDIR or /tmp, or Windows' temp directory."),
+    N("fs.make_temp_dir", 1, T(T_R), 1, T(T_R), fs_make_temp_dir, B,
+      "Make a new directory in the temporary one, named the prefix and random characters, that only its owner can use; returns its path."),
+    N("path.join", 2, T(T_R, T_R), 1, T(T_R), path_join_n, P,
+      "Two paths joined with a separator, as written; the second if it is absolute (path.normalize tidies)."),
+    N("path.normalize", 1, T(T_R), 1, T(T_R), path_normalize, P,
+      "A path without doubled separators, \".\" names, or \"..\" after a name it undoes (as Go's filepath.Clean): a/./b/../c is a/c, \"\" is \".\"."),
+    N("path.dirname", 1, T(T_R), 1, T(T_R), path_dirname_n, P,
+      "All but the last name, normalized: a/b/c.txt gives a/b, c.txt gives \".\", /a gives /."),
+    N("path.basename", 1, T(T_R), 1, T(T_R), path_basename_n, P,
+      "The last name, trailing separators ignored: a/b/ gives b; \"\" gives \".\" and a root the separator."),
+    N("path.ext", 1, T(T_R), 1, T(T_R), path_ext_n, P,
+      "The last name's extension, with its dot: \".gz\" for a.tar.gz, \"\" for README or .bashrc."),
+    N("path.stem", 1, T(T_R), 1, T(T_R), path_stem_n, P,
+      "The last name without its extension: a.tar for a.tar.gz, .bashrc for .bashrc."),
+    N("path.is_absolute", 1, T(T_R), 1, T(T_B), path_is_absolute_n, P,
+      "Whether a path starts at a root (/x; on Windows also C:\\x, \\\\server\\share and \\x)."),
+    N("path.absolute", 1, T(T_R), 1, T(T_R), path_absolute_n, F,
+      "A path from the root: a relative one joined to the current directory, then normalized (links are not followed)."),
+    N("path.sep", 0, T(0), 1, T(T_R), path_sep_n, P, "The separator this system writes: / or (on Windows) \\."),
     N("os.args", 0, T(0), 1, T(T_R), os_args, F,
       "The program's arguments (after the program file on the command line), as a list of strings."),
     N("os.env", 1, T(T_R), 1, T(T_R), os_env, F, "An environment variable, or null."),
@@ -1087,6 +1388,7 @@ static const NativeDef OS_NATIVES[] = {
 
 #undef F
 #undef B
+#undef P
 #undef N
 #undef T
 

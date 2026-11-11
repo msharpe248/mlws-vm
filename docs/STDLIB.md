@@ -9,7 +9,8 @@ restricts them.
 | Module | Contents |
 |---|---|
 | `io`, `str`, `gc`, `test` | printing, string bytes, the collector, test failures |
-| `fs` | files, standard streams, directories, metadata |
+| `fs` | files, standard streams, directories, metadata, copies, temporary directories |
+| `path` | names of files as text: joining, normalizing, the directory, name and extension |
 | `os` | arguments, the environment, exit, running commands |
 | `net`, `tls` | TCP, UDP, DNS, TLS |
 | `text`, `json`, `regex` | formatting, string utilities, UTF-8, JSON, regular expressions |
@@ -75,6 +76,37 @@ Handles belong to their process and cannot be sent to another (`E_TYPE`).
   when the program calls `io.flush`, which also writes out the calling
   process's unfinished line.
 * Seeking (`fs.seek`) works on files only.
+
+## Paths and files
+
+```asm
+    ncall "path.join" (dir, "sales.csv") -> (R0)    ; dir/sales.csv
+    ncall "path.ext" (R0) -> (R1)                   ; ".csv"
+    ncall "path.normalize" ("a/./b/../c") -> (R2)   ; a/c
+    ncall "fs.make_temp_dir" ("myapp-") -> (R3)     ; a new directory only its owner can use
+    ncall "fs.copy" (R0, R4)
+```
+
+* **`path.*` work on text.** They never look at the disk or follow links, and
+  are not OS calls (quota 5) or limited by a sandbox, except
+  `path.absolute`, which reads the current directory. On Windows they read
+  `/` and `\` alike, write `\`, and keep a drive (`C:`) or a share
+  (`\\server\share`) at the front, as Go's `path/filepath` does.
+* `path.normalize` is Go's `filepath.Clean`: one separator between names, no
+  `.`, a `..` taken back with the name before it, `.` for nothing. It is only
+  text: `a/link/..` is `a` even when `link` leads elsewhere.
+  `path.dirname` and `path.basename` are Go's `Dir` and `Base` (`a/b/` is
+  `a/b` and `b`). `path.ext` and `path.stem` split the last name as Python's
+  `splitext` does: `.gz` and `a.tar` for `a.tar.gz`, and nothing for
+  `.bashrc`, a name that is all extension. `path.join` joins as written,
+  with the second path whole if it is absolute.
+* `fs.copy(from, to)` copies a file's contents, over `to` if it is there, but
+  not its permissions or times. It needs `read` of `from` and `write` of `to`.
+* `fs.temp_dir()` is `$TMPDIR` or `/tmp` (on Windows, `GetTempPath`'s).
+  `fs.make_temp_dir(prefix)` makes a directory there named the prefix and
+  random characters, never one that was there already, that only its owner
+  can use (`mkdtemp`'s mode 0700), and needs `write` of the temp directory.
+  Removing it is the program's to do.
 
 ## Networking
 
