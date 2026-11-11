@@ -355,6 +355,7 @@ of the instructions in call-heavy code.
 | M114 | gdb's `condition` and `ignore` counts and its `dprintf`; the Debug Adapter Protocol's `condition`, `hitCondition` and `logMessage`, whose `{expression}` interpolation and diamond-marked logpoints VS Code shows; Chrome DevTools' conditional breakpoints and logpoints |
 | M115 | Erlang's `poolboy` and Elixir's `Task.async_stream` with `max_concurrency`; Java's `ExecutorService` (a fixed thread pool, `invokeAll` keeping the order); Python's `multiprocessing.Pool.map` |
 | M116 | RFC 9110 and 9112 (HTTP semantics and HTTP/1.1, chunked transfer coding); Go's `net/http`, a goroutine per connection and a handler per request; Python's WSGI and Ruby's Rack, a request as a map and a response as a value; Erlang's Cowboy, a process per connection; the limits on request lines and headers of nginx (`large_client_header_buffers`) and Apache (`LimitRequestLine`) |
+| M117 | The tours that lead languages' documentation (*A Tour of Go*, the Rust book's first chapters, *Learn You Some Erlang*), each part a running program and a pointer to the reference |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

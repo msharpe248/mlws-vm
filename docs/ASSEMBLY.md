@@ -679,6 +679,10 @@ names start with `_` hold include files) into `json5-1.2.0.mlwsl`
 | `std/math.masm` | `.import std.math` | `gcd`, `ipow`, `isqrt`, `fact`, `clamp`, `fclamp`, `sin`, `cos`, `sqrt`, `pow` |
 | `std/supervisor.masm` | `.import std.supervisor` | `start`: a supervisor process that restarts failed children (closures) |
 | `std/server.masm` | `.import std.server` | `start`: a generic server (as `gen_server`) that keeps its state through reloads of its callback module |
+| `std/pool.masm` | `.import std.pool` | `start`, `run`, `map`: a pool of workers running one function on many jobs |
+| `std/http.masm` | `.import std.http` | `start` (a server with a handler), `read_request`, `write_response`, `query`, and a client: `request`, `get`, `post` |
+| `std/node.masm` | `.import std.node` | processes on other VMs: `start`, `connect`, `spawn`, `whereis`, global names, watching nodes ([STDLIB.md](STDLIB.md#other-vms-stdnode)) |
+| `std/names.masm` | `mlwsvm names` | the name service nodes connect by, one per machine |
 | `std/io.inc` | `.include "std/io.inc"` | Macros `PRINT_S`, `PRINTLN_S`, `PRINT_I`, `PRINTLN_I`, `PRINT_U`, `PRINTLN_U`, `PRINT_F`, `PRINTLN_F`, `PRINT_C`, `PRINT_B`, `PRINTLN_B`, `PRINT_HEX`, `NL`, `PRINTLN s, v...` |
 | `std/test.inc` | `.include "std/test.inc"` | Macros `ASSERT_EQ/NE/LT/LE/GT/GE a, b [, type]`, `ASSERT_TRUE/FALSE v [, type]`, `FAIL "msg"` |
 

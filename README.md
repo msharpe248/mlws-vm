@@ -286,6 +286,7 @@ passes its tests.
 
 | | |
 |---|---|
+| [docs/GUIDE.md](docs/GUIDE.md) | Writing programs, a tour: the first ones, functions, values, errors, the library, processes, servers and pools, the web, testing, debugging, speed, and shipping |
 | [examples/](examples/README.md) | Complete programs, commented, by topic: Unix tools (`cat`, `grep`, `wc`), CSV and JSON, exact decimals, generators, pipelines of processes, timers, errors, a key-value server, an HTTP server |
 | [docs/learn/](docs/learn/README.md) | How MLWSVM works, for readers new to virtual machines: twelve chapters from bytecode and the interpreter loop to garbage collection, processes and the JIT, each linked to the code that does it |
 | [docs/DESIGN.md](docs/DESIGN.md) | How the whole system is put together and why: the path from source to running code, and each part's data structures, algorithms and connections (a process in memory, the collector, the scheduler, the optimizer's analyses, ...) |
@@ -305,7 +306,7 @@ passes its tests.
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks and results, how the interpreter and scheduler are made fast, and what is left alone (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M116 and what remains: the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M117 and what remains: the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout
