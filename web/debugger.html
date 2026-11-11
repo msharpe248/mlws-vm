@@ -141,6 +141,8 @@ table.src td.g::before { content: ""; display: inline-block; width: 9px; height:
 table.src tr:hover td.g::before { background: color-mix(in srgb, var(--critical) 30%, transparent); }
 table.src tr.bp td.g::before { background: var(--critical); }
 table.src tr.bp.waiting td.g::before { background: transparent; border: 2px solid var(--critical); }
+table.src tr.bp.lp td.g::before { background: var(--warning); border-radius: 2px; transform: rotate(45deg) scale(0.85); }
+table.src tr.bp.lp.waiting td.g::before { background: transparent; border: 2px solid var(--warning); }
 table.src.asm td.g { cursor: default; }
 table.src.asm tr:hover td.g::before { background: transparent; }
 table.src.asm tr.bp td.g::before { background: var(--critical); }
@@ -157,6 +159,12 @@ ul.rows li.sel { background: var(--selected); }
 ul.rows .fn { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 ul.rows .at { color: var(--text-muted); margin-left: auto; white-space: nowrap; }
 ul.rows button { padding: 0 6px; }
+ul.rows .opts { color: var(--text-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; overflow-wrap: anywhere; }
+ul.rows .dot.lp { border-radius: 2px; transform: rotate(45deg) scale(0.85); background: var(--warning); }
+ul.rows li.bp-edit { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; align-items: center; padding: 2px 6px 8px 22px; }
+ul.rows li.bp-edit input { width: 100%; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+ul.rows li.bp-edit .why { grid-column: 1 / -1; color: var(--text-muted); }
+ul.rows li.bp-edit .acts { grid-column: 1 / -1; display: flex; gap: 6px; justify-content: flex-end; }
 /* variables: a tree */
 .tree { font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .tree .v { display: flex; gap: 6px; align-items: baseline; padding-left: calc(var(--d, 0) * 14px); border-radius: 4px; }
@@ -506,7 +514,7 @@ async function loadCode(scroll) {
   const outer = frame > 0;
   $("code-body").innerHTML = `<table class="src" data-file="${esc(p.file)}"><tbody>` + src.lines.map((t, i) => {
     const n = i + 1, m = marks.get(n);
-    return `<tr data-line="${n}" class="${n === p.line ? "cur" + (outer ? " outer" : "") : ""}${m ? " bp" + (m.waiting ? " waiting" : "") : ""}"><td class="g" title="${m ? "Remove the breakpoint" : "Set a breakpoint here"}"></td><td class="n">${n}</td><td>${esc(t) || " "}</td></tr>`;
+    return `<tr data-line="${n}" class="${n === p.line ? "cur" + (outer ? " outer" : "") : ""}${m ? " bp" + (m.waiting ? " waiting" : "") + (m.log ? " lp" : "") : ""}"><td class="g" title="${m ? "Remove the breakpoint" : "Set a breakpoint here"}"></td><td class="n">${n}</td><td>${esc(t) || " "}</td></tr>`;
   }).join("") + `</tbody></table>`;
   if (scroll) reveal();
 }
@@ -534,10 +542,11 @@ $("lang").addEventListener("change", (ev) => { lang = ev.target.value; renderFra
 function breakLines(file) { // line -> {id, waiting}: the breakpoints of a file, by the line each is at
   const m = new Map();
   for (const b of bps) {
-    if (b.file && base(b.file) === base(file)) m.set(b.line_at || b.line, { id: b.id, waiting: !b.at.length });
+    const log = !!b.log;
+    if (b.file && base(b.file) === base(file)) m.set(b.line_at || b.line, { id: b.id, waiting: !b.at.length, log });
     for (const a of b.at) { // one set at a function, or in the other of a function's two files
-      if (a.file === file && !m.has(a.line)) m.set(a.line, { id: b.id });
-      if (a.source === file && !m.has(a.source_line)) m.set(a.source_line, { id: b.id });
+      if (a.file === file && !m.has(a.line)) m.set(a.line, { id: b.id, log });
+      if (a.source === file && !m.has(a.source_line)) m.set(a.source_line, { id: b.id, log });
     }
   }
   return m;
@@ -546,11 +555,8 @@ async function loadBreaks() {
   const r = await get("/api/debug");
   if (r.status !== 200) return;
   bps = r.body.breakpoints;
-  $("bps").innerHTML = bps.map((b) => {
-    const what = b.function ? `${esc(b.function)}` : `${esc(base(b.file))}:${b.line_at || b.line}`;
-    const sub = !b.at.length ? "waiting for its code" : b.function ? "a function" : b.line_at !== b.line ? `asked for line ${b.line}` : b.at.length > 1 ? `${b.at.length} places` : "";
-    return `<li><span class="dot ${b.at.length ? "critical" : ""}"></span><span class="fn">${what}</span><span class="at">${esc(sub)}</span><button type="button" data-bp="${b.id}" aria-label="Remove this breakpoint">×</button></li>`;
-  }).join("");
+  if (editingBp != null && !bps.some((b) => b.id === editingBp)) editingBp = null;
+  if (editingBp == null) renderBreaks(); // (not while one is being edited: what is typed stays)
   $("bps-empty").hidden = bps.length > 0;
   const others = r.body.processes.filter((p) => p.pid !== pid);
   $("others").hidden = !others.length;
@@ -561,7 +567,7 @@ async function loadBreaks() {
     const marks = breakLines(table.dataset.file);
     for (const tr of table.rows) {
       const m = marks.get(Number(tr.dataset.line));
-      tr.classList.toggle("bp", !!m); tr.classList.toggle("waiting", !!(m && m.waiting));
+      tr.classList.toggle("bp", !!m); tr.classList.toggle("waiting", !!(m && m.waiting)); tr.classList.toggle("lp", !!(m && m.log));
     }
   }
 }
@@ -579,11 +585,65 @@ $("code-body").addEventListener("click", async (ev) => {
   }
   loadBreaks();
 });
+// A breakpoint's line in the list, and under it, when it is being edited, its
+// options: a condition, a hit count, a log message (a logpoint never stops).
+let editingBp = null;
+function nth(n) { // 2nd, 3rd, 11th, 21st
+  const t = n % 100, u = n % 10;
+  return n + (t >= 11 && t <= 13 ? "th" : u === 1 ? "st" : u === 2 ? "nd" : u === 3 ? "rd" : "th");
+}
+function bpOptions(b) {
+  const o = [];
+  if (b.condition) o.push(`if ${b.condition}`);
+  if (b.hit) o.push(/^\d/.test(b.hit) ? `from hit ${b.hit}` : b.hit.startsWith("==") ? `only hit ${b.hit.slice(2).trim()}` : `every ${nth(Number(b.hit.slice(1)))} hit`);
+  if (b.log) o.push(`logs “${b.log}”`);
+  if (b.condition || b.hit || b.log) o.push(`${b.hits} hit${b.hits === 1 ? "" : "s"}`);
+  return o.join(" · ");
+}
+function renderBreaks() {
+  $("bps").innerHTML = bps.map((b) => {
+    const what = b.function ? `${esc(b.function)}` : `${esc(base(b.file))}:${b.line_at || b.line}`;
+    const sub = !b.at.length ? "waiting for its code" : b.function ? "a function" : b.line_at !== b.line ? `asked for line ${b.line}` : b.at.length > 1 ? `${b.at.length} places` : "";
+    const opts = bpOptions(b);
+    const row = `<li><span class="dot ${b.log ? "lp" : b.at.length ? "critical" : ""}" title="${b.log ? "a logpoint: it logs, and does not stop" : "a breakpoint"}"></span><span class="fn">${what}</span>${opts ? `<span class="opts">${esc(opts)}</span>` : ""}<span class="at">${esc(sub)}</span><button type="button" data-edit="${b.id}" aria-label="Edit this breakpoint's condition, hit count and log message" title="Condition, hit count, log message">✎</button><button type="button" data-bp="${b.id}" aria-label="Remove this breakpoint">×</button></li>`;
+    if (b.id !== editingBp) return row;
+    return row + `<li class="bp-edit" data-for="${b.id}">
+      <label for="bpc">Condition</label><input id="bpc" value="${esc(b.condition || "")}" placeholder="count > 5,  R1 == &quot;done&quot;,  x != null" autocomplete="off">
+      <label for="bph">Hit count</label><input id="bph" value="${esc(b.hit || "")}" placeholder="3 (from the 3rd on),  == 3,  % 10" autocomplete="off">
+      <label for="bpl">Log message</label><input id="bpl" value="${esc(b.log || "")}" placeholder="count is {count}: logged, without stopping" autocomplete="off">
+      <span class="why" id="bp-why"></span>
+      <span class="acts"><button type="button" data-cancel>Cancel</button><button type="button" data-save="${b.id}">Save</button></span></li>`;
+  }).join("");
+}
+async function saveBreak(id) {
+  const b = bps.find((x) => x.id === id);
+  if (!b) return;
+  const body = b.function ? { function: b.function } : { file: b.file, line: b.line };
+  body.condition = $("bpc").value.trim() || null;
+  body.hit = $("bph").value.trim() || null;
+  body.log = $("bpl").value || null;
+  const r = await post("/api/debug/breakpoints", body);
+  if (!r.ok) { $("bp-why").textContent = r.body && r.body.error ? r.body.error : "not saved"; return; }
+  editingBp = null;
+  loadBreaks();
+}
 $("bps").addEventListener("click", async (ev) => {
+  const e = ev.target.closest("button[data-edit]");
+  if (e) { editingBp = editingBp === Number(e.dataset.edit) ? null : Number(e.dataset.edit); renderBreaks(); if (editingBp != null) $("bpc").focus(); return; }
+  if (ev.target.closest("button[data-cancel]")) { editingBp = null; renderBreaks(); return; }
+  const s = ev.target.closest("button[data-save]");
+  if (s) { saveBreak(Number(s.dataset.save)); return; }
   const b = ev.target.closest("button[data-bp]");
   if (!b) return;
+  if (editingBp === Number(b.dataset.bp)) editingBp = null;
   await post(`/api/debug/breakpoints/${b.dataset.bp}/delete`);
   loadBreaks();
+});
+$("bps").addEventListener("keydown", (ev) => {
+  const li = ev.target.closest("li.bp-edit");
+  if (!li) return;
+  if (ev.key === "Enter") { ev.preventDefault(); saveBreak(Number(li.dataset.for)); }
+  else if (ev.key === "Escape") { editingBp = null; renderBreaks(); }
 });
 $("bp-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();

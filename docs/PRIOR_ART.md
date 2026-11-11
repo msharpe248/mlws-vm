@@ -352,6 +352,7 @@ of the instructions in call-heavy code.
 | M111 | TextMate's grammars (2004), which VS Code, Sublime Text and GitHub's Linguist read; the grammars of other assemblers' extensions, which likewise tell a mnemonic from its operands by its place on the line |
 | M112 | Go's `path/filepath` (`Clean`, which follows Rob Pike's lexical rules from Plan 9, `Dir`, `Base`, and its volume names for drives and shares); Python's `os.path.splitext`; POSIX's `mkdtemp`, and the temporary-file races it answers |
 | M113 | `top`'s and `htop`'s filters (by user, and htop's `F4` filter on the command), and Erlang's `observer`, whose process list filters likewise |
+| M114 | gdb's `condition` and `ignore` counts and its `dprintf`; the Debug Adapter Protocol's `condition`, `hitCondition` and `logMessage`, whose `{expression}` interpolation and diamond-marked logpoints VS Code shows; Chrome DevTools' conditional breakpoints and logpoints |
 | Platforms | The BSDs' `sysctl` executable paths and `EAI_NODATA`; Debian multiarch and QEMU user-mode emulation for testing 32-bit and big-endian hosts; WebAssembly's little-endian memory; ctypes' and Rust's host-sized C types; MinGW's `__mingw_setjmp`, which does not unwind, for the JIT on Windows arm64 |
 
 ## References

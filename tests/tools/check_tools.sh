@@ -1194,7 +1194,7 @@ if command -v curl >/dev/null 2>&1; then
     [ "$(get -H "$A" "$D/source?file=$DF")" = 200 ] && grep -q '^{"file":"[^"]*","text":"; Debugged by check_tools.sh' "$MOND/r" || fail "debug: its source"
     [ "$(get -H "$A" "$D/source?file=/etc/passwd")" = 404 ] || fail "debug: a file no code came from"
     # a breakpoint at a function; out of it; over the next lines, the sleep among them; into it again
-    [ "$(code -H "$A" --data '{"function":"bump"}' $D/breakpoints)" = 200 ] && grep -q "^{\"id\":1,\"file\":null,\"line\":0,\"line_at\":0,\"function\":\"bump\",\"at\":\[{\"function\":\"debugged.bump\",\"pc\":0,\"file\":\"[^\"]*\",\"line\":$(line_of 'add I1, n, 1')}\]}$" "$MOND/r" \
+    [ "$(code -H "$A" --data '{"function":"bump"}' $D/breakpoints)" = 200 ] && grep -q "^{\"id\":1,\"file\":null,\"line\":0,\"line_at\":0,\"function\":\"bump\",\"at\":\[{\"function\":\"debugged.bump\",\"pc\":0,\"file\":\"[^\"]*\",\"line\":$(line_of 'add I1, n, 1')}\],\"condition\":null,\"hit\":null,\"log\":null,\"hits\":0}$" "$MOND/r" \
         || fail "debug: a breakpoint at a function ($(cat "$MOND/r"))"
     [ "$(code -H "$A" $D/$W/continue)" = 200 ] || fail "debug: continue"
     paused $W 2
@@ -1225,7 +1225,7 @@ if command -v curl >/dev/null 2>&1; then
     # breakpoints at lines: one with code, one without (the next that has), one in no file loaded
     [ "$(break_at debugged.masm $L_SLEEP)" = 200 ] && grep -q "\"line_at\":$(line_of 'sleep 5'),\"function\":null,\"at\":\[{\"function\":\"debugged.worker\"" "$MOND/r" || fail "debug: a breakpoint at a line ($(cat "$MOND/r"))"
     [ "$(break_at debugged.masm $L_NOTE)" = 200 ] && grep -q "\"line_at\":$(line_of 'bnz.r r, 1f'),\"function\":null,\"at\":\[{\"function\":\"debugged.show\"" "$MOND/r" || fail "debug: a breakpoint at a line without code ($(cat "$MOND/r"))"
-    [ "$(code -H "$A" --data '{"file":"later.masm","line":3}' $D/breakpoints)" = 200 ] && grep -q '"file":"later.masm","line":3,"line_at":0,"function":null,"at":\[\]}$' "$MOND/r" || fail "debug: a breakpoint for code not loaded ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"file":"later.masm","line":3}' $D/breakpoints)" = 200 ] && grep -q '"file":"later.masm","line":3,"line_at":0,"function":null,"at":\[\],"condition":null,"hit":null,"log":null,"hits":0}$' "$MOND/r" || fail "debug: a breakpoint for code not loaded ($(cat "$MOND/r"))"
     [ "$(code -H "$A" --data '{"line":3}' $D/breakpoints)" = 400 ] || fail "debug: a breakpoint nowhere"
     [ "$(get -H "$A" $D/breakpoints)" = 200 ] && [ "$(grep -o '"id":' "$MOND/r" | wc -l | tr -d ' ')" = 3 ] || fail "debug: the breakpoints ($(cat "$MOND/r"))"
     for i in 1 2; do # at the sleep once a pass: it is one instruction, though the process waits in it
@@ -1236,6 +1236,34 @@ if command -v curl >/dev/null 2>&1; then
         [ $i = 1 ] && C1=$C
     done
     [ "$C" = $((C1 + 1)) ] || fail "debug: a pass between two stops at a line ($C1, then $C)"
+    # The same breakpoint again, with options: a condition (it stops when the
+    # count is 5 more), a hit count (only the third pass), a log message (it
+    # never stops, and logs the values named); then plain again. Bad ones: 400.
+    count_now() { curl -s -H "$A" "$D/$W/vars" | sed 's/.*"name":"count","value":"\([0-9]*\)".*/\1/'; }
+    BODY="{\"file\":\"debugged.masm\",\"line\":$L_SLEEP,\"condition\":\"count >= $((C + 5))\"}"
+    [ "$(code -H "$A" --data "$BODY" $D/breakpoints)" = 200 ] && grep -q "\"condition\":\"count >= $((C + 5))\",\"hit\":null,\"log\":null,\"hits\":0}$" "$MOND/r" || fail "debug: a condition ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" $D/$W/continue)" = 200 ] || fail "debug: continue"
+    N=$((N + 1)); paused $W $N
+    [ "$(count_now)" = $((C + 5)) ] || fail "debug: stopped when the condition held (count $(count_now), not $((C + 5)))"
+    C=$((C + 5))
+    BODY="{\"file\":\"debugged.masm\",\"line\":$L_SLEEP,\"hit\":\"== 3\"}"
+    [ "$(code -H "$A" --data "$BODY" $D/breakpoints)" = 200 ] && grep -q '"condition":null,"hit":"== 3","log":null,"hits":0}$' "$MOND/r" || fail "debug: a hit count ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" $D/$W/continue)" = 200 ] || fail "debug: continue"
+    N=$((N + 1)); paused $W $N
+    [ "$(count_now)" = $((C + 3)) ] || fail "debug: stopped at the third hit (count $(count_now), not $((C + 3)))"
+    curl -s -H "$A" $D | grep -q '"hit":"== 3","log":null,"hits":3}' || fail "debug: the hits counted ($(curl -s -H "$A" $D))"
+    BODY="{\"file\":\"debugged.masm\",\"line\":$L_SLEEP,\"log\":\"count {count}, tagged {tagged}, {I3}, {nope}\"}"
+    [ "$(code -H "$A" --data "$BODY" $D/breakpoints)" = 200 ] || fail "debug: a logpoint ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" $D/$W/continue)" = 200 ] || fail "debug: continue"
+    i=0
+    until curl -sf -H "$A" "$U/api/log" | grep -q '"text":"count [0-9]*, tagged 7, 7, {nope?}"'; do
+        i=$((i + 1)); [ $i -lt 50 ] || fail "debug: the logpoint's message ($(curl -sf -H "$A" "$U/api/log" | tail -c 600))"; sleep 0.1
+    done
+    curl -s -H "$A" $D/$W | grep -q "\"seq\":$N," || fail "debug: a logpoint stopped it ($(curl -s -H "$A" $D/$W))"
+    [ "$(break_at debugged.masm $L_SLEEP)" = 200 ] && grep -q '"condition":null,"hit":null,"log":null,' "$MOND/r" || fail "debug: plain again ($(cat "$MOND/r"))"
+    N=$((N + 1)); paused $W $N
+    [ "$(code -H "$A" --data '{"function":"bump","condition":"count >"}' $D/breakpoints)" = 400 ] && grep -q '"error":"the condition: expected' "$MOND/r" || fail "debug: a bad condition ($(cat "$MOND/r"))"
+    [ "$(code -H "$A" --data '{"function":"bump","hit":"often"}' $D/breakpoints)" = 400 ] && grep -q '"error":"the hit count: ' "$MOND/r" || fail "debug: a bad hit count ($(cat "$MOND/r"))"
     # a `break` instruction, and a breakpoint on a recv: once for each message
     [ "$(code -H "$A" $D/$B/attach)" = 200 ] && grep -q '"debugged":true,"state":"waiting"' "$MOND/r" || fail "debug: attach to one that waits ($(cat "$MOND/r"))"
     [ "$(code -H "$A" --data '"go"' $U/api/proc/$B/send)" = 200 ] || fail "debug: a message"

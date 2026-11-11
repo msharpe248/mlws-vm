@@ -610,7 +610,8 @@ in that environment, since a change is theirs too), the
 breakpoints, and the process's own lines of the log (the newest at the bottom or at the top, by
 the dashboard's own choice), and it names the other processes being
 debugged, each a click away. A click beside a line sets or removes a
-breakpoint there. A message can be sent to the process from its mailbox, as
+breakpoint there; ✎ beside a breakpoint in the list gives it a condition, a
+hit count or a log message, and a logpoint is marked with a diamond. A message can be sent to the process from its mailbox, as
 JSON; sent to a paused process, it waits there. The bar under a pane (the
 call stack, the variables, the mailbox, the environment, the log), dragged, makes it taller or
 shorter, which the browser remembers; a double-click gives it back its own
@@ -632,6 +633,23 @@ A process is **attached** to, and from then:
   without code moves to the next that has some, up to ten lines on. One for
   code that is not loaded waits for it, and each follows a reload. A `break`
   instruction stops an attached process too.
+* **A breakpoint's options**, each optional, set when it is made or by
+  making it again at the same place (the page's ✎ beside it):
+  * a **condition**: it stops only when this holds, in the frame it is in:
+    `count > 5`, `R1 == "done"`, `node != null`, or one operand alone (true
+    when not 0, 0.0 or null). An operand is a register, a variable (a
+    `.local`'s or an `.alias`'s name; one of several registers is read by
+    its first), a number, a string, `true`, `false` or `null`; the
+    comparisons are `==`, `!=`, `<`, `<=`, `>` and `>=`. Numbers compare as
+    numbers, strings by their bytes, other references by identity. A name
+    that is nothing there makes it stop, rather than pass by unseen.
+  * a **hit count**: `3` stops from the third time on (its condition holding),
+    `== 3` only the third time, `% 3` every third time. A breakpoint counts
+    its hits (`hits`) from when it was last set.
+  * a **log message**, which makes it a **logpoint**: it never stops, and
+    writes the message to the log as the process's, at level info, each
+    `{name}` (a register or variable) replaced by its value. A logpoint
+    counts, and obeys its condition and hit count, like any breakpoint.
 * **Continue** lets it go on; **detach** as well, and from then it runs as it
   did before, its machine code where it has some. Continue also lets off one
   that was asked to pause and is not there yet.
@@ -666,7 +684,7 @@ pausing and each new breakpoint go into the log (`monitor.debug_attach`,
 | `GET /api/debug/PID/vars?frame=N&path=P` | the `children` of the value at a path: a struct's fields, a list's or an array's elements, a map's values by key, a closure's captures, the registers of a variable of several; 1,000 at most, from `from=K` |
 | `GET /api/debug/PID/code?frame=N` | the frame's function as instructions: each a `pc`, `line`, `text`, `source` and `source_line`, and whether a `breakpoint` is there; with `pc`, the frame's own |
 | `GET /api/debug/source?file=F` | the `text` of a file that loaded code came from, as the frames name it: the file of that name, or one beside the module's own file (a compiler names a program's file as it was given it); 404 for any other file, or one that is not there |
-| `GET /api/debug/breakpoints` | each breakpoint: `id`, `file` and `line`, or `function`; `line_at` (the line with code it is at) and `at`, the places it is at now (none: waiting for its code) |
+| `GET /api/debug/breakpoints` | each breakpoint: `id`, `file` and `line`, or `function`; `line_at` (the line with code it is at) and `at`, the places it is at now (none: waiting for its code); `condition`, `hit` and `log` (null if not set), and `hits` |
 
 | Action | Does |
 |---|---|
@@ -675,7 +693,7 @@ pausing and each new breakpoint go into the log (`monitor.debug_attach`,
 | `POST /api/debug/PID/pause` | pause it before its next instruction; with `{"program": true}`, every process of its program, each attached to |
 | `POST /api/debug/PID/continue` | a paused one goes on, and one asked to pause is let off; 409 if it is neither; with `{"program": true}`, every one of its program |
 | `POST /api/debug/PID/step` | `{"kind": "into" \| "over" \| "out", "by": "line" \| "insn"}` (`by` may be left out: `line`); 409 if it is not paused, or is paused where it failed |
-| `POST /api/debug/breakpoints` | `{"file": "app.masm", "line": 12}` (a file by its name, with or without its directories) or `{"function": "mod.f"}`; answers the breakpoint, the one there already if it is the same |
+| `POST /api/debug/breakpoints` | `{"file": "app.masm", "line": 12}` (a file by its name, with or without its directories) or `{"function": "mod.f"}`, with `"condition"`, `"hit"` and `"log"` if wanted; answers the breakpoint. One at the same place is the same breakpoint: it takes the options given (those not given are cleared) and counts its hits again. A condition or hit count that cannot be read is refused (400), with why |
 | `POST /api/debug/breakpoints/ID/delete` | it is gone |
 
 Each action on a process answers its state as `GET /api/debug/PID` does,
@@ -686,7 +704,7 @@ Limits to know. A process in a blocking call that is still being made
 Nothing stops inside a callback from C, and an error raised inside a
 coroutine, or in such a callback, ends its process as it always did.
 Breakpoints stop only processes being debugged: one not attached to runs
-past them. A register its function has not
+past them, and logpoints log only theirs. A register its function has not
 written yet shows whatever was there. Values are read, not changed.
 
 ### The program's log
