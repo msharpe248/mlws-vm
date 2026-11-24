@@ -21,6 +21,7 @@ enum { JF_S0 = 0, JF_S1 = 1, JF_TMP = 15 };
 /* The holes a loop may have and keep its registers (jit_loops): none, since
  * with 5 slots a hole cost more than the loop saved. */
 #define JM_LOOP_HOLES 0
+#define JM_CODE_MAX ((size_t)1 << 31) /* rel32 branches reach 2 GiB either way */
 static const uint8_t jc_ireg[JC_NI] = {RSI, RDI, R9, RBP, R15};
 static const uint8_t jc_freg[JC_NF] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
 

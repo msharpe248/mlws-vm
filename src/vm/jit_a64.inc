@@ -19,6 +19,10 @@ enum { JF_S0 = 0, JF_S1 = 1 };
 /* The holes a loop may have and keep its registers (jit_loops): each costs
  * a write-back and a load of them. */
 #define JM_LOOP_HOLES 2
+/* A function's code must be shorter than this for every branch inside it to
+ * reach: b.cond, cbz and cbnz reach 1 MiB either way (b and bl, 128 MiB,
+ * reach across the whole code memory). */
+#define JM_CODE_MAX ((size_t)1 << 20)
 static const uint8_t jc_ireg[JC_NI] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 21, 22, 28};
 static const uint8_t jc_freg[JC_NF] = {8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
 #define XZR 31

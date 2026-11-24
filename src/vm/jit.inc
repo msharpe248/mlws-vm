@@ -3059,6 +3059,7 @@ static void jit_compile(VM *vm, Function *f) {
         jm_add32i(b, JR_LEFT, JR_LEFT, rest[pc]);
         jexit(j, &f->code[pc]);
     }
+    if (b->n >= JM_CODE_MAX) j->broken = true; /* some branch inside it may not reach: interpret it */
     uint8_t *at = j->broken ? NULL : jit_reserve(jt, b->n);
     if (at) {
         for (size_t k = 0; k < j->fx.n; k++) {
@@ -3113,7 +3114,7 @@ static void jit_compile(VM *vm, Function *f) {
         jt->ncalli += j->ncalli;
         jt->nspec += j->nspec;
         jt->bytes += b->n;
-    } else { /* no room (or a bug): it stays the interpreter's */
+    } else { /* no room, too large, or a bug: it stays the interpreter's */
         jt->no_memory = !j->broken;
         f->jit_state = JIT_NONE;
         if (f->jit_xop)
