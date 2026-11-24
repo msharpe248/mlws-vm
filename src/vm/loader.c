@@ -353,6 +353,7 @@ static bool link_module(VM *vm, LModule *lm, MlwsError *err) {
             d->nfields = st->nfields;
             d->fields = st->fields;
             d->types = st->types;
+            struct_def_init_refs(d);
             lm->structs[i] = d;
             continue;
         }

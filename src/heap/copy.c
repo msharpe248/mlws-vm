@@ -12,11 +12,17 @@
 
 typedef struct {
     Obj *old, *copy;
+    uint32_t gen; /* matches CopyState.gen when occupied (avoids O(cap) memset) */
+} CopySlot;
+
+typedef struct {
+    Obj *old, *copy;
 } CopyPair;
 
 struct CopyState {
-    CopyPair *slots; /* open-addressing map old -> copy */
+    CopySlot *slots; /* open-addressing map old -> copy */
     size_t cap, n;
+    uint32_t gen;
     VEC(CopyPair) work;
 };
 
@@ -44,20 +50,22 @@ static uint32_t ptr_hash(const void *p) {
 
 static Obj *map_lookup(struct CopyState *cs, Obj *o) {
     if (!cs->cap) return NULL;
+    uint32_t g = cs->gen;
     for (size_t i = ptr_hash(o) & (cs->cap - 1);; i = (i + 1) & (cs->cap - 1)) {
-        if (!cs->slots[i].old) return NULL;
+        if (cs->slots[i].gen != g) return NULL;
         if (cs->slots[i].old == o) return cs->slots[i].copy;
     }
 }
 
 static void map_insert(struct CopyState *cs, Obj *o, Obj *c) {
+    uint32_t g = cs->gen;
     if ((cs->n + 1) * 2 > cs->cap) {
         size_t nc = cs->cap ? cs->cap * 2 : 64;
-        CopyPair *ns = xcalloc(nc, sizeof *ns);
+        CopySlot *ns = xcalloc(nc, sizeof *ns);
         for (size_t i = 0; i < cs->cap; i++) {
-            if (!cs->slots[i].old) continue;
+            if (cs->slots[i].gen != g) continue;
             size_t j = ptr_hash(cs->slots[i].old) & (nc - 1);
-            while (ns[j].old) j = (j + 1) & (nc - 1);
+            while (ns[j].gen == g) j = (j + 1) & (nc - 1);
             ns[j] = cs->slots[i];
         }
         free(cs->slots);
@@ -65,9 +73,10 @@ static void map_insert(struct CopyState *cs, Obj *o, Obj *c) {
         cs->cap = nc;
     }
     size_t j = ptr_hash(o) & (cs->cap - 1);
-    while (cs->slots[j].old) j = (j + 1) & (cs->cap - 1);
+    while (cs->slots[j].gen == g) j = (j + 1) & (cs->cap - 1);
     cs->slots[j].old = o;
     cs->slots[j].copy = c;
+    cs->slots[j].gen = g;
     cs->n++;
 }
 
@@ -170,13 +179,44 @@ static Word copy_slot(Process *from, Process *to, struct CopyState *cs, Word v, 
 Word msg_copy(Process *from, Process *to, Word v, uint8_t tag) {
     no_pointer(from, tag);
     if (!type_is_ref(tag) || !v.r) return v;
+    Obj *root = (Obj *)v.r;
+    /* Fast path for leaf root objects: no sharing/cycle table or worklist needed. */
+    if (root->kind == OBJ_STRING) {
+        if (gc_share(from, to, (ObjString *)root) || (root->flags & OBJF_IMMORTAL)) return v;
+        const ObjString *s = (const ObjString *)root;
+        return (Word){.r = &str_new(to, s->data, s->len)->h};
+    }
+    if (root->flags & OBJF_IMMORTAL) return v;
+    if (root->kind == OBJ_BYTES) {
+        const ObjBytes *b = (const ObjBytes *)root;
+        ObjBytes *nb = bytes_new(to, b->len);
+        if (b->len) memcpy(nb->data, b->data, b->len);
+        return (Word){.r = &nb->h};
+    }
+    if (root->kind == OBJ_BIG || root->kind == OBJ_DEC) {
+        size_t size = num_footprint(root);
+        Obj *c = gc_alloc_unaccounted(to, root->kind, size);
+        memcpy((char *)c + sizeof(Obj), (const char *)root + sizeof(Obj), size - sizeof(Obj));
+        gc_account(to, (int64_t)size);
+        return (Word){.r = c};
+    }
+    if (root->kind == OBJ_ARRAY && ((const ObjArray *)root)->elem != T_R) {
+        const ObjArray *a = (const ObjArray *)root;
+        no_pointer(from, a->elem);
+        ObjArray *na = array_new(to, (MlwsType)a->elem, a->len);
+        memcpy(na->data, a->data, a->len * sizeof(Word));
+        return (Word){.r = &na->h};
+    }
     if (!tls_copy) tls_copy = xcalloc(1, sizeof(struct CopyState));
     struct CopyState *cs = tls_copy;
-    if (cs->cap) memset(cs->slots, 0, cs->cap * sizeof *cs->slots);
+    if (++cs->gen == 0) {
+        cs->gen = 1;
+        if (cs->cap) memset(cs->slots, 0, cs->cap * sizeof *cs->slots);
+    }
     cs->n = 0;
     cs->work.n = 0;
     Word out;
-    out.r = shallow(from, to, cs, v.r);
+    out.r = shallow(from, to, cs, root);
     while (cs->work.n) {
         CopyPair pr = cs->work.v[--cs->work.n];
         switch (pr.old->kind) {
@@ -217,6 +257,11 @@ Word msg_copy(Process *from, Process *to, Word v, uint8_t tag) {
         }
         default: break;
         }
+    }
+    if (cs->cap > 4096) { /* release oversized scratch after a huge message */
+        free(cs->slots);
+        cs->slots = NULL;
+        cs->cap = 0;
     }
     return out;
 }

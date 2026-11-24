@@ -659,7 +659,7 @@ struct Process {
     bool deadline_set;           /* recvt is waiting with a timeout */
     bool deadlock;               /* [L] recv must raise E_DEADLOCK */
     bool kill_pending;           /* killed by its own thread: stop at the next instruction */
-    bool kill_req;               /* [L] killed by another thread: stop after this slice */
+    _Atomic bool kill_req;       /* [L] killed by another thread: stop after this slice */
     bool in_runq;                /* [L] */
     bool published;              /* in the process table */
     bool raising;                /* building an Error: exempt from the heap quota */
@@ -721,7 +721,7 @@ struct Process {
     /* the small-object allocator (gc.c) */
     bool slabs;                  /* small objects come from this process's chunks */
     uint8_t mark_bit;            /* what OBJF_MARK reads as in a live old object: flipped by each major collection */
-    unsigned char *bump, *bump_lim, *hole_end; /* the hole being allocated into: next free byte, end of the zeroed part, end */
+    unsigned char *bump, *bump_lim, *zero_lim, *hole_end; /* next free byte, fast-path limit (min zeroed & quota), zeroed end, hole end */
     unsigned char *bump_base;    /* the start of its chunk's data */
     uint64_t alloc_limit;        /* the fast path allocates while heap_bytes stays below this (heap.h) */
     struct Chunk *bump_chunk;    /* the chunk holding it */
@@ -933,6 +933,8 @@ void sched_start(VM *vm, Process *p); /* publish a new process and make it ready
 /* Run the scheduler until `main` finishes (returns false) or a tool hook
  * stops it (returns true; call again to resume). */
 bool sched_run(VM *vm, Process *main);
+uint64_t sched_slices(const VM *vm); /* total time slices across all workers */
+bool sched_fast_continue(const Process *p); /* true: worker may stay on p for another slice */
 void sched_send(Process *p, uint64_t pid, Word v, uint8_t tag);
 void sched_take_inbox(Process *p); /* move delivered messages into p's mailbox */
 void sched_kill(Process *p, uint64_t pid, const char *code, const char *msg);

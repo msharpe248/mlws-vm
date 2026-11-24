@@ -4,6 +4,7 @@
 #endif
 #include "common.h"
 
+#include <math.h>
 #include <sys/stat.h>
 #if defined(_WIN32) && !defined(S_ISREG)
 #define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
@@ -138,12 +139,28 @@ void sb_put_quoted(StrBuf *b, const char *s, size_t n) {
 
 uint32_t hash_bytes(const void *p, size_t n) {
     const unsigned char *s = p;
-    uint32_t h = 2166136261u; /* FNV-1a */
-    for (size_t i = 0; i < n; i++) {
-        h ^= s[i];
-        h *= 16777619u;
+    uint64_t h = 0x9e3779b97f4a7c15ull ^ (uint64_t)n * 0xbf58476d1ce4e5b9ull;
+    while (n >= 8) {
+        uint64_t v;
+        memcpy(&v, s, 8);
+        h = (h ^ v) * 0xbf58476d1ce4e5b9ull;
+        h ^= h >> 31;
+        s += 8;
+        n -= 8;
     }
-    return h;
+    if (n >= 4) {
+        uint32_t v;
+        memcpy(&v, s, 4);
+        h = (h ^ v) * 0x94d049bb133111ebull;
+        h ^= h >> 31;
+        s += 4;
+        n -= 4;
+    }
+    while (n--) h = (h ^ *s++) * 0x100000001b3ull;
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdull;
+    h ^= h >> 33;
+    return (uint32_t)h;
 }
 
 static size_t smap_slot(const StrMap *m, const char *key) {
@@ -206,17 +223,33 @@ void fmt_double(double d, char *buf, size_t n) {
         snprintf(buf, n, d < 0 ? "-inf" : "inf");
         return;
     }
-    /* The fewest digits that read back, then the form: plain from 1e-4 up to
-     * 1e16, as Python's repr chooses, and an exponent outside that (%g would
-     * choose by the number of digits, and so write 210 as 2.1e+02). */
-    for (int prec = 1; prec <= 17; prec++) {
-        snprintf(buf, n, "%.*e", prec - 1, d);
-        if (strtod(buf, NULL) != d) continue;
-        int x = atoi(strchr(buf, 'e') + 1); /* the decimal exponent */
-        if (x >= -4 && x < 16) snprintf(buf, n, "%.*f", prec - 1 - x > 0 ? prec - 1 - x : 0, d);
-        else snprintf(buf, n, "%.*g", prec, d);
+    if (d == 0.0) {
+        snprintf(buf, n, signbit(d) ? "-0" : "0");
         return;
     }
+    /* Fast path: exact integers within double's 53-bit significand (plain form). */
+    if (d > -9007199254740992.0 && d < 9007199254740992.0) {
+        int64_t iv = (int64_t)d;
+        if ((double)iv == d) {
+            snprintf(buf, n, "%lld", (long long)iv);
+            return;
+        }
+    }
+    /* Binary search for the fewest decimal digits that round-trip to d, then
+     * plain form from 1e-4 up to 1e16, as Python's repr chooses. */
+    char tmp[48];
+    int lo = 1, hi = 17;
+    while (lo < hi) {
+        int mid = (lo + hi) >> 1;
+        snprintf(tmp, sizeof tmp, "%.*e", mid - 1, d);
+        if (strtod(tmp, NULL) == d) hi = mid;
+        else lo = mid + 1;
+    }
+    int prec = lo;
+    snprintf(tmp, sizeof tmp, "%.*e", prec - 1, d);
+    int x = atoi(strchr(tmp, 'e') + 1); /* the decimal exponent */
+    if (x >= -4 && x < 16) snprintf(buf, n, "%.*f", prec - 1 - x > 0 ? prec - 1 - x : 0, d);
+    else snprintf(buf, n, "%.*g", prec, d);
 }
 
 /* ---- errors -------------------------------------------------------------- */

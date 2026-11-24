@@ -111,9 +111,17 @@ bool smap_has(const StrMap *m, const char *key);
 void smap_free(StrMap *m);
 
 uint32_t hash_bytes(const void *p, size_t n);
-/* A string's hash (ObjString.hash): never 0, which means not yet computed. */
+/* A string's hash (ObjString.hash): never 0, which means not yet computed.
+ * Short strings (the common map-key case) are hashed inline. */
 static inline uint32_t hash_string(const void *p, size_t n) {
-    uint32_t h = hash_bytes(p, n);
+    uint32_t h;
+    if (__builtin_expect(n < 16, 1)) {
+        const unsigned char *s = (const unsigned char *)p;
+        h = 2166136261u;
+        for (size_t i = 0; i < n; i++) h = (h ^ s[i]) * 16777619u;
+    } else {
+        h = hash_bytes(p, n);
+    }
     return h ? h : 1;
 }
 

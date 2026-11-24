@@ -74,9 +74,24 @@ typedef struct StructDef {
     const char *name;
     const char *module;
     uint32_t nfields;
+    uint8_t has_refs;  /* non-zero if any field holds a GC reference (gc.c) */
+    uint64_t ref_mask; /* for nfields <= 64: bit k set iff field k is a reference */
     char **fields;
     uint8_t *types; /* MlwsType per field */
 } StructDef;
+
+static inline void struct_def_init_refs(StructDef *d) {
+    uint64_t m = 0;
+    uint8_t any = 0;
+    for (uint32_t i = 0; i < d->nfields; i++) {
+        if (type_is_ref(d->types[i])) {
+            any = 1;
+            if (i < 64) m |= (uint64_t)1 << i;
+        }
+    }
+    d->has_refs = any;
+    d->ref_mask = m;
+}
 
 typedef struct {
     Obj h;

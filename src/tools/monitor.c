@@ -287,7 +287,7 @@ static void vm_json(StrBuf *b, VM *vm) {
               "{\"vm\":\"mlwsvm\",\"uptime_ns\":%llu,\"processes\":%llu,\"spawned\":%llu,\"max_live\":%llu,"
               "\"slices\":%llu,\"insns\":%llu,\"heap_bytes\":%llu,\"raw_bytes\":%llu,\"modules\":%zu,\"main_pid\":%llu}",
               (unsigned long long)(plat_now_ns() - vm->start_ns), (unsigned long long)vm->live,
-              (unsigned long long)vm->spawned, (unsigned long long)vm->max_live, (unsigned long long)vm->slices,
+              (unsigned long long)vm->spawned, (unsigned long long)vm->max_live, (unsigned long long)sched_slices(vm),
               (unsigned long long)insns, (unsigned long long)heap, (unsigned long long)raw, vm->mods.n,
               (unsigned long long)vm->main_pid);
 }

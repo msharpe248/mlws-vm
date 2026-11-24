@@ -14,13 +14,13 @@ enum { JF_S0 = 0, JF_S1 = 1 };
 #define JIT_ARCH "arm64"
 /* The register cache's machine registers (none of the above). */
 #define JC_NI 16
-#define JC_NF 16
+#define JC_NF 24
 #define JM_RCACHE 1 /* R registers in the cache's free slots (jc_rslot) */
 /* The holes a loop may have and keep its registers (jit_loops): each costs
  * a write-back and a load of them. */
 #define JM_LOOP_HOLES 2
 static const uint8_t jc_ireg[JC_NI] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 21, 22, 28};
-static const uint8_t jc_freg[JC_NF] = {16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
+static const uint8_t jc_freg[JC_NF] = {8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
 #define XZR 31
 
 static void jw(JBuf *b, uint32_t w) {
@@ -43,6 +43,7 @@ static uint32_t a_rrr(uint32_t op, int d, int n, int m) { return op | (unsigned)
 #define A_ORR 0xAA000000u
 #define A_EOR 0xCA000000u
 #define A_MUL 0x9B007C00u
+#define A_SMULH 0x9B407C00u
 #define A_SDIV 0x9AC00C00u
 #define A_LSLV 0x9AC02000u
 #define A_LSRV 0x9AC02400u
@@ -71,6 +72,21 @@ static uint32_t a_ldp(int t, int t2, int n, int off) {
 }
 static uint32_t a_ldp_post(int t, int t2, int n, int off) {
     return 0xA8C00000u | ((unsigned)(off / 8) & 0x7F) << 15 | (unsigned)t2 << 10 | (unsigned)n << 5 | (unsigned)t;
+}
+static uint32_t a_fstp(int t, int t2, int n, int off) {
+    return 0x6D000000u | ((unsigned)(off / 8) & 0x7F) << 15 | (unsigned)t2 << 10 | (unsigned)n << 5 | (unsigned)t;
+}
+static uint32_t a_fldp(int t, int t2, int n, int off) {
+    return 0x6D400000u | ((unsigned)(off / 8) & 0x7F) << 15 | (unsigned)t2 << 10 | (unsigned)n << 5 | (unsigned)t;
+}
+static uint32_t a_lsli(int d, int a, unsigned n) {
+    return 0xD3400000u | ((64u - n) << 16) | ((63u - n) << 10) | (unsigned)a << 5 | (unsigned)d;
+}
+static uint32_t a_lsri(int d, int a, unsigned n) {
+    return 0xD340FC00u | (n << 16) | (unsigned)a << 5 | (unsigned)d;
+}
+static uint32_t a_asri(int d, int a, unsigned n) {
+    return 0x9340FC00u | (n << 16) | (unsigned)a << 5 | (unsigned)d;
 }
 
 /* x = v: movz (or movn, for mostly-ones values) and a movk per other chunk */
@@ -135,8 +151,16 @@ static void jm_alu(JBuf *b, int op, int d, int a, int c) {
     static const uint32_t ops[] = {A_ADD, A_SUB, A_AND, A_ORR, A_EOR, A_MUL, A_LSLV, A_LSRV, A_ASRV};
     jw(b, a_rrr(ops[op], d, a, c)); /* (a shift's count modulo 64, as shiftop) */
 }
-/* d = a + v or a - v, for any v */
+/* d = a op v, for any v */
 static void jm_alui(JBuf *b, int op, int d, int a, int64_t v) {
+    if (op >= JA_SHL) {
+        unsigned n = (unsigned)v & 63u;
+        if (n == 0) jm_mov(b, d, a);
+        else if (op == JA_SHL) jw(b, a_lsli(d, a, n));
+        else if (op == JA_SHR) jw(b, a_lsri(d, a, n));
+        else jw(b, a_asri(d, a, n));
+        return;
+    }
     if (op == JA_SUB) op = JA_ADD, v = (int64_t)(0 - (uint64_t)v);
     if (op == JA_ADD && v >= 0 && v < 4096) jw(b, a_addi(d, a, (unsigned)v));
     else if (op == JA_ADD && v < 0 && v > -4096) jw(b, a_subi(d, a, (unsigned)-v));
@@ -159,8 +183,32 @@ static void jm_subs32i(JBuf *b, int d, int a, uint32_t v) {
 static void jm_sub32(JBuf *b, int d, int a, int c) { jw(b, a_rrr(0x4B000000u, d, a, c)); }
 /* d = n + m*8 */
 static void jm_addsh3(JBuf *b, int d, int n, int m) { jw(b, a_rrr(0x8B000C00u, d, n, m)); }
-/* d = a / k or a % k (k a constant, neither 0 nor -1: the quickener's DIV_IK and REM_IK) */
+/* d = a / k or a % k (k a constant, neither 0 nor -1: the quickener's DIV_IK and REM_IK).
+ * Fast-path k == 1 and powers of 2; arm64 hardware sdiv is faster than 64-bit
+ * movk+smulh+msub for general divisors. */
 static void jm_divk(JBuf *b, int d, int a, int64_t k, bool rem) {
+    if (k == 1) {
+        if (rem) jm_movi(b, d, 0);
+        else jm_mov(b, d, a);
+        return;
+    }
+    uint64_t ak = k < 0 ? (uint64_t)(0 - (uint64_t)k) : (uint64_t)k;
+    if ((ak & (ak - 1)) == 0 && ak <= ((uint64_t)1 << 62)) {
+        unsigned s = (unsigned)__builtin_ctzll(ak);
+        if (s == 1) jw(b, a_lsri(JR_S2, a, 63));
+        else jw(b, a_asri(JR_S2, a, 63)), jw(b, a_lsri(JR_S2, JR_S2, 64u - s));
+        jw(b, a_rrr(A_ADD, JR_S2, a, JR_S2));
+        jw(b, a_asri(JR_S2, JR_S2, s));
+        if (rem) {
+            jw(b, a_lsli(JR_S1, JR_S2, s));
+            jw(b, a_rrr(A_SUB, d, a, JR_S1));
+        } else if (k < 0) {
+            jw(b, a_rrr(A_SUB, d, XZR, JR_S2));
+        } else {
+            jm_mov(b, d, JR_S2);
+        }
+        return;
+    }
     a_movk64(b, JR_S1, (uint64_t)k);
     jw(b, a_rrr(A_SDIV, JR_S2, a, JR_S1));
     if (rem) jw(b, 0x9B008000u | (unsigned)JR_S1 << 16 | (unsigned)a << 10 | (unsigned)JR_S2 << 5 | (unsigned)d);
@@ -298,13 +346,17 @@ static void jm_jtab(JBuf *b, int idx, uint32_t n, uint32_t *at, uint32_t *oob) {
  * goes to target; the exit (R0: the instruction to stop at) returns
  * {R0, left}. */
 static void jm_tramp(JBuf *b, size_t *exit_at, const uint8_t *mem) {
-    jw(b, a_stp_pre(29, 30, 31, -96));
+    jw(b, a_stp_pre(29, 30, 31, -160));
     jw(b, a_addi(29, 31, 0)); /* mov x29, sp */
     jw(b, a_stp(19, 20, 31, 16));
     jw(b, a_stp(21, 22, 31, 32));
     jw(b, a_stp(23, 24, 31, 48));
     jw(b, a_stp(25, 26, 31, 64));
     jw(b, a_stp(27, 28, 31, 80));
+    jw(b, a_fstp(8, 9, 31, 96));
+    jw(b, a_fstp(10, 11, 31, 112));
+    jw(b, a_fstp(12, 13, 31, 128));
+    jw(b, a_fstp(14, 15, 31, 144));
     jw(b, a_mov_x(JR_CTX, 0));
     jm_ld(b, JR_WIN, JR_CTX, offsetof(Ctx, I));
     jm_ld(b, JR_FR, JR_CTX, offsetof(Ctx, fr));
@@ -314,12 +366,16 @@ static void jm_tramp(JBuf *b, size_t *exit_at, const uint8_t *mem) {
     jm_jmpr(b, 2);
     *exit_at = b->n;
     jw(b, a_mov_w(1, JR_LEFT));
+    jw(b, a_fldp(14, 15, 31, 144));
+    jw(b, a_fldp(12, 13, 31, 128));
+    jw(b, a_fldp(10, 11, 31, 112));
+    jw(b, a_fldp(8, 9, 31, 96));
     jw(b, a_ldp(27, 28, 31, 80));
     jw(b, a_ldp(25, 26, 31, 64));
     jw(b, a_ldp(23, 24, 31, 48));
     jw(b, a_ldp(21, 22, 31, 32));
     jw(b, a_ldp(19, 20, 31, 16));
-    jw(b, a_ldp_post(29, 30, 31, 96));
+    jw(b, a_ldp_post(29, 30, 31, 160));
     jw(b, A_RET);
 }
 /* The Process, in a register (it has its own here). */

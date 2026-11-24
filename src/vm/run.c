@@ -48,7 +48,7 @@ static void program_result(VM *vm, Process *p, RunResult *res, uint64_t wall_ns)
     res->insns = p->insns;
     res->spawned = vm->spawned;
     res->max_live = vm->max_live;
-    res->slices = vm->slices;
+    res->slices = sched_slices(vm);
     res->raw_peak = p->raw_peak;
     res->raw_allocs = p->raw_allocs;
     res->raw_frees = p->raw_frees;

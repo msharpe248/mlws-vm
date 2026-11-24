@@ -74,13 +74,48 @@ typedef struct {
     size_t n, cap;
 } JFixes;
 
+#if defined(__x86_64__)
+/* Hacker's Delight (2nd ed.), Fig. 10-1 adapted to 64-bit signed integers.
+ * Valid for all d with |d| >= 3 and not a power of 2. */
+typedef struct {
+    int64_t m;
+    int s;
+    int add; /* +1: add dividend; -1: sub dividend; 0: neither */
+} JMagic;
+static JMagic jit_magic64(int64_t d) {
+    uint64_t ad = d < 0 ? (uint64_t)(0 - (uint64_t)d) : (uint64_t)d;
+    uint64_t t = ((uint64_t)1 << 63) + ((uint64_t)d >> 63);
+    uint64_t anc = t - 1 - t % ad;
+    int p = 63;
+    uint64_t q1 = ((uint64_t)1 << 63) / anc;
+    uint64_t r1 = ((uint64_t)1 << 63) - q1 * anc;
+    uint64_t q2 = ((uint64_t)1 << 63) / ad;
+    uint64_t r2 = ((uint64_t)1 << 63) - q2 * ad;
+    uint64_t delta;
+    do {
+        p++;
+        q1 = 2 * q1;
+        r1 = 2 * r1;
+        if (r1 >= anc) { q1++; r1 -= anc; }
+        q2 = 2 * q2;
+        r2 = 2 * r2;
+        if (r2 >= ad) { q2++; r2 -= ad; }
+        delta = ad - r2;
+    } while (q1 < delta || (q1 == delta && r1 == 0));
+    int64_t m = (int64_t)(q2 + 1);
+    if (d < 0) m = (int64_t)(0 - (uint64_t)m);
+    int add = d > 0 && m < 0 ? 1 : d < 0 && m > 0 ? -1 : 0;
+    return (JMagic){m, p - 64, add};
+}
+#endif
+
 #if defined(__aarch64__)
 #include "jit_a64.inc"
 #else
 #include "jit_x64.inc"
 #endif
 
-#define JC_MAX 16
+#define JC_MAX 24
 typedef struct {
     const Insn *in; /* where the interpreter goes on: not yet counted */
     uint64_t left;
@@ -230,6 +265,8 @@ typedef struct {
      * R ones as bank 2), the list in S0 and its length in S1, and goes back
      * to `back`. */
     bool grow;
+    bool alloc;
+    bool alloc_struct;
     uint8_t glist, gn, na;
     uint8_t abank[3 * JC_MAX], amreg[3 * JC_MAX], avreg[3 * JC_MAX];
 } JSide;
@@ -256,11 +293,14 @@ typedef struct {
     int8_t of[2][256];
     int16_t vm[2][JC_MAX];
     bool dirty[2][JC_MAX];
-    uint32_t pin[2]; /* slots this instruction uses */
+    uint32_t pin[2];      /* slots this instruction uses */
+    uint32_t loop_pin[2]; /* slots pinned for the enclosing JLoop */
     uint8_t next[2];
     bool record;
     int32_t gok; /* a module whose globals this process is known to have (checked in this block), or -1 */
     uint8_t used[2][256];
+    uint16_t used_cnt[2][256];
+    uint8_t cur_pin[2], max_pin[2];
     int8_t rof[256];
     JRKnown rk[256];
     uint8_t rseen[256]; /* R registers read in the block (jld_r) */
@@ -275,6 +315,7 @@ typedef struct {
 typedef struct {
     uint32_t L, E;
     uint16_t n;
+    bool partial[2]; /* true if bank uses more regs than slots: top regs pinned, rest dynamic */
     uint8_t bank[2 * JC_MAX], vreg[2 * JC_MAX], slot[2 * JC_MAX];
     bool written[2 * JC_MAX];
 } JLoop;
@@ -365,6 +406,7 @@ static void jc_reset(JCache *c) {
     memset(c->rk, 0, sizeof c->rk);
     memset(c->rseen, 0, sizeof c->rseen);
     c->pin[0] = c->pin[1] = 0;
+    c->loop_pin[0] = c->loop_pin[1] = 0;
     c->gok = -1;
 }
 
@@ -430,13 +472,31 @@ static void jc_store(JComp *j, int bank, int s, int r) {
 }
 
 /* Write the changed registers back, and forget them all (a block's end; in
- * a loop, not until its end; before a branch into a fallin block, keep them). */
+ * a loop, keep loop-pinned slots and flush any dynamic slots of a partial
+ * loop; before a branch into a fallin block, keep them). */
 static void jc_flush(JComp *j) {
     JCache *c = &j->jc;
-    if (j->loop || c->record) return;
+    if (c->record) return;
+    if (j->loop) {
+        if (!j->loop->partial[0] && !j->loop->partial[1]) return;
+        for (int bank = 0; bank < 2; bank++) {
+            if (!j->loop->partial[bank]) continue;
+            for (int s = 0; s < jc_nslots(bank); s++) {
+                if (c->loop_pin[bank] & (1u << s)) continue;
+                int v = c->vm[bank][s];
+                if (v >= 0 && v < JC_RBASE) {
+                    if (c->dirty[bank][s]) jc_store(j, bank, s, v), c->dirty[bank][s] = false;
+                    c->of[bank][v] = -1;
+                    c->vm[bank][s] = -1;
+                }
+            }
+        }
+        return;
+    }
     for (int bank = 0; bank < 2; bank++)
         for (int s = 0; s < jc_nslots(bank); s++)
-            if (c->vm[bank][s] >= 0 && c->dirty[bank][s]) jc_store(j, bank, s, c->vm[bank][s]), c->dirty[bank][s] = false;
+            if (c->vm[bank][s] >= 0 && c->vm[bank][s] < JC_RBASE && c->dirty[bank][s])
+                jc_store(j, bank, s, c->vm[bank][s]), c->dirty[bank][s] = false;
     if (!j->keep) jc_reset(c);
 }
 
@@ -452,30 +512,37 @@ static int jc_alloc(JComp *j, int bank) {
                 c->vm[0][s] = -1;
                 return s;
             }
-    for (;;) { /* evict, in turn, a slot this instruction does not use */
+    for (int tries = 0; tries < ns; tries++) { /* evict, in turn, a slot this instruction and loop do not pin */
         int s = c->next[bank];
         c->next[bank] = (uint8_t)((s + 1) % ns);
-        if (c->pin[bank] & 1u << s) continue;
+        if ((c->pin[bank] | c->loop_pin[bank]) & (1u << s)) continue;
         if (c->dirty[bank][s]) jc_store(j, bank, s, c->vm[bank][s]);
         c->of[bank][c->vm[bank][s]] = -1;
         c->vm[bank][s] = -1;
         c->dirty[bank][s] = false;
         return s;
     }
+    j->broken = true; /* every slot pinned (bug): refuse to install code instead of hanging */
+    return 0;
 }
 
 /* The machine register holding register r, loaded if it is not yet. */
 static int jc_get(JComp *j, int bank, int r) {
     JCache *c = &j->jc;
-    if (c->record) return c->used[bank][r] |= 1, jc_mreg(bank, 0);
+    if (c->record) {
+        c->used[bank][r] |= 1;
+        if (c->used_cnt[bank][r] < UINT16_MAX) c->used_cnt[bank][r]++;
+        if (++c->cur_pin[bank] > c->max_pin[bank]) c->max_pin[bank] = c->cur_pin[bank];
+        return jc_mreg(bank, 0);
+    }
     int s = c->of[bank][r];
-    if (s < 0 && j->loop) j->broken = true;
+    if (s < 0 && j->loop && !j->loop->partial[bank]) j->broken = true;
     if (s < 0) {
         s = jc_alloc(j, bank);
         if (bank) jm_fld(&j->b, jc_freg[s], JR_WIN, jwoff(j, BANK_F, (unsigned)r));
         else jm_ld(&j->b, jc_ireg[s], JR_WIN, jwoff(j, BANK_I, (unsigned)r));
         c->of[bank][r] = (int8_t)s;
-        c->vm[bank][s] = (int8_t)r;
+        c->vm[bank][s] = (int16_t)r;
     }
     c->pin[bank] |= 1u << s;
     return jc_mreg(bank, s);
@@ -484,13 +551,18 @@ static int jc_get(JComp *j, int bank, int r) {
 /* The machine register to write register r to (its value to be written back). */
 static int jc_def(JComp *j, int bank, int r) {
     JCache *c = &j->jc;
-    if (c->record) return c->used[bank][r] |= 2, jc_mreg(bank, 0);
+    if (c->record) {
+        c->used[bank][r] |= 2;
+        if (c->used_cnt[bank][r] < UINT16_MAX) c->used_cnt[bank][r]++;
+        if (++c->cur_pin[bank] > c->max_pin[bank]) c->max_pin[bank] = c->cur_pin[bank];
+        return jc_mreg(bank, 0);
+    }
     int s = c->of[bank][r];
-    if (s < 0 && j->loop) j->broken = true;
+    if (s < 0 && j->loop && !j->loop->partial[bank]) j->broken = true;
     if (s < 0) {
         s = jc_alloc(j, bank);
         c->of[bank][r] = (int8_t)s;
-        c->vm[bank][s] = (int8_t)r;
+        c->vm[bank][s] = (int16_t)r;
     }
     c->dirty[bank][s] = true;
     c->pin[bank] |= 1u << s;
@@ -507,7 +579,7 @@ static void jside_record(const JComp *j, JSide *sd, uint32_t pc) {
     const JCache *c = &j->jc;
     sd->pc = pc;
     sd->n = 0;
-    sd->unset = sd->grow = false;
+    sd->unset = sd->grow = sd->alloc = false;
     for (int bank = 0; bank < 2; bank++)
         for (int k = 0; k < jc_nslots(bank); k++)
             if (c->vm[bank][k] >= 0 && c->dirty[bank][k]) {
@@ -537,7 +609,7 @@ static void jside(JComp *j, int kind, int cond, int reg, bool nz, uint32_t pc) {
 #define SIDE_IF_NULL(reg) jside(j, FX_CB, 0, (reg), false, pc)
 
 /* ---- the forms it compiles ---- */
-enum { JX_ARITH = Q__COUNT, JX_SET }; /* generic instructions it compiles (jit_class) */
+enum { JX_ARITH = Q__COUNT, JX_SET, JX_FARITH }; /* generic instructions it compiles (jit_class) */
 static bool jit_ends_block(uint16_t x) {
     switch (x) {
 #define X(N, o) case Q_##N##_II: case Q_##N##_IK: case Q_##N##_FFL: case Q_##N##_FKL:
@@ -550,6 +622,7 @@ static bool jit_ends_block(uint16_t x) {
     case Q_BZ_R: case Q_BNZ_R: case Q_BEQ_RR: case Q_BNE_RR: case Q_BEQ_RK: case Q_BNE_RK:
     case Q_BEQ_EKK: case Q_BNE_EKK: case Q_TCALL_R:
     case Q_BISA: case Q_BNISA: case Q_BEQ_RG: case Q_BNE_RG:
+    case Q_BZ_MB_U8: case Q_BNZ_MB_U8:
     case Q_CALL_RK: case Q_CALLI_R: case Q_CALLI_RK: case Q_JTAB: case Q_TCALLI_R: return true;
     default: return false;
     }
@@ -585,6 +658,8 @@ static bool jit_handles(uint16_t x) {
     case Q_STEC: case Q_STECK: case Q_STGK:
     case Q_SEQ_RR: case Q_SNE_RR: case Q_SEQ_RK: case Q_SNE_RK: case Q_MGET_R:
     case Q_MGETV_I: case Q_MGETV_F: case Q_MGETV_R:
+    case Q_MNEW: case Q_MSET: case Q_MHAS:
+    case Q_LDMB_U8: case Q_STMB_U8: case Q_STMBK_U8:
     case Q_STRCAT_RK: case Q_BUFCAT_RK: case Q_TOSTR_I: case Q_TOSTR_F: case Q_SUBSTR_RII: case Q_BUFNEW_K: case Q_BUFPUSH_I:
 #define X(N, o) case Q_##N##_FF: case Q_##N##_FK:
         QSET_OPS(X)
@@ -595,7 +670,7 @@ static bool jit_handles(uint16_t x) {
     case Q_LDED_I: case Q_LDED_F: case Q_LDED_R: case Q_STED_I: case Q_STED_F: case Q_STED_R:
     case Q_LDE_I: case Q_LDE_F: case Q_LDE_R: case Q_STE_I: case Q_STE_F: case Q_STE_R:
     case Q_LDEK_I: case Q_LDEK_F: case Q_LDEK_R: case Q_STEK_I: case Q_STEK_F: case Q_STEK_R:
-    case JX_ARITH: case JX_SET:
+    case JX_ARITH: case JX_SET: case JX_FARITH:
         return true;
     default: return false;
     }
@@ -609,17 +684,32 @@ static bool jit_gen_operand(const Operand *o) {
     return (o->mode == OM_REG && REG_BANK(o->reg) == BANK_I) || o->mode == OM_IMM ||
            (o->mode == OM_UPVAL && o->index < 65536);
 }
+static bool jit_fgen_operand(const Operand *o, bool dst) {
+    if (o->mode == OM_REG && REG_BANK(o->reg) == BANK_F) return true;
+    if (!dst && (o->mode == OM_FIMM || o->mode == OM_IMM)) return true;
+    if (o->mode == OM_ELEM && REG_BANK(o->reg) == BANK_R && REG_BANK(o->ireg) == BANK_I) return true;
+    if (o->mode == OM_ELEMI && REG_BANK(o->reg) == BANK_R && o->index <= UINT32_MAX) return true;
+    return false;
+}
 static uint16_t jit_class(const Insn *in, uint16_t x) {
     if (x != in->op) return x; /* quickened */
     bool arith = in->op == OP_ADD || in->op == OP_SUB || in->op == OP_MUL || in->op == OP_AND || in->op == OP_OR ||
                  in->op == OP_XOR;
     bool set = in->op >= OP_SEQ && in->op <= OP_SGE;
-    if ((!arith && !set) || (in->type != T_I64 && in->type != T_U64)) return x;
-    if (in->nops != 3 && !(arith && in->nops == 2)) return x;
-    if (in->ops[0].mode != OM_REG || REG_BANK(in->ops[0].reg) != BANK_I) return x;
-    for (int k = 1; k < in->nops; k++)
-        if (!jit_gen_operand(&in->ops[k])) return x;
-    return arith ? JX_ARITH : JX_SET;
+    if ((arith || set) && (in->type == T_I64 || in->type == T_U64)) {
+        if (in->nops < 2 || (!arith && in->nops != 3)) return x;
+        if (in->ops[0].mode != OM_REG || REG_BANK(in->ops[0].reg) != BANK_I) return x;
+        for (int k = 1; k < in->nops; k++)
+            if (!jit_gen_operand(&in->ops[k])) return x;
+        return arith ? JX_ARITH : JX_SET;
+    }
+    bool farith = in->op == OP_ADD || in->op == OP_SUB || in->op == OP_MUL || in->op == OP_DIV;
+    if (farith && in->type == T_F64 && in->nops >= 2 && jit_fgen_operand(&in->ops[0], true)) {
+        for (int k = 1; k < in->nops; k++)
+            if (!jit_fgen_operand(&in->ops[k], false)) return x;
+        return JX_FARITH;
+    }
+    return x;
 }
 
 /* An instruction the JIT does not compile is still run from the machine code
@@ -648,6 +738,7 @@ static JIT_CC JitStep jit_step(Ctx *c, const Insn *in, uint32_t left) {
     uint32_t depth = p->nframes;
     uint64_t ib = c->ibase;
     c->ibase = ib - left; /* the handler's count, with no slice left, as the interpreter's */
+    c->stepping = true;
     uint16_t x = jit_form(c->fr->fn, in);
     Jit *jt = c->vm->jit;
     if (jt->stats) {
@@ -660,6 +751,7 @@ static JIT_CC JitStep jit_step(Ctx *c, const Insn *in, uint32_t left) {
 #else
     int st = qhandlers[x](c, in, 0, c->I, c->F, c->R);
 #endif
+    c->stepping = false;
     c->ibase = ib;
     uint64_t nl = p->insns <= ib ? ib - p->insns : 0;
     if (st != SLICE_YIELD) { /* done, blocked, failed, ...: as the handler says */
@@ -770,8 +862,7 @@ static void jit_push_frame(JComp *j, const Insn *in, uint32_t pc, const Function
     uint32_t deep = jm_fwd(b, JC_LS);
     jm_st32(b, JR_S0, P, P_OFF(max_depth));
     jm_bind(b, deep);
-    jm_ld(b, t, P, P_OFF(regs));
-    jm_addsh3(b, t, t, JR_S1); /* the callee's window */
+    jm_alui(b, JA_ADD, t, JR_WIN, (int64_t)j->f->rsize * 8); /* the callee's window */
     jm_clear(b, t, (int64_t)fn->zoff * 8, fn->zlen);
     for (int k = 0; k < argc; k++) {
         if (src[k] == QPLAN_K) jm_movi(b, JR_S0, kw[k]);
@@ -1003,20 +1094,95 @@ static void jit_tcalli(JComp *j, const Insn *in, uint32_t pc) {
     jit_callee_interp(j, none);
 }
 
+/* Place n values (constants where slot[k] == QPLAN_K, else window slot[k],
+ * reading directly from the register cache when present) into jc_ireg[0..JRES_N-1]
+ * and Ctx.retv[JRES_N..n-1]. Resolves any register-move cycles among jc_ireg
+ * using JR_S0. */
+static void jit_emit_vals(JComp *j, int n, const uint8_t *slot, const uint64_t *kw) {
+    JBuf *b = &j->b;
+    const JCache *c = &j->jc;
+    const uint16_t *roff = j->f->roff;
+    /* First, values past JRES_N go straight to Ctx.retv (never clobbering jc_ireg). */
+    for (int k = JRES_N; k < n; k++) {
+        uint8_t s = slot[k];
+        if (s == QPLAN_K) {
+            jm_movi(b, JR_S0, kw[k]);
+        } else if (s < roff[BANK_F] && c->of[0][s] >= 0) {
+            jm_mov(b, JR_S0, jc_ireg[c->of[0][s]]);
+        } else if (s >= roff[BANK_F] && s < roff[BANK_R] && c->of[1][s - roff[BANK_F]] >= 0) {
+            jm_fmov_to_x(b, JR_S0, jc_freg[c->of[1][s - roff[BANK_F]]]);
+        } else if (s >= roff[BANK_R] && s < roff[BANK_P] && c->rof[s - roff[BANK_R]] >= 0) {
+            jm_mov(b, JR_S0, jc_ireg[c->rof[s - roff[BANK_R]]]);
+        } else {
+            jm_ld(b, JR_S0, JR_WIN, (int64_t)s * 8);
+        }
+        jm_st(b, JR_S0, JR_CTX, C_OFF(retv) + 8 * k);
+    }
+    int nr = n < JRES_N ? n : JRES_N;
+    if (nr <= 0) return;
+    /* Classify 0..nr-1: 0=const, 1=mem, 2=freg, 3=ireg. */
+    uint8_t kind[4];
+    int src[4];
+    bool done[4] = {false, false, false, false};
+    for (int k = 0; k < nr; k++) {
+        uint8_t s = slot[k];
+        if (s == QPLAN_K) {
+            kind[k] = 0, src[k] = 0;
+        } else if (s < roff[BANK_F] && c->of[0][s] >= 0) {
+            kind[k] = 3, src[k] = jc_ireg[c->of[0][s]];
+        } else if (s >= roff[BANK_F] && s < roff[BANK_R] && c->of[1][s - roff[BANK_F]] >= 0) {
+            kind[k] = 2, src[k] = jc_freg[c->of[1][s - roff[BANK_F]]];
+        } else if (s >= roff[BANK_R] && s < roff[BANK_P] && c->rof[s - roff[BANK_R]] >= 0) {
+            kind[k] = 3, src[k] = jc_ireg[c->rof[s - roff[BANK_R]]];
+        } else {
+            kind[k] = 1, src[k] = s;
+        }
+    }
+    /* Move all ireg sources first without clobbering any pending source. */
+    for (;;) {
+        bool progress = false;
+        int pending = -1;
+        for (int k = 0; k < nr; k++) {
+            if (done[k] || kind[k] != 3) continue;
+            pending = k;
+            int dst = jc_ireg[k];
+            bool used = false;
+            for (int m = 0; m < nr; m++)
+                if (m != k && !done[m] && kind[m] == 3 && src[m] == dst) { used = true; break; }
+            if (!used) {
+                jm_mov(b, dst, src[k]);
+                done[k] = true;
+                progress = true;
+            }
+        }
+        if (pending < 0) break;
+        if (!progress) { /* cycle among pending ireg moves: break via JR_S0 */
+            int dst = jc_ireg[pending];
+            jm_mov(b, JR_S0, dst);
+            for (int m = 0; m < nr; m++)
+                if (!done[m] && kind[m] == 3 && src[m] == dst) src[m] = JR_S0;
+        }
+    }
+    for (int k = 0; k < nr; k++) {
+        if (done[k]) continue;
+        int dst = jc_ireg[k];
+        if (kind[k] == 0) jm_movi(b, dst, kw[k]);
+        else if (kind[k] == 1) jm_ld(b, dst, JR_WIN, (int64_t)src[k] * 8);
+        else jm_fmov_to_x(b, dst, src[k]);
+    }
+}
+
 static void jit_ret(JComp *j, const Insn *in, uint32_t pc) {
     JBuf *b = &j->b;
     const QPlan *rp = in->k.p;
     jm_ld8(b, JR_S0, JR_FR, FR_OFF(qret));
-    jbranch(j, FX_CB, 0, JR_S0, false, TO_UNDO, pc);
+    jside(j, FX_CB, 0, JR_S0, false, pc);
     jm_ld(b, JR_S1, JR_FR, FR_OFF(ret_insn));
     jm_ld32(b, JR_S2, JR_S1, (int64_t)offsetof(Insn, target)); /* the continuation, or 0 */
-    jbranch(j, FX_CB, 0, JR_S2, false, TO_UNDO, pc);
-    for (int k = 0; k < rp->nres; k++) { /* (into JRES_N registers, then Ctx.retv) */
-        int v = k < JRES_N ? jc_ireg[k] : JR_S0;
-        if (rp->slot[k] == QPLAN_K) jm_movi(b, v, in->ops[k].kw); /* Q_RET_RK's constant */
-        else jm_ld(b, v, JR_WIN, (int64_t)rp->slot[k] * 8);
-        if (k >= JRES_N) jm_st(b, JR_S0, JR_CTX, C_OFF(retv) + 8 * k);
-    }
+    jside(j, FX_CB, 0, JR_S2, false, pc);
+    uint64_t kw[MAX_OPERANDS];
+    for (int k = 0; k < rp->nres; k++) kw[k] = in->ops[k].kw;
+    jit_emit_vals(j, rp->nres, rp->slot, kw);
     int P = jm_proc(b, JR_S3);
     if (!j->f->stackless) {
         jm_ld(b, JR_S0, JR_FR, FR_OFF(entry_sp));
@@ -1055,6 +1221,37 @@ static void jit_tail_frame(JComp *j, const Insn *in, uint32_t pc, const Function
     const Operand *qo = in->ops;
     const MFunc *mf = fn->mf;
     int argc = (int)qo[1].imm;
+    if (fn == j->f) {
+        /* Self-tail-call: same window size (already fits rcap), same fn/stackless/qret.
+         * Pass up to JRES_N arguments in jc_ireg directly from the register cache. */
+        if (clo >= 0) jm_st(b, clo, JR_FR, FR_OFF(closure));
+        else jm_stz(b, JR_FR, FR_OFF(closure));
+        uint8_t slot[MAX_OPERANDS];
+        uint64_t kw[MAX_OPERANDS];
+        for (int k = 0; k < argc; k++) {
+            slot[k] = qo[2 + k].mode == OM_REG ? qo[2 + k].pad : QPLAN_K;
+            kw[k] = qo[2 + k].kw;
+        }
+        jit_emit_vals(j, argc, slot, kw);
+        if (!j->f->stackless) {
+            int P = jm_proc(b, JR_S3);
+            jm_ld(b, JR_S0, JR_FR, FR_OFF(entry_sp));
+            jm_st(b, JR_S0, P, P_OFF(sp));
+            jm_st(b, JR_S0, P, P_OFF(fp));
+        }
+        jm_movi(b, JR_S0, 0);
+        jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
+        jm_clear(b, JR_WIN, (int64_t)fn->zoff * 8, fn->zlen);
+        uint32_t cnt[NBANKS] = {0};
+        for (int k = 0; k < argc; k++) {
+            int bk = (int)type_bank((MlwsType)mf->params[k]);
+            int v = k < JRES_N ? jc_ireg[k] : JR_S0;
+            if (k >= JRES_N) jm_ld(b, JR_S0, JR_CTX, C_OFF(retv) + 8 * k);
+            jm_st(b, v, JR_WIN, (int64_t)(fn->roff[bk] + cnt[bk]++) * 8);
+        }
+        jbranch(j, FX_B, 0, 0, false, TO_BODY, 0);
+        return;
+    }
     jm_ld32(b, JR_S1, JR_FR, FR_OFF(base));
     jm_add32i(b, JR_S2, JR_S1, fn->rsize);
     int P = jm_proc(b, JR_S3);
@@ -1068,30 +1265,26 @@ static void jit_tail_frame(JComp *j, const Insn *in, uint32_t pc, const Function
     }
     if (clo >= 0) jm_st(b, clo, JR_FR, FR_OFF(closure)); /* (before the call below, which may clobber clo) */
     /* Whether the callee's ret may copy its results straight to the caller
-     * (tail_qret): no, if this frame's may not; for a call to itself, what
-     * this frame's may, since every frame given qret checked the same;
-     * otherwise what the call site's word says for this frame's ret_insn,
-     * or what the helper works out (and puts in the word). */
-    if (fn != j->f) {
-        uintptr_t *word = jit_word(j->jt);
-        jm_ld8(b, JR_S0, JR_FR, FR_OFF(qret));
-        uint32_t no = jm_fwd_cbz(b, JR_S0, false);
-        jm_ld(b, JR_S1, JR_FR, FR_OFF(ret_insn));
-        jm_movi(b, JR_S2, (uint64_t)(uintptr_t)word);
-        jm_ld(b, JR_S2, JR_S2, 0);
-        jm_alu(b, JA_XOR, JR_S2, JR_S2, JR_S1); /* the word's qret, if it is for this ret_insn */
-        jm_cmpi(b, JR_S2, 1);
-        uint32_t miss = jm_fwd(b, JC_HI);
-        jm_st8(b, JR_S2, JR_FR, FR_OFF(qret));
-        uint32_t hit = jm_fwd(b, JC_AL);
-        jm_bind(b, miss);
-        jm_mov(b, JR_A0, JR_FR);
-        jm_movi(b, JR_A1, (uint64_t)(uintptr_t)fn);
-        jm_movi(b, JR_A2, (uint64_t)(uintptr_t)word);
-        jm_ccall(b, (const void *)jit_tail_qret);
-        jm_st8(b, JR_R0, JR_FR, FR_OFF(qret));
-        jm_bind(b, no), jm_bind(b, hit);
-    }
+     * (tail_qret): no, if this frame's may not; otherwise what the call site's
+     * word says for this frame's ret_insn, or what the helper works out. */
+    uintptr_t *word = jit_word(j->jt);
+    jm_ld8(b, JR_S0, JR_FR, FR_OFF(qret));
+    uint32_t no = jm_fwd_cbz(b, JR_S0, false);
+    jm_ld(b, JR_S1, JR_FR, FR_OFF(ret_insn));
+    jm_movi(b, JR_S2, (uint64_t)(uintptr_t)word);
+    jm_ld(b, JR_S2, JR_S2, 0);
+    jm_alu(b, JA_XOR, JR_S2, JR_S2, JR_S1); /* the word's qret, if it is for this ret_insn */
+    jm_cmpi(b, JR_S2, 1);
+    uint32_t miss = jm_fwd(b, JC_HI);
+    jm_st8(b, JR_S2, JR_FR, FR_OFF(qret));
+    uint32_t hit = jm_fwd(b, JC_AL);
+    jm_bind(b, miss);
+    jm_mov(b, JR_A0, JR_FR);
+    jm_movi(b, JR_A1, (uint64_t)(uintptr_t)fn);
+    jm_movi(b, JR_A2, (uint64_t)(uintptr_t)word);
+    jm_ccall(b, (const void *)jit_tail_qret);
+    jm_st8(b, JR_R0, JR_FR, FR_OFF(qret));
+    jm_bind(b, no), jm_bind(b, hit);
     jm_ld32(b, JR_S1, JR_FR, FR_OFF(base)); /* (a call keeps no scratch register) */
     jm_add32i(b, JR_S2, JR_S1, fn->rsize);
     P = jm_proc(b, JR_S3);
@@ -1124,16 +1317,12 @@ static void jit_tail_frame(JComp *j, const Insn *in, uint32_t pc, const Function
     jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
     if (clo < 0) jm_stz(b, JR_FR, FR_OFF(closure));
     jm_st32(b, JR_S2, P, P_OFF(rtop));
-    for (unsigned k = 0; k < fn->zlen; k++) jm_stz(b, JR_WIN, (int64_t)(fn->zoff + k) * 8);
+    jm_clear(b, JR_WIN, (int64_t)fn->zoff * 8, fn->zlen);
     uint32_t cnt[NBANKS] = {0};
     for (int k = 0; k < argc; k++) {
         int bk = (int)type_bank((MlwsType)mf->params[k]);
         jm_ld(b, JR_S0, JR_CTX, C_OFF(retv) + 8 * k);
         jm_st(b, JR_S0, JR_WIN, (int64_t)(fn->roff[bk] + cnt[bk]++) * 8);
-    }
-    if (fn == j->f) {
-        jbranch(j, FX_B, 0, 0, false, TO_BODY, 0);
-        return;
     }
     jm_movi(b, JR_S0, (uint64_t)(uintptr_t)&fn->jit_entry);
     jm_ld(b, JR_S0, JR_S0, 0);
@@ -1189,31 +1378,56 @@ static uint32_t jit_global(JComp *j, const Insn *in, uint32_t pc, int tag, unsig
     return 0;
 }
 
+static bool jit_alloc_inline(const Insn *in, uint16_t x) {
+    if (x == Q_NEW) {
+        const StructDef *def = in->k.p;
+        return sizeof(ObjStruct) + def->nfields * sizeof(Word) <= GC_SMALL_MAX;
+    }
+    if (x == Q_LNEW) {
+        int64_t cap = in->k.i;
+        return cap > 0 && cap <= LIST_INLINE_MAX &&
+               sizeof(ObjList) + (size_t)cap * (sizeof(Word) + 1) <= GC_SMALL_MAX;
+    }
+    return false;
+}
+
+static void jit_record_all(const JComp *j, JSide *sd) {
+    const JCache *c = &j->jc;
+    sd->na = 0;
+    for (int bank = 0; bank < 2; bank++)
+        for (int k = 0; k < jc_nslots(bank); k++) {
+            int v = c->vm[bank][k];
+            if (v < 0) continue;
+            sd->abank[sd->na] = (uint8_t)(bank == 0 && v >= JC_RBASE ? 2 : bank);
+            sd->amreg[sd->na] = (uint8_t)jc_mreg(bank, k);
+            sd->avreg[sd->na++] = (uint8_t)(v >= JC_RBASE ? v - JC_RBASE : v);
+        }
+}
+
 /* new (a struct) or lnew (a list with its storage inside it): the allocator's
- * fast path (heap.h, gc_alloc) in machine code, the object in R0. It takes
- * the next bytes of the hole being allocated into, if they are there and
- * the heap stays below Process.alloc_limit; else it goes to what follows,
- * the call of the C function, and returns the branch from its end to after
- * that (0: no fast path for this one). */
-static uint32_t jit_alloc(JComp *j, const Insn *in, bool st) {
+ * fast path (heap.h, gc_alloc) in machine code, leaving the object in JR_S0
+ * without flushing cached registers. When the hole is full, branches to an
+ * out-of-line stub (sd->alloc) that flushes, calls C, reloads cached registers
+ * and jumps back with the object in JR_S0. Returns the side index. */
+static size_t jit_alloc_fast(JComp *j, const Insn *in, uint32_t pc, bool st) {
     JBuf *b = &j->b;
     int64_t cap = st ? 0 : in->k.i;
-    if (!st && (cap <= 0 || cap > LIST_INLINE_MAX)) return 0;
     const StructDef *def = in->k.p;
     size_t size = st ? sizeof(ObjStruct) + def->nfields * sizeof(Word) : sizeof(ObjList) + (size_t)cap * (sizeof(Word) + 1);
-    if (size > GC_SMALL_MAX) return 0;
     size_t n = (size + 15) & ~(size_t)15;
     int P = jm_proc(b, JR_S3);
     jm_ld(b, JR_S0, P, P_OFF(bump));
     jm_ld(b, JR_S1, P, P_OFF(bump_lim));
     jm_alu(b, JA_SUB, JR_S1, JR_S1, JR_S0);
     jm_cmpi(b, JR_S1, (int64_t)n);
-    uint32_t full = jm_fwd(b, JC_LO);
+    SIDE_IF(JC_LO);
+    size_t side = j->sides.n - 1;
+    JSide *sd = &j->sides.v[side];
+    sd->alloc = true;
+    sd->alloc_struct = st;
+    jit_record_all(j, sd);
     jm_ld(b, JR_S1, P, P_OFF(heap_bytes));
     jm_alui(b, JA_ADD, JR_S1, JR_S1, (int64_t)size);
-    jm_ld(b, JR_S2, P, P_OFF(alloc_limit));
-    jm_cmp(b, JR_S1, JR_S2);
-    uint32_t limit = jm_fwd(b, JC_HS);
     jm_st(b, JR_S1, P, P_OFF(heap_bytes));
     jm_alui(b, JA_ADD, JR_S1, JR_S0, (int64_t)n);
     jm_st(b, JR_S1, P, P_OFF(bump));
@@ -1239,11 +1453,7 @@ static uint32_t jit_alloc(JComp *j, const Insn *in, bool st) {
         jm_movi(b, JR_S1, (uint64_t)cap);
         jm_st32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, cap));
     }
-    jm_mov(b, JR_R0, JR_S0);
-    uint32_t done = jm_fwd(b, JC_AL);
-    jm_bind(b, full);
-    jm_bind(b, limit);
-    return done;
+    return side;
 }
 
 /* The write barrier (heap.h, gc_write), before a store of the object in v
@@ -1306,17 +1516,9 @@ static void jit_list_back(JComp *j, size_t side) { j->sides.v[side].back = (uint
  * allocation only asks for a collection, at the next safepoint, so what the
  * block knows young stays young.) */
 static void jit_grow_side(JComp *j, unsigned list, unsigned n) {
-    const JCache *c = &j->jc;
     JSide *sd = &j->sides.v[j->sides.n - 1];
-    sd->grow = true, sd->glist = (uint8_t)list, sd->gn = (uint8_t)n, sd->na = 0;
-    for (int bank = 0; bank < 2; bank++)
-        for (int k = 0; k < jc_nslots(bank); k++) {
-            int v = c->vm[bank][k];
-            if (v < 0) continue;
-            sd->abank[sd->na] = (uint8_t)(bank == 0 && v >= JC_RBASE ? 2 : bank);
-            sd->amreg[sd->na] = (uint8_t)jc_mreg(bank, k);
-            sd->avreg[sd->na++] = (uint8_t)(v >= JC_RBASE ? v - JC_RBASE : v);
-        }
+    sd->grow = true, sd->glist = (uint8_t)list, sd->gn = (uint8_t)n;
+    jit_record_all(j, sd);
     sd->back = (uint32_t)j->b.n;
 }
 static JIT_CC void jit_list_grow(Process *p, ObjList *l, uint64_t n) { list_grow(p, l, (uint64_t)l->len + n); }
@@ -1522,6 +1724,51 @@ static JIT_CC Obj *jit_tostr_f(Process *p, int64_t bits) {
     return &value_to_string(p, w, T_F64)->h;
 }
 
+static JIT_CC Obj *jit_map_new(Process *p) { return &map_new(p)->h; }
+static JIT_CC uintptr_t jit_mset(Process *p, const Insn *in, const uint64_t *win, const Function *fn) {
+    return q_mset(p, in, (const int64_t *)win, (const double *)(win + fn->roff[BANK_F]),
+                  (const Word *)(win + fn->roff[BANK_R]));
+}
+static JIT_CC JitWord jit_mhas(const Obj *ob, const Insn *in, uint64_t key) {
+    if (!ob || ob->kind != OBJ_MAP) return (JitWord){0, 0};
+    Word k;
+    if (in->target & 0x10000u) k.r = (Obj *)in->k.p;
+    else k.u = key;
+    return (JitWord){map_find((ObjMap *)ob, k, (uint8_t)(in->target & 0xFF)) != NULL, 1};
+}
+
+/* Raw indexed byte memory check (P{I}, .u8): verifies raw segment, live,
+ * generation and bounds; leaves seg->data in JR_S1 and byte offset in JR_S0. */
+static void jit_raw_u8(JComp *j, uint32_t pc, unsigned preg, int ix) {
+    JBuf *b = &j->b;
+    _Static_assert(sizeof(Segment) == 24, "Segment size assumed 24 bytes");
+    _Static_assert(offsetof(Segment, gen) == 20 && offsetof(Segment, kind) == 22 && offsetof(Segment, live) == 23,
+                   "Segment gen/kind/live packed in one 32-bit word");
+    jm_ld(b, JR_S0, JR_WIN, jwoff(j, BANK_P, preg));
+    jm_alui(b, JA_SHR, JR_S1, JR_S0, 44);
+    jm_alui(b, JA_SUB, JR_S1, JR_S1, SEG_RAW0);
+    int P = jm_proc(b, JR_S3);
+    jm_ld(b, JR_S2, P, P_OFF(raw.n));
+    jm_cmp(b, JR_S1, JR_S2);
+    SIDE_IF(JC_HS);
+    jm_alui(b, JA_SHL, JR_S2, JR_S1, 1);
+    jm_alu(b, JA_ADD, JR_S1, JR_S1, JR_S2); /* raw_idx * 3 */
+    jm_ld(b, JR_S2, P, P_OFF(raw.v));
+    jm_addsh3(b, JR_S1, JR_S2, JR_S1); /* &p->raw.v[raw_idx] */
+    jm_ld32(b, JR_S2, JR_S1, (int64_t)offsetof(Segment, gen));
+    jm_alui(b, JA_SHR, JR_S3, JR_S0, 32);
+    jm_alui(b, JA_AND, JR_S3, JR_S3, 0xFFFu);
+    jm_alui(b, JA_OR, JR_S3, JR_S3, (int64_t)((uint64_t)SEGK_RAW << 16 | (uint64_t)1 << 24));
+    jm_cmp32(b, JR_S2, JR_S3);
+    SIDE_IF(JC_NE);
+    jm_mov32(b, JR_S0, JR_S0); /* zero-extend PTR_OFF(ptr) */
+    jm_alu(b, JA_ADD, JR_S0, JR_S0, ix);
+    jm_ld32(b, JR_S2, JR_S1, (int64_t)offsetof(Segment, size));
+    jm_cmp(b, JR_S0, JR_S2);
+    SIDE_IF(JC_HS);
+    jm_ld(b, JR_S1, JR_S1, (int64_t)offsetof(Segment, data));
+}
+
 static JitWord jit_mgetv(const Obj *ob, const Insn *in, uint64_t key, uint8_t tag) {
     if (!ob || ob->kind != OBJ_MAP) return (JitWord){0, 0};
     Word k;
@@ -1601,6 +1848,8 @@ static void jit_pair_load(JComp *j, const Insn *in, uint32_t pc, int bank, int i
 }
 static void jit_pair(JComp *j, const Insn *in, uint32_t pc, uint16_t x1, uint16_t x2) {
     JBuf *b = &j->b;
+    j->jc.pin[0] = j->jc.pin[1] = 0;
+    j->jc.cur_pin[0] = j->jc.cur_pin[1] = 0;
     int bank0 = x1 - Q_LDE_I;
     const Insn *v = in + 1;
     unsigned r = in->r[1];
@@ -1647,21 +1896,97 @@ static uint16_t jit_is_pair(const Function *f, const uint16_t *jx, const uint8_t
     return in->r[1] == v->r[1] && in->r[2] == v->r[2] && v->k.i == 1 ? jx[pc + 1] : 0;
 }
 
+/* A generic f64 operand (jit_fgen_operand) loaded into a float register (`into`
+ * if constant or element, or its cache register if an F register). */
+static int jit_fgen_src(JComp *j, const Insn *in, const Operand *o, uint32_t pc, int into) {
+    JBuf *b = &j->b;
+    if (o->mode == OM_REG) return jc_get(j, 1, REG_IDX(o->reg));
+    if (o->mode == OM_FIMM || o->mode == OM_IMM) {
+        jm_fconst(b, into, o->f);
+        return into;
+    }
+    int ix;
+    if (o->mode == OM_ELEMI) {
+        jm_movi(b, JR_S3, (uint32_t)o->index);
+        ix = JR_S3;
+    } else {
+        ix = jc_get(j, 0, REG_IDX(o->ireg));
+        if (o->imm) jm_alui(b, JA_ADD, JR_S3, ix, o->imm), ix = JR_S3;
+    }
+    unsigned r = (unsigned)REG_IDX(o->reg);
+    jld_r(j, JR_S0, r);
+    jit_elem(j, in, pc, r, ix, false, 1, into);
+    return into;
+}
+
 static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t *cont) {
     JBuf *b = &j->b;
     int shape, kind, s1, s2, d, op;
     uint32_t goff; /* a global's word, at S0 + goff (jit_global) */
     uint32_t t = pc + (uint32_t)(int32_t)in->target; /* a branch's target (relative in this build) */
     j->jc.pin[0] = j->jc.pin[1] = 0;
+    j->jc.cur_pin[0] = j->jc.cur_pin[1] = 0;
     switch (x) {
-    case JX_ARITH: { /* (two operands: the destination is the first) */
+    case JX_ARITH: { /* (two operands: the destination is the first; 4+: accumulate in S3) */
         static const int ops[] = {[OP_ADD] = JA_ADD, [OP_SUB] = JA_SUB, [OP_MUL] = JA_MUL,
                                   [OP_AND] = JA_AND, [OP_OR] = JA_OR, [OP_XOR] = JA_XOR};
-        const Operand *a = &in->ops[in->nops == 3 ? 1 : 0], *c = &in->ops[in->nops - 1];
-        s1 = jit_gen_src(j, a, pc, JR_S3);
-        s2 = jit_gen_src(j, c, pc, JR_S4);
+        int aop = ops[in->op];
+        if (in->nops <= 3) {
+            const Operand *a = &in->ops[in->nops == 3 ? 1 : 0], *c = &in->ops[in->nops - 1];
+            s1 = jit_gen_src(j, a, pc, JR_S3);
+            s2 = jit_gen_src(j, c, pc, JR_S4);
+            d = jc_def(j, 0, REG_IDX(in->ops[0].reg));
+            jm_alu(b, aop, d, s1, s2);
+            return;
+        }
+        s1 = jit_gen_src(j, &in->ops[1], pc, JR_S3);
+        if (s1 != JR_S3) jm_mov(b, JR_S3, s1);
+        j->jc.pin[0] = 0; /* each source is consumed into S3: free its slot */
+        j->jc.cur_pin[0] = 0;
+        for (int k = 2; k < in->nops; k++) {
+            if (in->ops[k].mode == OM_IMM) {
+                jm_alui(b, aop, JR_S3, JR_S3, in->ops[k].imm);
+            } else {
+                s2 = jit_gen_src(j, &in->ops[k], pc, JR_S4);
+                jm_alu(b, aop, JR_S3, JR_S3, s2);
+                j->jc.pin[0] = 0;
+                j->jc.cur_pin[0] = 0;
+            }
+        }
         d = jc_def(j, 0, REG_IDX(in->ops[0].reg));
-        jm_alu(b, ops[in->op], d, s1, s2);
+        jm_mov(b, d, JR_S3);
+        return;
+    }
+    case JX_FARITH: {
+        static const int fops[] = {[OP_ADD] = JF_ADD, [OP_SUB] = JF_SUB, [OP_MUL] = JF_MUL, [OP_DIV] = JF_DIV};
+        int fop = fops[in->op];
+        const Operand *dst = &in->ops[0];
+        int acc = jit_fgen_src(j, in, in->nops == 2 ? dst : &in->ops[1], pc, JF_S0);
+        if (acc != JF_S0) jm_fmov(b, JF_S0, acc);
+        j->jc.pin[0] = j->jc.pin[1] = 0; /* consumed into JF_S0: free its slot(s) */
+        j->jc.cur_pin[0] = j->jc.cur_pin[1] = 0;
+        for (int k = in->nops == 2 ? 1 : 2; k < in->nops; k++) {
+            s2 = jit_fgen_src(j, in, &in->ops[k], pc, JF_S1);
+            jm_fop(b, fop, JF_S0, JF_S0, s2);
+            j->jc.pin[0] = j->jc.pin[1] = 0;
+            j->jc.cur_pin[0] = j->jc.cur_pin[1] = 0;
+        }
+        if (dst->mode == OM_REG) {
+            d = jc_def(j, 1, REG_IDX(dst->reg));
+            jm_fmov(b, d, JF_S0);
+        } else {
+            int ix;
+            if (dst->mode == OM_ELEMI) {
+                jm_movi(b, JR_S3, (uint32_t)dst->index);
+                ix = JR_S3;
+            } else {
+                ix = jc_get(j, 0, REG_IDX(dst->ireg));
+                if (dst->imm) jm_alui(b, JA_ADD, JR_S3, ix, dst->imm), ix = JR_S3;
+            }
+            unsigned r = (unsigned)REG_IDX(dst->reg);
+            jld_r(j, JR_S0, r);
+            jit_elem(j, in, pc, r, ix, true, 1, JF_S0);
+        }
         return;
     }
     case JX_SET: {
@@ -1710,8 +2035,15 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         return;
     case Q_CALL_R: case Q_CALL_RK: jc_flush(j); *cont = jit_call(j, in, pc); return;
     case Q_CALLI_R: case Q_CALLI_RK: jc_flush(j); *cont = jit_calli(j, in, pc); return;
-    case Q_RET_R: case Q_RET_RK: jc_flush(j); jit_ret(j, in, pc); return;
-    case Q_TCALL_R: jc_flush(j); jit_tcall(j, in, pc); return;
+    case Q_RET_R: case Q_RET_RK:
+        jit_ret(j, in, pc);
+        if (!j->loop && !j->jc.record) jc_reset(&j->jc);
+        return;
+    case Q_TCALL_R:
+        if (in->ops[0].rv.ptr != j->f) jc_flush(j);
+        jit_tcall(j, in, pc);
+        if (!j->loop && !j->jc.record) jc_reset(&j->jc);
+        return;
     case Q_TCALLI_R: jc_flush(j); jit_tcalli(j, in, pc); return;
     case Q_BITCAST_FI: s1 = jc_get(j, 0, in->r[1]); d = jc_def(j, 1, in->r[0]); jm_fmov_from_x(b, d, s1); return;
     case Q_BITCAST_IF: s1 = jc_get(j, 1, in->r[1]); d = jc_def(j, 0, in->r[0]); jm_fmov_to_x(b, d, s1); return;
@@ -1741,10 +2073,13 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
     case Q_BEQ_EKK: case Q_BNE_EKK: { /* R0[i] (a list element tagged r) against a constant */
         uint32_t i = in->r[1] | (uint32_t)in->r[2] << 8;
         jld_r(j, JR_S0, in->r[0]);
-        SIDE_IF_NULL(JR_S0);
-        jm_ld8(b, JR_S1, JR_S0, (int64_t)offsetof(Obj, kind));
-        jm_cmpi32(b, JR_S1, OBJ_LIST);
-        SIDE_IF(JC_NE);
+        if (j->jc.rk[in->r[0]].kind != OBJ_LIST) {
+            SIDE_IF_NULL(JR_S0);
+            jm_ld8(b, JR_S1, JR_S0, (int64_t)offsetof(Obj, kind));
+            jm_cmpi32(b, JR_S1, OBJ_LIST);
+            SIDE_IF(JC_NE);
+            j->jc.rk[in->r[0]].kind = OBJ_LIST, j->jc.rk[in->r[0]].def = NULL;
+        }
         jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, len));
         jm_cmpi32(b, JR_S1, i);
         SIDE_IF(JC_LS); /* len <= i */
@@ -1799,15 +2134,20 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         jm_st(b, JR_S1, JR_S0, goff);
         return;
     case Q_NEW: case Q_LNEW: { /* the C functions may trap (a quota), so the frame's pc and the count are up to date */
+        if (jit_alloc_inline(in, x)) {
+            size_t side = jit_alloc_fast(j, in, pc, x == Q_NEW);
+            j->sides.v[side].back = (uint32_t)b->n;
+            jst_r(j, JR_S0, in->r[0]);
+            j->jc.rk[in->r[0]] = (JRKnown){x == Q_NEW ? OBJ_STRUCT : OBJ_LIST, true, x == Q_NEW ? in->k.p : NULL};
+            return;
+        }
         jc_flush(j);
-        uint32_t done = jit_alloc(j, in, x == Q_NEW);
         jm_movi(b, JR_S0, pc + 1);
         jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
         jit_sync_insns(j, j->rest[pc] - 1); /* the rest of the block, not yet run */
         jm_mov(b, JR_A0, jm_proc(b, JR_S3));
         jm_movi(b, JR_A1, x == Q_NEW ? (uint64_t)(uintptr_t)in->k.p : (uint64_t)in->k.i);
         jm_ccall(b, x == Q_NEW ? (const void *)jit_struct_new : (const void *)jit_list_new);
-        if (done) jm_bind(b, done);
         jst_r(j, JR_R0, in->r[0]);
         j->jc.rk[in->r[0]] = (JRKnown){x == Q_NEW ? OBJ_STRUCT : OBJ_LIST, true, x == Q_NEW ? in->k.p : NULL};
         return;
@@ -1850,6 +2190,66 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         if (obj) jst_r(j, JR_R0, in->r[0]);
         return;
     }
+    case Q_MNEW:
+        jc_flush(j);
+        jm_movi(b, JR_S0, pc + 1);
+        jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
+        jit_sync_insns(j, j->rest[pc] - 1);
+        jm_mov(b, JR_A0, jm_proc(b, JR_S3));
+        jm_ccall(b, (const void *)jit_map_new);
+        jst_r(j, JR_R0, in->r[0]);
+        return;
+    case Q_MSET:
+        jc_flush(j);
+        jm_movi(b, JR_S0, pc + 1);
+        jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
+        jit_sync_insns(j, j->rest[pc] - 1);
+        jm_mov(b, JR_A0, jm_proc(b, JR_S3));
+        jm_movi(b, JR_A1, (uint64_t)(uintptr_t)in);
+        jm_mov(b, JR_A2, JR_WIN);
+        jm_movi(b, JR_A3, (uint64_t)(uintptr_t)j->f);
+        jm_ccall(b, (const void *)jit_mset);
+        SIDE_IF_NULL(JR_R0);
+        return;
+    case Q_MHAS: {
+        uint8_t ktag = (uint8_t)(in->target & 0xFF);
+        int kb = ktag == T_I64 ? BANK_I : ktag == T_F64 ? BANK_F : BANK_R;
+        jc_flush(j);
+        if (in->target & 0x10000u) jm_movi(b, JR_A2, 0);
+        else jm_ld(b, JR_A2, JR_WIN, jwoff(j, kb, in->r[2]));
+        jld_r(j, JR_A0, in->r[1]);
+        jm_movi(b, JR_A1, (uint64_t)(uintptr_t)in);
+        jm_ccall(b, (const void *)jit_mhas);
+        SIDE_IF_NULL(JR_R1);
+        d = jc_def(j, 0, in->r[0]);
+        jm_mov(b, d, JR_R0);
+        return;
+    }
+    case Q_LDMB_U8:
+        s1 = jc_get(j, 0, in->r[2]);
+        jit_raw_u8(j, pc, in->r[1], s1);
+        d = jc_def(j, 0, in->r[0]);
+        jm_ld8x(b, d, JR_S1, JR_S0);
+        return;
+    case Q_STMB_U8:
+        s1 = jc_get(j, 0, in->r[2]);
+        s2 = jc_get(j, 0, in->r[1]);
+        jit_raw_u8(j, pc, in->r[0], s1);
+        jm_st8x(b, s2, JR_S1, JR_S0);
+        return;
+    case Q_STMBK_U8:
+        s1 = jc_get(j, 0, in->r[2]);
+        jit_raw_u8(j, pc, in->r[0], s1);
+        jm_movi(b, JR_S2, (uint8_t)in->k.i);
+        jm_st8x(b, JR_S2, JR_S1, JR_S0);
+        return;
+    case Q_BZ_MB_U8: case Q_BNZ_MB_U8:
+        s1 = jc_get(j, 0, in->r[1]);
+        jit_raw_u8(j, pc, in->r[0], s1);
+        jm_ld8x(b, JR_S2, JR_S1, JR_S0);
+        jc_flush(j);
+        jbranch(j, FX_CB, 0, JR_S2, x == Q_BNZ_MB_U8, TO_BODY, t);
+        return;
     case Q_MGET_R:
         jc_flush(j);
         jld_r(j, JR_A0, in->r[1]);
@@ -1964,7 +2364,19 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
             ix = jc_get(j, 0, (int)in->target);
             if (x == Q_LDV_ED) jm_alui(b, JA_ADD, JR_S3, ix, (int8_t)in->r[2]), ix = JR_S3;
         }
-        jld_r(j, JR_S0, (unsigned)in->k.i);
+        unsigned obreg = (unsigned)in->k.i;
+        jld_r(j, JR_S0, obreg);
+        if (j->jc.rk[obreg].kind == OBJ_LIST) {
+            jm_ld32(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, len));
+            jm_cmp(b, ix, JR_S1);
+            SIDE_IF(JC_HS);
+            jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, tags));
+            jm_ld8x(b, JR_S2, JR_S1, ix);
+            jm_ld(b, JR_S1, JR_S0, (int64_t)offsetof(ObjList, items));
+            jm_ldx(b, JR_S4, JR_S1, ix);
+            jit_ldv_value(j, in, pc);
+            return;
+        }
         SIDE_IF_NULL(JR_S0);
         jm_ld8(b, JR_S1, JR_S0, (int64_t)offsetof(Obj, kind));
         jm_cmpi32(b, JR_S1, OBJ_LIST);
@@ -2034,13 +2446,6 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
     }
     case Q_LPUSH_R: case Q_LPUSH_RK: { /* into the list's spare capacity; growing it is the handler's */
         unsigned nv = (unsigned)in->nops - 1;
-        int vals[MAX_OPERANDS];
-        for (unsigned k = 0; k < nv; k++) { /* the values first: a load may evict from the cache */
-            const Operand *a = &in->ops[1 + k];
-            vals[k] = -1;
-            if (a->mode == OM_REG && REG_BANK(a->reg) != BANK_R)
-                vals[k] = jc_get(j, REG_BANK(a->reg) == BANK_I ? 0 : 1, REG_IDX(a->reg));
-        }
         jld_r(j, JR_S0, in->r[0]);
         if (j->jc.rk[in->r[0]].kind != OBJ_LIST) {
             SIDE_IF_NULL(JR_S0);
@@ -2070,9 +2475,15 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
                 jm_st(b, JR_S2, JR_S3, (int64_t)k * 8);
                 tg = a->pad;
             } else if (REG_BANK(a->reg) == BANK_I) {
-                jm_st(b, vals[k], JR_S3, (int64_t)k * 8), tg = T_I64;
+                int s = j->jc.record ? -1 : j->jc.of[0][REG_IDX(a->reg)];
+                if (s >= 0) jm_st(b, jc_ireg[s], JR_S3, (int64_t)k * 8);
+                else jm_ld(b, JR_S2, JR_WIN, jwoff(j, BANK_I, (unsigned)REG_IDX(a->reg))), jm_st(b, JR_S2, JR_S3, (int64_t)k * 8);
+                tg = T_I64;
             } else if (REG_BANK(a->reg) == BANK_F) {
-                jm_fst(b, vals[k], JR_S3, (int64_t)k * 8), tg = T_F64;
+                int s = j->jc.record ? -1 : j->jc.of[1][REG_IDX(a->reg)];
+                if (s >= 0) jm_fst(b, jc_freg[s], JR_S3, (int64_t)k * 8);
+                else jm_ld(b, JR_S2, JR_WIN, jwoff(j, BANK_F, (unsigned)REG_IDX(a->reg))), jm_st(b, JR_S2, JR_S3, (int64_t)k * 8);
+                tg = T_F64;
             } else {
                 jld_r(j, JR_S2, (unsigned)REG_IDX(a->reg));
                 jm_st(b, JR_S2, JR_S3, (int64_t)k * 8), tg = T_R;
@@ -2091,6 +2502,11 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
         } kinds[] = {{OBJ_LIST, offsetof(ObjList, len)}, {OBJ_STRING, offsetof(ObjString, len)}, {OBJ_ARRAY, offsetof(ObjArray, len)}};
         uint32_t done[3];
         jld_r(j, JR_S0, in->r[1]);
+        if (j->jc.rk[in->r[1]].kind == OBJ_LIST) {
+            d = jc_def(j, 0, in->r[0]);
+            jm_ld32(b, d, JR_S0, (int64_t)offsetof(ObjList, len));
+            return;
+        }
         SIDE_IF_NULL(JR_S0);
         jm_ld8(b, JR_S1, JR_S0, (int64_t)offsetof(Obj, kind));
         for (int k = 0; k < 3; k++) {
@@ -2139,13 +2555,9 @@ static void jit_insn(JComp *j, const Insn *in, uint16_t x, uint32_t pc, uint32_t
             s2 = jc_get(j, 0, in->r[shape == 0 ? 2 : 1]);
             d = jc_def(j, 0, in->r[0]);
             jm_alu(b, op, d, s1, s2);
-        } else if (op == JA_ADD || op == JA_SUB) {
+        } else {
             d = jc_def(j, 0, in->r[0]);
             jm_alui(b, op, d, s1, in->k.i);
-        } else {
-            jm_movi(b, JR_S1, (uint64_t)in->k.i);
-            d = jc_def(j, 0, in->r[0]);
-            jm_alu(b, op, d, s1, JR_S1);
         }
         return;
     }
@@ -2217,9 +2629,15 @@ static bool jit_worth_entering(const Function *f, const uint16_t *xop, uint32_t 
         for (uint32_t k = 0; k < ns && !pushed; k++) {
             uint32_t t = succ[k];
             if (t >= n || (!jit_handles(xop[t]) && !jit_steps(&f->code[t], xop[t]))) continue;
-            if (mark[t] == 1) { /* a loop: what runs to its head is what counts */
-                loop = true;
-                break;
+            if (mark[t] == 1) { /* a loop: only instructions in the cycle count against it */
+                uint32_t cseen = 0, cstep = 0;
+                for (uint32_t k2 = sp; k2-- > 0;) {
+                    if (jit_handles(xop[stack[k2]])) cseen++;
+                    else cstep++;
+                    if (stack[k2] == t) break;
+                }
+                if (cseen >= JIT_STEP_COST * cstep) return true;
+                continue;
             }
             if (mark[t]) continue;
             mark[t] = 1;
@@ -2235,9 +2653,11 @@ static bool jit_worth_entering(const Function *f, const uint16_t *xop, uint32_t 
 
 /* Whether the form calls C or leaves the machine code by itself (a loop's
  * registers would not survive it). */
-static bool jit_calls_out(uint16_t x) {
-    return jit_calls(x) || x == Q_JTAB || x == Q_NEW || x == Q_LNEW || x == Q_MGET_R || x == Q_MGETV_I ||
-           x == Q_MGETV_F || x == Q_MGETV_R || (x >= Q_STRCAT_RK && x <= Q_BUFPUSH_I);
+static bool jit_calls_out(const Insn *in, uint16_t x) {
+    if (jit_alloc_inline(in, x)) return false;
+    return jit_calls(x) || x == Q_JTAB || x == Q_NEW || x == Q_LNEW || x == Q_MNEW || x == Q_MSET || x == Q_MHAS ||
+           x == Q_MGET_R || x == Q_MGETV_I || x == Q_MGETV_F || x == Q_MGETV_R ||
+           (x >= Q_STRCAT_RK && x <= Q_BUFPUSH_I);
 }
 
 /* Where an instruction can go next, into out (at most 2 + its operands):
@@ -2336,7 +2756,7 @@ static size_t jit_loops(JComp *j, const uint16_t *jx, const uint8_t *lead, JLoop
         for (uint32_t pc = L; pc <= E && ok; pc++)
             if (in_loop[pc]) {
                 ok = loop_of[pc] < 0;
-                if (!jit_handles(jx[pc]) || jit_calls_out(jx[pc])) in_loop[pc] = 0, holes++; /* a hole */
+                if (!jit_handles(jx[pc]) || jit_calls_out(&f->code[pc], jx[pc])) in_loop[pc] = 0, holes++; /* a hole */
             }
         ok = ok && in_loop[L] && in_loop[E] && holes <= JM_LOOP_HOLES;
         if (!ok) continue;
@@ -2344,22 +2764,47 @@ static size_t jit_loops(JComp *j, const uint16_t *jx, const uint8_t *lead, JLoop
         jc_reset(&d.jc);
         d.jc.record = true;
         memset(d.jc.used, 0, sizeof d.jc.used);
+        memset(d.jc.used_cnt, 0, sizeof d.jc.used_cnt);
+        d.jc.max_pin[0] = d.jc.max_pin[1] = 0;
         uint32_t ignored;
         for (uint32_t pc = L; pc <= E; pc++)
             if (in_loop[pc]) jit_insn(&d, &f->code[pc], jx[pc], pc, &ignored);
         free(d.b.v), free(d.fx.v), free(d.sides.v), free(d.leaves.v);
         JLoop lp = {.L = L, .E = E};
-        int count[2] = {0, 0};
-        for (int bank = 0; bank < 2 && ok; bank++)
-            for (int r = 0; r < 256 && ok; r++) {
-                if (!d.jc.used[bank][r]) continue;
-                if (count[bank] == jc_nslots(bank)) {
+        for (int bank = 0; bank < 2 && ok; bank++) {
+            int nused = 0;
+            for (int r = 0; r < 256; r++)
+                if (d.jc.used[bank][r]) nused++;
+            int ns = jc_nslots(bank);
+            if (nused <= ns) {
+                int slot = 0;
+                for (int r = 0; r < 256; r++) {
+                    if (!d.jc.used[bank][r]) continue;
+                    lp.bank[lp.n] = (uint8_t)bank, lp.vreg[lp.n] = (uint8_t)r, lp.slot[lp.n] = (uint8_t)slot++;
+                    lp.written[lp.n++] = (d.jc.used[bank][r] & 2) != 0;
+                }
+            } else {
+                int reserve = d.jc.max_pin[bank] > 3 ? d.jc.max_pin[bank] : 3;
+                if (ns <= reserve) {
                     ok = false;
                     break;
                 }
-                lp.bank[lp.n] = (uint8_t)bank, lp.vreg[lp.n] = (uint8_t)r, lp.slot[lp.n] = (uint8_t)count[bank]++;
-                lp.written[lp.n++] = (d.jc.used[bank][r] & 2) != 0;
+                int cap = ns - reserve;
+                lp.partial[bank] = true;
+                bool picked[256] = {false};
+                for (int slot = 0; slot < cap; slot++) {
+                    int best = -1;
+                    uint16_t bestc = 0;
+                    for (int r = 0; r < 256; r++)
+                        if (d.jc.used[bank][r] && !picked[r] && d.jc.used_cnt[bank][r] > bestc)
+                            best = r, bestc = d.jc.used_cnt[bank][r];
+                    if (best < 0) break;
+                    picked[best] = true;
+                    lp.bank[lp.n] = (uint8_t)bank, lp.vreg[lp.n] = (uint8_t)best, lp.slot[lp.n] = (uint8_t)slot;
+                    lp.written[lp.n++] = (d.jc.used[bank][best] & 2) != 0;
+                }
             }
+        }
         if (!ok) continue;
         v = xrealloc(v, (nl + 1) * sizeof *v);
         v[nl] = lp;
@@ -2385,6 +2830,7 @@ static void jit_loop_load_as(JComp *j, const JLoop *lp, bool seed, bool emit) {
         j->jc.of[bank][r] = (int8_t)s;
         j->jc.vm[bank][s] = (int16_t)r;
         j->jc.dirty[bank][s] = lp->written[k];
+        j->jc.loop_pin[bank] |= 1u << s;
     }
 }
 static void jit_loop_load(JComp *j, const JLoop *lp, bool seed) { jit_loop_load_as(j, lp, seed, true); }
@@ -2554,6 +3000,23 @@ static void jit_compile(VM *vm, Function *f) {
             jm_bind(b, other);
         }
         jside_stores(j, sd);
+        if (sd->alloc) { /* bump hole full: allocate in C (which may trap), reload cache, back with obj in S0 */
+            jm_movi(b, JR_S0, sd->pc + 1);
+            jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
+            jit_sync_insns(j, rest[sd->pc] - 1);
+            jm_mov(b, JR_A0, jm_proc(b, JR_S3));
+            const Insn *ain = &f->code[sd->pc];
+            jm_movi(b, JR_A1, sd->alloc_struct ? (uint64_t)(uintptr_t)ain->k.p : (uint64_t)ain->k.i);
+            jm_ccall(b, sd->alloc_struct ? (const void *)jit_struct_new : (const void *)jit_list_new);
+            jm_mov(b, JR_S0, JR_R0);
+            for (int r = 0; r < sd->na; r++) {
+                if (sd->abank[r] == 1) jm_fld(b, sd->amreg[r], JR_WIN, jwoff(j, BANK_F, sd->avreg[r]));
+                else jm_ld(b, sd->amreg[r], JR_WIN, jwoff(j, sd->abank[r] ? BANK_R : BANK_I, sd->avreg[r]));
+            }
+            uint32_t at = jm_emit_branch(b, FX_B, 0, 0, false);
+            jm_patch_at(b->v, at, sd->back);
+            continue;
+        }
         if (sd->grow) { /* grown in C (which may trap, as new may), and back */
             jm_movi(b, JR_S0, sd->pc + 1);
             jm_st32(b, JR_S0, JR_FR, FR_OFF(pc));
@@ -2759,6 +3222,10 @@ static QCC int h_Q_JIT(QPARAMS) {
     Jit *jt = c->vm->jit;
     void **ent = __atomic_load_n(&fn->jit_entry, __ATOMIC_ACQUIRE);
     if (!ent) MUSTTAIL return qhandlers[in->xop](QARGS); /* forgotten since (interp_jit_forget): its own form is back */
+#if QWIDE
+    c->fr = qfr;
+    c->I = I;
+#endif
     JitExit r = jt->enter(c, left + 1, ent[pc]);
     if (jt->stats && r.in) {
         __atomic_fetch_add(&jt->entries, 1, __ATOMIC_RELAXED);
