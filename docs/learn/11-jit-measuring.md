@@ -113,7 +113,7 @@ Two results from it, both used in chapter 10:
   machine instructions. That is what the cheaper calls of chapter 10
   addressed.
 * **The x86-64 code is as long as the arm64 code.** The JIT gains less on
-  x86-64 (compiled Lua's `nbody` takes 39% less time on the i7 and 59% less
+  x86-64 (compiled Lua's `nbody` takes 46% less time on the i7 and 66% less
   on the M5), and the obvious suspect was the x86-64 encoder. Counting
   showed the same number of machine instructions for each VM instruction on
   both. The i7 simply runs fewer of them per cycle: 11–17 billion a second

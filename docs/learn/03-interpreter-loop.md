@@ -101,7 +101,12 @@ MLWSVM's fallback is exactly that. In `run_loop`
         ...
         if (left == 0) { /* time slice used up */
             SPILL();
-            return SLICE_YIELD;
+            if (... && sched_fast_continue(p)) { /* nothing else wants this thread */
+                ...
+                left = budget;
+            } else {
+                return SLICE_YIELD;
+            }
         }
         ...
         left--;
@@ -293,7 +298,15 @@ static MLWS_NOINLINE QCC int h_slice(QPARAMS) {
     uint32_t pc = (uint32_t)(in - QCODE);
     QFRAME->pc = pc;
     p->insns = c->ibase - left;
-    if (!c->hooked || c->hleft == 0) return SLICE_YIELD; /* time slice used up */
+    if (!c->hooked) {
+        if (... && sched_fast_continue(p)) { /* nothing else wants this thread */
+            ... /* a new slice: its budget, ibase */
+            left = nb - 1;
+            MUSTTAIL return qhandlers[in->xop](QARGS);
+        }
+        return SLICE_YIELD; /* time slice used up */
+    }
+    if (c->hleft == 0) return SLICE_YIELD;
     if (tool_hook(c->vm, p, pc)) return SLICE_BREAK; /* debugger stop: pc not advanced */
     c->hleft--, c->ibase++;
     left = 0;
@@ -304,6 +317,10 @@ static MLWS_NOINLINE QCC int h_slice(QPARAMS) {
 Since every handler tail-called the next, there is no chain of C frames to
 unwind: the value returned goes straight back to `run_loop`'s caller,
 `interp_run`, and from there to the scheduler, which runs another process.
+If no other process, timer or I/O is waiting for the thread, and nothing is
+due in this process (a collection, a kill), `sched_fast_continue` lets the
+slice's end start the next slice in place instead, up to 64 times in a row
+(chapter 7).
 
 What the handlers do not carry in arguments is in a `Ctx`
 (`Ctx` in [src/vm/interp.c](../../src/vm/interp.c)): the process, the frame,

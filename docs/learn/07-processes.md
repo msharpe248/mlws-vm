@@ -384,6 +384,16 @@ also a *safepoint*: a point between instructions where every live
 reference is in a register or a heap object, so a pending collection can
 run or a kill from another thread can take effect.
 
+Going back to the scheduler costs a clock read and a lock or two at every
+slice's end, and 2,000 instructions take only about a microsecond. So
+`h_slice` first asks `sched_fast_continue` in
+[src/vm/sched.c](../../src/vm/sched.c) whether anything else wants the
+worker: another process in its queue, a pending timer, a process waiting
+for I/O, a stop of the world, or a kill, collection or finalizer due in this
+process. If nothing does, it starts the next slice itself, without
+returning, for up to 64 slices in a row. The checks are a handful of
+relaxed atomic loads, and each counts as a slice in `--stats`.
+
 The instruction count does one more job. `proc_run_slice` in
 [src/vm/process.c](../../src/vm/process.c) shortens the slice to what the
 process's instruction quota allows, so `quota 3, N` limits how much CPU a
@@ -424,7 +434,7 @@ Each worker thread (one per core by default, `--threads N`) runs this loop,
 Take a ready process, run one slice, and look at why the slice ended:
 `after_slice` requeues it (`YIELD`), parks it (`BLOCK`, `SLEEP`), hands it
 to the poller or the I/O pool, or finishes it. The clock is read once per
-slice: the end of one slice is the start of the next.
+slice that comes back here: the end of one slice is the start of the next.
 [PERFORMANCE.md](../PERFORMANCE.md#the-multi-threaded-scheduler) measured
 why that matters. In message-heavy code a slice may be a handful of
 instructions, and with three clock reads per slice and plain mutexes

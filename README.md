@@ -129,8 +129,8 @@ base:
   what each did.
 * **A JIT**: `--jit on` compiles each hot function to arm64 or x86-64 machine
   code, which runs in mixed mode with the interpreter on the same registers
-  and frames. Calls and loops take 52–79% less time, and the compilers'
-  Lua, Erlang and Lox benchmarks 28–78% less (all but message passing);
+  and frames. Calls and loops take 56–82% less time, and the compilers'
+  Lua, Erlang and Lox benchmarks 20–82% less (all but message passing);
   results, errors, instruction counts and preemption are the interpreter's.
 * **A module cache**: a `.masm` file is assembled once and its module kept (and
   optimized once, with `--opt`), so a large generated program starts in
@@ -156,32 +156,32 @@ Apple M5 Pro. Every engine printed the same output.
 
 | Lua | MLWSVM | MLWSVM JIT | Lua 5.5 | LuaJIT 2.1 |
 |---|---|---|---|---|
-| fib (32) | 60 | **29** | 53 | 10 |
-| loop (30,000,000 iterations) | 202 | **54** | 218 | 17 |
-| methods (2M method calls and objects) | 541 | **212** | 348 | 71 |
-| strings (format, gmatch, gsub) | 198 | **104** | 134 | 100 |
-| iterate (pairs, ipairs) | 73 | **32** | 58 | 6 |
-| binarytrees (15) | 333 | **163** | 382 | 148 |
-| nbody (500,000) | 862 | **362** | 424 | 25 |
-| spectralnorm (500) | 233 | **90** | 185 | 9 |
-| fannkuch (10) | 2,005 | **657** | 808 | 125 |
+| fib (32) | 55 | **27** | 57 | 11 |
+| loop (30,000,000 iterations) | 187 | **43** | 221 | 18 |
+| methods (2M method calls and objects) | 514 | **207** | 351 | 71 |
+| strings (format, gmatch, gsub) | 189 | **103** | 137 | 104 |
+| iterate (pairs, ipairs) | 72 | **31** | 60 | 6 |
+| binarytrees (15) | 321 | **162** | 399 | 152 |
+| nbody (500,000) | 853 | **301** | 404 | 25 |
+| spectralnorm (500) | 206 | **70** | 184 | 9 |
+| fannkuch (10) | 1,750 | **551** | 824 | 126 |
 
 | Erlang | MLWSVM | MLWSVM JIT | Erlang/OTP 29 (JIT) |
 |---|---|---|---|
-| fib (30) | 42 | **17** | 90 |
-| ring (1,000 processes, 1,000,000 messages) | 235 | **215** | 265 |
-| binarytrees (16) | 566 | 198 | **129** |
-| nbody (100,000 steps) | 484 | 187 | **148** |
-| sorting (200,000 integers, maps) | 372 | 215 | **115** |
+| fib (30) | 39 | **17** | 94 |
+| ring (1,000 processes, 1,000,000 messages) | 135 | **125** | 267 |
+| binarytrees (16) | 521 | 181 | **134** |
+| nbody (100,000 steps) | 472 | 174 | **151** |
+| sorting (200,000 integers, maps) | 357 | 207 | **121** |
 
 Bold marks the faster of MLWSVM's JIT and the reference interpreter or
 BEAM; LuaJIT is there for scale. With its JIT, MLWSVM runs all nine Lua
-programs faster than Lua 5.5 here, on the M5 (seven of them on the i7). LuaJIT,
-a tracing JIT that specializes code to the types it sees, is 1.04–14.5× faster
-than MLWSVM's JIT. BEAM's times include its start-up of
+programs faster than Lua 5.5 here, on the M5 (eight of them on the i7). LuaJIT,
+a tracing JIT that specializes code to the types it sees, is 1.07–12× faster
+than MLWSVM's JIT, except on `strings`, where the two take the same time. BEAM's times include its start-up of
 about 80 ms, which is most of its `fib` and almost a third of its `ring`.
-Its code is 1.3–1.9× faster than MLWSVM's JIT on the other three. Start-up
-is 3 ms for MLWSVM (with the module cache) and 2 ms for Lua.
+Its code is 1.2–1.7× faster than MLWSVM's JIT on the other three. Start-up
+is about 3 ms for MLWSVM (with the module cache) and for Lua.
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) has the benchmarks on three
 machines, the JIT's effect on each, the collector, and comparisons with the
 JVM and CPython.
@@ -322,7 +322,7 @@ passes its tests.
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Calling C: native extensions, the declarative FFI, and the security model |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Benchmarks and results, how the interpreter and scheduler are made fast, and what is left alone (and why) |
 | [docs/REGISTER_VS_STACK.md](docs/REGISTER_VS_STACK.md) | Register machines and stack machines: how each works, their trade-offs and history, the same programs measured on MLWSVM, Lua, the JVM and CPython, and what 0–32 operands cost compared with a fixed 3 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M118 and what remains: the deferred performance work |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M119 and what remains: the deferred performance work |
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Where each idea comes from (Parrot, Lua, VAX, BEAM, JVM, WebAssembly, ...) and what may be new in the combination |
 
 ## Source layout

@@ -151,6 +151,7 @@ project. Their effects, from
 | Compiled Lua | calls and returns with constants, closure tail calls, `new`, `lnew`, `jtab`, shifts, and more | compiled Lua's `methods` 26% less time |
 | A Lua table constructor | `lpush` with constants among its values | `methods` 16% less |
 | Compiled Erlang | `bitcast` between `I` and `F`, `typeof`, a tuple's tag test, direct tail calls | `binarytrees` and `nbody` 29–39% less, `sorting` 15–21% less |
+| Maps and raw memory | `mnew`, `mset` and `mhas`, and bytes of raw memory loaded, stored and branched on | `sieve` 70% less |
 
 A profile of real compiled code shows what a finished set looks like. This
 Lox program calls a method 100,000 times:

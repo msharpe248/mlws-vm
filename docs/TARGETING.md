@@ -538,7 +538,8 @@ them by emitting these shapes; nothing else changes.
   `bitcast.f64.i64 F0, 4602678819172646912`), and compare-and-branch on them
   (`blt I0, I1, L`, `bge F0, 0.5, L`), signed or unsigned (`bge.u64 I0, I1, L`:
   one bounds check for `0 <= i < n`). Narrow types (`i32`, `u8`, ...) take the
-  general path, because they must wrap.
+  general path, because they must wrap, except for bytes of raw memory
+  (below).
 * **Set-compares** of `f64` registers and constants (`slt.f64 I0, F0, F1`,
   `seq.f64 I0, F0, 0.0`, all six), and reference identity (`seq.r I0, R0, R1`,
   `sne.r I0, R0, null`).
@@ -573,8 +574,9 @@ them by emitting these shapes; nothing else changes.
   (`mov.i64 R0->Point.x, 0`, `mov.r R0->Node.next, null`) and to elements
   (`mov.f64 R1[I2], 0.0`, `mov.r R1[I2+1], null`, `mov.i64 R1[0], 1`); and `ldv I0, F0, R1[I2]`
   (or `R1[I2+1]`, `R1[3]`) of an `i64` or `f64` list or array element. Arithmetic
-  directly on a field or element works, but takes the general path. Loading
-  into registers, computing there and storing back is much faster in a loop:
+  directly on a field or element works, but takes the general path (the JIT
+  compiles it for `f64` elements: below). Loading into registers, computing
+  there and storing back is much faster in an interpreted loop:
   `bench/nbody.masm` runs in 96 ms with element operands and in 24 ms rewritten
   that way, although it executes more instructions.
 * **Lists:** `lpush R0, I1, F2, R3` of untyped register values and constants
@@ -589,10 +591,16 @@ them by emitting these shapes; nothing else changes.
   `mget.r R0, R1, "name", null`, a reference looked up by a constant string key
   with a null default (an object whose fields are a map); and `mget` of a key
   in any register into a register of each bank, with or without a constant
-  default (`mget I0, R1, R2, -1`), when the value has the bank's 64-bit type.
+  default (`mget I0, R1, R2, -1`), when the value has the bank's 64-bit type;
+  `mnew R0`; `mset R0, key, value` and `mhas I0, R1, key` with the key in a
+  register or a string constant and the value in a register.
+* **Raw memory:** a byte at a register index, loaded into an `I` register,
+  stored from one or as a constant, or tested and branched on
+  (`mov.u8 I0, P1{I2}`, `mov.u8 P1{I2}, 1`, `bnz.u8 P1{I2}, L`). Other widths
+  and other addressing take the general path.
 
-Other allocating instructions (`mnew`, `mset`, `strcat`, an `lpush` that grows
-its list, ...) take the general path. To see which of a
+Other allocating instructions (`strcat` of other operands, an `lpush` that
+grows its list, ...) take the general path. To see which of a
 program's instructions do, run it with `mlwsvm run --profile`: the report lists
 the hottest instructions on the general path, with their lines
 ([TOOLING.md](TOOLING.md#profiler---profile)).
@@ -603,13 +611,16 @@ they are written, since each call clears those of its callee (section 2).
 **With the JIT** (`--jit on`, [JIT.md](JIT.md)) the same shapes become
 machine code, so emitting them pays twice. It also compiles `i64` and `u64`
 arithmetic and compares into a register whose operands are registers,
-constants or captures (`add I1, x, UP[0]`, `slt I0, I1, 10`). Any other
+constants or captures (`add I1, x, UP[0]`, `slt I0, I1, 10`), and `f64`
+arithmetic directly on list and array elements (`add.f64 R0[I1], R1[I1]`,
+as `bench/nbody.masm` does). Any other
 instruction still runs from the machine code, by its handler, at the cost of
 a few interpreted instructions. A loop keeps its registers in machine
 registers across iterations if every instruction in it is one of the fast
-shapes and none calls (`call`, `new`, `lnew`, `mget`, `jtab`), it is entered
-only at its head, and it uses at most 16 `I` and 16 `F` registers (5 and 13
-on x86-64). `--jit-report -` lists the instructions it stepped most, and
+shapes and none calls (`call`, `mget`, `mnew`, `mset`, `mhas`, `jtab`, the
+string builders, and `new` or `lnew` of an object over 256 bytes), and it is
+entered only at its head. It keeps up to 16 `I` and 24 `F` registers there
+(5 and 13 on x86-64), and if it uses more, the ones it uses most. `--jit-report -` lists the instructions it stepped most, and
 where its machine code handed back to the interpreter.
 
 Where it matters, prefer one instruction to several (`blt a, b, L` over `slt` +
@@ -620,8 +631,8 @@ Where it matters, prefer one instruction to several (`blt a, b, L` over `slt` +
 
 The remaining planned work is performance, done when measurements call for it
 ([ROADMAP.md](ROADMAP.md#4-performance-when-measurements-call-for-it)): more
-specialised forms for arithmetic on fields, elements and raw memory, and a
-smaller decoded form. These need no changes to
+specialised forms for arithmetic on fields and elements in the interpreter,
+and for raw memory of other widths, and a smaller decoded form. These need no changes to
 generated code, but which forms get specialised should follow what compilers
 actually emit, so the compilers' output will decide them.
 

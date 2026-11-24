@@ -27,16 +27,16 @@ per core:
 
 | Benchmark | Apple M5 Pro, Clang | Intel i7-11700KF, GCC | AMD Ryzen 9 5900X, Clang |
 |---|---|---|---|
-| fib | 50 | 93 | 92 |
-| loop | 86 | 152 | 135 |
-| sieve | 582 | 1,023 | 1,039 |
-| nbody | 98 | 167 | 158 |
-| binarytrees | 95 | 165 | 171 |
-| maps | 40 | 77 | 87 |
-| pingpong | 33 | 96 | 74 |
-| closures | 99 | 176 | 166 |
-| parallel | 24 | 44 | 33 |
-| connections | 1,061 | 680 | 1,212 |
+| fib | 42 | 80 | 74 |
+| loop | 82 | 145 | 128 |
+| sieve | 184 | 297 | 311 |
+| nbody | 104 | 161 | 173 |
+| binarytrees | 79 | 137 | 142 |
+| maps | 26 | 54 | 63 |
+| pingpong | 36 | 93 | 76 |
+| closures | 87 | 155 | 158 |
+| parallel | 17 | 40 | 29 |
+| connections | 989 | 457 | 765 |
 
 On Windows (GitHub's runners, in CI), `connections` takes 2 to 5 s on x86-64
 and arm64 (the runners vary). Sockets are waited for on an I/O completion port,
@@ -51,7 +51,7 @@ With tail-call dispatch, a change to some handlers leaves the others' code
 alone, and builds differ by a few percent at most (item 3 below); the
 dispatch loop that other compilers get is more sensitive, by 5% or more.
 
-The tight loop runs at about 2.1G instructions per second on the Mac, about two
+The tight loop runs at about 2.2G instructions per second on the Mac, about two
 clock cycles per instruction. `maps` and `pingpong` spend their time in natives
 (strings, hashing, message copying) and in the scheduler rather than in the
 interpreter loop.
@@ -61,18 +61,18 @@ interpreter loop.
 The benchmarks of *Crafting Interpreters*, compiled by the Lox compiler in the
 `mlws-compilers` project, which keeps each dynamically typed value in an F and
 an R register and caches method lookups at each call site. Milliseconds of wall
-time, best of three:
+time, best of five:
 
 | Benchmark | Apple M5 Pro | Intel i7, GCC | AMD Ryzen, Clang |
 |---|---|---|---|
-| fib | 513 | 932 | 921 |
-| binary_trees | 2,002 | 4,011 | 4,036 |
-| trees | 1,864 | 5,012 | 6,135 |
-| instantiation | 490 | 835 | 837 |
-| invocation | 272 | 597 | 515 |
-| method_call | 175 | 329 | 313 |
-| properties | 383 | 752 | 688 |
-| zoo | 307 | 600 | 493 |
+| fib | 277 | 453 | 429 |
+| binary_trees | 696 | 1,171 | 1,136 |
+| trees | 1,741 | 3,095 | 2,986 |
+| instantiation | 289 | 473 | 435 |
+| invocation | 242 | 457 | 435 |
+| method_call | 145 | 246 | 235 |
+| properties | 341 | 638 | 583 |
+| zoo | 265 | 447 | 425 |
 
 These are 1.3–3.0× faster than before the forms for compiled dynamic code
 existed ([item 1](#how-the-interpreter-is-made-fast) below): `invocation` most, since every call there passed a
@@ -93,21 +93,21 @@ interpreter running the same source:
 
 | Benchmark | MLWSVM, M5 | JIT, M5 | Lua 5.5, M5 | MLWSVM, i7 | JIT, i7 | Lua 5.5, i7 |
 |---|---|---|---|---|---|---|
-| loop | 202 | 54 | 218 | 339 | 105 | 290 |
-| iterate | 73 | 32 | 58 | 115 | 50 | 80 |
-| fib | 60 | 29 | 53 | 108 | 45 | 102 |
-| methods | 541 | 212 | 348 | 955 | 365 | 567 |
-| strings | 198 | 104 | 134 | 350 | 206 | 213 |
-| binarytrees (15) | 333 | 163 | 382 | 558 | 275 | 578 |
-| nbody (500,000) | 862 | 362 | 424 | 1,339 | 823 | 591 |
-| spectralnorm (500) | 233 | 90 | 185 | 368 | 124 | 269 |
-| fannkuch (10) | 2,005 | 657 | 808 | 2,975 | 1,442 | 1,157 |
+| loop | 187 | 43 | 221 | 332 | 75 | 289 |
+| iterate | 72 | 31 | 60 | 109 | 47 | 79 |
+| fib | 55 | 27 | 57 | 93 | 42 | 101 |
+| methods | 514 | 207 | 351 | 880 | 339 | 576 |
+| strings | 189 | 103 | 137 | 332 | 193 | 212 |
+| binarytrees (15) | 321 | 162 | 399 | 537 | 260 | 582 |
+| nbody (500,000) | 853 | 301 | 404 | 1,301 | 714 | 595 |
+| spectralnorm (500) | 206 | 70 | 184 | 376 | 110 | 267 |
+| fannkuch (10) | 1,750 | 551 | 824 | 2,604 | 1,146 | 1,164 |
 
-Interpreted, `loop` and `binarytrees` take less time than in Lua on the M5,
-and `binarytrees` on the i7 too; with the JIT, all nine take less
-time than in Lua on the M5, and seven on the i7. Without start-up, interpreted `fib` runs in 50 ms
-on the M5, as fast as Lua: its typed copy executes fewer instructions than
-Lua's bytecode does. Counted with Lua's
+Interpreted, `loop`, `fib` and `binarytrees` take less time than in Lua on
+the M5, and `fib` and `binarytrees` on the i7; with the JIT, all nine take
+less time than in Lua on the M5, and all but `nbody` on the i7. Without
+start-up, interpreted `fib` runs in 44 ms on the M5, faster than Lua: its
+typed copy executes fewer instructions than Lua's bytecode does. Counted with Lua's
 own instruction hook, the others execute 1.7 to 5.2 times as many, and each
 costs less: 0.5–0.9 ns on the M5 in the loop-heavy benchmarks, against Lua's
 1.0–1.5 ns. What the
@@ -136,10 +136,10 @@ included on both sides; Erlang's is about 0.08 s):
 | Benchmark | MLWSVM | MLWSVM with its JIT | Erlang/OTP 29 |
 |---|---|---|---|
 | fib | 0.04 | 0.02 | 0.09 |
-| ring | 0.23 | 0.21 | 0.27 |
-| binarytrees | 0.57 | 0.20 | 0.13 |
-| nbody | 0.48 | 0.19 | 0.15 |
-| sorting | 0.37 | 0.21 | 0.12 |
+| ring | 0.14 | 0.13 | 0.27 |
+| binarytrees | 0.52 | 0.18 | 0.13 |
+| nbody | 0.47 | 0.17 | 0.15 |
+| sorting | 0.36 | 0.21 | 0.12 |
 
 BEAM compiles to machine code here, so its loops are not a fair match for an
 interpreter. `ring`, which passes a message round a ring of a thousand
@@ -156,19 +156,20 @@ subtracted):
 
 | | `fib` (Mac) | `loop` (Mac) | `fib` (Intel) | `loop` (Intel) |
 |---|---|---|---|---|
-| MLWSVM | **50** | **86** | **92** | **149** |
-| Lua 5.5 | 51 | 213 | 101 | 289 |
-| MLWSVM with its JIT (`--jit on`) | 24 | 18 | 36 | 70 |
-| JVM, interpreter only (`-Xint`) | 90 | 185 | 104 | 396 |
-| CPython | 128 | 1,177 | 186 | 2,374 |
-| JVM with its JIT compiler | 3 | 16 | 8 | 31 |
+| MLWSVM | **42** | **83** | **76** | **143** |
+| Lua 5.5 | 51 | 213 | 100 | 288 |
+| MLWSVM with its JIT (`--jit on`) | 15 | 16 | 26 | 28 |
+| JVM, interpreter only (`-Xint`) | 92 | 187 | 104 | 396 |
+| CPython | 130 | 1,195 | 186 | 2,379 |
+| JVM with its JIT compiler | 3 | 16 | 8 | 32 |
 
 MLWSVM is the fastest of these interpreters on both programs. It runs the
-loop 2.5× faster than Lua and 2.2× faster than the JVM's interpreter on the
-Mac, and `fib` as fast as Lua there and 1.1× faster on the Intel machine: a
-call costs about 7 ns on the Mac, as in Lua. With its JIT (the medians of
-the next section), MLWSVM takes half the time on `fib` and a fifth on the
-loop. The JVM's JIT row is there for scale: an optimizing compiler removes
+loop 2.6× faster than Lua and 2.3× faster than the JVM's interpreter on the
+Mac, and `fib` 1.2× faster than Lua there and 1.3× faster on the Intel
+machine: a call costs about 6 ns on the Mac, against Lua's 7. With its JIT
+(the medians of the next section), MLWSVM takes about a third of the time
+on `fib` and a fifth on the loop, where it is as fast as the JVM's JIT on
+the Mac. The JVM's JIT row is there for scale: an optimizing compiler removes
 the loop's work and inlines `fib`'s calls.
 [REGISTER_VS_STACK.md](REGISTER_VS_STACK.md) explains these numbers, with the
 instruction counts and listings of each VM's code.
@@ -247,37 +248,38 @@ benchmarks of the sections above.
 
 | Program | M5, ms (interpreter → JIT) | M5 | i7, GCC | Ryzen, Clang |
 |---|---|---|---|---|
-| bench/fib | 47 → 17 | −64% | −66% | −61% |
-| bench/loop | 84 → 18 | −79% | −54% | −60% |
-| bench/nbody | 99 → 100 | 0% | 0% | 0% |
-| bench/sieve | 606 → 610 | +1% | −1% | +2% |
-| bench/closures | 99 → 14 | −86% | −84% | −84% |
-| bench/maps | 27 → 27 | −1% | −3% | −3% |
-| bench/binarytrees | 81 → 56 | −31% | −33% | −27% |
-| Erlang fib | 34 → 10 | −69% | −68% | −64% |
-| Erlang ring | 194 → 173 | −11% | −4% | −9% |
-| Erlang binarytrees | 547 → 187 | −66% | −63% | −61% |
-| Erlang nbody | 469 → 176 | −62% | −56% | −63% |
-| Erlang sorting | 360 → 203 | −44% | −40% | −39% |
-| Lua fib | 50 → 18 | −65% | −66% | −60% |
-| Lua loop | 188 → 42 | −78% | −72% | −73% |
-| Lua methods | 534 → 199 | −63% | −63% | −55% |
-| Lua strings | 182 → 92 | −50% | −44% | −42% |
-| Lua iterate | 61 → 20 | −67% | −64% | −71% |
-| Lua binarytrees | 320 → 149 | −54% | −53% | −51% |
-| Lua nbody | 843 → 343 | −59% | −39% | −51% |
-| Lua spectralnorm | 218 → 78 | −64% | −69% | −73% |
-| Lua fannkuch | 1978 → 643 | −68% | −52% | −67% |
-| Lox binary_trees | 701 → 300 | −57% | −59% | −52% |
-| Lox equality | 129 → 63 | −51% | −61% | −56% |
-| Lox fib | 313 → 123 | −61% | −65% | −65% |
-| Lox instantiation | 291 → 178 | −39% | −28% | −28% |
-| Lox invocation | 257 → 67 | −74% | −67% | −59% |
-| Lox method_call | 154 → 73 | −53% | −54% | −36% |
-| Lox properties | 382 → 126 | −67% | −63% | −42% |
-| Lox string_equality | 1.4 → 0.9 | −40% | −52% | −42% |
-| Lox trees | 1800 → 638 | −65% | −62% | −49% |
-| Lox zoo | 280 → 94 | −66% | −65% | −51% |
+| bench/fib | 42 → 15 | −64% | −69% | −62% |
+| bench/loop | 83 → 16 | −81% | −81% | −75% |
+| bench/nbody | 104 → 10 | −91% | −91% | −92% |
+| bench/sieve | 186 → 73 | −61% | −53% | −63% |
+| bench/closures | 88 → 13 | −85% | −84% | −85% |
+| bench/maps | 27 → 26 | −2% | −4% | −4% |
+| bench/binarytrees | 79 → 35 | −55% | −53% | −46% |
+| bench/parallel | 17 → 3.4 | −80% | −81% | −70% |
+| Erlang fib | 31 → 9.5 | −69% | −69% | −67% |
+| Erlang ring | 127 → 117 | −8% | −4% | −5% |
+| Erlang binarytrees | 511 → 172 | −66% | −65% | −62% |
+| Erlang nbody | 462 → 165 | −64% | −61% | −65% |
+| Erlang sorting | 347 → 197 | −43% | −41% | −38% |
+| Lua fib | 44 → 16 | −64% | −66% | −62% |
+| Lua loop | 175 → 31 | −82% | −81% | −79% |
+| Lua methods | 501 → 195 | −61% | −62% | −55% |
+| Lua strings | 176 → 89 | −49% | −44% | −44% |
+| Lua iterate | 60 → 19 | −68% | −67% | −72% |
+| Lua binarytrees | 308 → 149 | −52% | −54% | −50% |
+| Lua nbody | 835 → 285 | −66% | −46% | −66% |
+| Lua spectralnorm | 193 → 57 | −70% | −73% | −75% |
+| Lua fannkuch | 1737 → 538 | −69% | −56% | −73% |
+| Lox binary_trees | 696 → 273 | −61% | −62% | −56% |
+| Lox equality | 129 → 63 | −51% | −63% | −59% |
+| Lox fib | 278 → 125 | −55% | −68% | −63% |
+| Lox instantiation | 290 → 189 | −35% | −34% | −20% |
+| Lox invocation | 245 → 61 | −75% | −68% | −52% |
+| Lox method_call | 146 → 62 | −58% | −56% | −38% |
+| Lox properties | 343 → 109 | −68% | −64% | −51% |
+| Lox string_equality | 1.4 → 0.8 | −41% | −52% | −40% |
+| Lox trees | 1746 → 576 | −67% | −65% | −55% |
+| Lox zoo | 267 → 80 | −70% | −68% | −56% |
 
 Calls and loops gain the most: the machine code has no dispatch, keeps a
 block's registers in machine registers, and a loop's across iterations (with
@@ -289,10 +291,11 @@ Lua's `methods` and the Lox programs gain. Field, element and capture access gai
 each still checks its object's type and bounds, as the interpreter does,
 though not again for an object the block has checked.
 
-Where the time is not the interpreter's, the JIT has nothing to remove:
-`bench/nbody` computes on elements in place (operands the interpreter has no
-fast form for, so the JIT does not enter it), `sieve` works in raw memory,
-`maps` is natives, and Erlang's `ring` is messages and the scheduler.
+`bench/nbody` computes on elements in place, which the interpreter has no
+fast form for and the JIT compiles, and `sieve`'s bytes of raw memory are
+compiled too. Where the time is not the interpreter's, the JIT has nothing
+to remove: `maps` is natives, and `pingpong` and Erlang's `ring` are
+messages and the scheduler.
 On x86-64 the machine code is about as long as on arm64 (compiled Lua's
 `nbody` reads a field in 35 and 39 instructions where arm64 takes 35 and
 38), but the i7 runs about half as many instructions a cycle as the M5:
@@ -340,7 +343,11 @@ it measured faster.
    `binarytrees` and `nbody` and 15–21% off `sorting`. An eighth, for text:
    `strcat` and `bufcat` of registers and string constants, `tostr` of an
    `I` or an `F` register, `substr` of registers, `bufnew` of a constant and
-   `bufpush` of a register, each a check of its operands and a call of C.
+   `bufpush` of a register, each a check of its operands and a call of C. A
+   ninth: `mnew`, and `mset` and `mhas` of a key in a register or a string
+   constant, and bytes of raw memory at a register index, loaded, stored and
+   branched on (`mov.u8 I0, P0{I1}`, `bnz.u8 P0{I1}, L`), which took
+   70% off `sieve` on all three machines.
    The profiler lists the
    instructions that still run generically, which is how these were chosen. A
    shape qualifies only when its generic semantics are trivially the same: no
@@ -400,7 +407,10 @@ it measured faster.
    with no test of their bank and with one cache line read instead of a
    72-byte operand per value; a frame pushed this way is marked, and its
    quickened `ret` copies the results back the same way. Closure calls
-   (`calli`) work alike, with the closure's type and banks checked per call.
+   (`calli`, `tcalli`) work alike. The first function a call site calls has
+   its parameter and result types checked once, and is kept in the plan with
+   its argument slots, so a later call to it checks only that the closure is
+   one of it; a call to any other function checks the types each time.
    Measured with a window per bank instead, every call and return does its
    bookkeeping four times, and `fib` takes 37% longer.
 
@@ -488,10 +498,13 @@ a pointer:
   zeroed 2 KiB at a time ahead of the allocator, so an object needs no
   `memset` of its own. There is no lock, no `malloc` call and no free list.
   The fast path is inline wherever an object is made, and the JIT emits it
-  for `new` and for `lnew` of a list whose storage is inside it: a compare
-  of the hole's room, a compare of the heap against one limit that is both
-  the next collection's threshold and the heap quota, the bump, the header
-  and two counts. Allocating 50 million two-field structs, nothing kept,
+  for `new` and for `lnew` of a list whose storage is inside it, keeping its
+  registers in machine registers (a stub out of the way writes them back
+  and calls C when the hole is used up): one compare, the bump, the header
+  and two counts. The compare is against `bump_lim`, which the slow path
+  keeps at the nearer of the end of the hole's zeroed part and the point
+  where the heap reaches one limit, both the next collection's threshold and
+  the heap quota. Allocating 50 million two-field structs, nothing kept,
   takes 146 ms with the JIT on the M5, against 369 ms with the free lists
   this replaced.
 * **The dead are never visited.** A collection marks what survives and the
@@ -603,6 +616,11 @@ mailbox, up to 4% against no generations.
   in the same block, and otherwise leaves for the interpreter, once per
   object between collections. Stores of null, numbers and constants never
   remember anything.
+* **Leaves are not scanned.** An object with no references in it (a
+  string, a number, an array of numbers, an empty list or map, a struct
+  whose type has no reference field) is marked without going on the mark
+  stack, and a struct's fields are scanned by its type's bit mask of
+  reference fields.
 * **The order of the chunks.** After a minor collection the allocator goes
   first through the chunks it used last, the most recent first, whose memory
   is the likeliest to be in the caches.
@@ -654,17 +672,23 @@ design is in [ABI.md](ABI.md) §1.1 and at the top of `src/vm/sched.c`. In short
   sections use `os_unfair_lock` on macOS rather than `pthread_mutex`. Both
   matter in message-heavy code, where a slice may be only a few instructions
   long: with three clock reads per slice and plain mutexes, `pingpong` took
-  twice as long.
+  twice as long. A slice that is used up, when nothing else wants its
+  worker (no other process in its queue, no timer, no process waiting for
+  I/O, no stop of the world, nothing due in the process itself), goes
+  straight on into the next, up to 64 in a row, after a handful of relaxed
+  atomic loads. Each worker counts its slices itself, so they share no
+  counter.
 
 `parallel` on the Mac with different thread counts (best of six):
 
 | Threads | 1 | 2 | 4 | 6 | 8 | 12 | 16 | 18 |
 |---|---|---|---|---|---|---|---|---|
-| ms | 191 | 102 | 56 | 37 | 36 | 30 | 26 | 25 |
-| Speed-up | 1.0× | 1.9× | 3.4× | 5.1× | 5.4× | 6.3× | 7.4× | 7.8× |
+| ms | 190 | 97 | 50 | 34 | 30 | 23 | 17 | 17 |
+| Speed-up | 1.0× | 2.0× | 3.8× | 5.6× | 6.4× | 8.4× | 11.5× | 11.3× |
 
 Scaling is close to linear up to the six performance cores. The efficiency cores
-add less after that.
+add less after that, and nothing past sixteen threads, one for each of the
+sixteen processes.
 
 The tools: the debugger, tracer and profiler run the program on one thread (they
 see every instruction). The monitor pauses the other threads at a slice boundary
@@ -692,13 +716,13 @@ for each request it serves.
   container written now and then cheaper still. The young generation's
   growth bounds what it costs today.
 * **More specialised shapes.** Arithmetic directly on elements and fields
-  (`nbody`) and raw memory (`sieve`) take the generic path. Rewriting `nbody` to
-  load into registers, compute there and store back takes it from 96 ms to
-  24 ms, so compilers can already get most of that speed. The shapes worth a
-  form of their own are the ones compiled programs run most: the profiler's
-  list of instructions on the general path shows them, as it showed the ones
-  added for compiled Lox. What remains there for Lox is allocation (`new`,
-  `mnew`, `mset`), which a fast form must not do.
+  (`nbody`) takes the generic path in the interpreter, though the JIT
+  compiles it for `f64` elements (`nbody` takes 10 ms with the JIT on the M5). Rewriting `nbody` to load into
+  registers, compute there and store back takes the interpreter from 96 ms
+  to 24 ms, so compilers can already get most of that speed. The shapes
+  worth a form of their own are the ones compiled programs run most: the
+  profiler's list of instructions on the general path shows them, as it
+  showed the ones added for compiled Lox.
 * **Lock-free run queues** (Chase–Lev deques). Each queue's lock is almost
   always uncontended, because a thread mostly uses its own queue. Spawning a
   million processes from one is still twice as slow on 18 threads as on one,
