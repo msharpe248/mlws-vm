@@ -158,7 +158,7 @@ subtracted):
 |---|---|---|---|---|
 | MLWSVM | **42** | **83** | **76** | **143** |
 | Lua 5.5 | 51 | 213 | 100 | 288 |
-| MLWSVM with its JIT (`--jit on`) | 15 | 16 | 26 | 28 |
+| MLWSVM with its JIT (`--jit on`) | 15 | 16 | 25 | 28 |
 | JVM, interpreter only (`-Xint`) | 92 | 187 | 104 | 396 |
 | CPython | 130 | 1,195 | 186 | 2,379 |
 | JVM with its JIT compiler | 3 | 16 | 8 | 32 |
@@ -248,38 +248,38 @@ benchmarks of the sections above.
 
 | Program | M5, ms (interpreter → JIT) | M5 | i7, GCC | Ryzen, Clang |
 |---|---|---|---|---|
-| bench/fib | 42 → 15 | −64% | −69% | −62% |
-| bench/loop | 83 → 16 | −81% | −81% | −75% |
-| bench/nbody | 104 → 10 | −91% | −91% | −92% |
-| bench/sieve | 186 → 73 | −61% | −53% | −63% |
-| bench/closures | 88 → 13 | −85% | −84% | −85% |
-| bench/maps | 27 → 26 | −2% | −4% | −4% |
-| bench/binarytrees | 79 → 35 | −55% | −53% | −46% |
-| bench/parallel | 17 → 3.4 | −80% | −81% | −70% |
-| Erlang fib | 31 → 9.5 | −69% | −69% | −67% |
-| Erlang ring | 127 → 117 | −8% | −4% | −5% |
-| Erlang binarytrees | 511 → 172 | −66% | −65% | −62% |
-| Erlang nbody | 462 → 165 | −64% | −61% | −65% |
-| Erlang sorting | 347 → 197 | −43% | −41% | −38% |
-| Lua fib | 44 → 16 | −64% | −66% | −62% |
-| Lua loop | 175 → 31 | −82% | −81% | −79% |
-| Lua methods | 501 → 195 | −61% | −62% | −55% |
-| Lua strings | 176 → 89 | −49% | −44% | −44% |
-| Lua iterate | 60 → 19 | −68% | −67% | −72% |
-| Lua binarytrees | 308 → 149 | −52% | −54% | −50% |
-| Lua nbody | 835 → 285 | −66% | −46% | −66% |
-| Lua spectralnorm | 193 → 57 | −70% | −73% | −75% |
-| Lua fannkuch | 1737 → 538 | −69% | −56% | −73% |
-| Lox binary_trees | 696 → 273 | −61% | −62% | −56% |
-| Lox equality | 129 → 63 | −51% | −63% | −59% |
-| Lox fib | 278 → 125 | −55% | −68% | −63% |
-| Lox instantiation | 290 → 189 | −35% | −34% | −20% |
-| Lox invocation | 245 → 61 | −75% | −68% | −52% |
-| Lox method_call | 146 → 62 | −58% | −56% | −38% |
-| Lox properties | 343 → 109 | −68% | −64% | −51% |
-| Lox string_equality | 1.4 → 0.8 | −41% | −52% | −40% |
-| Lox trees | 1746 → 576 | −67% | −65% | −55% |
-| Lox zoo | 267 → 80 | −70% | −68% | −56% |
+| bench/fib | 42 → 15 | −65% | −71% | −71% |
+| bench/loop | 83 → 16 | −81% | −80% | −75% |
+| bench/nbody | 105 → 6.2 | −94% | −97% | −96% |
+| bench/sieve | 183 → 47 | −74% | −69% | −76% |
+| bench/closures | 87 → 13 | −85% | −83% | −85% |
+| bench/maps | 26 → 26 | −1% | −4% | −3% |
+| bench/binarytrees | 79 → 34 | −57% | −53% | −50% |
+| bench/parallel | 16 → 3.4 | −80% | −82% | −73% |
+| Erlang fib | 36 → 9.4 | −74% | −69% | −71% |
+| Erlang ring | 127 → 116 | −8% | −2% | −8% |
+| Erlang binarytrees | 508 → 170 | −67% | −65% | −66% |
+| Erlang nbody | 459 → 163 | −64% | −61% | −67% |
+| Erlang sorting | 343 → 193 | −44% | −42% | −41% |
+| Lua fib | 44 → 15 | −66% | −68% | −69% |
+| Lua loop | 173 → 32 | −81% | −82% | −80% |
+| Lua methods | 504 → 194 | −61% | −62% | −57% |
+| Lua strings | 173 → 88 | −49% | −45% | −45% |
+| Lua iterate | 60 → 19 | −68% | −68% | −68% |
+| Lua binarytrees | 306 → 147 | −52% | −55% | −56% |
+| Lua nbody | 833 → 284 | −66% | −46% | −66% |
+| Lua spectralnorm | 193 → 53 | −73% | −73% | −77% |
+| Lua fannkuch | 1730 → 520 | −70% | −57% | −70% |
+| Lox binary_trees | 693 → 271 | −61% | −62% | −57% |
+| Lox equality | 128 → 61 | −52% | −63% | −63% |
+| Lox fib | 279 → 117 | −58% | −70% | −69% |
+| Lox instantiation | 289 → 189 | −35% | −34% | −26% |
+| Lox invocation | 243 → 60 | −75% | −66% | −64% |
+| Lox method_call | 147 → 62 | −58% | −55% | −43% |
+| Lox properties | 353 → 108 | −69% | −64% | −57% |
+| Lox string_equality | 1.4 → 0.8 | −40% | −53% | −46% |
+| Lox trees | 1740 → 569 | −67% | −65% | −55% |
+| Lox zoo | 271 → 78 | −71% | −68% | −61% |
 
 Calls and loops gain the most: the machine code has no dispatch, keeps a
 block's registers in machine registers, and a loop's across iterations (with
@@ -293,13 +293,11 @@ though not again for an object the block has checked.
 
 `bench/nbody` computes on elements in place, which the interpreter has no
 fast form for and the JIT compiles, and `sieve`'s bytes of raw memory are
-compiled too. Loop-invariant R registers and dominating type/segment guards
-are hoisted into the loop preheader, enclosing loops that fit all registers
-without holes are promoted so nested loops stay in registers, immutable
-`ObjArray` bounds checks are cached per block, and cached caller arguments
-are stored straight into the callee's window (M120: against the M119 table
-above, `sieve` takes a further 34–39% less time, `bench/nbody` 37–63% less,
-and `fib` 2–7% less across the M5, i7 and Ryzen). Where the time is not the
+compiled too. In a loop, an object register the loop never writes is
+loaded once, and its type is checked once before the loop when every pass
+uses it; a raw pointer's segment is checked once too, leaving one compare of
+each index against the size. An element whose bounds a block has checked is
+not checked again there. Where the time is not the
 interpreter's, the JIT has nothing to remove: `maps` is natives, and
 `pingpong` and Erlang's `ring` are messages and the scheduler.
 On x86-64 the machine code is about as long as on arm64 (compiled Lua's
@@ -723,7 +721,7 @@ for each request it serves.
   growth bounds what it costs today.
 * **More specialised shapes.** Arithmetic directly on elements and fields
   (`nbody`) takes the generic path in the interpreter, though the JIT
-  compiles it for `f64` elements (`nbody` takes 10 ms with the JIT on the M5). Rewriting `nbody` to load into
+  compiles it for `f64` elements (`nbody` takes 6 ms with the JIT on the M5). Rewriting `nbody` to load into
   registers, compute there and store back takes the interpreter from 96 ms
   to 24 ms, so compilers can already get most of that speed. The shapes
   worth a form of their own are the ones compiled programs run most: the
