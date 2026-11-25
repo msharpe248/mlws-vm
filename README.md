@@ -137,7 +137,7 @@ base:
   milliseconds on later runs.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 324 test programs, also run under
+* **Tested in its own assembly**: 390 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, with a
   garbage collection at every allocation, with every module optimized, and
   with every function compiled by the JIT. A differential fuzzer (`mlwsvm
@@ -355,7 +355,7 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 
 ## Status
 
-The current release is 0.28.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
+The current release is 0.29.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
 on GitHub. Everything described in `docs/` is implemented and tested on macOS, Linux and
 Windows ([Platforms](#platforms) has the details).
 [docs/ROADMAP.md](docs/ROADMAP.md) lists the milestones and what remains.
