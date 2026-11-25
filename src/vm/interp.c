@@ -9,6 +9,7 @@
 #include <math.h>
 
 #include "../core/arith.h"
+#include "../core/regflow.h"
 #include "../heap/heap.h"
 #include "../heap/numeric.h"
 #include "../platform/platform.h"

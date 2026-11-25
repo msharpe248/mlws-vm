@@ -124,6 +124,7 @@ typedef struct Function {
     uint32_t jit_native;
     uint16_t jit_loops;
     uint16_t jit_spec; /* closure calls compiled for the function they called last */
+    uint16_t jit_hoisted; /* loop-invariant R guards and raw-P checks hoisted */
     uint8_t jit_state;
 } Function;
 

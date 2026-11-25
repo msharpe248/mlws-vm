@@ -124,7 +124,10 @@ call does and goes to the callee's machine code. A direct call to a function
 that has no machine code stops for the interpreter, which makes it; a
 closure call goes to the interpreter at the callee's first instruction. The
 call clears the callee's window two words at a time (`stp` on arm64, a
-16-byte store on x86-64), and writes the frame's pc and flags as one word.
+16-byte store on x86-64), writes the frame's pc and flags as one word, and
+stores caller arguments that are live in the register cache straight from
+their machine registers into the callee's window without reloading them from
+memory.
 Its continuation follows it in the machine code, and the code of the
 instruction after the call follows the continuation. A return to a call made
 from machine code goes to the continuation, with the first four results in
@@ -157,10 +160,15 @@ once read or written, and those changed are written back at the block's
 end: 16 general and 24 float registers on arm64, 5 and 13 on x86-64. On
 arm64, an R register read twice in a block also stays in a general register
 that is free: it is written to the window as soon as it is set, where the
-collector sees it, so it is never written back. What a block has checked of
-an R register's object (a struct of a type, or a list) holds until the
-register is set again, so a second field or element of the same object
-skips the checks.
+collector sees it, so it is never written back. What a block has checked of an R register's object (a struct of a type, a
+list, or a typed array) holds until the register is set again, so a second
+field or element of the same object skips the checks. Because a typed array's
+length is fixed, a block also remembers up to four `(array, index)` pairs
+whose bounds it has checked, skipping repeat length checks until either
+register is written; two-operand `f64` arithmetic on a known typed array
+element (`sub R1[I1], F0`, `add.f64 R0[I1], R1[I1]`) checks bounds once and
+updates the element in place (on x86-64, using indexed addressing with a
+displacement to fold `ObjArray.data` into the load and store).
 
 **Falling through.** A block that only the conditional branch ending the
 block before reaches by falling through (no branch, `jmp` or `jtab` goes to
@@ -199,7 +207,26 @@ loop, or the interpreter). A loop with more than 2 holes on arm64, or any on
 x86-64, does not keep its registers: each hole costs a write-back and a
 load of all of them. A loop whose registers do not all fit keeps those it
 uses most, and leaves the rest of the cache's slots (at least three, and as
-many as its widest instruction uses) to the others, block by block.
+many as its widest instruction uses) to the others, block by block. When an
+enclosing loop has no holes, fits all of its I and F registers without
+spilling, and does not stop an inner loop from hoisting its own invariants,
+the outer loop is chosen so both levels stay in registers without reloading
+at each outer iteration.
+
+Loop-invariant R registers stay in otherwise-unused general slots for the
+duration of the loop (on x86-64 too, where loading them once at loop entry
+avoids the per-block move cost that keeps intra-block R caching off). Type
+guards for loop-invariant structs, lists and typed arrays (using sole
+`anew`/`lnew` definitions as hints), and raw-memory segment checks for
+loop-invariant P registers used in `.u8` operations (hoisted to `data + off`
+and `size - off` in two free general slots when the loop has no holes or C
+stubs), are lifted into the loop's preheader—only when the guarded access
+dominates every back edge of the loop, so an untaken conditional branch
+cannot trigger repeated preheader exits. On a failed preheader guard, the
+loop stops cleanly for the interpreter before its first instruction. For a
+hoisted raw pointer with a non-zero offset, the fast path compares the index
+unsigned against `size - off`; a negative index whose sum with `off` is still
+in bounds side-exits to the interpreter.
 
 **Tools.** The debugger, profiler and tracer see every instruction, so a run
 under them compiles nothing.
@@ -285,10 +312,11 @@ only for a report.
   instruction quota stopping a process at the same instruction. Their
   expected output is the interpreter's.
 * `; expect-jit: compiled FUNCTION N`, `; expect-jit: loops FUNCTION N`,
-  `; expect-jit: speculated FUNCTION N` (closure calls compiled for a callee)
-  and `; expect-jit: steps N` in a test check what the JIT did (where the
-  build has one). A line ending with `arm64` or `x86-64` is checked only for that
-  JIT.
+  `; expect-jit: speculated FUNCTION N` (closure calls compiled for a callee),
+  `; expect-jit: hoisted FUNCTION N` (loop-invariant R guards and raw-P checks
+  hoisted) and `; expect-jit: steps N` in a test check what the JIT did (where
+  the build has one). A line ending with `arm64` or `x86-64` is checked only
+  for that JIT.
 * `make check-jit` runs every test and example with `--jit all` (also under
   GC stress and with every module optimized) and with `--jit on
   --jit-hot 2` (also on one worker thread). `make check-asan` runs the tests

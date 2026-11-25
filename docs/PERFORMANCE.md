@@ -293,9 +293,15 @@ though not again for an object the block has checked.
 
 `bench/nbody` computes on elements in place, which the interpreter has no
 fast form for and the JIT compiles, and `sieve`'s bytes of raw memory are
-compiled too. Where the time is not the interpreter's, the JIT has nothing
-to remove: `maps` is natives, and `pingpong` and Erlang's `ring` are
-messages and the scheduler.
+compiled too. Loop-invariant R registers and dominating type/segment guards
+are hoisted into the loop preheader, enclosing loops that fit all registers
+without holes are promoted so nested loops stay in registers, immutable
+`ObjArray` bounds checks are cached per block, and cached caller arguments
+are stored straight into the callee's window (M120: against the M119 table
+above, `sieve` takes a further 34–39% less time, `bench/nbody` 37–63% less,
+and `fib` 2–7% less across the M5, i7 and Ryzen). Where the time is not the
+interpreter's, the JIT has nothing to remove: `maps` is natives, and
+`pingpong` and Erlang's `ring` are messages and the scheduler.
 On x86-64 the machine code is about as long as on arm64 (compiled Lua's
 `nbody` reads a field in 35 and 39 instructions where arm64 takes 35 and
 38), but the i7 runs about half as many instructions a cycle as the M5:

@@ -170,6 +170,11 @@ static void jm_alui(JBuf *b, int op, int d, int a, int64_t v) {
     else if (op == JA_ADD && v < 0 && v > -4096) jw(b, a_subi(d, a, (unsigned)-v));
     else a_movk64(b, JR_TMP, (uint64_t)v), jm_alu(b, op, d, a, JR_TMP);
 }
+/* [n + m*8 + off] */
+static void jm_ldxd(JBuf *b, int d, int n, int m, int64_t off) { jm_alui(b, JA_ADD, JR_TMP, n, off); jm_ldx(b, d, JR_TMP, m); }
+static void jm_stxd(JBuf *b, int s, int n, int m, int64_t off) { jm_alui(b, JA_ADD, JR_TMP, n, off); jm_stx(b, s, JR_TMP, m); }
+static void jm_fldxd(JBuf *b, int d, int n, int m, int64_t off) { jm_alui(b, JA_ADD, JR_TMP, n, off); jm_fldx(b, d, JR_TMP, m); }
+static void jm_fstxd(JBuf *b, int s, int n, int m, int64_t off) { jm_alui(b, JA_ADD, JR_TMP, n, off); jm_fstx(b, s, JR_TMP, m); }
 /* 32-bit: d = a + v (the upper half zero), d = a - c */
 static void jm_add32i(JBuf *b, int d, int a, uint32_t v) {
     if (v < 4096) jw(b, 0x11000000u | v << 10 | (unsigned)a << 5 | (unsigned)d);

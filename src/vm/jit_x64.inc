@@ -103,6 +103,10 @@ static void jm_ldx(JBuf *b, int d, int n, int m) { x_memx(b, 0, true, 0x8B, d, n
 static void jm_stx(JBuf *b, int s, int n, int m) { x_memx(b, 0, true, 0x89, s, n, m, 3, 0, false); }
 static void jm_fldx(JBuf *b, int d, int n, int m) { x_memx(b, 0xF2, false, 0x0F10, d, n, m, 3, 0, false); }
 static void jm_fstx(JBuf *b, int s, int n, int m) { x_memx(b, 0xF2, false, 0x0F11, s, n, m, 3, 0, false); }
+static void jm_ldxd(JBuf *b, int d, int n, int m, int64_t off) { x_memx(b, 0, true, 0x8B, d, n, m, 3, off, false); }
+static void jm_stxd(JBuf *b, int s, int n, int m, int64_t off) { x_memx(b, 0, true, 0x89, s, n, m, 3, off, false); }
+static void jm_fldxd(JBuf *b, int d, int n, int m, int64_t off) { x_memx(b, 0xF2, false, 0x0F10, d, n, m, 3, off, false); }
+static void jm_fstxd(JBuf *b, int s, int n, int m, int64_t off) { x_memx(b, 0xF2, false, 0x0F11, s, n, m, 3, off, false); }
 static void jm_ld8x(JBuf *b, int d, int n, int m) { x_memx(b, 0, false, 0x0FB6, d, n, m, 0, 0, false); }
 static void jm_st8x(JBuf *b, int s, int n, int m) { x_memx(b, 0, false, 0x88, s, n, m, 0, 0, true); }
 
@@ -141,6 +145,8 @@ static void jm_alu(JBuf *b, int op, int d, int a, int c) {
         x_rr(b, 0, true, x_aluop[op], d, c, false);
     } else if (d == c && comm) {
         x_rr(b, 0, true, x_aluop[op], d, a, false);
+    } else if (op == JA_ADD) { /* lea d, [a + c] */
+        x_memx(b, 0, true, 0x8D, d, a, c, 0, 0, false);
     } else if (d == c) {
         jm_mov(b, JR_TMP, c);
         jm_mov(b, d, a);
@@ -171,6 +177,10 @@ static void jm_alui(JBuf *b, int op, int d, int a, int64_t v) {
         }
         if (op == JA_ADD && d != a) { /* lea d, [a + v] */
             x_mem(b, 0, true, 0x8D, d, a, v, false);
+            return;
+        }
+        if (op == JA_SUB && d != a && v > INT32_MIN) { /* lea d, [a - v] */
+            x_mem(b, 0, true, 0x8D, d, a, -v, false);
             return;
         }
         static const int ext[] = {[JA_ADD] = 0, [JA_SUB] = 5, [JA_AND] = 4, [JA_OR] = 1, [JA_XOR] = 6};
@@ -265,7 +275,9 @@ enum { JC_FEQ, JC_FNE, JC_FLT, JC_FLE, JC_FGT, JC_FGE };
 
 static void jm_cmp(JBuf *b, int a, int c) { x_rr(b, 0, true, 0x3B, a, c, false); }
 static void jm_cmpi(JBuf *b, int a, int64_t v) {
-    if (v >= -128 && v <= 127) {
+    if (v == 0) {
+        x_rr(b, 0, true, 0x85, a, a, false); /* test a, a */
+    } else if (v >= -128 && v <= 127) {
         x_rr(b, 0, true, 0x83, 7, a, false);
         jb8(b, (uint8_t)v);
     } else if (v >= INT32_MIN && v <= INT32_MAX) {
@@ -277,7 +289,10 @@ static void jm_cmpi(JBuf *b, int a, int64_t v) {
     }
 }
 static void jm_cmp32(JBuf *b, int a, int c) { x_rr(b, 0, false, 0x3B, a, c, false); }
-static void jm_cmpi32(JBuf *b, int a, uint32_t v) { x_alu32i(b, 7, a, v); }
+static void jm_cmpi32(JBuf *b, int a, uint32_t v) {
+    if (v == 0) x_rr(b, 0, false, 0x85, a, a, false);
+    else x_alu32i(b, 7, a, v);
+}
 static void x_setcc(JBuf *b, unsigned cc, int d) { x_rr(b, 0, false, 0x0F90u + cc, 0, d, true); }
 static void x_movzx8(JBuf *b, int d, int s) { x_rr(b, 0, false, 0x0FB6, d, s, true); }
 static void jm_cset(JBuf *b, int d, int cond) {
