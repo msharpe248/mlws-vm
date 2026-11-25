@@ -56,7 +56,7 @@
 #undef X
 #undef U
         QCASE(Q_CALL_R) {
-            SPILL(); /* the caller's pc is its return address; a depth trap unwinds from here */
+            QCALL_SAVE_PC(); /* the caller's pc is its return address */
             const QPlan *pl = in->k.p;
             Function *fn = pl->fn;
             int argc = pl->argc;
@@ -68,12 +68,10 @@
             uint64_t *nw = QPRC->regs + nf->base;
             const uint64_t *ow = QPRC->regs + of->base;
             for (int k = 0; k < argc; k++) memcpy(&nw[pl->slot[argc + k]], &ow[pl->slot[k]], 8);
-            ctx_set(QCTX, nf, fn, nw);
-            RELOAD();
+            QSWITCH(nf, fn, nw, 0);
             NEXT;
         }
         QCASE(Q_RET_R) {
-            SPILL();
             const Insn *ri = QFRM->ret_insn;
             if (QFRM->qret) {
                 /* Back to a quickened call, whose result registers match this
@@ -84,16 +82,16 @@
                 const uint8_t *rs = cp->slot + 2 * cp->argc;
                 const Frame *of = QFRM - 1;
                 uint64_t *cw = QPRC->regs + of->base;
-                const uint64_t *fw = QPRC->regs + QFRM->base;
+                const uint64_t *fw = (const uint64_t *)QI;
                 for (int k = 0; k < nres; k++) memcpy(&cw[rs[k]], &fw[rp->slot[k]], 8);
                 proc_pop_frame(QPRC);
-                ctx_set(QCTX, (Frame *)of, of->fn, cw);
-                RELOAD();
+                QSWITCH((Frame *)of, of->fn, cw, of->pc);
                 NEXT;
             }
 #if !QFORMS_RET_INLINE /* to a generic call or out of the entry function: the generic ret */
             GENERIC();
 #else
+            SPILL();
             const Operand *qo = in->ops;
             Word vals[MAX_OPERANDS];
             int n = in->nops;
@@ -314,25 +312,42 @@
 #undef STRUCT_OF
 #undef IS_STRUCT
         QCASE(Q_CALLI_R) {
-            const Operand *qo = in->ops;
             Obj *ob = QR[in->r[0]].r;
             if (!ob || ob->kind != OBJ_CLOSURE) GENERIC();
             ObjClosure *cl = (ObjClosure *)ob;
             Function *fn = cl->fn;
+            QPlan *pl = (QPlan *)in->k.p;
+            int argc = pl->argc;
+            if (__builtin_expect(__atomic_load_n(&pl->ic_fn, __ATOMIC_ACQUIRE) == fn, 1)) {
+                QCALL_SAVE_PC();
+                QPUSH_FRAME(fn, in);
+                Frame *nf = &QPRC->frames[QPRC->nframes - 1];
+                const Frame *of = nf - 1;
+                nf->closure = &cl->h;
+                nf->qret = 1;
+                uint64_t *nw = QPRC->regs + nf->base;
+                const uint64_t *ow = QPRC->regs + of->base;
+                for (int k = 0; k < argc; k++) memcpy(&nw[pl->slot[argc + k]], &ow[pl->slot[k]], 8);
+                QSWITCH(nf, fn, nw, 0);
+                NEXT;
+            }
+            const Operand *qo = in->ops;
             const MFunc *mf = fn->mf;
-            int argc = (int)qo[1].imm, nres = in->nops - 2 - argc;
+            int nres = pl->nres;
             if (argc != mf->nparams || nres > mf->nrets || (nres && !(mf->flags & MF_RETS_DECLARED))) GENERIC();
             for (int k = 0; k < argc; k++)
                 if (!wide_type(mf->params[k]) || REG_BANK(qo[2 + k].reg) != (int)type_bank((MlwsType)mf->params[k])) GENERIC();
             for (int k = 0; k < nres; k++)
                 if (!wide_type(mf->rets[k]) || REG_BANK(qo[2 + argc + k].reg) != (int)type_bank((MlwsType)mf->rets[k])) GENERIC();
             plan_saw(in, fn);
-            SPILL();
+            QCALL_SAVE_PC();
             QPUSH_FRAME(fn, in);
             Frame *nf = &QPRC->frames[QPRC->nframes - 1];
             const Frame *of = nf - 1;
             nf->closure = &cl->h;
             nf->qret = 1;
+            bool fill_ic = __atomic_load_n(&pl->ic_state, __ATOMIC_RELAXED) == 0 &&
+                           __atomic_exchange_n(&pl->ic_state, 1, __ATOMIC_ACQ_REL) == 0;
             /* the next parameter slot of each bank in the callee's window
              * (scalars: an array here costs a stack frame and a stack-protector
              * check per call) */
@@ -348,33 +363,53 @@
                 case BANK_R: d = nr++; break;
                 default: d = np++; break;
                 }
+                if (fill_ic) pl->slot[argc + k] = (uint8_t)d;
                 memcpy(&nw[d], &ow[a->pad], 8);
             }
-            ctx_set(QCTX, nf, fn, nw);
-            RELOAD();
+            if (fill_ic) __atomic_store_n(&pl->ic_fn, fn, __ATOMIC_RELEASE);
+            QSWITCH(nf, fn, nw, 0);
             NEXT;
         }
         QCASE(Q_TCALLI_R) {
             /* A closure tail call: the callee's frame replaces this one, at
              * the same base, and returns to this frame's caller. */
-            const Operand *qo = in->ops;
             Obj *ob = QR[in->r[0]].r;
             if (!ob || ob->kind != OBJ_CLOSURE) GENERIC();
             ObjClosure *cl = (ObjClosure *)ob;
             Function *fn = cl->fn;
+            QPlan *pl = (QPlan *)in->k.p;
+            int argc = pl->argc;
+            if (QFRM->base + fn->rsize > QPRC->rcap) GENERIC();
+            if (__builtin_expect(__atomic_load_n(&pl->ic_fn, __ATOMIC_ACQUIRE) == fn, 1)) {
+                uint64_t args[MAX_OPERANDS];
+                const uint64_t *ow = (const uint64_t *)QI;
+                for (int k = 0; k < argc; k++) memcpy(&args[k], &ow[pl->slot[k]], 8);
+                const Insn *ri = QFRM->ret_insn;
+                uint8_t qret = tail_qret(ri, QFRM->qret, fn->mf);
+                proc_pop_frame(QPRC);
+                proc_push_frame_fitting(QPRC, fn, ri);
+                Frame *nf = &QPRC->frames[QPRC->nframes - 1];
+                nf->closure = &cl->h;
+                nf->qret = qret;
+                uint64_t *nw = QPRC->regs + nf->base;
+                for (int k = 0; k < argc; k++) memcpy(&nw[pl->slot[argc + k]], &args[k], 8);
+                QSWITCH(nf, fn, nw, 0);
+                NEXT;
+            }
+            const Operand *qo = in->ops;
             const MFunc *mf = fn->mf;
-            int argc = (int)qo[1].imm;
-            if (argc != mf->nparams || QFRM->base + fn->rsize > QPRC->rcap) GENERIC();
+            if (argc != mf->nparams) GENERIC();
             for (int k = 0; k < argc; k++)
                 if (!wide_type(mf->params[k]) || REG_BANK(qo[2 + k].reg) != (int)type_bank((MlwsType)mf->params[k])) GENERIC();
             plan_saw(in, fn);
-            SPILL();
             /* The arguments, in order, before the callee's window replaces this one. */
             uint64_t args[MAX_OPERANDS];
-            const uint64_t *ow = QPRC->regs + QFRM->base;
+            const uint64_t *ow = (const uint64_t *)QI;
             for (int k = 0; k < argc; k++) memcpy(&args[k], &ow[qo[2 + k].pad], 8);
             const Insn *ri = QFRM->ret_insn;
             uint8_t qret = tail_qret(ri, QFRM->qret, mf);
+            bool fill_ic = __atomic_load_n(&pl->ic_state, __ATOMIC_RELAXED) == 0 &&
+                           __atomic_exchange_n(&pl->ic_state, 1, __ATOMIC_ACQ_REL) == 0;
             proc_pop_frame(QPRC);
             proc_push_frame_fitting(QPRC, fn, ri);
             Frame *nf = &QPRC->frames[QPRC->nframes - 1];
@@ -390,10 +425,11 @@
                 case BANK_R: d = nr++; break;
                 default: d = np++; break;
                 }
+                if (fill_ic) pl->slot[argc + k] = (uint8_t)d;
                 memcpy(&nw[d], &args[k], 8);
             }
-            ctx_set(QCTX, nf, fn, nw);
-            RELOAD();
+            if (fill_ic) __atomic_store_n(&pl->ic_fn, fn, __ATOMIC_RELEASE);
+            QSWITCH(nf, fn, nw, 0);
             NEXT;
         }
         QCASE(Q_TCALL_R) {
@@ -404,9 +440,8 @@
             const MFunc *mf = fn->mf;
             int argc = (int)qo[1].imm;
             if (QFRM->base + fn->rsize > QPRC->rcap) GENERIC();
-            SPILL();
             uint64_t args[MAX_OPERANDS];
-            const uint64_t *ow = QPRC->regs + QFRM->base;
+            const uint64_t *ow = (const uint64_t *)QI;
             for (int k = 0; k < argc; k++) memcpy(&args[k], qo[2 + k].mode == OM_REG ? &ow[qo[2 + k].pad] : &qo[2 + k].kw, 8);
             const Insn *ri = QFRM->ret_insn;
             uint8_t qret = tail_qret(ri, QFRM->qret, mf);
@@ -426,8 +461,7 @@
                 }
                 memcpy(&nw[d], &args[k], 8);
             }
-            ctx_set(QCTX, nf, fn, nw);
-            RELOAD();
+            QSWITCH(nf, fn, nw, 0);
             NEXT;
         }
         /* Allocation: a collection may run, so the frame's pc is saved first
@@ -704,6 +738,71 @@
             NEXT;
         }
 #undef GLOBAL_REF
+        QCASE(Q_MNEW) {
+            SPILL();
+            QR[in->r[0]].r = &map_new(QPRC)->h;
+            NEXT;
+        }
+        QCASE(Q_MSET) {
+            SPILL();
+            if (!q_mset(QPRC, in, QI, QF, QR)) GENERIC();
+            NEXT;
+        }
+        QCASE(Q_MHAS) {
+            const Obj *ob = QR[in->r[1]].r;
+            if (!ob || ob->kind != OBJ_MAP) GENERIC();
+            uint8_t ktag = (uint8_t)(in->target & 0xFF);
+            Word key;
+            if (in->target & 0x10000u) key.r = (Obj *)in->k.p;
+            else if (ktag == T_I64) key.i = QI[in->r[2]];
+            else if (ktag == T_F64) key.f = QF[in->r[2]];
+            else key.r = QR[in->r[2]].r;
+            QI[in->r[0]] = map_find((ObjMap *)ob, key, ktag) != NULL;
+            NEXT;
+        }
+        /* Raw indexed byte memory: P{I} with .u8, for raw segments (no tags). */
+#define RAW_U8_PTR(preg, ireg, out_p)                                         \
+        do {                                                                  \
+            uint64_t ptr_ = QP[(preg)];                                       \
+            uint32_t seg_ = PTR_SEG(ptr_) - SEG_RAW0;                         \
+            if (__builtin_expect(seg_ >= QPRC->raw.n, 0)) GENERIC();          \
+            const Segment *s_ = &QPRC->raw.v[seg_];                           \
+            if (__builtin_expect(!s_->live || s_->gen != PTR_GEN(ptr_), 0)) GENERIC(); \
+            uint64_t off_ = (uint64_t)PTR_OFF(ptr_) + (uint64_t)QI[(ireg)];   \
+            if (__builtin_expect(off_ >= s_->size, 0)) GENERIC();             \
+            (out_p) = &s_->data[off_];                                        \
+        } while (0)
+        QCASE(Q_LDMB_U8) {
+            uint8_t *bp;
+            RAW_U8_PTR(in->r[1], in->r[2], bp);
+            QI[in->r[0]] = *bp;
+            NEXT;
+        }
+        QCASE(Q_STMB_U8) {
+            uint8_t *bp;
+            RAW_U8_PTR(in->r[0], in->r[2], bp);
+            *bp = (uint8_t)QI[in->r[1]];
+            NEXT;
+        }
+        QCASE(Q_STMBK_U8) {
+            uint8_t *bp;
+            RAW_U8_PTR(in->r[0], in->r[2], bp);
+            *bp = (uint8_t)in->k.i;
+            NEXT;
+        }
+        QCASE(Q_BZ_MB_U8) {
+            uint8_t *bp;
+            RAW_U8_PTR(in->r[0], in->r[1], bp);
+            if (*bp == 0) JUMP();
+            NEXT;
+        }
+        QCASE(Q_BNZ_MB_U8) {
+            uint8_t *bp;
+            RAW_U8_PTR(in->r[0], in->r[1], bp);
+            if (*bp != 0) JUMP();
+            NEXT;
+        }
+#undef RAW_U8_PTR
         QCASE(Q_MGET_R) { /* mget.r R0, R1, "key" [, null] */
             const Obj *ob = QR[in->r[1]].r;
             if (!ob || ob->kind != OBJ_MAP) GENERIC();
@@ -745,7 +844,7 @@
         /* Calls and rets with constants among their values: Q_CALL_R and
          * Q_RET_R with each constant converted at load time (Operand.kw). */
         QCASE(Q_CALL_RK) {
-            SPILL();
+            QCALL_SAVE_PC();
             const QPlan *pl = in->k.p;
             Function *fn = pl->fn;
             int argc = pl->argc;
@@ -759,27 +858,24 @@
                 uint8_t s = pl->slot[k];
                 memcpy(&nw[pl->slot[argc + k]], s != QPLAN_K ? &ow[s] : &in->ops[2 + k].kw, 8);
             }
-            ctx_set(QCTX, nf, fn, nw);
-            RELOAD();
+            QSWITCH(nf, fn, nw, 0);
             NEXT;
         }
         QCASE(Q_RET_RK) {
             if (!QFRM->qret) GENERIC();
-            SPILL();
             const Insn *ri = QFRM->ret_insn;
             const QPlan *cp = ri->k.p, *rp = in->k.p;
             int nres = cp->nres;
             const uint8_t *rs = cp->slot + 2 * cp->argc;
             const Frame *of = QFRM - 1;
             uint64_t *cw = QPRC->regs + of->base;
-            const uint64_t *fw = QPRC->regs + QFRM->base;
+            const uint64_t *fw = (const uint64_t *)QI;
             for (int k = 0; k < nres; k++) {
                 uint8_t s = rp->slot[k];
                 memcpy(&cw[rs[k]], s != QPLAN_K ? &fw[s] : &in->ops[k].kw, 8);
             }
             proc_pop_frame(QPRC);
-            ctx_set(QCTX, (Frame *)of, of->fn, cw);
-            RELOAD();
+            QSWITCH((Frame *)of, of->fn, cw, of->pc);
             NEXT;
         }
         /* A closure call with constants: checked against the callee per call,

@@ -31,6 +31,10 @@ Obj *num_from_f64(Process *p, MlwsType t, double v);       /* traps E_OVERFLOW f
 Obj *num_convert(Process *p, MlwsType to, const Obj *from); /* big <-> dec (dec->big truncates) */
 Obj *num_arith(Process *p, int op, const Obj *a, const Obj *b); /* OP_ADD ... OP_MAX; same kinds */
 Obj *num_unary(Process *p, int op, const Obj *a);           /* OP_NEG, OP_ABS */
+/* A decimal rounded to `places` fractional digits (negative: to tens,
+ * hundreds, ...), with exactly that scale: 2.5 to 2 places is 2.50. */
+enum { NUM_HALF_EVEN, NUM_HALF_UP, NUM_HALF_DOWN, NUM_DOWN, NUM_UP, NUM_FLOOR, NUM_CEILING };
+Obj *num_round(Process *p, const Obj *x, int64_t places, int mode);
 int num_cmp(const Obj *a, const Obj *b);                    /* same kinds; -1, 0, 1 */
 bool num_to_int(const Obj *a, MlwsType to, Word *out);      /* false if out of range (truncates decimals) */
 double num_to_f64(const Obj *a);

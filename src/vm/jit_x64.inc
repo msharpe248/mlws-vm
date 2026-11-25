@@ -21,6 +21,7 @@ enum { JF_S0 = 0, JF_S1 = 1, JF_TMP = 15 };
 /* The holes a loop may have and keep its registers (jit_loops): none, since
  * with 5 slots a hole cost more than the loop saved. */
 #define JM_LOOP_HOLES 0
+#define JM_CODE_MAX ((size_t)1 << 31) /* rel32 branches reach 2 GiB either way */
 static const uint8_t jc_ireg[JC_NI] = {RSI, RDI, R9, RBP, R15};
 static const uint8_t jc_freg[JC_NF] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
 
@@ -102,6 +103,10 @@ static void jm_ldx(JBuf *b, int d, int n, int m) { x_memx(b, 0, true, 0x8B, d, n
 static void jm_stx(JBuf *b, int s, int n, int m) { x_memx(b, 0, true, 0x89, s, n, m, 3, 0, false); }
 static void jm_fldx(JBuf *b, int d, int n, int m) { x_memx(b, 0xF2, false, 0x0F10, d, n, m, 3, 0, false); }
 static void jm_fstx(JBuf *b, int s, int n, int m) { x_memx(b, 0xF2, false, 0x0F11, s, n, m, 3, 0, false); }
+static void jm_ldxd(JBuf *b, int d, int n, int m, int64_t off) { x_memx(b, 0, true, 0x8B, d, n, m, 3, off, false); }
+static void jm_stxd(JBuf *b, int s, int n, int m, int64_t off) { x_memx(b, 0, true, 0x89, s, n, m, 3, off, false); }
+static void jm_fldxd(JBuf *b, int d, int n, int m, int64_t off) { x_memx(b, 0xF2, false, 0x0F10, d, n, m, 3, off, false); }
+static void jm_fstxd(JBuf *b, int s, int n, int m, int64_t off) { x_memx(b, 0xF2, false, 0x0F11, s, n, m, 3, off, false); }
 static void jm_ld8x(JBuf *b, int d, int n, int m) { x_memx(b, 0, false, 0x0FB6, d, n, m, 0, 0, false); }
 static void jm_st8x(JBuf *b, int s, int n, int m) { x_memx(b, 0, false, 0x88, s, n, m, 0, 0, true); }
 
@@ -140,6 +145,8 @@ static void jm_alu(JBuf *b, int op, int d, int a, int c) {
         x_rr(b, 0, true, x_aluop[op], d, c, false);
     } else if (d == c && comm) {
         x_rr(b, 0, true, x_aluop[op], d, a, false);
+    } else if (op == JA_ADD) { /* lea d, [a + c] */
+        x_memx(b, 0, true, 0x8D, d, a, c, 0, 0, false);
     } else if (d == c) {
         jm_mov(b, JR_TMP, c);
         jm_mov(b, d, a);
@@ -150,14 +157,35 @@ static void jm_alu(JBuf *b, int op, int d, int a, int c) {
     }
 }
 static void jm_alui(JBuf *b, int op, int d, int a, int64_t v) {
-    if ((op == JA_ADD || op == JA_SUB) && v >= INT32_MIN && v <= INT32_MAX) {
-        if (d != a && op == JA_ADD) { /* lea d, [a + v] */
+    if (op >= JA_SHL) {
+        static const int ext[] = {4, 5, 7};
+        unsigned n = (unsigned)v & 63u;
+        jm_mov(b, d, a);
+        if (n) {
+            x_rr(b, 0, true, 0xC1, ext[op - JA_SHL], d, false);
+            jb8(b, n);
+        }
+        return;
+    }
+    if (v >= INT32_MIN && v <= INT32_MAX) {
+        bool small = v >= -128 && v <= 127;
+        if (op == JA_MUL) {
+            x_rr(b, 0, true, small ? 0x6B : 0x69, d, a, false);
+            if (small) jb8(b, (uint8_t)v);
+            else jb32(b, (uint32_t)v);
+            return;
+        }
+        if (op == JA_ADD && d != a) { /* lea d, [a + v] */
             x_mem(b, 0, true, 0x8D, d, a, v, false);
             return;
         }
+        if (op == JA_SUB && d != a && v > INT32_MIN) { /* lea d, [a - v] */
+            x_mem(b, 0, true, 0x8D, d, a, -v, false);
+            return;
+        }
+        static const int ext[] = {[JA_ADD] = 0, [JA_SUB] = 5, [JA_AND] = 4, [JA_OR] = 1, [JA_XOR] = 6};
         jm_mov(b, d, a);
-        bool small = v >= -128 && v <= 127;
-        x_rr(b, 0, true, small ? 0x83 : 0x81, op == JA_ADD ? 0 : 5, d, false);
+        x_rr(b, 0, true, small ? 0x83 : 0x81, ext[op], d, false);
         if (small) jb8(b, (uint8_t)v);
         else jb32(b, (uint32_t)v);
         return;
@@ -192,11 +220,53 @@ static void jm_addsh3(JBuf *b, int d, int n, int m) { x_memx(b, 0, true, 0x8D, d
 /* d = a / k or a % k (k a constant, neither 0 nor -1: the quickener's DIV_IK
  * and REM_IK, so idiv cannot fault) */
 static void jm_divk(JBuf *b, int d, int a, int64_t k, bool rem) {
-    jm_mov(b, RAX, a);
-    jm_movi(b, RCX, (uint64_t)k);
-    jb8(b, 0x48), jb8(b, 0x99); /* cqo */
-    x_rr(b, 0, true, 0xF7, 7, RCX, false);
-    jm_mov(b, d, rem ? RDX : RAX);
+    if (k == 1) {
+        if (rem) jm_movi(b, d, 0);
+        else jm_mov(b, d, a);
+        return;
+    }
+    uint64_t ak = k < 0 ? (uint64_t)(0 - (uint64_t)k) : (uint64_t)k;
+    if ((ak & (ak - 1)) == 0 && ak <= ((uint64_t)1 << 62)) {
+        unsigned s = (unsigned)__builtin_ctzll(ak);
+        jm_mov(b, RAX, a);
+        if (s == 1) jm_alui(b, JA_SHR, RAX, RAX, 63);
+        else jm_alui(b, JA_SAR, RAX, RAX, 63), jm_alui(b, JA_SHR, RAX, RAX, 64u - s);
+        jm_alu(b, JA_ADD, RAX, RAX, a);
+        jm_alui(b, JA_SAR, RAX, RAX, s);
+        if (rem) {
+            jm_alui(b, JA_SHL, RAX, RAX, s);
+            jm_alu(b, JA_SUB, d, a, RAX);
+        } else if (k < 0) {
+            x_rr(b, 0, true, 0xF7, 3, RAX, false); /* neg rax */
+            jm_mov(b, d, RAX);
+        } else {
+            jm_mov(b, d, RAX);
+        }
+        return;
+    }
+    if (k == INT64_MIN) {
+        jm_mov(b, RAX, a);
+        jm_movi(b, RCX, (uint64_t)k);
+        jb8(b, 0x48), jb8(b, 0x99); /* cqo */
+        x_rr(b, 0, true, 0xF7, 7, RCX, false);
+        jm_mov(b, d, rem ? RDX : RAX);
+        return;
+    }
+    JMagic mg = jit_magic64(k);
+    jm_movi(b, RAX, (uint64_t)mg.m);
+    x_rr(b, 0, true, 0xF7, 5, a, false); /* imul a -> rdx:rax */
+    if (mg.add > 0) jm_alu(b, JA_ADD, RDX, RDX, a);
+    else if (mg.add < 0) jm_alu(b, JA_SUB, RDX, RDX, a);
+    if (mg.s > 0) jm_alui(b, JA_SAR, RDX, RDX, mg.s);
+    jm_mov(b, RAX, RDX);
+    jm_alui(b, JA_SHR, RAX, RAX, 63);
+    jm_alu(b, JA_ADD, RDX, RDX, RAX);
+    if (rem) {
+        jm_alui(b, JA_MUL, RDX, RDX, k);
+        jm_alu(b, JA_SUB, d, a, RDX);
+    } else {
+        jm_mov(b, d, RDX);
+    }
 }
 
 enum { JC_EQ, JC_NE, JC_LT, JC_LE, JC_GT, JC_GE, JC_LO, JC_LS, JC_HI, JC_HS, JC_AL };
@@ -205,7 +275,9 @@ enum { JC_FEQ, JC_FNE, JC_FLT, JC_FLE, JC_FGT, JC_FGE };
 
 static void jm_cmp(JBuf *b, int a, int c) { x_rr(b, 0, true, 0x3B, a, c, false); }
 static void jm_cmpi(JBuf *b, int a, int64_t v) {
-    if (v >= -128 && v <= 127) {
+    if (v == 0) {
+        x_rr(b, 0, true, 0x85, a, a, false); /* test a, a */
+    } else if (v >= -128 && v <= 127) {
         x_rr(b, 0, true, 0x83, 7, a, false);
         jb8(b, (uint8_t)v);
     } else if (v >= INT32_MIN && v <= INT32_MAX) {
@@ -217,7 +289,10 @@ static void jm_cmpi(JBuf *b, int a, int64_t v) {
     }
 }
 static void jm_cmp32(JBuf *b, int a, int c) { x_rr(b, 0, false, 0x3B, a, c, false); }
-static void jm_cmpi32(JBuf *b, int a, uint32_t v) { x_alu32i(b, 7, a, v); }
+static void jm_cmpi32(JBuf *b, int a, uint32_t v) {
+    if (v == 0) x_rr(b, 0, false, 0x85, a, a, false);
+    else x_alu32i(b, 7, a, v);
+}
 static void x_setcc(JBuf *b, unsigned cc, int d) { x_rr(b, 0, false, 0x0F90u + cc, 0, d, true); }
 static void x_movzx8(JBuf *b, int d, int s) { x_rr(b, 0, false, 0x0FB6, d, s, true); }
 static void jm_cset(JBuf *b, int d, int cond) {

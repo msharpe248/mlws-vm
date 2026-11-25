@@ -1,0 +1,2 @@
+# The examples' inputs are read byte for byte (cat, wc): never CRLF on checkout.
+examples/data/** -text

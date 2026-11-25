@@ -243,7 +243,7 @@ static void cmd_info_break(Debugger *d) {
     if (!any) say(d, "No breakpoints.\n");
 }
 
-static bool parse_reg(const char *s, uint8_t *reg) {
+bool dbg_parse_reg(const char *s, uint8_t *reg) {
     if (!strcmp(s, "SP")) return *reg = REG_MAKE(BANK_S, SREG_SP), true;
     if (!strcmp(s, "FP")) return *reg = REG_MAKE(BANK_S, SREG_FP), true;
     if (!strcmp(s, "PID")) return *reg = REG_MAKE(BANK_S, SREG_PID), true;
@@ -430,7 +430,7 @@ static void cmd_print(Debugger *d, const char *arg) {
         say(d, "The program is not stopped in a process.\n");
         return;
     }
-    if (!parse_reg(arg, &reg)) {
+    if (!dbg_parse_reg(arg, &reg)) {
         const Frame *fr = &p->frames[p->nframes - 1];
         const MVar *v = dbg_var_at(fr->fn, fr->pc, arg);
         if (!v) {

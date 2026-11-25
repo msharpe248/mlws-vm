@@ -1,0 +1,143 @@
+; sales.masm - a report from a CSV file: sales summed by region, largest
+; first, as a table and as JSON.
+;
+;     mlwsvm run examples/sales.masm [FILE.csv]     (default examples/data/sales.csv)
+;
+; The file's first row names the columns; the report needs "region" and
+; "amount", wherever they are. csv.parse reads RFC 4180, so a field may be
+; quoted, with commas and doubled quotes inside. Each region's totals are a
+; struct in a map; the map keeps the order regions were first seen, and
+; list.sort, given a comparator closure, puts the largest first.
+;
+; expect-stdout: region    sales      amount
+; expect-stdout: North         2      150.75
+; expect-stdout: South         2      174.75
+; expect-stdout: East          2      210.00
+; expect-stdout: West          1       42.00
+; expect-stdout: sorted:
+; expect-stdout: East          2      210.00
+; expect-stdout: South         2      174.75
+; expect-stdout: North         2      150.75
+; expect-stdout: West          1       42.00
+; expect-stdout: {"region":"East","sales":2,"amount":210}
+.include "std/io.inc"
+
+.struct Total
+    region: ref
+    sales: i64
+    amount: f64
+.ends
+
+; column(header, name) -> its index in the header row; throws if it has none
+.func column(ref header, ref name) -> i64
+    len I0, header
+    mov I1, 0
+1:  bge I1, I0, 2f
+    mov R2, header[I1]
+    strcmp I2, R2, name
+    bz I2, 3f
+    inc I1
+    jmp 1b
+2:  strcat R3, "no column named ", name
+    throw R3
+3:  ret I1
+.endf
+
+; larger_first(a, b) -> negative if a's amount is larger (a comes first)
+.func larger_first(ref a, ref b) -> i64
+    mov F0, a->Total.amount
+    mov F1, b->Total.amount
+    blt F1, F0, 1f
+    blt F0, F1, 2f
+    ret 0
+1:  ret -1
+2:  ret 1
+.endf
+
+.func print_total(ref t)
+    lnew R1
+    lpush R1, t->Total.region, t->Total.sales, t->Total.amount
+    ncall "text.format" ("{:<8}{:>7}{:>12.2f}", R1) -> (R2)
+    PRINTLN_S R2
+    ret
+.endf
+
+; print_all(list): each total, in the list's order
+.func print_all(ref totals)
+    len I0, totals
+    mov I1, 0
+1:  bge I1, I0, 2f
+    mov R1, totals[I1]
+    call print_total (R1)
+    inc I1
+    jmp 1b
+2:  ret
+.endf
+
+.func main
+    .alias rows, R0
+    .alias by_region, R1
+    .alias totals, R2
+    .alias row, R3
+    .alias t, R4
+    .alias region_at, I0
+    .alias amount_at, I1
+    .alias n, I2
+    .alias i, I3
+    ncall "os.args" () -> (R5)
+    mov R6, "examples/data/sales.csv"
+    len I4, R5
+    bz I4, 1f
+    mov R6, R5[0]
+1:  ncall "fs.read_file" (R6) -> (R7)
+    ncall "csv.parse" (R7) -> (rows)   ; a list of rows, each a list of strings
+    mov row, rows[0]
+    call column (row, "region") -> (region_at)
+    call column (row, "amount") -> (amount_at)
+
+    mnew by_region                     ; region -> its Total, in first-seen order
+    len n, rows
+    mov i, 1                           ; after the header
+each_row:
+    bge i, n, summed
+    mov row, rows[i]
+    inc i
+    mov R5, row[region_at]
+    mget t, by_region, R5, null
+    bnz.r t, 2f
+    new t, Total
+    mov t->Total.region, R5
+    mset by_region, R5, t
+2:  inc t->Total.sales
+    mov R6, row[amount_at]
+    parse.f64 F0, R6
+    add t->Total.amount, F0
+    jmp each_row
+
+summed:
+    lnew totals                        ; the map's values, in its order
+    mkeys R5, by_region
+    len n, R5
+    mov i, 0
+3:  bge i, n, 4f
+    mov R6, R5[i]
+    mget t, by_region, R6
+    lpush totals, t
+    inc i
+    jmp 3b
+4:  lnew R5
+    lpush R5, "region", "sales", "amount"
+    ncall "text.format" ("{:<8}{:>7}{:>12}", R5) -> (R6)
+    PRINTLN_S R6
+    call print_all (totals)
+
+    closure larger_first -> (R6)
+    ncall "list.sort" (totals, R6)     ; stable: equal amounts keep their order
+    PRINTLN_S "sorted:"
+    call print_all (totals)
+
+    mget t, by_region, "East"          ; a struct becomes a JSON object of its fields
+    ncall "json.stringify" (t, 0) -> (R7)
+    PRINTLN_S R7
+    ret 0
+.endf

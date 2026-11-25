@@ -1,0 +1,263 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "MLWSVM assembly",
+  "scopeName": "source.masm-mlwsvm",
+  "fileTypes": [
+    "masm"
+  ],
+  "patterns": [
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#struct-block"
+    },
+    {
+      "include": "#signature"
+    },
+    {
+      "include": "#label-definition"
+    },
+    {
+      "include": "#directive"
+    },
+    {
+      "include": "#instruction"
+    },
+    {
+      "include": "#operands"
+    }
+  ],
+  "repository": {
+    "comment": {
+      "patterns": [
+        {
+          "comment": "test expectations: ; expect-stdout: ..., ; stdin: ..., ; args: ...",
+          "match": "(;)\\s*(expect-[a-z]+|stdin|args|skip|threads|option|requires|debug-script|no-opt)(:)(.*)$",
+          "captures": {
+            "0": {
+              "name": "comment.line.semicolon.masm-mlwsvm"
+            },
+            "1": {
+              "name": "punctuation.definition.comment.masm-mlwsvm"
+            },
+            "2": {
+              "name": "keyword.other.test.masm-mlwsvm"
+            },
+            "3": {
+              "name": "punctuation.separator.masm-mlwsvm"
+            }
+          }
+        },
+        {
+          "begin": ";",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.masm-mlwsvm"
+            }
+          },
+          "end": "$",
+          "name": "comment.line.semicolon.masm-mlwsvm"
+        }
+      ]
+    },
+    "label-definition": {
+      "comment": "a label, and the instruction that may follow it on the line",
+      "match": "^\\s*([A-Za-z_$][\\w.$]*|[0-9]+)(:)(?!:)\\s*(?:([A-Za-z_][A-Za-z0-9_]*)((?:\\.[a-z][a-z0-9]*)*)(?=\\s|$|;))?",
+      "captures": {
+        "1": {
+          "name": "entity.name.label.masm-mlwsvm"
+        },
+        "2": {
+          "name": "punctuation.separator.label.masm-mlwsvm"
+        },
+        "3": {
+          "name": "keyword.other.instruction.masm-mlwsvm"
+        },
+        "4": {
+          "name": "storage.type.suffix.masm-mlwsvm"
+        }
+      }
+    },
+    "directive": {
+      "match": "(?<![\\w.])\\.(?:alias|align|ascii|asciz|b|c|callback|const|cstruct|debug_format|elif|else|endf|endif|endm|endr|ends|endtry|equ|error|export|extension|extern|ffi_free|func|if|ifb|ifdef|ifnb|ifndef|import|include|irp|library|loc|local|macro|module|public|regs|reload|rept|requires|set|space|struct|try|zero)\\b",
+      "name": "keyword.control.directive.masm-mlwsvm"
+    },
+    "instruction": {
+      "comment": "the first word on a line: a mnemonic, its type suffixes, or a macro",
+      "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)((?:\\.[a-z][a-z0-9]*)*)(?=\\s|$|;)",
+      "captures": {
+        "1": {
+          "name": "keyword.other.instruction.masm-mlwsvm"
+        },
+        "2": {
+          "name": "storage.type.suffix.masm-mlwsvm"
+        }
+      }
+    },
+    "operands": {
+      "patterns": [
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#char"
+        },
+        {
+          "match": "\\b(?:[IFRP](?:[0-9]|[1-9][0-9])|SP|FP|PID)\\b",
+          "name": "variable.language.register.masm-mlwsvm"
+        },
+        {
+          "match": "\\b(?:UP|ARG|LOC)(?=\\s*\\[)",
+          "name": "variable.language.register.masm-mlwsvm"
+        },
+        {
+          "match": "\\b(?:null|true|false|inf|nan)\\b",
+          "name": "constant.language.masm-mlwsvm"
+        },
+        {
+          "comment": "local label references: 1f (forward), 1b (back)",
+          "match": "\\b[0-9]+[fb]\\b",
+          "name": "entity.name.label.reference.masm-mlwsvm"
+        },
+        {
+          "match": "-?\\b0[xX][0-9A-Fa-f_]+\\b|-?\\b0[bB][01_]+\\b|-?\\b0[oO][0-7_]+\\b",
+          "name": "constant.numeric.integer.masm-mlwsvm"
+        },
+        {
+          "comment": "BigInt (123n) and decimal (19.99d) literals",
+          "match": "-?\\b[0-9][0-9_]*(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?[nd]\\b",
+          "name": "constant.numeric.masm-mlwsvm"
+        },
+        {
+          "match": "-?\\b[0-9][0-9_]*(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\\b",
+          "name": "constant.numeric.masm-mlwsvm"
+        },
+        {
+          "comment": "a macro's parameter",
+          "match": "\\\\[A-Za-z_][\\w]*",
+          "name": "variable.parameter.macro.masm-mlwsvm"
+        },
+        {
+          "match": "->",
+          "name": "keyword.operator.arrow.masm-mlwsvm"
+        },
+        {
+          "comment": "R0->Struct.field",
+          "match": "(?<=->)([A-Za-z_$][\\w$]*)(\\.)([A-Za-z_$][\\w$]*)",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.struct.masm-mlwsvm"
+            },
+            "3": {
+              "name": "variable.other.member.masm-mlwsvm"
+            }
+          }
+        }
+      ]
+    },
+    "string": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.masm-mlwsvm",
+      "patterns": [
+        {
+          "match": "\\\\(?:[nrt0\\\\\"'abfv]|x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\}|u[0-9A-Fa-f]{4})",
+          "name": "constant.character.escape.masm-mlwsvm"
+        }
+      ]
+    },
+    "char": {
+      "match": "'(?:[^'\\\\]|\\\\(?:[nrt0\\\\\"'abfv]|x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\}|u[0-9A-Fa-f]{4}))'",
+      "name": "constant.character.masm-mlwsvm"
+    },
+    "signature": {
+      "comment": ".func name(i64 a, ref b) -> (i64), .extern c.strlen, \"\", \"strlen\" (cstr) -> (usize), .callback",
+      "begin": "(?<![\\w.])(\\.(?:func|extern|callback|macro))\\b(?:\\s+([A-Za-z_$][\\w.$]*))?",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.directive.masm-mlwsvm"
+        },
+        "2": {
+          "name": "entity.name.function.masm-mlwsvm"
+        }
+      },
+      "end": "$",
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "comment": "a parameter or result: [out] TYPE [name], after ( or ,",
+          "match": "([(,])\\s*(?:(out)\\s+)?((?:b|c|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|r|ref|p|ptr|big|dec|cstr|buf|usize|isize|void)(?:<[\\w$]+>)?)(?![\\w$])(?:\\s+([A-Za-z_$][\\w$]*))?",
+          "captures": {
+            "2": {
+              "name": "storage.modifier.masm-mlwsvm"
+            },
+            "3": {
+              "name": "storage.type.masm-mlwsvm"
+            },
+            "4": {
+              "name": "variable.parameter.masm-mlwsvm"
+            }
+          }
+        },
+        {
+          "match": "->",
+          "name": "keyword.operator.arrow.masm-mlwsvm"
+        },
+        {
+          "match": "\\\\[A-Za-z_][\\w]*",
+          "name": "variable.parameter.macro.masm-mlwsvm"
+        },
+        {
+          "comment": ".macro NAME a, b: its parameters",
+          "match": "(?<=[\\s,])[A-Za-z_$][\\w$]*",
+          "name": "variable.parameter.masm-mlwsvm"
+        }
+      ]
+    },
+    "struct-block": {
+      "begin": "^\\s*(\\.(?:struct|cstruct))\\s+([A-Za-z_$][\\w.$]*)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.directive.masm-mlwsvm"
+        },
+        "2": {
+          "name": "entity.name.type.struct.masm-mlwsvm"
+        }
+      },
+      "end": "^\\s*(\\.ends)\\b",
+      "endCaptures": {
+        "1": {
+          "name": "keyword.control.directive.masm-mlwsvm"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "match": "^\\s*([A-Za-z_$][\\w$]*)\\s*(:)\\s*([A-Za-z_$][\\w<>$]*)",
+          "captures": {
+            "1": {
+              "name": "variable.other.member.masm-mlwsvm"
+            },
+            "2": {
+              "name": "punctuation.separator.masm-mlwsvm"
+            },
+            "3": {
+              "name": "storage.type.masm-mlwsvm"
+            }
+          }
+        },
+        {
+          "include": "#operands"
+        }
+      ]
+    }
+  }
+}

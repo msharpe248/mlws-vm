@@ -1,0 +1,270 @@
+; std.pool - a pool of worker processes that run one function on many jobs,
+; no more of them at once than it has workers.
+;
+;     .import std.pool as pool
+;     closure resize -> (R0)                    ; the work: resize(ref job) -> ref
+;     call pool.start (R0, 4) -> (I0)          ; four workers
+;     call pool.run (I0, job, 5000) -> (R1)    ; one job: its result, or what it raised
+;     call pool.map (I0, jobs, 60000) -> (R2)  ; a list of jobs, run at once: their results, in order
+;     send I0, "stop"
+;
+; A job and its result are references (wrap a number in a list), copied as
+; messages are. The pool is a process that hands each job, as it comes, to a
+; worker that is free, or keeps it until one is; the worker runs the
+; function and answers the caller itself. A job that raises an error raises
+; it in the caller of pool.run, and its worker goes on. A worker that dies
+; (killed, or out of a quota) is replaced, and its caller gets the error that
+; ended it. A job waits in the pool for a free worker for as long as the
+; caller's timeout allows (negative: for ever): the time a job takes is in it.
+;
+; pool.map gives each job to its own process, which calls the pool and sends
+; the answer to a collector: the caller's mailbox is not touched, so what
+; other processes send it meanwhile is not lost. If a job raises, pool.map
+; raises the first error, after every job has finished.
+;
+; "stop" ends the pool and its workers; workers end too if the pool ends.
+
+.module std.pool
+.export start, run, map
+
+; Start a pool of n workers (at least 1) running fn; returns its pid.
+.func start(ref fn, i64 n) -> i64
+    bgt n, 0, 1f
+    mov n, 1
+1:  spawn pool (fn, n) -> (I2)
+    ret I2
+.endf
+
+; run(pool, job, timeout_ms) -> fn(job), or raise what it raised.
+.func run(i64 pool, ref job, i64 timeout_ms) -> ref
+    ncall "proc.call" (pool, job, timeout_ms) -> (R2)  ; [1, result] or [0, error]
+    mov I2, R2[0]
+    mov R3, R2[1]
+    bz I2, 1f
+    ret R3
+1:  throw R3
+.endf
+
+; map(pool, jobs, timeout_ms) -> a list of fn(job) for each job, in order.
+.func map(i64 pool, ref jobs, i64 timeout_ms) -> ref
+    spawn collect (pool, jobs, timeout_ms) -> (I2)
+    ncall "proc.call" (I2, null, timeout_ms) -> (R2)     ; [1, results] or [0, first error]
+    mov I3, R2[0]
+    mov R3, R2[1]
+    bz I3, 1f
+    ret R3
+1:  throw R3
+.endf
+
+; ---- map's processes ----
+
+; one(collector, pool, i, job, timeout): run one job; send [i, answer] to the collector
+.func one(i64 collector, i64 pool, i64 i, ref job, i64 timeout_ms)
+.try 1f
+    ncall "proc.call" (pool, job, timeout_ms) -> (R2)
+.endtry
+    jmp 2f
+1:  catch R3                           ; (the call itself: E_TIMEOUT, E_NOPROC)
+    lnew R2
+    lpush R2, 0, R3
+2:  lnew R4
+    lpush R4, i, R2
+    send collector, R4
+    ret
+.endf
+
+; collect(pool, jobs, timeout): a process per job; their answers, in order,
+; to the Call that map makes of this process.
+.func collect(i64 pool, ref jobs, i64 timeout_ms)
+    .alias results, R2
+    .alias call_, R3
+    .alias first_error, R4
+    .alias n, I2
+    .alias left, I3
+    len n, jobs
+    lnew results, n
+    mov I4, 0
+1:  bge I4, n, 2f
+    lpush results, null
+    mov R5, jobs[I4]
+    spawn one (PID, pool, I4, R5, timeout_ms)
+    inc I4
+    jmp 1b
+2:  mov left, n
+    mov call_, null
+    mov first_error, null
+wait:
+    bnz.r call_, 3f                    ; the caller's Call, and every answer: done
+    jmp 4f
+3:  bz left, done
+4:  recv R6
+    isa I5, R6, Call
+    bz I5, 5f
+    mov call_, R6
+    jmp wait
+5:  mov I6, R6[0]                      ; [i, [ok, value]]
+    mov R7, R6[1]
+    mov I7, R7[0]
+    mov R8, R7[1]
+    dec left
+    bnz I7, 6f
+    bnz.r first_error, wait            ; (keep the first)
+    mov first_error, R8
+    jmp wait
+6:  mov results[I6], R8
+    jmp wait
+done:
+    lnew R9
+    bnz.r first_error, 7f
+    lpush R9, 1, results
+    jmp 8f
+7:  lpush R9, 0, first_error
+8:  ncall "proc.reply" (call_, R9)
+    ret
+.endf
+
+; ---- the pool ----
+
+; worker(pool, fn): run each job (a Call) the pool sends; answer its caller;
+; then tell the pool it is free, as [its pid]. It ends with the pool.
+.func worker(i64 pool, ref fn)
+    monitor pool
+loop:
+    recv R2
+    isa I2, R2, Call
+    bz I2, gone                        ; (the pool's Down: it has ended)
+.try failed
+    calli fn (R2->Call.body) -> (R3)
+.endtry
+    lnew R4
+    lpush R4, 1, R3
+    jmp answer
+failed:
+    catch R5
+    lnew R4
+    lpush R4, 0, R5
+answer:
+    ncall "proc.reply" (R2, R4)
+    lnew R6
+    lpush R6, PID
+    send pool, R6
+    jmp loop
+gone:
+    ret
+.endf
+
+; give(busy, w, call): call to worker w, which is busy with it until it is free
+.func give(ref busy, i64 w, ref call_)
+    mset busy, w, call_
+    send w, call_
+    ret
+.endf
+
+; pool(fn, n): n workers; jobs to free ones, in the order they came
+.func pool(ref fn, i64 n)
+    .alias idle, R2                    ; free workers
+    .alias busy, R3                    ; worker -> the Call it is running
+    .alias queue, R4                   ; Calls waiting for a worker
+    .alias head, I2                    ; the queue's first: queue[head]
+    lnew idle
+    mnew busy
+    lnew queue
+    mov head, 0
+    mov I3, 0
+1:  bge I3, n, loop
+    spawnm worker (PID, fn) -> (I4)
+    lpush idle, I4
+    inc I3
+    jmp 1b
+loop:
+    recv R5
+    isa I5, R5, Call
+    bnz I5, job
+    isa I5, R5, Down
+    bnz I5, down
+    typeof I5, R5
+    beq I5, 5, free                    ; a list: [a worker that is free]
+    beq I5, 1, stop                    ; a string: "stop"?
+    jmp loop
+
+job:
+    len I6, idle
+    bz I6, 2f
+    lpop I7, idle
+    call give (busy, I7, R5)
+    jmp loop
+2:  lpush queue, R5                    ; every worker busy: it waits
+    jmp loop
+
+free:
+    mov I7, R5[0]
+    mdel busy, I7
+dispatch:                              ; worker I7 is free: the next job, or idle
+    len I6, queue
+    bge head, I6, 3f
+    mov R6, queue[head]
+    mov queue[head], null
+    inc head
+    call give (busy, I7, R6)
+    jmp loop
+3:  bz head, 4f                        ; the queue is empty: start it again
+    lnew queue
+    mov head, 0
+4:  lpush idle, I7
+    jmp loop
+
+down:                                  ; a worker ended: its caller hears why; another takes its place
+    mov I7, R5->Down.pid
+    mhas I8, busy, I7
+    bz I8, 5f
+    mget R6, busy, I7
+    mdel busy, I7
+    new R7, Error
+    mov R8, R5->Down.code
+    bnz.r R8, 6f
+    mov R8, "E_EXITED"                 ; (ended normally: only by a bug)
+6:  mov R7->Error.code, R8
+    strcat R9, "std.pool: the worker running this job ended (", R8, ")"
+    mov R7->Error.message, R9
+    lnew R10
+    lpush R10, 0, R7
+    ncall "proc.reply" (R6, R10)
+    jmp 7f
+5:  call drop (idle, I7)               ; (an idle one, killed)
+7:  spawnm worker (PID, fn) -> (I7)
+    jmp dispatch
+
+stop:
+    strcmp I6, R5, "stop"
+    bnz I6, loop
+    lnew R6                            ; every worker, idle and busy
+    mkeys R6, busy
+    len I6, idle
+    mov I3, 0
+8:  bge I3, I6, 9f
+    mov I7, idle[I3]
+    lpush R6, I7
+    inc I3
+    jmp 8b
+9:  len I6, R6
+    mov I3, 0
+10: bge I3, I6, 11f
+    mov I7, R6[I3]
+    kill I7
+    inc I3
+    jmp 10b
+11: ret
+.endf
+
+; drop(list, x): remove x from a list of integers, if it is there
+.func drop(ref l, i64 x)
+    len I2, l
+    mov I3, 0
+1:  bge I3, I2, 2f
+    mov I4, l[I3]
+    beq I4, x, 3f
+    inc I3
+    jmp 1b
+3:  ldel l, I3
+2:  ret
+.endf

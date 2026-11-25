@@ -16,3 +16,4 @@ lib/ext/
 /build-loop/
 /mlwsvm-poison
 /build-poison/
+editors/vscode/*.vsix

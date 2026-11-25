@@ -34,7 +34,7 @@ static int jc_get(JComp *j, int bank, int r) {
         if (bank) jm_fld(&j->b, jc_freg[s], JR_WIN, jwoff(j, BANK_F, (unsigned)r));
         else jm_ld(&j->b, jc_ireg[s], JR_WIN, jwoff(j, BANK_I, (unsigned)r));
         c->of[bank][r] = (int8_t)s;
-        c->vm[bank][s] = (int8_t)r;
+        c->vm[bank][s] = (int16_t)r;
     }
     c->pin[bank] |= 1u << s;
     return jc_mreg(bank, s);
@@ -44,23 +44,33 @@ static int jc_get(JComp *j, int bank, int r) {
 `of[bank][r]` says which slot holds VM register `r`, and `vm[bank][s]` which
 VM register slot `s` holds. `jc_def` is the same for a register about to be
 written, and marks it dirty. When all slots are taken, `jc_alloc` evicts one
-that the current instruction does not use (`pin`), storing it first if it is
-dirty. At the end of a block, `jc_flush` stores the dirty ones and forgets
-them all:
+that neither the current instruction uses (`pin`) nor a loop keeps
+(`loop_pin`), storing it first if it is dirty. An instruction that reads
+more registers than there are slots (`xor I0, I1, I2, ..., I11` takes
+twelve) folds each into a scratch register as it goes and unpins it, so its
+slots can be reused. At the end of a block, `jc_flush` stores the dirty
+ones and forgets them all:
 
 ```c
 static void jc_flush(JComp *j) {
     JCache *c = &j->jc;
-    if (j->loop || c->record) return;
+    if (c->record) return;
+    if (j->loop) {
+        ... (a loop's registers stay; in a partial loop the others go back)
+        return;
+    }
     for (int bank = 0; bank < 2; bank++)
         for (int s = 0; s < jc_nslots(bank); s++)
-            if (c->vm[bank][s] >= 0 && c->dirty[bank][s]) jc_store(j, bank, s, c->vm[bank][s]), c->dirty[bank][s] = false;
+            if (c->vm[bank][s] >= 0 && c->vm[bank][s] < JC_RBASE && c->dirty[bank][s])
+                jc_store(j, bank, s, c->vm[bank][s]), c->dirty[bank][s] = false;
     if (!j->keep) jc_reset(c);
 }
 ```
 
 How many slots there are depends on the processor. arm64 has 31 general
-registers, so the cache has 16 for integers and 16 for floats. x86-64 has
+registers and 32 floating-point ones, so the cache has 16 for integers and
+24 for floats (`d8` to `d31`; the C calling convention preserves `d8` to
+`d15`, so the code that enters the machine code saves them). x86-64 has
 16, and after the ones the JIT needs for itself (the `Ctx`, the window, the
 slice's count, the frame, scratch registers for the forms) only 5 are left
 for integers, with 13 for floats in the `xmm` registers. A sixth was tried
@@ -146,7 +156,11 @@ from the block before *and* from the branch back, so fallin does not apply.
 For loops, the JIT goes further: if all the I and F registers the loop uses
 fit in the cache, they are loaded once on the way in and stay in machine
 registers for every iteration. They are written back on every way out: a
-branch out of the loop, a side exit, the slice's end.
+branch out of the loop, a side exit, the slice's end. If they do not all
+fit, the ones the loop uses most stay in machine registers, and the rest
+share the slots left over (at least three, and as many as one of the
+loop's instructions uses at once) as they would outside a loop, written back
+at each block's end.
 
 That was the loop in chapter 8:
 
@@ -224,6 +238,10 @@ frames and windows). Three choices make it cheap.
   #define JRES_N (JC_NI < 4 ? JC_NI : 4)
   ```
 
+* **Tail calls to itself.** A function that tail-calls itself keeps its
+  frame: the arguments go from machine registers to the window's parameters,
+  the part of the window that must start empty is cleared, and the code jumps to the function's
+  first instruction, without leaving the machine code.
 * **Small frames.** The frame record's pc and two flags are written as one
   64-bit store, the callee's window is cleared two words at a time (`stp xzr,
   xzr` on arm64, 16-byte stores on x86-64), and a function that never uses
@@ -232,7 +250,7 @@ frames and windows). Three choices make it cheap.
 Counted with callgrind (chapter 11), a call was 64 x86-64 instructions and a
 return 25–27, about half of compiled Erlang's `binarytrees`. The changes
 above made call-heavy programs 3–19% faster with the JIT. Against the
-interpreter, `bench/fib` now takes 61–66% less time.
+interpreter, `bench/fib` now takes 62–69% less time.
 
 ## A closure call, compiled for its callee
 
@@ -310,9 +328,9 @@ site has seen `adder`.
 
 | | M5 | i7 |
 |---|---|---|
-| `--jit off` (interpreted) | 85 ms | 174 ms |
-| `--jit all` (compiled, the general closure call) | 80 ms | 147 ms |
-| `--jit on` (compiled for `adder`) | 28 ms | 53 ms |
+| `--jit off` (interpreted) | 65 ms | 144 ms |
+| `--jit all` (compiled, the general closure call) | 80 ms | 140 ms |
+| `--jit on` (compiled for `adder`) | 25 ms | 46 ms |
 
 ```sh
 $ ./mlwsvm run --jit on --jit-report - clo.masm
@@ -323,11 +341,13 @@ mlwsvm jit (arm64): a function compiled after 1000 calls or loop iterations
   closure calls       1 of 1 compiled for the function they called last
 ```
 
-Compiling the loop and the closure's body, but not the call, gains 6–16%:
-the general call's checks and its trip through C are most of the time. Once
-the call is compiled for `adder`, the loop runs three times as fast. On the
+Compiling the loop and the closure's body, but not the call, gains little,
+and on the M5 loses: the general call's checks and its trip through C are
+most of the time, while the interpreter's own closure call skips the checks
+for the function the call site called first. Once the call is compiled for
+`adder`, the loop runs about three times as fast as interpreted. On the
 compilers' benchmarks, which call methods everywhere, compiling closure calls
-for their callee is what most of the gain of `bench/closures` (84–86% less
+for their callee is what most of the gain of `bench/closures` (84–85% less
 time than interpreted), Lua's `methods` and the Lox programs is.
 
 ## What it does not do

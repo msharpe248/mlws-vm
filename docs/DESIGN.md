@@ -832,7 +832,13 @@ and the budget.
 
 **The slice counter.** `left` counts down the instructions left in the time
 slice (2,000). When it reaches 0, `h_slice` writes the frame's `pc` and the
-process's instruction count back, and returns `SLICE_YIELD`. With a tool's
+process's instruction count back, and returns `SLICE_YIELD`, unless the
+process may simply go on: nothing else is queued on its worker, no timer is
+pending, no process waits on the poller, nothing stops the world, the
+process has no kill, collection or finalizer pending and is under its
+instruction quota, and the worker is not worker 0 with the monitor to serve (`sched_fast_continue` in
+sched.c). Then it starts the next slice itself, for up to 64 slices in a
+row before going back through the scheduler. With a tool's
 hook installed, the counter is set to 0 for every instruction, so each one
 passes through `h_slice`, which calls the hook (§20). Without one, the
 dispatch pays nothing for tools.
@@ -964,7 +970,7 @@ process has. Grouped by purpose:
 |---|---|---|
 | The running context | `regs`, `rcap`, `rtop` (the register stack); `frames`, `nframes`, `fcap`, `flimit`; `stack` (a `Segment`), `sp`, `fp` | §9.2–9.5 |
 | Memory | `globals[nglobals]` (one segment per module), `old_globals`; `raw` (segments), `rawfree` | §10 |
-| The heap | `heap` (the `malloc` list), `chunks`, the hole being allocated into (`bump`, `bump_lim`, `hole_end`), `recycle`, the owner lists, `bchunks`, `buf_free[16]`, `heap_bytes`, `alloc_limit`, `next_gc`, `gc_pending`, `markstack`, `remset`; `handles`, `handle_free` | §11 |
+| The heap | `heap` (the `malloc` list), `chunks`, the hole being allocated into (`bump`, `bump_lim`, `zero_lim`, `hole_end`), `recycle`, the owner lists, `bchunks`, `buf_free[16]`, `heap_bytes`, `alloc_limit`, `next_gc`, `gc_pending`, `markstack`, `remset`; `handles`, `handle_free` | §11 |
 | Exceptions | `jb` (the slice's jump buffer), `exception`, `err`, `backtrace` | §12 |
 | Messages and scheduling | `lock`; `mbox` (taken messages), `inbox` (delivered, not yet taken), `mcount`; `links`, `monitors`; `wake_at`; kill flags; `quota[6]`; `reply` | §13, §14 |
 | Native calls | `cur_native`, `in_foreign`, `native_req`, `bcall` (a call on the I/O pool), `fdwait`; `cb_base`, `pins` | §15, §17 |
@@ -1188,7 +1194,7 @@ typedef struct Obj {
 
 | Kind | Layout after the header | Notes |
 |---|---|---|
-| string | `len`, `hash`, bytes, NUL | Immutable. The hash (FNV-1a, never 0) is computed when it is first a map key (0 until then), or when made for a constant, which threads share |
+| string | `len`, `hash`, bytes, NUL | Immutable. The hash (never 0: FNV-1a under 16 bytes, and for longer strings 8 bytes at a time, mixed with SplitMix64's and MurmurHash3's multipliers, folded to 32 bits) is computed when it is first a map key (0 until then), or when made for a constant, which threads share |
 | bytes | `len`, `cap`, `data *` | Mutable; the buffer grows by doubling |
 | array | `elem` type, `len`, words | Fixed length; traced if `elem` is `r` |
 | struct | `StructDef *`, fields | The type comes from its module; fields are traced if their declared type is a reference |
@@ -1218,7 +1224,10 @@ entries: dense, in insertion order        index: power of two, open addressing
 * Lookup probes `index` from the key's hash, skipping deleted slots and
   stopping at an empty one, and compares the stored hash before the key.
 * Insertion appends to `entries` and puts the entry's number in the first
-  empty or deleted slot.
+  empty or deleted slot, which the lookup that missed the key has already
+  found.
+* `entries` and `index` are one allocation, the index just after the
+  entries' capacity.
 * Deletion marks the entry dead and the slot deleted. The entries stay in
   place until the next rebuild, which keeps iteration in insertion order.
 * A rebuild, when `entries` is full, compacts the live entries (doubling
@@ -1254,12 +1263,18 @@ Every object is made by `gc_alloc(p, kind, size)`:
   coroutines from the start, and a list when it first gets a buffer. A
   collection walks these lists to free what the dead ones own (§11.5).
 
-The fast path is inline (heap.h): an object that fits in the zeroed part of
-the hole, owns nothing, and keeps `heap_bytes` below `Process.alloc_limit`
-(the next collection's threshold, or once one is due, the heap quota) is
-the pointer bump, its header, and the counts. The JIT emits the same for
-`new` and for an `lnew` whose storage is inside the list. Everything else
-goes through `gc_alloc_slow`.
+The fast path is inline (heap.h): an object that owns nothing and ends at
+or below `bump_lim` is the pointer bump, its header, and the counts.
+`bump_lim` is the nearer of two limits: the end of the hole's zeroed part
+(`zero_lim`), and the bytes the heap may still grow before `heap_bytes`
+reaches `Process.alloc_limit` (the next collection's threshold, or once one
+is due, the heap quota). So one compare checks both. It is recomputed
+whenever either changes (`clamp_bump_lim` in gc.c): a fast allocation moves
+`bump` by at least the bytes it adds to `heap_bytes`, so it cannot pass
+either limit. The JIT emits the same for `new` and for an `lnew` whose
+storage is inside the list, keeping its cached registers; when the hole is
+used up, a stub out of the way writes them back, calls C and reloads them.
+Everything else goes through `gc_alloc_slow`.
 
 AddressSanitizer builds and `MLWSVM_NO_SLABS=1` use `malloc` for everything,
 so each object's lifetime is visible. `MLWSVM_SLABS=1` uses the chunks even
@@ -1330,7 +1345,12 @@ remembered objects, and marks no old object):
 
 Marking is iterative: `mark` marks an object and pushes it on
 `markstack`; the loop pops objects and scans them by kind, marking what
-they refer to. Immortal objects are never marked, so they are never
+they refer to. An object with nothing to scan is marked without being
+pushed: a string, a byte buffer, a number, an array of numbers, an empty
+list, map or closure, and a struct whose type has no reference field
+(`StructDef.has_refs`, worked out when the type is linked, with
+`ref_mask`, the bit of each reference field, by which a struct of up to 64
+fields is scanned). Immortal objects are never marked, so they are never
 written, which is what makes sharing them between threads safe. The cost
 is proportional to the root words scanned plus the live objects and their
 references.
@@ -1639,7 +1659,10 @@ worker_loop(w):
 `after_slice` handles the result: requeue (`YIELD`); wait (`BLOCK`, unless
 a message or reply arrived during the slice, which would otherwise be a
 lost wake-up); start a timer (`SLEEP`, or a deadline); hand the process to
-the poller or the I/O pool; or `finish` it.
+the poller or the I/O pool; or `finish` it. A slice that ends with
+nothing else for its worker to do does not come back here: the interpreter
+starts the next one itself (§8.3), so a process alone on its worker goes
+through this loop once every 64 slices.
 
 **Work stealing.** A worker whose queue is empty looks at the others in
 turn, starting after itself, and takes half of the first non-empty queue

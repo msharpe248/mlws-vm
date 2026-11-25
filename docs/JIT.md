@@ -69,13 +69,20 @@ The JIT compiles the quickened forms ([PERFORMANCE.md](PERFORMANCE.md#how-the-in
   it, the allocator's pointer bump in machine code: DESIGN.md §11.2),
   `lpush` (a full list grown by a call of C, in a stub out of the way),
   `mget` of a constant key or a key in a register,
+  `mnew`, `mset` and `mhas` (by calls of C),
   `ldv`, `typeof`, `isa`, `bisa`, `bnisa`, and a tuple's tag test;
+* bytes of raw memory at a register index, loaded, stored (a register or a
+  constant) and tested by `bz`/`bnz` (`mov.u8 I0, P1{I2}`,
+  `bnz.u8 P1{I2}, L`), each checking the segment and the bounds;
 * the string builders, `strcat`, `bufcat`, `tostr`, `substr`, `bufnew` and
   `bufpush`, by calls of their quickened forms' C functions.
 
 It also compiles a few generic instructions that have no quickened form,
-from their operands: `i64` and `u64` add, sub, mul, and, or, xor and
-compares into a register, of I registers, constants and closure captures.
+from their operands: `i64` and `u64` add, sub, mul, and, or, xor (of any
+number of operands) and compares into a register, of I registers, constants
+and closure captures; and `f64` add, sub, mul and div of F registers,
+constants and list or array elements, into an F register or an element
+(`add.f64 R1[I2], R3[I2]`).
 
 Each form does what its handler's fast path does, with the same checks.
 Whatever the handler hands to the generic instruction (a struct of another
@@ -102,7 +109,9 @@ first instruction of a block where entering pays gets the execution opcode
 machine code there. Entering and leaving costs about as much as 20
 interpreted instructions, and so does a step, so a block is entered only if
 what runs from it before the interpreter must take over has a loop or a
-call, or is long, and steps rarely. (`--jit all` enters at every block.)
+call, or is long, and steps rarely (for a loop, rarely within the loop
+itself: what runs before it, once, does not count). (`--jit all` enters at
+every block.)
 
 **The slice.** Each block's code starts by taking its length from the
 slice's count, or, if the slice has less left, by stopping before its first
@@ -115,7 +124,10 @@ call does and goes to the callee's machine code. A direct call to a function
 that has no machine code stops for the interpreter, which makes it; a
 closure call goes to the interpreter at the callee's first instruction. The
 call clears the callee's window two words at a time (`stp` on arm64, a
-16-byte store on x86-64), and writes the frame's pc and flags as one word.
+16-byte store on x86-64), writes the frame's pc and flags as one word, and
+stores caller arguments that are live in the register cache straight from
+their machine registers into the callee's window without reloading them from
+memory.
 Its continuation follows it in the machine code, and the code of the
 instruction after the call follows the continuation. A return to a call made
 from machine code goes to the continuation, with the first four results in
@@ -145,13 +157,18 @@ is compiled for a callee.
 
 **Registers.** Inside a block, I and F registers live in machine registers
 once read or written, and those changed are written back at the block's
-end: 16 general and 16 float registers on arm64, 5 and 13 on x86-64. On
+end: 16 general and 24 float registers on arm64, 5 and 13 on x86-64. On
 arm64, an R register read twice in a block also stays in a general register
 that is free: it is written to the window as soon as it is set, where the
-collector sees it, so it is never written back. What a block has checked of
-an R register's object (a struct of a type, or a list) holds until the
-register is set again, so a second field or element of the same object
-skips the checks.
+collector sees it, so it is never written back. What a block has checked of an R register's object (a struct of a type, a
+list, or a typed array) holds until the register is set again, so a second
+field or element of the same object skips the checks. Because a typed array's
+length is fixed, a block also remembers up to four `(array, index)` pairs
+whose bounds it has checked, skipping repeat length checks until either
+register is written; two-operand `f64` arithmetic on a known typed array
+element (`sub R1[I1], F0`, `add.f64 R0[I1], R1[I1]`) checks bounds once and
+updates the element in place (on x86-64, using indexed addressing with a
+displacement to fold `ObjArray.data` into the load and store).
 
 **Falling through.** A block that only the conditional branch ending the
 block before reaches by falling through (no branch, `jmp` or `jtab` goes to
@@ -188,7 +205,28 @@ a *hole*: the registers are written back before it and loaded after it, as
 they are on any way back in past the head (a slow path that rejoins the
 loop, or the interpreter). A loop with more than 2 holes on arm64, or any on
 x86-64, does not keep its registers: each hole costs a write-back and a
-load of all of them.
+load of all of them. A loop whose registers do not all fit keeps those it
+uses most, and leaves the rest of the cache's slots (at least three, and as
+many as its widest instruction uses) to the others, block by block. When an
+enclosing loop has no holes, fits all of its I and F registers without
+spilling, and does not stop an inner loop from hoisting its own invariants,
+the outer loop is chosen so both levels stay in registers without reloading
+at each outer iteration.
+
+Loop-invariant R registers stay in otherwise-unused general slots for the
+duration of the loop (on x86-64 too, where loading them once at loop entry
+avoids the per-block move cost that keeps intra-block R caching off). Type
+guards for loop-invariant structs, lists and typed arrays (using sole
+`anew`/`lnew` definitions as hints), and raw-memory segment checks for
+loop-invariant P registers used in `.u8` operations (hoisted to `data + off`
+and `size - off` in two free general slots when the loop has no holes or C
+stubs), are lifted into the loop's preheader—only when the guarded access
+dominates every back edge of the loop, so an untaken conditional branch
+cannot trigger repeated preheader exits. On a failed preheader guard, the
+loop stops cleanly for the interpreter before its first instruction. For a
+hoisted raw pointer with a non-zero offset, the fast path compares the index
+unsigned against `size - off`; a negative index whose sum with `off` is still
+in bounds side-exits to the interpreter.
 
 **Tools.** The debugger, profiler and tracer see every instruction, so a run
 under them compiles nothing.
@@ -210,7 +248,11 @@ first compiles something, and freed with the VM). Code is written, then
 made executable, and never written again: on macOS on Apple silicon, the
 memory is `MAP_JIT`, writable or executable for each thread in turn; on
 Linux each piece of code has pages of its own, made executable once
-written. If the memory runs out, later functions stay interpreted. A host
+written. If the memory runs out, later functions stay interpreted. So does
+a function whose machine code on arm64 would be 1 MB or more (a generated
+table of thousands of instructions), since a conditional branch there
+reaches only 1 MB, and a side exit's branch must reach the end of the
+function's code. A host
 built with the hardened runtime needs the
 `com.apple.security.cs.allow-jit` entitlement for `MAP_JIT`; without it the
 JIT compiles nothing.
@@ -270,10 +312,11 @@ only for a report.
   instruction quota stopping a process at the same instruction. Their
   expected output is the interpreter's.
 * `; expect-jit: compiled FUNCTION N`, `; expect-jit: loops FUNCTION N`,
-  `; expect-jit: speculated FUNCTION N` (closure calls compiled for a callee)
-  and `; expect-jit: steps N` in a test check what the JIT did (where the
-  build has one). A line ending with `arm64` or `x86-64` is checked only for that
-  JIT.
+  `; expect-jit: speculated FUNCTION N` (closure calls compiled for a callee),
+  `; expect-jit: hoisted FUNCTION N` (loop-invariant R guards and raw-P checks
+  hoisted) and `; expect-jit: steps N` in a test check what the JIT did (where
+  the build has one). A line ending with `arm64` or `x86-64` is checked only
+  for that JIT.
 * `make check-jit` runs every test and example with `--jit all` (also under
   GC stress and with every module optimized) and with `--jit on
   --jit-hot 2` (also on one worker thread). `make check-asan` runs the tests
@@ -286,11 +329,13 @@ only for a report.
 
 [PERFORMANCE.md](PERFORMANCE.md#the-jit) has the results on the three
 machines, for the benchmarks and the compilers' programs. Calls (`fib`) take
-60–69% less time, closure calls (`closures`, compiled Lox's `invocation`)
-59–86% less, loops (`loop`, `fannkuch`, `spectralnorm`) 52–79% less, and
-field and element access with method calls (`nbody`, `methods`, compiled
-Lox's `trees`) 39–65% less. Where the time goes to natives (`maps`), raw memory (`sieve`)
-or the scheduler (Erlang's `ring`), the JIT changes little.
+62–69% less time, closure calls (`closures`, compiled Lox's `invocation`)
+52–85% less, loops (`loop`, `fannkuch`, `spectralnorm`) 56–81% less,
+field and element access with method calls (compiled Lua's `nbody` and
+`methods`, Lox's `trees`) 46–67% less, arithmetic on elements
+(`bench/nbody`) 91–92% less, and bytes of raw memory (`sieve`) 53–63% less.
+Where the time goes to natives (`maps`) or the scheduler (Erlang's `ring`),
+the JIT changes little.
 
 ## Design
 

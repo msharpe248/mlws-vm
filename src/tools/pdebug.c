@@ -19,15 +19,40 @@ typedef struct {
     uint32_t pc;
 } BpAt;
 
+/* A condition's operand: a register, a named variable (`.loc`'s, or an
+ * `.alias`), or a literal. */
+enum { CA_NONE, CA_REG, CA_VAR, CA_INT, CA_FLOAT, CA_STR, CA_NULL };
+typedef struct {
+    uint8_t kind, reg;
+    char *text; /* CA_VAR's name, CA_STR's string */
+    int64_t i;
+    double f;
+} CondArg;
+
+/* "a OP b", or "a" alone (true when not 0, 0.0 or null). */
+enum { CO_TRUE, CO_EQ, CO_NE, CO_LT, CO_LE, CO_GT, CO_GE };
+typedef struct {
+    CondArg a, b;
+    uint8_t op;
+} Cond;
+
 /* A breakpoint: at a line of a file, or at a function's first instruction. It
  * is kept as it was asked for, and placed again whenever the modules change,
- * so one may wait for code not loaded yet, and follows a reload. */
+ * so one may wait for code not loaded yet, and follows a reload. It may stop
+ * only when a condition holds, or from a number of hits on; one with a log
+ * message (a logpoint) never stops, but writes the message to the log. */
 typedef struct {
     uint32_t id;
     char *file, *function; /* one of them */
     uint32_t line;         /* as asked */
     uint32_t line_at;      /* the line with code it is at (0: nowhere yet) */
     VEC(BpAt) at;
+    char *cond_text;       /* as asked, or NULL */
+    Cond cond;
+    char hit_op;           /* 0: every hit; '>': from the hit_n-th on; '=': only the hit_n-th; '%': every hit_n-th */
+    uint64_t hit_n;
+    char *log;             /* a logpoint's message, {NAME} filled in; NULL: a breakpoint */
+    uint64_t hits;         /* times reached with its condition true (atomic: processes on any thread) */
 } PBreak;
 
 typedef struct PDebug {
@@ -42,10 +67,19 @@ static PDebug *pdebug_of(VM *vm) {
     return t->pdbg;
 }
 
+static void cond_free(Cond *c) {
+    free(c->a.text);
+    free(c->b.text);
+    memset(c, 0, sizeof *c);
+}
+
 static void pbreak_free(PBreak *b) {
     free(b->file);
     free(b->function);
     VEC_FREE(b->at);
+    free(b->cond_text);
+    cond_free(&b->cond);
+    free(b->log);
 }
 
 void pdebug_free(VM *vm) {
@@ -69,6 +103,209 @@ static void position(const Function *f, uint32_t pc, const char **file, uint32_t
 
 static bool same_file(const char *have, const char *asked) {
     return !strcmp(have, asked) || !strcmp(path_basename(have), path_basename(asked));
+}
+
+/* ---- conditions and logpoints --------------------------------------------------- */
+
+static const char *skip_ws(const char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    return s;
+}
+
+/* One operand at *s; false (and *why) if there is none. */
+static bool parse_arg(const char **s, CondArg *a, const char **why) {
+    const char *p = skip_ws(*s);
+    memset(a, 0, sizeof *a);
+    if (*p == '"') { /* a string, with \" and \\ */
+        StrBuf b = {0};
+        for (p++; *p && *p != '"'; p++) {
+            if (*p == '\\' && p[1]) p++;
+            sb_putc(&b, *p);
+        }
+        if (*p != '"') {
+            sb_free(&b);
+            return *why = "a string without its closing quote", false;
+        }
+        a->kind = CA_STR;
+        a->text = b.s ? b.s : xstrdup("");
+        *s = p + 1;
+        return true;
+    }
+    if (isdigit((unsigned char)*p) || ((*p == '-' || *p == '+') && (isdigit((unsigned char)p[1]) || p[1] == '.'))) {
+        char *end;
+        long long v = strtoll(p, &end, 0);
+        if (*end == '.' || *end == 'e' || *end == 'E') {
+            a->kind = CA_FLOAT;
+            a->f = strtod(p, &end);
+        } else {
+            a->kind = CA_INT;
+            a->i = v;
+        }
+        *s = end;
+        return true;
+    }
+    if (isalpha((unsigned char)*p) || *p == '_' || *p == '$') {
+        const char *q = p;
+        while (isalnum((unsigned char)*q) || *q == '_' || *q == '$' || *q == '.') q++;
+        char *name = xstrndup(p, (size_t)(q - p));
+        *s = q;
+        if (!strcmp(name, "null")) a->kind = CA_NULL;
+        else if (!strcmp(name, "true") || !strcmp(name, "false")) a->kind = CA_INT, a->i = name[0] == 't';
+        else if (dbg_parse_reg(name, &a->reg)) a->kind = CA_REG;
+        else {
+            a->kind = CA_VAR;
+            a->text = name;
+            return true;
+        }
+        free(name);
+        return true;
+    }
+    return *why = "expected a register, a variable's name, a number, a string, true, false or null", false;
+}
+
+/* "a", or "a OP b" with OP one of == != < <= > >=. NULL, or why not. */
+static const char *parse_cond(const char *text, Cond *c) {
+    const char *s = text, *why = NULL;
+    memset(c, 0, sizeof *c);
+    if (!parse_arg(&s, &c->a, &why)) return why;
+    s = skip_ws(s);
+    static const struct { const char *t; uint8_t op; } OPS[] = {
+        {"==", CO_EQ}, {"!=", CO_NE}, {"<=", CO_LE}, {">=", CO_GE}, {"<", CO_LT}, {">", CO_GT}};
+    if (*s) {
+        size_t k = 0;
+        while (k < 6 && strncmp(s, OPS[k].t, strlen(OPS[k].t))) k++;
+        if (k == 6) return cond_free(c), "expected == != < <= > or >= after the first operand";
+        c->op = OPS[k].op;
+        s += strlen(OPS[k].t);
+        if (!parse_arg(&s, &c->b, &why)) return cond_free(c), why;
+        if (*skip_ws(s)) return cond_free(c), "something follows the condition";
+    }
+    return NULL;
+}
+
+/* An operand's value in the process's frame: false if it names no variable there. */
+static bool arg_value(const Process *p, const CondArg *a, Word *w, MlwsType *t) {
+    const Frame *fr = &p->frames[p->nframes - 1];
+    switch (a->kind) {
+    case CA_REG: {
+        int b = REG_BANK(a->reg), i = REG_IDX(a->reg);
+        if (b == BANK_S) {
+            w->i = (int64_t)p->pid, *t = T_I64;
+            return REG_IDX(a->reg) == SREG_PID;
+        }
+        if (i >= fr->fn->mf->nregs[b]) return false;
+        memcpy(w, frame_reg(p->regs, fr, b, i), sizeof *w);
+        *t = b == BANK_I ? T_I64 : b == BANK_F ? T_F64 : b == BANK_R ? T_R : T_P;
+        return true;
+    }
+    case CA_VAR: {
+        const MVar *v = dbg_var_at(fr->fn, fr->pc, a->text);
+        if (!v || !v->nregs) return false;
+        dbg_var_reg(p, fr, v, 0, w, t);
+        return true;
+    }
+    case CA_INT: w->i = a->i, *t = T_I64; return true;
+    case CA_FLOAT: w->f = a->f, *t = T_F64; return true;
+    case CA_NULL: w->r = NULL, *t = T_R; return true;
+    case CA_STR: w->r = NULL, *t = T_C; return true; /* (T_C: the literal itself, compared as text) */
+    default: return false;
+    }
+}
+
+static int cmp_num(double x, double y) { return x < y ? -1 : x > y ? 1 : 0; }
+
+/* Does the condition hold? An operand that names nothing here makes it hold:
+ * better to stop and show why than to pass by unseen. */
+static bool cond_holds(const Process *p, const Cond *c) {
+    Word x, y;
+    MlwsType tx, ty;
+    if (!arg_value(p, &c->a, &x, &tx)) return true;
+    if (c->op == CO_TRUE) return tx == T_F64 ? x.f != 0 : tx == T_R ? x.r != NULL : x.i != 0;
+    if (!arg_value(p, &c->b, &y, &ty)) return true;
+    int r; /* the comparison: -1, 0, 1, or 2 for unordered (only == and != mean anything) */
+    bool nx = tx == T_I64 || tx == T_F64, ny = ty == T_I64 || ty == T_F64;
+    if (nx && ny) {
+        r = tx == T_I64 && ty == T_I64 ? (x.i < y.i ? -1 : x.i > y.i) : cmp_num(tx == T_F64 ? x.f : (double)x.i, ty == T_F64 ? y.f : (double)y.i);
+    } else if ((tx == T_C || ty == T_C) && (tx == T_R || ty == T_R)) { /* a string literal and a value */
+        const Obj *o = tx == T_R ? x.r : y.r;
+        const char *lit = tx == T_C ? c->a.text : c->b.text;
+        if (!o || o->kind != OBJ_STRING) r = 2;
+        else {
+            const ObjString *str = (const ObjString *)o;
+            size_t ln = strlen(lit), m = str->len < ln ? str->len : ln;
+            int k = memcmp(str->data, lit, m);
+            r = k ? (k < 0 ? -1 : 1) : str->len < ln ? -1 : str->len > ln;
+            if (tx == T_C) r = -r;
+        }
+    } else if (tx == T_R && ty == T_R) {
+        const Obj *a = x.r, *b = y.r;
+        if (a && b && a->kind == OBJ_STRING && b->kind == OBJ_STRING) {
+            const ObjString *sa = (const ObjString *)a, *sb = (const ObjString *)b;
+            size_t m = sa->len < sb->len ? sa->len : sb->len;
+            int k = memcmp(sa->data, sb->data, m);
+            r = k ? (k < 0 ? -1 : 1) : sa->len < sb->len ? -1 : sa->len > sb->len;
+        } else r = a == b ? 0 : 2;
+    } else if (tx == T_P && ty == T_P) {
+        r = x.p == y.p ? 0 : 2;
+    } else {
+        r = 2;
+    }
+    switch (c->op) {
+    case CO_EQ: return r == 0;
+    case CO_NE: return r != 0;
+    case CO_LT: return r == -1;
+    case CO_LE: return r == -1 || r == 0;
+    case CO_GT: return r == 1;
+    default: return r == 1 || r == 0;
+    }
+}
+
+/* A logpoint's message, each {NAME} (a register or variable) replaced by its value. */
+static void log_message(Process *p, const char *msg) {
+    StrBuf b = {0};
+    for (const char *s = msg; *s; s++) {
+        const char *close = *s == '{' ? strchr(s, '}') : NULL;
+        if (!close) {
+            sb_putc(&b, *s);
+            continue;
+        }
+        char *name = xstrndup(s + 1, (size_t)(close - s - 1));
+        CondArg a;
+        const char *why, *q = name;
+        Word w;
+        MlwsType t;
+        if (parse_arg(&q, &a, &why) && !*skip_ws(q) && (a.kind == CA_REG || a.kind == CA_VAR) && arg_value(p, &a, &w, &t))
+            fmt_value(&b, w, t, 1);
+        else
+            sb_printf(&b, "{%s?}", name); /* nothing of that name here */
+        free(a.text);
+        free(name);
+        s = close;
+    }
+    if (atomic_load_explicit(&p->vm->mlog_on, memory_order_relaxed)) vm_mlog_put(p->vm, p, 1, NULL, b.s ? b.s : "", b.n);
+    sb_free(&b);
+}
+
+/* At a marked instruction: does a breakpoint there stop the process? Each one
+ * there whose condition holds is hit; a logpoint logs and lets it go on. (The
+ * breakpoints change only with the world stopped, so they are read freely.) */
+static bool break_here(Process *p, const Function *f, uint32_t pc) {
+    Tools *t = p->vm->tools;
+    if (!t || !t->pdbg) return true;
+    bool stop = false, any = false;
+    for (size_t i = 0; i < t->pdbg->bps.n; i++) {
+        PBreak *b = &t->pdbg->bps.v[i];
+        bool at = false;
+        for (size_t k = 0; k < b->at.n && !at; k++) at = b->at.v[k].fn == f && b->at.v[k].pc == pc;
+        if (!at) continue;
+        any = true;
+        if (b->cond_text && !cond_holds(p, &b->cond)) continue;
+        uint64_t n = __atomic_add_fetch(&b->hits, 1, __ATOMIC_RELAXED);
+        if ((b->hit_op == '>' && n < b->hit_n) || (b->hit_op == '=' && n != b->hit_n) || (b->hit_op == '%' && n % b->hit_n)) continue;
+        if (b->log) log_message(p, b->log);
+        else stop = true;
+    }
+    return stop || !any; /* (marked, but by nothing known: as before) */
 }
 
 /* ---- the hook ------------------------------------------------------------------ */
@@ -99,7 +336,7 @@ static bool pdebug_hook(Process *p, uint32_t pc) {
         }
         if (here) why = PDBG_STEP;
     }
-    if (!why && f->bp && pc < f->ncode && f->bp[pc]) why = PDBG_BREAKPOINT;
+    if (!why && f->bp && pc < f->ncode && f->bp[pc] && break_here(p, f, pc)) why = PDBG_BREAKPOINT;
     if (!why) { /* it begins this instruction (the scheduler: has it finished it, when the process next waits?) */
         d->at_fn = f, d->at_pc = pc, d->at_depth = p->nframes;
         return false;
@@ -276,7 +513,34 @@ static void break_json(StrBuf *b, const PBreak *k) {
         if (i) sb_putc(b, ',');
         where_json(b, k->at.v[i].fn, k->at.v[i].pc);
     }
-    sb_puts(b, "]}");
+    sb_putc(b, ']');
+    sb_puts(b, ",\"condition\":");
+    if (k->cond_text) js(b, k->cond_text);
+    else sb_puts(b, "null");
+    sb_puts(b, ",\"hit\":");
+    if (k->hit_op) sb_printf(b, "\"%s%llu\"", k->hit_op == '>' ? "" : k->hit_op == '=' ? "== " : "% ", (unsigned long long)k->hit_n);
+    else sb_puts(b, "null");
+    sb_puts(b, ",\"log\":");
+    if (k->log) js(b, k->log);
+    else sb_puts(b, "null");
+    sb_printf(b, ",\"hits\":%llu", (unsigned long long)__atomic_load_n(&k->hits, __ATOMIC_RELAXED));
+    sb_putc(b, '}');
+}
+
+/* "3" (from the third hit on), "== 3" (only the third), "% 3" (every third). */
+static bool parse_hit(const char *s, char *op, uint64_t *n) {
+    s = skip_ws(s);
+    *op = '>';
+    if (!strncmp(s, "==", 2)) *op = '=', s += 2;
+    else if (*s == '%') *op = '%', s++;
+    else if (!strncmp(s, ">=", 2)) s += 2;
+    s = skip_ws(s);
+    if (!isdigit((unsigned char)*s)) return false;
+    char *end;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (*skip_ws(end) || v == 0) return false;
+    *n = v;
+    return true;
 }
 
 static void breaks_json(StrBuf *b, PDebug *d) {
@@ -752,28 +1016,54 @@ int pdebug_post(VM *vm, const char *path, const char *body, size_t n, StrBuf *ou
     if (why) return fail(out, 409, why);
     pdebug_refresh(vm);
     if (!strcmp(path, "/breakpoints")) {
-        static const char *const NAMES[] = {"file", "line", "function"};
-        char *v[3] = {0};
-        bool ok = tools_json_flat(body, n, NAMES, v, 3) && ((v[0] && v[1] && !v[2]) || (v[2] && !v[0] && !v[1]));
+        static const char *const NAMES[] = {"file", "line", "function", "condition", "hit", "log"};
+        char *v[6] = {0};
+        bool ok = tools_json_flat(body, n, NAMES, v, 6) && ((v[0] && v[1] && !v[2]) || (v[2] && !v[0] && !v[1]));
         uint32_t line = ok && v[1] ? (uint32_t)strtoul(v[1], NULL, 10) : 0;
         if (!ok || (v[1] && !line) || (v[2] && !*v[2])) {
-            for (int i = 0; i < 3; i++) free(v[i]);
-            return fail(out, 400, "expected {\"file\": NAME, \"line\": N} or {\"function\": NAME}");
+            for (int i = 0; i < 6; i++) free(v[i]);
+            return fail(out, 400, "expected {\"file\": NAME, \"line\": N} or {\"function\": NAME}, with \"condition\", \"hit\" or \"log\" if wanted");
         }
-        for (size_t i = 0; i < d->bps.n; i++) { /* the same again: the one there */
+        /* The options: "" or null is none. */
+        for (int i = 3; i < 6; i++)
+            if (v[i] && (!*skip_ws(v[i]) || !strcmp(v[i], "null"))) free(v[i]), v[i] = NULL;
+        Cond cond = {0};
+        char hit_op = 0;
+        uint64_t hit_n = 0;
+        const char *bad = v[3] ? parse_cond(v[3], &cond) : NULL, *what = "the condition: ";
+        if (!bad && v[4] && !parse_hit(v[4], &hit_op, &hit_n))
+            bad = "it is N (from the Nth hit on), == N (only the Nth) or % N (every Nth)", what = "the hit count: ";
+        if (bad) {
+            cond_free(&cond);
+            StrBuf m = {0};
+            sb_printf(&m, "%s%s", what, bad);
+            for (int i = 0; i < 6; i++) free(v[i]);
+            int rc = fail(out, 400, m.s);
+            sb_free(&m);
+            return rc;
+        }
+        for (size_t i = 0; i < d->bps.n; i++) { /* one there already: it takes these options */
             PBreak *k = &d->bps.v[i];
             if ((v[2] && k->function && !strcmp(k->function, v[2])) || (v[0] && k->file && !strcmp(k->file, v[0]) && k->line == line)) {
+                free(k->cond_text);
+                cond_free(&k->cond);
+                free(k->log);
+                k->cond_text = v[3], k->cond = cond, k->hit_op = hit_op, k->hit_n = hit_n, k->log = v[5], k->hits = 0;
                 for (int j = 0; j < 3; j++) free(v[j]);
+                free(v[4]);
                 break_json(out, k);
                 return 200;
             }
         }
         if (d->bps.n >= 1000) {
-            for (int i = 0; i < 3; i++) free(v[i]);
+            for (int i = 0; i < 6; i++) free(v[i]);
+            cond_free(&cond);
             return fail(out, 409, "there are a thousand breakpoints already");
         }
-        PBreak k = {.id = ++d->next_id, .file = v[0], .function = v[2], .line = line};
+        PBreak k = {.id = ++d->next_id, .file = v[0], .function = v[2], .line = line,
+                    .cond_text = v[3], .cond = cond, .hit_op = hit_op, .hit_n = hit_n, .log = v[5]};
         free(v[1]);
+        free(v[4]);
         VEC_PUSH(d->bps, k);
         place_all(vm, d);
         break_json(out, &d->bps.v[d->bps.n - 1]);

@@ -43,6 +43,9 @@ typedef struct Worker {
     PlatLock *qlock;
     uint64_t *q; /* ring buffer of ready pids */
     size_t qcap, qhead, qlen;
+    _Atomic size_t qlen_hint; /* relaxed mirror of qlen, for fast same-process continuation */
+    _Atomic uint64_t slices;  /* per-worker slice counter (avoids contending on VM.slices) */
+    uint32_t run_streak;      /* consecutive fast-continued slices on current */
     Process *frag;    /* allocation target for outgoing messages (never runs) */
     Process *current; /* the process this worker is running, or NULL */
     PlatThread *thread;
@@ -239,6 +242,7 @@ static size_t q_push(Worker *w, uint64_t pid) {
     }
     w->q[(w->qhead + w->qlen) % w->qcap] = pid;
     size_t n = ++w->qlen;
+    atomic_store_explicit(&w->qlen_hint, n, memory_order_relaxed);
     plat_unlock(w->qlock);
     return n;
 }
@@ -252,6 +256,7 @@ static size_t q_take(Worker *w, uint64_t *out, size_t max) {
         w->qhead = (w->qhead + 1) % w->qcap;
     }
     w->qlen -= k;
+    atomic_store_explicit(&w->qlen_hint, w->qlen, memory_order_relaxed);
     plat_unlock(w->qlock);
     return k;
 }
@@ -668,9 +673,10 @@ void sched_send(Process *p, uint64_t pid, Word v, uint8_t tag) {
 }
 
 static void take_inbox_locked(Process *p) {
+    if (!p->inbox.n) return;
     for (size_t i = 0; i < p->inbox.n; i++) {
         InMsg *in = &p->inbox.v[i];
-        gc_adopt(p, in->objs, in->bytes, in->nobjs);
+        if (in->objs || in->bytes || in->nobjs) gc_adopt(p, in->objs, in->bytes, in->nobjs);
         Message m = {in->v, in->tag};
         VEC_PUSH(p->mbox, m);
     }
@@ -2115,6 +2121,33 @@ static bool after_slice(Worker *w, Process *p, int r) {
     return stop;
 }
 
+uint64_t sched_slices(const VM *vm) {
+    uint64_t total = atomic_load_explicit(&vm->slices, memory_order_relaxed);
+    const Sched *s = vm->sched;
+    if (s)
+        for (int i = 0; i < s->nworkers; i++)
+            total += atomic_load_explicit(&s->workers[i]->slices, memory_order_relaxed);
+    return total;
+}
+
+bool sched_fast_continue(const Process *p) {
+    Worker *w = tls_worker;
+    if (!w || w->current != p || p->cb_base || w->run_streak >= 64) return false;
+    const VM *vm = w->vm;
+    const Sched *s = vm->sched;
+    if (atomic_load_explicit(&s->done, memory_order_relaxed) ||
+        atomic_load_explicit(&s->stw, memory_order_relaxed) ||
+        atomic_load_explicit(&w->qlen_hint, memory_order_relaxed) ||
+        atomic_load_explicit(&p->kill_req, memory_order_relaxed) ||
+        atomic_load_explicit(&s->next_timer, memory_order_relaxed) ||
+        atomic_load_explicit(&s->io_waiting, memory_order_relaxed) ||
+        (w->id == 0 && vm->poll) || vm->stopped)
+        return false;
+    w->run_streak++;
+    atomic_store_explicit(&w->slices, atomic_load_explicit(&w->slices, memory_order_relaxed) + 1, memory_order_relaxed);
+    return true;
+}
+
 /* Returns true if a tool hook stopped the scheduler (single-threaded only). */
 static bool worker_loop(Worker *w) {
     VM *vm = w->vm;
@@ -2165,12 +2198,13 @@ static bool worker_loop(Worker *w) {
         take_inbox_locked(p);
         plat_unlock(p->lock);
         w->current = p;
+        w->run_streak = 0;
         int r = proc_run_slice(p, vm->slice_insns);
         uint64_t end = plat_now_ns();
         p->cpu_ns += end - now;
         now = end;
         w->current = NULL;
-        vm->slices++;
+        atomic_store_explicit(&w->slices, atomic_load_explicit(&w->slices, memory_order_relaxed) + 1, memory_order_relaxed);
         if (after_slice(w, p, r)) {
             stopped = true;
             break;
@@ -2240,7 +2274,10 @@ void sched_shutdown(VM *vm, Process *keep) {
             if (chunk[i] && chunk[i] != keep && !(chunk[i]->prog && chunk[i]->prog->main == chunk[i]))
                 proc_free(chunk[i]);
     }
-    for (int i = 0; i < s->nworkers; i++) s->workers[i]->qlen = 0;
+    for (int i = 0; i < s->nworkers; i++) {
+        s->workers[i]->qlen = 0;
+        atomic_store_explicit(&s->workers[i]->qlen_hint, 0, memory_order_relaxed);
+    }
     s->timers.n = 0;
     timers_changed(s);
     smap_free(&vm->registry); /* every named process is gone */
@@ -2329,6 +2366,7 @@ void sched_free(VM *vm) {
     for (uint32_t c = 0; c < PT_CHUNKS; c++) free(atomic_load(&s->chunks[c]));
     for (int i = 0; i < s->nworkers; i++) {
         Worker *w = s->workers[i];
+        vm->slices += atomic_load_explicit(&w->slices, memory_order_relaxed);
         heap_free_all(w->frag);
         free(w->frag);
         free(w->q);

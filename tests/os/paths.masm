@@ -1,0 +1,130 @@
+; std.path on POSIX: normalize as Go's filepath.Clean, dirname and basename
+; as Go's Dir and Base, ext and stem as Python's splitext (a name that is
+; only dots before its last one has no extension), join as written.
+; requires: posix
+; expect-stdout: normalize: [.] [a/c] [/a] [../../a] [../b] [a/b] [/] [.] [.] [.] [/] [..] [abc/def/jkl] [.] [..] [/a/b]
+; expect-stdout: dirname: [a/b] [.] [/] [/] [a/b] [.] [a] [/a]
+; expect-stdout: basename: [c.txt] [b] [/] [.] [a] [..] [/]
+; expect-stdout: ext: [.gz] [] [] [.txt] [] [.] [.c]
+; expect-stdout: stem: [a.tar] [README] [.bashrc] [c] [..] [a] [x]
+; expect-stdout: join: [a/b] [a/b] [/b] [b] [a/] [a/../b]
+; expect-stdout: is_absolute: true false false
+; expect-stdout: absolute: true true
+; expect-stdout: sep: /
+.include "std/test.inc"
+.include "std/io.inc"
+
+; each(name, native, list): "name: [r0] [r1] ..." for a one-argument path native
+.func each(ref title, ref fn, ref inputs)
+    PRINT_S title
+    PRINT_S ":"
+    len I0, inputs
+    mov I1, 0
+1:  bge I1, I0, 2f
+    mov R5, inputs[I1]
+    calli fn (R5) -> (R6)
+    strcat R7, " [", R6, "]"
+    PRINT_S R7
+    inc I1
+    jmp 1b
+2:  NL
+    ret
+.endf
+
+.func normalize(ref s) -> ref
+    ncall "path.normalize" (s) -> (R1)
+    ret R1
+.endf
+.func dirname(ref s) -> ref
+    ncall "path.dirname" (s) -> (R1)
+    ret R1
+.endf
+.func basename(ref s) -> ref
+    ncall "path.basename" (s) -> (R1)
+    ret R1
+.endf
+.func ext(ref s) -> ref
+    ncall "path.ext" (s) -> (R1)
+    ret R1
+.endf
+.func stem(ref s) -> ref
+    ncall "path.stem" (s) -> (R1)
+    ret R1
+.endf
+
+.func main
+    lnew R0
+    lpush R0, "", "a/./b/../c", "/../a", "../../a", "a/../../b", "a//b/", "/", ".", "./", "a/..", "/a/..", "../a/.."
+    lpush R0, "abc/def/ghi/../jkl", "a/b/c/../../..", "a/b/c/../../../..", "//a//b//"
+    closure normalize -> (R1)
+    call each ("normalize", R1, R0)
+
+    lnew R0
+    lpush R0, "a/b/c.txt", "c.txt", "/a", "/", "a/b/", "", "a//b", "/a/./b/../c"
+    closure dirname -> (R1)
+    call each ("dirname", R1, R0)
+
+    lnew R0
+    lpush R0, "a/b/c.txt", "a/b/", "/", "", "a", "..", "///"
+    closure basename -> (R1)
+    call each ("basename", R1, R0)
+
+    lnew R0
+    lpush R0, "a.tar.gz", "README", ".bashrc", "dir.d/c.txt", "..", "a.", "x.c/"
+    closure ext -> (R1)
+    call each ("ext", R1, R0)
+    closure stem -> (R1)
+    call each ("stem", R1, R0)
+
+    PRINT_S "join:"
+    ncall "path.join" ("a", "b") -> (R2)
+    strcat R3, " [", R2, "]"
+    PRINT_S R3
+    ncall "path.join" ("a/", "b") -> (R2)
+    strcat R3, " [", R2, "]"
+    PRINT_S R3
+    ncall "path.join" ("a", "/b") -> (R2)  ; an absolute second path wins
+    strcat R3, " [", R2, "]"
+    PRINT_S R3
+    ncall "path.join" ("", "b") -> (R2)
+    strcat R3, " [", R2, "]"
+    PRINT_S R3
+    ncall "path.join" ("a", "") -> (R2)
+    strcat R3, " [", R2, "/]"            ; (a, nothing added: shown with the / it lacks)
+    PRINT_S R3
+    ncall "path.join" ("a", "../b") -> (R2)  ; as written
+    strcat R3, " [", R2, "]"
+    PRINTLN_S R3
+
+    PRINT_S "is_absolute:"
+    ncall "path.is_absolute" ("/x") -> (I0)
+    tostr.b R2, I0
+    strcat R3, " ", R2
+    PRINT_S R3
+    ncall "path.is_absolute" ("x/y") -> (I0)
+    tostr.b R2, I0
+    strcat R3, " ", R2
+    PRINT_S R3
+    ncall "path.is_absolute" ("") -> (I0)
+    tostr.b R2, I0
+    strcat R3, " ", R2
+    PRINTLN_S R3
+
+    ncall "fs.cwd" () -> (R4)
+    ncall "path.absolute" ("x/../y") -> (R2)  ; the current directory's y
+    ncall "path.join" (R4, "y") -> (R5)
+    strcmp I0, R2, R5
+    seq I1, I0, 0
+    ncall "path.absolute" ("/p/./q/..") -> (R2)
+    strcmp I0, R2, "/p"
+    seq I2, I0, 0
+    tostr.b R2, I1
+    tostr.b R3, I2
+    strcat R6, "absolute: ", R2, " ", R3
+    PRINTLN_S R6
+
+    ncall "path.sep" () -> (R2)
+    strcat R3, "sep: ", R2
+    PRINTLN_S R3
+    ret 0
+.endf

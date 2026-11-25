@@ -1,0 +1,118 @@
+; web.masm - a small web service with std.http: a page, a JSON API, and a form
+; posted to it.
+;
+;     mlwsvm run examples/web.masm 8080      serve http://localhost:8080/
+;     mlwsvm run examples/web.masm           a self-test (what `make test` runs)
+;
+; std.http does the protocol: a process per connection, keep-alive, request
+; maps, Content-Length; this program is only its handler, a function from a
+; request (a map) to a response (a map, or a string for plain text). A
+; handler that fails costs one 500 response; the server goes on.
+;
+; expect-stdout: GET /: 200 text/html
+; expect-stdout: GET /api/sum?a=2&b=40: 200 {"a":2,"b":40,"sum":42}
+; expect-stdout: POST /greet: 200 Hello, Ada Lovelace!
+; expect-stdout: GET /nope: 404
+.include "std/io.inc"
+.import std.http as http
+
+; handle(request) -> response
+.func handle(ref req) -> ref
+    mget R1, req, "path"
+    strcmp I1, R1, "/"
+    bz I1, page
+    strcmp I1, R1, "/api/sum"
+    bz I1, sum
+    strcmp I1, R1, "/greet"
+    bz I1, greet
+    mnew R2
+    mset R2, "status", 404
+    mset R2, "body", "not found\n"
+    ret R2
+page:
+    mnew R2
+    mnew R3
+    mset R3, "Content-Type", "text/html; charset=utf-8"
+    mset R2, "headers", R3
+    mset R2, "body", "<!doctype html><title>MLWSVM</title><form method=post action=/greet><input name=name><button>Greet</button></form>\n"
+    ret R2
+sum:                                   ; /api/sum?a=1&b=2 -> JSON
+    mget R2, req, "query"
+    call http.query (R2) -> (R3)
+    mget R4, R3, "a", "0"
+    mget R5, R3, "b", "0"
+    parse.i64 I2, R4                   ; (not a number: E_PARSE, so a 500)
+    parse.i64 I3, R5
+    add I4, I2, I3
+    mnew R6
+    mset R6, "a", I2
+    mset R6, "b", I3
+    mset R6, "sum", I4
+    ncall "json.stringify" (R6, 0) -> (R7)
+    mnew R8
+    mnew R9
+    mset R9, "Content-Type", "application/json"
+    mset R8, "headers", R9
+    mset R8, "body", R7
+    ret R8
+greet:                                 ; a form's fields come as a query string in the body
+    mget R2, req, "body"
+    call http.query (R2) -> (R3)
+    mget R4, R3, "name", "stranger"
+    strcat R5, "Hello, ", R4, "!"
+    ret R5
+.endf
+
+; show(response, title): "TITLE: status" and its body or Content-Type
+.func show(ref title, ref resp, i64 what)
+    mget I1, resp, "status"
+    tostr R3, I1
+    strcat R4, title, ": ", R3
+    beq what, 0, 2f
+    beq what, 1, 1f
+    mget R5, resp, "headers"
+    mget R6, resp, "body"
+    mget R6, R5, "content-type"
+    ncall "text.split" (R6, ";") -> (R7)
+    mov R6, R7[0]
+    strcat R4, R4, " ", R6
+    jmp 2f
+1:  mget R6, resp, "body"
+    strcat R4, R4, " ", R6
+2:  PRINTLN_S R4
+    ret
+.endf
+
+.func main
+    ncall "os.args" () -> (R0)
+    len I0, R0
+    closure handle -> (R1)
+    bz I0, self_test
+    mov R2, R0[0]
+    parse.i64 I1, R2
+    call http.start ("", I1, R1) -> (I2, I3)  ; "": every address
+    lnew R3
+    lpush R3, I3
+    ncall "text.format" ("serving http://localhost:{}/", R3) -> (R4)
+    PRINTLN_S R4
+    ncall "io.flush" ()
+    sleep 2000000000                   ; until the program is stopped
+    ret 0
+self_test:
+    call http.start ("127.0.0.1", 0, R1) -> (I2, I3)
+    tostr R5, I3
+    strcat R6, "http://127.0.0.1:", R5
+    call http.get (R6, 5000) -> (R7)
+    call show ("GET /", R7, 2)
+    strcat R8, R6, "/api/sum?a=2&b=40"
+    call http.get (R8, 5000) -> (R7)
+    call show ("GET /api/sum?a=2&b=40", R7, 1)
+    strcat R8, R6, "/greet"
+    call http.post (R8, "application/x-www-form-urlencoded", "name=Ada+Lovelace", 5000) -> (R7)
+    call show ("POST /greet", R7, 1)
+    strcat R8, R6, "/nope"
+    call http.get (R8, 5000) -> (R7)
+    call show ("GET /nope", R7, 0)
+    kill I2
+    ret 0
+.endf

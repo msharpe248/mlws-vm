@@ -172,6 +172,37 @@ long plat_stdin_read(void *buf, size_t n, uint64_t timeout_ns) {
     return ReadFile(h, buf, (DWORD)n, &got, NULL) ? (long)got : 0;
 }
 
+static WFd saved_stdin; /* plat_stdin_feed: table entry 0 as it was */
+static HANDLE saved_std;
+static bool stdin_fed;
+
+bool plat_stdin_feed(const char *data, size_t n) {
+    HANDLE r, w;
+    if (stdin_fed || n > 0x10000 || !CreatePipe(&r, &w, NULL, (DWORD)n + 4096)) return false;
+    DWORD put = 0;
+    BOOL ok = n ? WriteFile(w, data, (DWORD)n, &put, NULL) : TRUE;
+    CloseHandle(w);
+    if (!ok || put != n) {
+        CloseHandle(r);
+        return false;
+    }
+    InitOnceExecuteOnce(&std_once, std_init, NULL, NULL);
+    saved_stdin = *slot(0);
+    *slot(0) = (WFd){.kind = WFD_PIPE, .h = r};
+    saved_std = GetStdHandle(STD_INPUT_HANDLE);
+    SetStdHandle(STD_INPUT_HANDLE, r);
+    stdin_fed = true;
+    return true;
+}
+
+void plat_stdin_restore(void) {
+    if (!stdin_fed) return;
+    CloseHandle(slot(0)->h);
+    *slot(0) = saved_stdin;
+    SetStdHandle(STD_INPUT_HANDLE, saved_std);
+    stdin_fed = false;
+}
+
 bool plat_make_executable(const char *path) {
     (void)path; /* the name says it */
     return true;

@@ -105,6 +105,7 @@ void dbg_clear_spec(Debugger *d, const char *spec);
  * by its module's formatter for its registers (`.debug_format`), run in a
  * sandboxed process of its own, else its value, or each of its registers. */
 const MVar *dbg_var_at(const Function *f, uint32_t pc, const char *name);
+bool dbg_parse_reg(const char *s, uint8_t *reg); /* "I3", "F0", "R12", "P1", SP, FP, PID */
 void dbg_var_reg(const Process *p, const Frame *fr, const MVar *v, int k, Word *w, MlwsType *t);
 void dbg_show_var(Process *p, const Frame *fr, const MVar *v, int depth, StrBuf *out);
 void dbg_var_regs(StrBuf *b, const MVar *v); /* "I3, F3, R3" */

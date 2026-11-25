@@ -9,11 +9,13 @@ restricts them.
 | Module | Contents |
 |---|---|
 | `io`, `str`, `gc`, `test` | printing, string bytes, the collector, test failures |
-| `fs` | files, standard streams, directories, metadata |
+| `fs` | files, standard streams, directories, metadata, copies, temporary directories |
+| `path` | names of files as text: joining, normalizing, the directory, name and extension |
 | `os` | arguments, the environment, exit, running commands |
 | `net`, `tls` | TCP, UDP, DNS, TLS |
+| `std.http` | HTTP/1.1: a server with a handler, its parts, and a client |
 | `text`, `json`, `regex` | formatting, string utilities, UTF-8, JSON, regular expressions |
-| `proc`, `std.supervisor`, `std.server` | the process count, a name registry, request/reply calls, supervisors, generic servers |
+| `proc`, `std.supervisor`, `std.server`, `std.pool` | the process count, a name registry, request/reply calls, supervisors, generic servers, worker pools |
 | `std.node` | processes on other VMs |
 | `env` | environments: values a set of processes shares, from `.mlws.env` files |
 | `weak` | weak references and weak maps (and `gc.finalize`) |
@@ -75,6 +77,37 @@ Handles belong to their process and cannot be sent to another (`E_TYPE`).
   when the program calls `io.flush`, which also writes out the calling
   process's unfinished line.
 * Seeking (`fs.seek`) works on files only.
+
+## Paths and files
+
+```asm
+    ncall "path.join" (dir, "sales.csv") -> (R0)    ; dir/sales.csv
+    ncall "path.ext" (R0) -> (R1)                   ; ".csv"
+    ncall "path.normalize" ("a/./b/../c") -> (R2)   ; a/c
+    ncall "fs.make_temp_dir" ("myapp-") -> (R3)     ; a new directory only its owner can use
+    ncall "fs.copy" (R0, R4)
+```
+
+* **`path.*` work on text.** They never look at the disk or follow links, and
+  are not OS calls (quota 5) or limited by a sandbox, except
+  `path.absolute`, which reads the current directory. On Windows they read
+  `/` and `\` alike, write `\`, and keep a drive (`C:`) or a share
+  (`\\server\share`) at the front, as Go's `path/filepath` does.
+* `path.normalize` is Go's `filepath.Clean`: one separator between names, no
+  `.`, a `..` taken back with the name before it, `.` for nothing. It is only
+  text: `a/link/..` is `a` even when `link` leads elsewhere.
+  `path.dirname` and `path.basename` are Go's `Dir` and `Base` (`a/b/` is
+  `a/b` and `b`). `path.ext` and `path.stem` split the last name as Python's
+  `splitext` does: `.gz` and `a.tar` for `a.tar.gz`, and nothing for
+  `.bashrc`, a name that is all extension. `path.join` joins as written,
+  with the second path whole if it is absolute.
+* `fs.copy(from, to)` copies a file's contents, over `to` if it is there, but
+  not its permissions or times. It needs `read` of `from` and `write` of `to`.
+* `fs.temp_dir()` is `$TMPDIR` or `/tmp` (on Windows, `GetTempPath`'s).
+  `fs.make_temp_dir(prefix)` makes a directory there named the prefix and
+  random characters, never one that was there already, that only its owner
+  can use (`mkdtemp`'s mode 0700), and needs `write` of the temp directory.
+  Removing it is the program's to do.
 
 ## Networking
 
@@ -189,7 +222,9 @@ as in Python and Rust:
 | type `q` | a string quoted, with escapes |
 
 Without a type, every value has a natural form: integers in decimal, floats
-in the shortest form that round-trips, `true`/`false`, characters as
+in the fewest digits that read back as the same float (plain from 1e-4 up to
+1e16, `210` and `0.001`, and with an exponent outside it, `1e+16` and
+`1e-05`), `true`/`false`, characters as
 themselves, BigInts and decimals exactly, and other objects as a description.
 The arguments are typed list elements, so a mismatch (`{:x}` of a string, a
 missing argument) is an error (`E_TYPE`, `E_BOUNDS`), never a crash. This
@@ -738,6 +773,77 @@ any message the new version's code sends. Messages are references (a number
 sent to it fails it with `E_TYPE`), and a callback that raises ends it with
 that error, as a failure, for its links and monitors. It is MLWSVM assembly
 (`lib/std/server.masm`).
+
+### Worker pools (`std.pool`)
+
+```asm
+.import std.pool as pool
+    closure resize -> (R0)                    ; the work: resize(ref job) -> ref
+    call pool.start (R0, 4) -> (I0)          ; four workers
+    call pool.run (I0, job, 5000) -> (R1)    ; one job: its result, or what it raised
+    call pool.map (I0, jobs, 60000) -> (R2)  ; a list of jobs at once: their results, in order
+    send I0, "stop"
+```
+
+A pool runs one function on many jobs with no more running at a time than
+it has workers: a bound on how much of a machine (or of a database, or of
+another service) a program uses at once. The pool is a process; each job is
+a call to it, which it hands to a free worker or keeps until one is free, and
+the worker answers the caller itself. Jobs and results are references.
+
+* A job that raises raises the same error in the caller of `pool.run`, and
+  its worker goes on to the next.
+* A worker that ends (killed, or out of a quota) is replaced at once, and its
+  caller gets the error that ended it (`E_EXITED` if it simply returned).
+* The timeout covers waiting for a worker as well as the work.
+* `pool.map` gives each job to a process of its own, which calls the pool,
+  and gathers the answers in another, so nothing is taken from the caller's
+  mailbox (there is no selective receive). If jobs raise, it raises the first
+  error once all have finished.
+* `"stop"` ends the pool and its workers; they also end if the pool fails.
+
+It is MLWSVM assembly (`lib/std/pool.masm`), built on `proc.call` and
+`proc.reply` as `std.server` is.
+
+### HTTP (`std.http`)
+
+```asm
+.import std.http as http
+    closure handle -> (R0)                                 ; handle(request) -> response
+    call http.start ("127.0.0.1", 8080, R0) -> (I0, I1)  ; the server's pid, and its port
+    call http.get ("https://example.org/", 5000) -> (R1)  ; {"status", "headers", "body"}
+    call http.post (url, "application/json", text, 5000) -> (R2)
+```
+
+* **Requests and responses are maps.** A request has `method`, `path`,
+  `query` (after the `?`, or `""`), `version`, `headers` (names in lower
+  case; a header said twice is one value, joined with `", "`), `body` (a
+  string) and `keep_alive`. A handler returns a map of `status` (200 if it
+  has none), `headers` and `body`, or just a string, which is a 200 of text.
+  `http.query(text)` makes a map of a query string or a form's body.
+* **The server** listens where `start` is called (so `E_ADDR_IN_USE` is
+  raised there), and serves each connection in a process of its own, request
+  after request, until the client closes it or it is idle for 30 s. It adds
+  `Content-Length`, a text `Content-Type` if a body has none, and
+  `Connection`. A handler that raises makes a 500, and its error goes to the
+  monitor's log; the connection closes and the server goes on. Killing its
+  pid stops it taking connections.
+* **Limits:** a request line or header of 16 KiB, 100 headers, a body of 16
+  MiB (by `Content-Length` or chunked); beyond them, a 400 or 413. These come
+  from `fs.set_line_max`, which makes `fs.read_line` on a handle refuse a
+  longer line (`E_RANGE`): without it, a peer that never ends a line makes
+  it read for ever.
+* **The client** sends one request on a connection of its own (`Connection:
+  close`), over TLS for `https`, the certificate checked against the
+  system's authorities. Its timeout is for connecting and for each wait. It
+  reads a body by `Content-Length`, in chunks, or up to the connection's end,
+  and skips `100 Continue`. `request(method, url, headers, body, timeout)`
+  does any method.
+* `http.read_request` and `http.write_response` are the server's parts, for
+  a server of your own (one that hands a connection over to WebSocket, say).
+
+It is MLWSVM assembly (`lib/std/http.masm`). [`examples/web.masm`](../examples/web.masm)
+is a small service built on it.
 
 ### Example: `examples/http_server.masm`
 

@@ -1,0 +1,130 @@
+; wc.masm - count the lines, words and bytes of files or standard input, as
+; Unix's wc.
+;
+;     mlwsvm run examples/wc.masm [FILE...]
+;     mlwsvm run examples/wc.masm < examples/data/poem.txt
+;
+; A word is a run of bytes that are not white space (space, tab, newline,
+; carriage return, vertical tab, form feed). It reads 64 KiB at a time and
+; looks at each byte of the buffer, so a word split across two reads is still
+; one word. With more than one file it ends with a total.
+;
+; args: examples/data/poem.txt -
+; stdin: one two  three
+; stdin:
+; stdin:   four
+; expect-stdout:        2       7      34 examples/data/poem.txt
+; expect-stdout:        3       4      23 -
+; expect-stdout:        5      11      57 total
+.include "std/io.inc"
+
+.struct Counts
+    lines: i64
+    words: i64
+    bytes: i64
+    in_word: i64                       ; the last byte read was part of a word
+.ends
+
+; count(in, c): add everything `in` holds to c
+.func count(ref in, ref c)
+    .alias buf, R2
+    .alias n, I0
+    .alias i, I1
+    .alias b, I2
+    .alias lines, I3
+    .alias words, I4
+    .alias in_word, I5
+    mov lines, c->Counts.lines         ; in registers while the loop runs
+    mov words, c->Counts.words
+    mov in_word, c->Counts.in_word
+read:
+    ncall "fs.read" (in, 65536) -> (buf)
+    len n, buf
+    bz n, done
+    add c->Counts.bytes, n
+    mov i, 0
+byte:
+    bge i, n, read
+    mov.u8 b, buf[i]
+    inc i
+    beq b, 10, newline
+    beq b, 32, space
+    blt b, 9, letter
+    ble b, 13, space                   ; 9 to 13: tab, newline, vt, ff, cr
+letter:
+    bnz in_word, byte
+    mov in_word, 1
+    inc words
+    jmp byte
+newline:
+    inc lines
+space:
+    mov in_word, 0
+    jmp byte
+done:
+    mov c->Counts.lines, lines
+    mov c->Counts.words, words
+    mov c->Counts.in_word, in_word
+    ret
+.endf
+
+; report(c, name): the three counts, then the name (if not null)
+.func report(ref c, ref name)
+    lnew R2
+    lpush R2, c->Counts.lines, c->Counts.words, c->Counts.bytes
+    ncall "text.format" ("{:>8}{:>8}{:>8}", R2) -> (R3)
+    bz.r name, 1f
+    strcat R3, R3, " ", name
+1:  PRINTLN_S R3
+    ret
+.endf
+
+.func main
+    .alias args, R0
+    .alias total, R1
+    .alias c, R2
+    .alias n, I0
+    .alias i, I1
+    .alias status, I2
+    ncall "os.args" () -> (args)
+    len n, args
+    bnz n, 1f
+    new c, Counts
+    ncall "fs.stdin" () -> (R3)
+    call count (R3, c)
+    call report (c, null)
+    ret 0
+1:  new total, Counts
+    mov status, 0
+    mov i, 0
+each:
+    bge i, n, last
+    mov R4, args[i]
+    inc i
+    new c, Counts
+    strcmp I3, R4, "-"
+    bnz I3, 2f
+    ncall "fs.stdin" () -> (R3)
+    jmp 3f
+2:
+.try unreadable
+    ncall "fs.open" (R4, "r") -> (R3)
+.endtry
+3:  call count (R3, c)
+    call report (c, R4)
+    add total->Counts.lines, c->Counts.lines
+    add total->Counts.words, c->Counts.words
+    add total->Counts.bytes, c->Counts.bytes
+    jmp each
+unreadable:
+    catch R5
+    strcat R6, "wc: ", R5->Error.message, "\n"
+    ncall "fs.stderr" () -> (R7)
+    ncall "fs.write" (R7, R6)
+    mov status, 1
+    jmp each
+last:
+    ble n, 1, 4f
+    call report (total, "total")
+4:  ret status
+.endf

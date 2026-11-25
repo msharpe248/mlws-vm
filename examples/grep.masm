@@ -1,0 +1,145 @@
+; grep.masm - print the lines that match a regular expression, as grep -E.
+;
+;     mlwsvm run examples/grep.masm [-i] [-n] [-v] PATTERN [FILE...]
+;     mlwsvm run examples/grep.masm -n 'c[a-z]+' examples/data/poem.txt
+;
+; -i ignores case, -n puts each line's number before it, and -v prints the
+; lines that do not match. With no files it reads standard input; with more
+; than one it puts the file's name before each line. The exit code is 0 if a
+; line was printed, 1 if none was, and 2 for a bad pattern or a file that
+; cannot be read, as grep's.
+;
+; The patterns are MLWSVM's regular expressions (docs/STDLIB.md, "Regular
+; expressions"): a match takes time linear in the line, whatever the pattern.
+;
+; args: -n -i ^(the|on)\s
+; stdin: The fog comes
+; stdin: on little cat feet.
+; stdin: It sits looking
+; stdin: over harbor and city
+; expect-stdout: 1:The fog comes
+; expect-stdout: 2:on little cat feet.
+.include "std/io.inc"
+
+; search(in, re, invert, numbers, label) -> how many lines were printed.
+; label is null, or the file's name to put before each line.
+.func search(ref in, ref re, i64 invert, i64 numbers, ref label) -> i64
+    .alias line, R5
+    .alias out, R6
+    .alias n, I5                       ; this line's number
+    .alias printed, I6
+    mov n, 0
+    mov printed, 0
+next:
+    ncall "fs.read_line" (in) -> (line)   ; null at the end of input
+    bz.r line, done
+    inc n
+    ncall "regex.test" (re, line) -> (I7)
+    beq I7, invert, next               ; matched xor -v: printed
+    inc printed
+    mov out, ""
+    bz.r label, 1f
+    strcat out, label, ":"
+1:  bz numbers, 2f
+    tostr.i64 R7, n
+    strcat out, out, R7, ":"
+2:  strcat out, out, line
+    PRINTLN_S out
+    jmp next
+done:
+    ret printed
+.endf
+
+.func usage
+    ncall "fs.stderr" () -> (R0)
+    ncall "fs.write" (R0, "usage: grep.masm [-i] [-n] [-v] PATTERN [FILE...]\n")
+    ret
+.endf
+
+.func main
+    .alias args, R0
+    .alias re, R1
+    .alias flags, R2
+    .alias label, R3
+    .alias nargs, I0
+    .alias i, I1
+    .alias invert, I2
+    .alias numbers, I3
+    .alias printed, I4
+    .alias failed, I5
+    ncall "os.args" () -> (args)
+    len nargs, args
+    mov i, 0
+    mov flags, ""
+    mov invert, 0
+    mov numbers, 0
+options:                               ; -i, -n and -v, each on its own
+    bge i, nargs, bad_usage
+    mov R4, args[i]
+    strcmp I6, R4, "-i"
+    bnz I6, 1f
+    mov flags, "i"
+    jmp 3f
+1:  strcmp I6, R4, "-n"
+    bnz I6, 2f
+    mov numbers, 1
+    jmp 3f
+2:  strcmp I6, R4, "-v"
+    bnz I6, pattern
+    mov invert, 1
+3:  inc i
+    jmp options
+pattern:
+.try bad_pattern
+    ncall "regex.compile" (R4, flags) -> (re)
+.endtry
+    inc i
+    mov printed, 0
+    mov failed, 0
+    mov label, null
+    sub I6, nargs, i                   ; how many files
+    bnz I6, files
+    ncall "fs.stdin" () -> (R5)
+    call search (R5, re, invert, numbers, label) -> (printed)
+    jmp finish
+files:
+    ble I6, 1, each
+    mov label, ""                      ; more than one: name each line's file
+each:
+    bge i, nargs, finish
+    mov R4, args[i]
+    bz.r label, 4f
+    mov label, R4
+4:
+.try unreadable
+    ncall "fs.open" (R4, "r") -> (R5)
+    call search (R5, re, invert, numbers, label) -> (I7)
+.endtry
+    ncall "fs.close" (R5)
+    add printed, I7
+    inc i
+    jmp each
+unreadable:
+    catch R6
+    strcat R7, "grep: ", R6->Error.message, "\n"
+    ncall "fs.stderr" () -> (R8)
+    ncall "fs.write" (R8, R7)
+    mov failed, 1
+    inc i
+    jmp each
+finish:
+    bnz failed, 5f
+    bz printed, 6f
+    ret 0
+5:  ret 2
+6:  ret 1
+bad_pattern:
+    catch R6
+    strcat R7, "grep: ", R6->Error.message, "\n"
+    ncall "fs.stderr" () -> (R8)
+    ncall "fs.write" (R8, R7)
+    ret 2
+bad_usage:
+    call usage ()
+    ret 2
+.endf

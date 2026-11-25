@@ -23,11 +23,10 @@ Obj *gc_alloc_slow(Process *p, uint8_t kind, size_t size);
 static inline Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
     size_t n = (size + 15) & ~(size_t)15;
     unsigned char *b = p->bump;
-    uint64_t hb = p->heap_bytes + size;
     if (__builtin_expect(size <= GC_SMALL_MAX && !((1u << kind) & GC_OWNER_KINDS) &&
-                             (size_t)(p->bump_lim - b) >= n && hb < p->alloc_limit, 1)) {
+                             (uintptr_t)p->bump_lim - (uintptr_t)b >= n, 1)) {
         p->bump = b + n;
-        p->heap_bytes = hb;
+        p->heap_bytes += size;
         Obj *o = (Obj *)b;
         o->kind = kind;
         o->slab = (uint16_t)(n / 16);

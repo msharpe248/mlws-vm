@@ -212,7 +212,7 @@ OP(STRCMP, 0x00B2, "strcmp", "Strings", "JOO", 0, 0,
 OP(STRFIND,0x00B3, "strfind","Strings", "JOOQ?", 0, 0,
    "`strfind dst, s, needle [, start]`: byte offset of the first occurrence of needle at or after start (default 0), or -1.")
 OP(TOSTR,  0x00B4, "tostr",  "Strings", "XV", TS_ANY, OPF_PERVAL,
-   "Convert a value to a new string, using the instruction type or the value's natural type: integers in decimal, floats in shortest round-trip form, bools as true/false, chars as UTF-8. A string converts to itself, a byte buffer to a copy, and other objects to a description such as <list len=3>.")
+   "Convert a value to a new string, using the instruction type or the value's natural type: integers in decimal, floats in the fewest digits that read back the same (plain from 1e-4 up to 1e16, with an exponent outside it), bools as true/false, chars as UTF-8. A string converts to itself, a byte buffer to a copy, and other objects to a description such as <list len=3>.")
 OP(PARSE,  0x00B5, "parse",  "Strings", "DO", TS_NUM | TS_BIGDEC, 0,
    "Parse a number from the whole string: `parse.i64 I0, s` (decimal, or 0x/0b/0o prefixed), `parse.f64 F0, s`. Anything else traps E_PARSE.")
 OP(BUFNEW, 0x00B6, "bufnew", "Strings", "XQ", 0, 0,

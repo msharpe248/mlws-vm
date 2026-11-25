@@ -1,0 +1,89 @@
+; std.path on Windows: both separators read, backslashes written; drive
+; letters ("C:") and shares ("\\server\share") are a path's volume, kept
+; before what is normalized, as Go's filepath does.
+; requires: windows
+; expect-stdout: normalize: [C:\a\c] [C:\a\b] [C:.] [C:..] [\\server\share\y] [\\server\share\x] [a\b\c] [\]
+; expect-stdout: dirname: [C:\a] [C:\] [C:.] [\\server\share\] [\\server\share]
+; expect-stdout: basename: [b.txt] [\] [.] [b]
+; expect-stdout: is_absolute: true false true true true false
+; expect-stdout: join: [C:\a\b] [D:\b] [C:b] [a/b]
+; expect-stdout: sep: \
+.include "std/io.inc"
+
+.func show(ref s)
+    strcat R1, " [", s, "]"
+    PRINT_S R1
+    ret
+.endf
+
+.func flag(i64 b)
+    tostr.b R1, b
+    strcat R1, " ", R1
+    PRINT_S R1
+    ret
+.endf
+
+.func main
+    PRINT_S "normalize:"
+    lnew R0
+    lpush R0, "C:\\a\\.\\b\\..\\c", "C:/a/b", "C:", "C:a\\..\\..", "\\\\server\\share\\x\\..\\y", "//server/share/x", "a/b\\c", "/"
+    len I0, R0
+    mov I1, 0
+1:  bge I1, I0, 2f
+    mov R2, R0[I1]
+    ncall "path.normalize" (R2) -> (R3)
+    call show (R3)
+    inc I1
+    jmp 1b
+2:  NL
+    PRINT_S "dirname:"
+    lnew R0
+    lpush R0, "C:\\a\\b.txt", "C:\\b.txt", "C:b.txt", "\\\\server\\share\\f", "\\\\server\\share"
+    len I0, R0
+    mov I1, 0
+3:  bge I1, I0, 4f
+    mov R2, R0[I1]
+    ncall "path.dirname" (R2) -> (R3)
+    call show (R3)
+    inc I1
+    jmp 3b
+4:  NL
+    PRINT_S "basename:"
+    lnew R0
+    lpush R0, "C:\\a\\b.txt", "C:\\", "C:", "a/b"
+    len I0, R0
+    mov I1, 0
+5:  bge I1, I0, 6f
+    mov R2, R0[I1]
+    ncall "path.basename" (R2) -> (R3)
+    call show (R3)
+    inc I1
+    jmp 5b
+6:  NL
+    PRINT_S "is_absolute:"
+    lnew R0
+    lpush R0, "C:\\x", "C:x", "\\\\server\\share", "\\x", "/x", "x"
+    len I0, R0
+    mov I1, 0
+7:  bge I1, I0, 8f
+    mov R2, R0[I1]
+    ncall "path.is_absolute" (R2) -> (I2)
+    call flag (I2)
+    inc I1
+    jmp 7b
+8:  NL
+    PRINT_S "join:"
+    ncall "path.join" ("C:\\a", "b") -> (R3)
+    call show (R3)
+    ncall "path.join" ("a", "D:\\b") -> (R3)
+    call show (R3)
+    ncall "path.join" ("a", "C:b") -> (R3)    ; a drive of its own: it wins
+    call show (R3)
+    ncall "path.join" ("a/", "b") -> (R3)     ; a separator already there
+    call show (R3)
+    NL
+    ncall "path.sep" () -> (R3)
+    strcat R3, "sep: ", R3
+    PRINTLN_S R3
+    ret 0
+.endf

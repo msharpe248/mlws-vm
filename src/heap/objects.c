@@ -263,15 +263,43 @@ static int64_t find_slot(const ObjMap *m, Word key, uint8_t ktag, uint32_t h) {
     }
 }
 
+/* Like find_slot, and on a miss records the first empty or deleted slot in
+ * *ins_slot so map_set can insert without probing a second time. */
+static int64_t find_slot_ins(const ObjMap *m, Word key, uint8_t ktag, uint32_t h, int64_t *ins_slot) {
+    if (!m->index_cap) {
+        *ins_slot = -1;
+        return -1;
+    }
+    uint32_t mask = m->index_cap - 1;
+    int64_t first_del = -1;
+    for (uint32_t i = h & mask;; i = (i + 1) & mask) {
+        int32_t e = m->index[i];
+        if (e == -1) {
+            *ins_slot = first_del >= 0 ? first_del : (int64_t)i;
+            return -1;
+        }
+        if (e >= 0) {
+            const MapEntry *me = &m->entries[e];
+            if (me->hash == h && key_eq(me->key, me->ktag, key, ktag)) return i;
+        } else if (first_del < 0) {
+            first_del = (int64_t)i;
+        }
+    }
+}
+
 MapEntry *map_find(ObjMap *m, Word key, uint8_t ktag) {
     int64_t slot = find_slot(m, key, ktag, key_hash(key, ktag));
     return slot < 0 ? NULL : &m->entries[m->index[slot]];
 }
 
-/* Compact live entries into a table of `cap` entries and rebuild the index. */
+/* Compact live entries into a table of `cap` entries and rebuild the index
+ * (entries and index live in one contiguous allocation). */
 static void map_rebuild(Process *p, ObjMap *m, uint32_t cap) {
     size_t before = obj_footprint(&m->h);
-    MapEntry *ne = xcalloc(cap, sizeof(MapEntry));
+    uint32_t icap = 8;
+    while (icap < cap * 2) icap *= 2;
+    MapEntry *ne = xmalloc((size_t)cap * sizeof(MapEntry) + (size_t)icap * sizeof(int32_t));
+    int32_t *ni = (int32_t *)(ne + cap);
     uint32_t n = 0;
     for (uint32_t i = 0; i < m->nentries; i++)
         if (m->entries[i].live) ne[n++] = m->entries[i];
@@ -279,23 +307,22 @@ static void map_rebuild(Process *p, ObjMap *m, uint32_t cap) {
     m->entries = ne;
     m->entry_cap = cap;
     m->nentries = n;
-    uint32_t icap = 8;
-    while (icap < cap * 2) icap *= 2;
-    free(m->index);
-    m->index = xmalloc(icap * sizeof(int32_t));
-    for (uint32_t i = 0; i < icap; i++) m->index[i] = -1;
+    memset(ni, 0xFF, (size_t)icap * sizeof(int32_t)); /* -1 */
+    m->index = ni;
     m->index_cap = icap;
+    uint32_t mask = icap - 1;
     for (uint32_t i = 0; i < n; i++) {
-        uint32_t j = ne[i].hash & (icap - 1);
-        while (m->index[j] != -1) j = (j + 1) & (icap - 1);
-        m->index[j] = (int32_t)i;
+        uint32_t j = ne[i].hash & mask;
+        while (ni[j] != -1) j = (j + 1) & mask;
+        ni[j] = (int32_t)i;
     }
     gc_account(p, (int64_t)obj_footprint(&m->h) - (int64_t)before);
 }
 
 void map_set(Process *p, ObjMap *m, Word key, uint8_t ktag, Word val, uint8_t vtag) {
     uint32_t h = key_hash(key, ktag);
-    int64_t slot = find_slot(m, key, ktag, h);
+    int64_t ins = -1;
+    int64_t slot = find_slot_ins(m, key, ktag, h, &ins);
     if (slot >= 0) {
         MapEntry *e = &m->entries[m->index[slot]];
         e->val = val;
@@ -307,6 +334,9 @@ void map_set(Process *p, ObjMap *m, Word key, uint8_t ktag, Word val, uint8_t vt
         uint32_t cap = m->count < m->entry_cap / 2 ? m->entry_cap : (m->entry_cap ? m->entry_cap * 2 : 8);
         if (m->count + 1 >= (uint32_t)MAX_WORDS) vm_trap(p, "E_BAD_ALLOC", "map too large");
         map_rebuild(p, m, cap);
+        uint32_t mask = m->index_cap - 1, j = h & mask;
+        while (m->index[j] >= 0) j = (j + 1) & mask;
+        ins = (int64_t)j;
     }
     uint32_t idx = m->nentries++;
     MapEntry *e = &m->entries[idx];
@@ -319,10 +349,7 @@ void map_set(Process *p, ObjMap *m, Word key, uint8_t ktag, Word val, uint8_t vt
     m->count++;
     gc_write_word(p, &m->h, key, ktag);
     gc_write_word(p, &m->h, val, vtag);
-    uint32_t mask = m->index_cap - 1;
-    uint32_t j = h & mask;
-    while (m->index[j] >= 0) j = (j + 1) & mask; /* reuse deleted (-2) or empty (-1) slots */
-    m->index[j] = (int32_t)idx;
+    m->index[ins] = (int32_t)idx;
 }
 
 static void delete_at(ObjMap *m, MapEntry *e, uint32_t slot) {

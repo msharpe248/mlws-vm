@@ -9,6 +9,7 @@
 #include <math.h>
 
 #include "../core/arith.h"
+#include "../core/regflow.h"
 #include "../heap/heap.h"
 #include "../heap/numeric.h"
 #include "../platform/platform.h"
@@ -53,6 +54,7 @@ typedef struct {
     uint32_t budget;   /* instructions the slice may run */
     uint32_t hleft;    /* with a tool's hook: instructions left (the handlers' `left` stays 0) */
     bool hooked;
+    bool stepping;     /* inside jit_step: h_slice must return SLICE_YIELD immediately */
     /* the JIT's (jit.inc): values passed between machine code (results, a
      * tail call's arguments); where a stepped instruction goes on, or its
      * status; on x86-64, the machine stack's base and limit in machine code */
@@ -334,13 +336,31 @@ static MlwsType mem_natural(const Loc *L) {
 }
 
 /* VM memory is little-endian on every host. */
-static uint64_t ld_le(const uint8_t *m, int n) {
+static inline uint64_t ld_le(const uint8_t *m, int n) {
+#if !MLWS_BIG_ENDIAN
+    switch (n) {
+    case 1: return m[0];
+    case 2: { uint16_t v; memcpy(&v, m, 2); return v; }
+    case 4: { uint32_t v; memcpy(&v, m, 4); return v; }
+    case 8: { uint64_t v; memcpy(&v, m, 8); return v; }
+    default: break;
+    }
+#endif
     uint64_t v = 0;
     for (int i = 0; i < n; i++) v |= (uint64_t)m[i] << (8 * i);
     return v;
 }
 
-static void st_le(uint8_t *m, uint64_t v, int n) {
+static inline void st_le(uint8_t *m, uint64_t v, int n) {
+#if !MLWS_BIG_ENDIAN
+    switch (n) {
+    case 1: m[0] = (uint8_t)v; return;
+    case 2: { uint16_t x = (uint16_t)v; memcpy(m, &x, 2); return; }
+    case 4: { uint32_t x = (uint32_t)v; memcpy(m, &x, 4); return; }
+    case 8: memcpy(m, &v, 8); return;
+    default: break;
+    }
+#endif
     for (int i = 0; i < n; i++) m[i] = (uint8_t)(v >> (8 * i));
 }
 
@@ -1086,6 +1106,9 @@ enum {
      * of a constant size and bufpush of an I register. Each checks its
      * operands and leaves anything else to the generic form. */
     Q_STRCAT_RK, Q_BUFCAT_RK, Q_TOSTR_I, Q_TOSTR_F, Q_SUBSTR_RII, Q_BUFNEW_K, Q_BUFPUSH_I,
+    /* Map mutators/queries and raw indexed byte memory (P{I}, .u8). */
+    Q_MNEW, Q_MSET, Q_MHAS,
+    Q_LDMB_U8, Q_STMB_U8, Q_STMBK_U8, Q_BZ_MB_U8, Q_BNZ_MB_U8,
     Q_JIT, Q_JITC,
     Q__COUNT
 };
@@ -1172,8 +1195,10 @@ static const MFunc *quicken_fn; /* function being quickened (for ret) */
 static uint32_t quicken_idx;      /* the instruction's index in it */
 
 typedef struct {
-    Function *fn;   /* a direct call's callee */
-    Function *seen; /* a closure call's last callee: the JIT's guess at the next */
+    Function *fn;    /* a direct call's callee */
+    Function *seen;  /* a closure call's last callee: the JIT's guess at the next */
+    Function *ic_fn; /* write-once monomorphic IC for Q_CALLI_R / Q_TCALLI_R */
+    uint8_t ic_state;
     uint8_t argc, nres;
     uint8_t slot[];
 } QPlan;
@@ -1207,6 +1232,8 @@ static void quicken_plan(Insn *in) {
     bool direct = in->xop == Q_CALL_R || in->xop == Q_CALL_RK;
     pl->fn = direct ? o[0].rv.ptr : NULL;
     pl->seen = NULL;
+    pl->ic_fn = NULL;
+    pl->ic_state = 0;
     pl->argc = (uint8_t)argc;
     pl->nres = (uint8_t)nres;
     const Operand *v = call ? o + 2 : o;
@@ -1399,6 +1426,16 @@ void interp_quicken(Insn *in) {
         } else if (t != T_P && wide_type(t) && o[1].mode == OM_REG &&
                    REG_BANK(o[1].reg) == (int)type_bank(t) && quicken_global(in, &o[0])) {
             in->xop = (uint16_t)(Q_STG_I + (t == T_F64 ? 1 : t == T_R ? 2 : 0));
+        } else if (t == T_U8 && IREG(0) && o[1].mode == OM_IDXB && REG_BANK(o[1].reg) == BANK_P &&
+                   REG_BANK(o[1].ireg) == BANK_I && o[1].bscale == 1 && o[1].bdisp == 0) {
+            in->xop = Q_LDMB_U8;
+            in->r[1] = (uint8_t)REG_IDX(o[1].reg);
+            in->r[2] = (uint8_t)REG_IDX(o[1].ireg);
+        } else if (t == T_U8 && o[0].mode == OM_IDXB && REG_BANK(o[0].reg) == BANK_P &&
+                   REG_BANK(o[0].ireg) == BANK_I && o[0].bscale == 1 && o[0].bdisp == 0 && (IREG(1) || KINT(1))) {
+            in->xop = IREG(1) ? Q_STMB_U8 : Q_STMBK_U8;
+            in->r[0] = (uint8_t)REG_IDX(o[0].reg);
+            in->r[2] = (uint8_t)REG_IDX(o[0].ireg);
         } else if (t != T_P && wide_type(t)) {
             quicken_slot(in, t);
         }
@@ -1456,10 +1493,22 @@ void interp_quicken(Insn *in) {
     case OP_BZ:
         if (i64 && IREG(0)) in->xop = Q_BZ_I;
         else if (t == T_R && RREG(0)) in->xop = Q_BZ_R;
+        else if (t == T_U8 && o[0].mode == OM_IDXB && REG_BANK(o[0].reg) == BANK_P &&
+                 REG_BANK(o[0].ireg) == BANK_I && o[0].bscale == 1 && o[0].bdisp == 0) {
+            in->xop = Q_BZ_MB_U8;
+            in->r[0] = (uint8_t)REG_IDX(o[0].reg);
+            in->r[1] = (uint8_t)REG_IDX(o[0].ireg);
+        }
         break;
     case OP_BNZ:
         if (i64 && IREG(0)) in->xop = Q_BNZ_I;
         else if (t == T_R && RREG(0)) in->xop = Q_BNZ_R;
+        else if (t == T_U8 && o[0].mode == OM_IDXB && REG_BANK(o[0].reg) == BANK_P &&
+                 REG_BANK(o[0].ireg) == BANK_I && o[0].bscale == 1 && o[0].bdisp == 0) {
+            in->xop = Q_BNZ_MB_U8;
+            in->r[0] = (uint8_t)REG_IDX(o[0].reg);
+            in->r[1] = (uint8_t)REG_IDX(o[0].ireg);
+        }
         break;
     case OP_CALLI: {
         bool regs = RREG(0), rk = RREG(0);
@@ -1676,6 +1725,36 @@ void interp_quicken(Insn *in) {
         if (RREG(0)) {
             in->xop = in->op == OP_BISA ? Q_BISA : Q_BNISA;
             in->k.p = o[1].rv.ptr;
+        }
+        break;
+    case OP_MNEW:
+        if (n == 1 && RREG(0)) in->xop = Q_MNEW;
+        break;
+    case OP_MSET: /* mset R0, key(reg|str), val(reg) */
+        if (n == 3 && RREG(0) && o[2].mode == OM_REG && REG_BANK(o[2].reg) < BANK_P) {
+            MlwsType vt = reg_natural_type(o[2].reg);
+            if (t != T_NONE && t != vt) break;
+            if (o[1].mode == OM_REG && REG_BANK(o[1].reg) < BANK_P) {
+                MlwsType kt = reg_natural_type(o[1].reg);
+                in->xop = Q_MSET;
+                in->target = (uint32_t)kt | ((uint32_t)vt << 8);
+            } else if (o[1].mode == OM_CONST && o[1].rv.ptr && ((const Obj *)o[1].rv.ptr)->kind == OBJ_STRING) {
+                in->xop = Q_MSET;
+                in->k.p = o[1].rv.ptr;
+                in->target = (uint32_t)T_R | ((uint32_t)vt << 8) | 0x10000u;
+            }
+        }
+        break;
+    case OP_MHAS: /* mhas I0, R1, key(reg|str) */
+        if (n == 3 && IREG(0) && RREG(1)) {
+            if (o[2].mode == OM_REG && REG_BANK(o[2].reg) < BANK_P) {
+                in->xop = Q_MHAS;
+                in->target = (uint32_t)reg_natural_type(o[2].reg);
+            } else if (o[2].mode == OM_CONST && o[2].rv.ptr && ((const Obj *)o[2].rv.ptr)->kind == OBJ_STRING) {
+                in->xop = Q_MHAS;
+                in->k.p = o[2].rv.ptr;
+                in->target = (uint32_t)T_R | 0x10000u;
+            }
         }
         break;
     case OP_MGET: /* mget.r R0, R1, "key" [, null] */
@@ -1944,6 +2023,22 @@ static MLWS_NOINLINE bool q_bufpush(Process *p, Obj *b, int64_t v) {
     bytes_append(p, (ObjBytes *)b, &byte, 1);
     return true;
 }
+static MLWS_NOINLINE bool q_mset(Process *p, const Insn *in, const int64_t *I, const double *F, const Word *R) {
+    Obj *ob = R[in->r[0]].r;
+    if (!ob || ob->kind != OBJ_MAP) return false;
+    uint8_t ktag = (uint8_t)(in->target & 0xFF);
+    uint8_t vtag = (uint8_t)((in->target >> 8) & 0xFF);
+    Word k, v;
+    if (in->target & 0x10000u) k.r = (Obj *)in->k.p;
+    else if (ktag == T_I64) k.i = I[in->r[1]];
+    else if (ktag == T_F64) k.f = F[in->r[1]];
+    else k.r = R[in->r[1]].r;
+    if (vtag == T_I64) v.i = I[in->r[2]];
+    else if (vtag == T_F64) v.f = F[in->r[2]];
+    else v.r = R[in->r[2]].r;
+    map_set(p, (ObjMap *)ob, k, ktag, v, vtag);
+    return true;
+}
 
 /* A byte of a string or byte buffer, for the element load forms: false for
  * any other object, or an index out of range, which the generic mov handles. */
@@ -2030,7 +2125,11 @@ static QCC int h_slice(QPARAMS);
 #define QI I
 #define QF F
 #define QR R
+#if QWIDE
+#define QP ((uint64_t *)I + QFRM->fn->roff[BANK_P])
+#else
 #define QP (c->P)
+#endif
 #define QCTX c
 /* The process and frame as locals of each handler (unused ones cost nothing):
  * read through `c`, every byte stored (a frame's qret, a list tag) could
@@ -2047,7 +2146,30 @@ static QCC int h_slice(QPARAMS);
 /* Frame.pc is the index after `in` (the return address, or where a fault is),
  * and Process.insns counts every instruction started, as in the loop. */
 #define SPILL() (QFRM->pc = (uint32_t)(in - QCODE) + 1, QPRC->insns = c->ibase - left)
+#define QCALL_SAVE_PC() (QFRM->pc = (uint32_t)(in - QCODE) + 1)
 #define RELOAD() (I = c->I, F = c->F, R = c->R, QSETFRAME(), nx = QCODE + QFRAME->pc)
+#if QWIDE
+#define QSWITCH(nf_, fn_, nw_, pc_)                                            \
+    do {                                                                       \
+        const Function *sfn_ = (fn_);                                          \
+        uint64_t *snw_ = (nw_);                                                \
+        qfr = (nf_);                                                           \
+        qcode = sfn_->code;                                                    \
+        I = (int64_t *)snw_;                                                   \
+        F = (double *)(snw_ + sfn_->roff[BANK_F]);                             \
+        R = (Word *)(snw_ + sfn_->roff[BANK_R]);                               \
+        nx = qcode + (pc_);                                                    \
+    } while (0)
+#else
+#define QSWITCH(nf_, fn_, nw_, pc_)                                            \
+    do {                                                                       \
+        const Function *sfn_ = (fn_);                                          \
+        ctx_set(QCTX, (nf_), sfn_, (nw_));                                     \
+        I = c->I, F = c->F, R = c->R;                                          \
+        c->code = sfn_->code;                                                  \
+        nx = c->code + (pc_);                                                  \
+    } while (0)
+#endif
 #define JUMP() (nx = in + (int32_t)in->target)
 #define JUMPTO(t) (nx = QCODE + (t))
 #define GENERIC()                                                              \
@@ -2118,6 +2240,8 @@ static __attribute__((unused)) QCC int qforms_start(QPARAMS) {
 #undef JUMP
 #undef JUMPTO
 #undef RELOAD
+#undef QSWITCH
+#undef QCALL_SAVE_PC
 #undef SPILL
 #undef U
 #undef IR
@@ -2138,7 +2262,20 @@ static MLWS_NOINLINE QCC int h_slice(QPARAMS) {
     uint32_t pc = (uint32_t)(in - QCODE);
     QFRAME->pc = pc;
     p->insns = c->ibase - left;
-    if (!c->hooked || c->hleft == 0) return SLICE_YIELD; /* time slice used up */
+    if (!c->hooked) {
+        if (!c->stepping && p->insns < p->quota[QUOTA_INSNS] && !(p->gc_pending | p->kill_pending) && !p->fin_ready.n &&
+            !proc_hooked(p) && sched_fast_continue(p)) {
+            uint64_t rem = p->quota[QUOTA_INSNS] - p->insns;
+            uint32_t nb = rem < c->vm->slice_insns ? (uint32_t)rem : c->vm->slice_insns;
+            c->insns0 = p->insns;
+            c->budget = nb;
+            c->ibase = p->insns + nb;
+            left = nb - 1;
+            MUSTTAIL return qhandlers[in->xop](QARGS);
+        }
+        return SLICE_YIELD; /* time slice used up */
+    }
+    if (c->hleft == 0) return SLICE_YIELD;
     if (tool_hook(c->vm, p, pc)) return SLICE_BREAK; /* debugger stop: pc not advanced */
     c->hleft--, c->ibase++;
     left = 0;
@@ -2161,6 +2298,13 @@ static QCC QNOSP int h_generic(QPARAMS) {
     Process *p = c->p;
     VM *vm = p->vm;
     Frame *fr = QFRAME;
+#if QWIDE
+    c->fr = fr;
+    c->I = I;
+    c->F = F;
+    c->R = R;
+    c->P = (uint64_t *)I + fr->fn->roff[BANK_P];
+#endif
     fr->pc = (uint32_t)(in - QCODE) + 1;
     p->insns = c->ibase - left;
 #define CX c
@@ -2221,6 +2365,7 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
     ctx_load(&c);
     c.vm = p->vm;
     c.hooked = proc_hooked(p);
+    c.stepping = false;
     c.insns0 = p->insns;
     c.budget = budget;
     c.hleft = c.hooked ? budget : 0;
@@ -2260,13 +2405,20 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
      * returns spill first), so the safepoint for a collection or a pending kill
      * is after each generic instruction, and once at the start of the slice. */
     const bool hooked = proc_hooked(p);
-    const uint64_t insns0 = p->insns;
+    uint64_t insns0 = p->insns;
     uint32_t left = budget;
     Frame *fr = c.fr;
     const Insn *code = fr->fn->code;
     uint32_t pc = fr->pc;
 #define SPILL() (fr->pc = pc, p->insns = insns0 + (budget - left))
+#define QCALL_SAVE_PC() SPILL()
 #define RELOAD() (fr = c.fr, code = fr->fn->code, pc = fr->pc)
+#define QSWITCH(nf_, fn_, nw_, pc_)                                            \
+    do {                                                                       \
+        const Function *sfn_ = (fn_);                                          \
+        ctx_set(&c, (nf_), sfn_, (nw_));                                       \
+        fr = (nf_), code = sfn_->code, pc = (pc_);                             \
+    } while (0)
 #define NEXT continue
     if (p->gc_pending | p->kill_pending) {
         if (p->kill_pending) {
@@ -2304,7 +2456,15 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
 #endif
         if (left == 0) { /* time slice used up */
             SPILL();
-            return SLICE_YIELD;
+            if (!hooked && p->insns < p->quota[QUOTA_INSNS] && !(p->gc_pending | p->kill_pending) &&
+                !p->fin_ready.n && !proc_hooked(p) && sched_fast_continue(p)) {
+                uint64_t rem = p->quota[QUOTA_INSNS] - p->insns;
+                budget = rem < vm->slice_insns ? (uint32_t)rem : vm->slice_insns;
+                insns0 = p->insns;
+                left = budget;
+            } else {
+                return SLICE_YIELD;
+            }
         }
         if (hooked) {
             SPILL();
@@ -2401,7 +2561,9 @@ static MLWS_NOINLINE int run_loop(Process *p, uint32_t budget) {
         RELOAD(); /* the instruction may have branched, called, returned or thrown */
     }
 #undef SPILL
+#undef QCALL_SAVE_PC
 #undef RELOAD
+#undef QSWITCH
 #undef NEXT
 #undef QCASE
 }

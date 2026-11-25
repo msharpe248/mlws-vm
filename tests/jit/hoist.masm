@@ -1,0 +1,410 @@
+; Regression tests for JIT headroom optimizations:
+;   * loop-invariant R caching and dominating type-guard hoisting (struct, list,
+;     array), including null/wrong-type preheader exits, null-tested loops, and
+;     conditional-use loops (must NOT hoist guards that do not dominate back
+;     edges, avoiding repeated preheader exit/re-entry thrashing);
+;   * loop-invariant raw-P segment check hoisting (positive offset, negative
+;     index side exit, OOB trap, UAF preheader exit, and conditional raw-P);
+;   * outer-loop promotion, immutable array bounds-check caching (and
+;     invalidation on R/I writes), and 2-op float array RMW;
+;   * direct-from-cache call arguments, skip_ireg aliasing, duplicate result
+;     slots, >JRES_N results, and polymorphic calli.
+; option: --jit all
+; option: --slice 7
+; no-opt: expect-jit counts the instructions as written
+; expect-jit: loops struct_loop 1
+; expect-jit: hoisted struct_loop 1
+; expect-jit: loops null_checked 1
+; expect-jit: hoisted null_checked 0
+; expect-jit: loops cond_loop 1
+; expect-jit: hoisted cond_loop 0
+; expect-jit: loops cond_raw_loop 1
+; expect-jit: hoisted cond_raw_loop 0
+; expect-jit: loops raw_off_loop 1
+; expect-jit: hoisted raw_off_loop 1 arm64
+; expect-jit: loops raw_bnz_loop 1
+; expect-jit: hoisted raw_bnz_loop 1
+; expect-jit: loops nested_arr 1
+; expect-jit: hoisted nested_arr 3
+; expect-jit: loops list_grow_loop 2
+; expect-jit: hoisted list_grow_loop 3
+; expect-jit: compiled call_args 15
+; expect-jit: compiled aok_inval 9
+; expect-stdout: struct 450 0 E_TYPE
+; expect-stdout: null_checked 0 15
+; expect-stdout: cond 600 100 100
+; expect-stdout: cond_raw 36 9
+; expect-stdout: raw 36 12 8 E_BOUNDS E_UAF
+; expect-stdout: nested 19.5 E_BOUNDS
+; expect-stdout: aok E_BOUNDS E_BOUNDS
+; expect-stdout: grow 4950
+; expect-stdout: calls 20 21 300 42 50
+.include "std/io.inc"
+
+.struct Box
+    val: i64
+    scale: i64
+.ends
+
+.struct Other
+    x: i64
+.ends
+
+; Loop-invariant struct R0: guard dominates back edge -> hoisted to preheader.
+; When n == 0 and R0 == null, the preheader exits cleanly to the interpreter
+; without trapping; when n > 0 and R0 is wrong type, traps E_TYPE.
+.func struct_loop(ref b, i64 n) -> i64
+    mov I1, 0
+    mov I2, 0
+1:  bge I1, n, 2f
+    mov I3, b->Box.val
+    mov I4, b->Box.scale
+    mul I3, I3, I4
+    add I2, I3
+    inc I1
+    jmp 1b
+2:  ret I2
+.endf
+
+; Loop that explicitly tests R0 for null: guard must NOT be hoisted.
+.func null_checked(ref b, i64 n) -> i64
+    mov I1, 0
+    mov I2, 0
+1:  bge I1, n, 2f
+    bz b, 3f
+    mov I3, b->Box.val
+    add I2, I3
+3:  inc I1
+    jmp 1b
+2:  ret I2
+.endf
+
+; b is used only when use != 0; nothing in the loop tests b itself.
+; The struct guard does NOT dominate the back edge, so it must NOT be hoisted
+; (otherwise null/Other with use == 0 exits the preheader on every pass).
+.func cond_loop(ref b, i64 n, i64 use) -> i64
+    mov I4, 0
+    mov I5, 0
+1:  bge I4, n, 2f
+    bz use, 3f
+    mov I6, b->Box.val
+    add I5, I6
+3:  add I5, 1
+    inc I4
+    jmp 1b
+2:  ret I5
+.endf
+
+; p is read only when use != 0: raw-P guard does NOT dominate the back edge,
+; so a freed pointer with use == 0 stays in machine code without thrashing.
+.func cond_raw_loop(ptr p, i64 n, i64 use) -> i64
+    mov I2, 0
+    mov I3, 0
+1:  bge I3, n, 2f
+    bz use, 3f
+    mov.u8 I4, p{I3}
+    add I2, I4
+    jmp 4f
+3:  add I2, 1
+4:  inc I3
+    jmp 1b
+2:  ret I2
+.endf
+
+; Loop-invariant raw-P hoisting with offset, negative index side-exit, OOB, UAF.
+.func raw_off_loop(ptr p, i64 start, i64 stop) -> i64
+    mov I2, 0
+    mov I3, start
+1:  bge I3, stop, 2f
+    mov.u8 I4, p{I3}
+    add I2, I4
+    inc I3
+    jmp 1b
+2:  ret I2
+.endf
+
+; Raw-P hoisting using 3 I registers (fits with 2 P slots on x86-64 too).
+.func raw_bnz_loop(ptr p, i64 n) -> i64
+    mov I1, 0
+    mov I2, 0
+1:  bge I1, n, 2f
+    bnz.u8 p{I1}, 3f
+    jmp 4f
+3:  inc I2
+4:  inc I1
+    jmp 1b
+2:  ret I2
+.endf
+
+; Nested do-while loop with OBJ_ARRAY .f64 compound RMW + outer-loop promotion.
+; All 3 array accesses dominate both back edges -> all 3 array guards hoisted.
+.func nested_arr(i64 outer, i64 inner) -> f64
+    anew.f64 R0, 4
+    anew.f64 R1, 4
+    anew.f64 R2, 4
+    mov R0[0], 1.0
+    mov R0[1], 2.0
+    mov R0[2], 3.0
+    mov R1[0], 0.5
+    mov R1[1], 0.5
+    mov R1[2], 0.5
+    mov R2[0], 1.0
+    mov R2[1], 1.0
+    mov R2[2], 1.0
+    mov I2, 0
+1:  mov I3, 0
+2:  mul F0, R0[I3], R2[I3]
+    sub R1[I3], F0
+    add.f64 R0[I3], R1[I3]
+    inc I3
+    blt I3, inner, 2b
+    inc I2
+    blt I2, outer, 1b
+    add.f64 F1, R0[0], R0[1], R0[2]
+    ret F1
+.endf
+
+; Test per-block OBJ_ARRAY bounds-check cache invalidation when R or I changes.
+.func aok_inval(i64 mode) -> f64
+    anew.f64 R0, 4
+    anew.f64 R1, 1
+    mov R0[2], 5.0
+    mov I1, 2
+    ; Check (R0, I1) -> passes (2 < 4)
+    mov F0, R0[I1]
+    bnz mode, 1f
+    ; Mode 0: overwrite R0 with shorter array R1 (len 1); must re-check and trap!
+    mov R0, R1
+    mov F1, R0[I1]
+    ret F1
+1:  ; Mode 1: overwrite I1 with 5; must re-check and trap!
+    add I1, 3
+    mov F1, R0[I1]
+    ret F1
+.endf
+
+; Loop with lpush growth slow-path stub and cached invariant R list + struct.
+.func list_grow_loop(ref b, i64 n) -> i64
+    lnew R1, 2
+    mov I1, 0
+1:  bge I1, n, 2f
+    mov I2, b->Box.val
+    add I2, I1
+    lpush R1, I2
+    inc I1
+    jmp 1b
+2:  mov I3, 0
+    mov I1, 0
+3:  bge I1, n, 4f
+    mov I2, R1[I1]
+    add I3, I2
+    inc I1
+    jmp 3b
+4:  ret I3
+.endf
+
+.func pair_ret(i64 a, i64 b) -> (i64, i64)
+    ret a, b
+.endf
+
+.func six_ret(i64 x) -> (i64, i64, i64, i64, i64, i64)
+    add I1, x, 1
+    add I2, x, 2
+    add I3, x, 3
+    add I4, x, 4
+    add I5, x, 5
+    ret x, I1, I2, I3, I4, I5
+.endf
+
+.func sum_args(i64 a, i64 b, i64 c, i64 d, f64 e, ref box) -> i64
+    add I4, a, b, c, d
+    mov I5, box->Box.val
+    add I4, I5
+    cvt.i64.f64 I5, e
+    add I4, I5
+    ret I4
+.endf
+
+.func clo_add(i64 x) -> i64
+    add I1, x, UP[0]
+    ret I1
+.endf
+
+.func clo_mul(i64 x) -> i64
+    mul I1, x, UP[0]
+    ret I1
+.endf
+
+; Exercises direct-from-cache args (including aliasing jc_ireg[2]), duplicate
+; result slots, >JRES_N results, and polymorphic calli.
+.func call_args(ref box, ref c1, ref c2) -> (i64, i64, i64, i64, i64)
+    call pair_ret (10, 20) -> (I0, I0)
+    mov I10, I0
+    call six_ret (1) -> (I1, I2, I3, I4, I5, I6)
+    add I11, I1, I2, I3, I4, I5, I6
+    mov I1, 10
+    mov I2, 20
+    mov I3, 30
+    mov I4, 40
+    mov F0, 195.0
+    call sum_args (I1, I2, I3, I4, F0, box) -> (I12)
+    calli c1 (40) -> (I7)
+    add I13, I7, 0
+    calli c2 (25) -> (I8)
+    add I14, I8, 0
+    ret I10, I11, I12, I13, I14
+.endf
+
+.func main
+    ; 1. Struct hoisting + guard failure edges
+    new R0, Box
+    mov R0->Box.val, 5
+    mov R0->Box.scale, 9
+    call struct_loop (R0, 10) -> (I0)
+    mov R1, null
+    call struct_loop (R1, 0) -> (I1)
+    new R2, Other
+.try 1f
+    call struct_loop (R2, 3) -> (I2)
+    mov R3, "NO_TRAP"
+    jmp 2f
+.endtry
+1:  catch R4
+    mov R3, R4->Error.code
+2:  ncall "io.print_s" ("struct ")
+    ncall "io.print_i" (I0)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I1)
+    ncall "io.print_c" (' ')
+    ncall "io.print_s" (R3)
+    ncall "io.nl" ()
+
+    ; 2. Null-tested loop
+    call null_checked (R1, 5) -> (I0)
+    call null_checked (R0, 3) -> (I1)
+    ncall "io.print_s" ("null_checked ")
+    ncall "io.print_i" (I0)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+
+    ; 3. Conditional struct use: null and wrong-type with use == 0
+    call cond_loop (R0, 100, 1) -> (I0)
+    call cond_loop (R1, 100, 0) -> (I1)
+    call cond_loop (R2, 100, 0) -> (I2)
+    ncall "io.print_s" ("cond ")
+    ncall "io.print_i" (I0)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I1)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I2)
+    ncall "io.nl" ()
+
+    ; 4. Raw-P hoisting + conditional raw-P with freed pointer
+    alloc P0, 10
+    mov I0, 0
+3:  bge I0, 10, 4f
+    mov.u8 P0{I0}, I0
+    inc I0
+    jmp 3b
+4:  call cond_raw_loop (P0, 9, 1) -> (I10)
+    add.p P1, P0, 4
+    call raw_off_loop (P0, 0, 9) -> (I0)
+    call raw_off_loop (P1, -1, 2) -> (I1)
+    call raw_bnz_loop (P0, 9) -> (I12)
+.try 5f
+    call raw_off_loop (P1, 0, 7) -> (I2)
+    mov R3, "NO_OOB"
+    jmp 6f
+.endtry
+5:  catch R4
+    mov R3, R4->Error.code
+6:  free P0
+    call cond_raw_loop (P0, 9, 0) -> (I11)
+.try 7f
+    call raw_off_loop (P1, 0, 2) -> (I2)
+    mov R5, "NO_UAF"
+    jmp 8f
+.endtry
+7:  catch R4
+    mov R5, R4->Error.code
+8:  ncall "io.print_s" ("cond_raw ")
+    ncall "io.print_i" (I10)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I11)
+    ncall "io.nl" ()
+    ncall "io.print_s" ("raw ")
+    ncall "io.print_i" (I0)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I1)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I12)
+    ncall "io.print_c" (' ')
+    ncall "io.print_s" (R3)
+    ncall "io.print_c" (' ')
+    ncall "io.print_s" (R5)
+    ncall "io.nl" ()
+
+    ; 5. Nested array outer-loop promotion + RMW + OOB
+    call nested_arr (1, 3) -> (F0)
+    add.f64 F0, 18.0
+.try 9f
+    call nested_arr (1, 5) -> (F1)
+    mov R3, "NO_OOB"
+    jmp 10f
+.endtry
+9:  catch R4
+    mov R3, R4->Error.code
+10: ncall "io.print_s" ("nested ")
+    ncall "io.print_f" (F0)
+    ncall "io.print_c" (' ')
+    ncall "io.print_s" (R3)
+    ncall "io.nl" ()
+
+    ; 6. aok invalidation on R and I writes
+.try 11f
+    call aok_inval (0) -> (F1)
+    mov R3, "NO_OOB0"
+    jmp 12f
+.endtry
+11: catch R4
+    mov R3, R4->Error.code
+12:
+.try 13f
+    call aok_inval (1) -> (F1)
+    mov R5, "NO_OOB1"
+    jmp 14f
+.endtry
+13: catch R4
+    mov R5, R4->Error.code
+14: ncall "io.print_s" ("aok ")
+    ncall "io.print_s" (R3)
+    ncall "io.print_c" (' ')
+    ncall "io.print_s" (R5)
+    ncall "io.nl" ()
+
+    ; 7. List grow stub inside hoisted-R loop
+    new R6, Box
+    mov R6->Box.val, 0
+    call list_grow_loop (R6, 100) -> (I0)
+    ncall "io.print_s" ("grow ")
+    ncall "io.print_i" (I0)
+    ncall "io.nl" ()
+
+    ; 8. Direct-from-cache call arg passing + polymorphic calli
+    closure clo_add (2) -> (R7)
+    closure clo_mul (2) -> (R8)
+    call call_args (R0, R7, R8) -> (I0, I1, I2, I3, I4)
+    ncall "io.print_s" ("calls ")
+    ncall "io.print_i" (I0)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I1)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I2)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I3)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I4)
+    ncall "io.nl" ()
+    ret 0
+.endf

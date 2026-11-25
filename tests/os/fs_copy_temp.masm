@@ -1,0 +1,85 @@
+; fs.temp_dir, fs.make_temp_dir (a new, private directory each time) and
+; fs.copy (contents, over a file that is there too; a directory or a missing
+; file is an error).
+; expect-stdout: two temp dirs: different, both there
+; expect-stdout: copied 100000 bytes, the same
+; expect-stdout: over an old file: 3 bytes
+; expect-stdout: E_NOT_FOUND E_IS_DIR E_BOUNDS
+.include "std/test.inc"
+.include "std/io.inc"
+
+.func main
+    ncall "fs.temp_dir" () -> (R0)
+    ncall "fs.make_temp_dir" ("mlwsvm-test-") -> (R1)
+    ncall "fs.make_temp_dir" ("mlwsvm-test-") -> (R2)
+    strcmp I0, R1, R2
+    ncall "fs.exists" (R1) -> (I1)
+    ncall "fs.exists" (R2) -> (I2)
+    ncall "path.dirname" (R1) -> (R3)
+    ncall "path.normalize" (R0) -> (R4)
+    strcmp I3, R3, R4                  ; in the temp directory
+    ASSERT_EQ I3, 0
+    ncall "path.basename" (R1) -> (R3)
+    ncall "text.starts_with" (R3, "mlwsvm-test-") -> (I3)
+    ASSERT_TRUE I3
+    bz I0, 9f
+    bz I1, 9f
+    bz I2, 9f
+    PRINTLN_S "two temp dirs: different, both there"
+
+    bufnew R5, 100000                  ; bytes 0, 1, ... 255, 0, 1, ...
+    mov I4, 0
+1:  and I5, I4, 255
+    mov R5[I4], I5
+    inc I4
+    blt I4, 100000, 1b
+    ncall "path.join" (R1, "a.bin") -> (R6)
+    ncall "path.join" (R1, "b.bin") -> (R7)
+    ncall "fs.write_file" (R6, R5)
+    ncall "fs.copy" (R6, R7)
+    ncall "fs.read_file" (R7) -> (R8)
+    len I6, R8
+    strcmp I7, R5, R8
+    ASSERT_EQ I7, 0
+    lnew R9
+    lpush R9, I6
+    ncall "text.format" ("copied {} bytes, the same", R9) -> (R10)
+    PRINTLN_S R10
+
+    ncall "path.join" (R1, "small.txt") -> (R11)
+    ncall "fs.write_file" (R11, "abc")
+    ncall "fs.copy" (R11, R7)          ; over b.bin: replaced, not added to
+    ncall "fs.stat" (R7) -> (R12)
+    lnew R9
+    lpush R9, R12->FileInfo.size
+    ncall "text.format" ("over an old file: {} bytes", R9) -> (R10)
+    PRINTLN_S R10
+
+    ncall "path.join" (R1, "none") -> (R13)
+.try 2f
+    ncall "fs.copy" (R13, R7)
+.endtry
+2:  catch R14
+    PRINT_S R14->Error.code
+.try 3f
+    ncall "fs.copy" (R2, R7)           ; a directory
+.endtry
+3:  catch R14
+    PRINT_S " "
+    PRINT_S R14->Error.code
+.try 4f
+    ncall "fs.make_temp_dir" ("a/b")   ; a prefix is part of a name
+.endtry
+4:  catch R14
+    PRINT_S " "
+    PRINTLN_S R14->Error.code
+
+    ncall "fs.remove" (R6)             ; tidy up
+    ncall "fs.remove" (R7)
+    ncall "fs.remove" (R11)
+    ncall "fs.rmdir" (R1)
+    ncall "fs.rmdir" (R2)
+    ret 0
+9:  PRINTLN_S "unexpected: the temp dirs"
+    ret 1
+.endf

@@ -147,12 +147,15 @@ them:
 chunk:  | line 0 | line 1 | line 2 | line 3 | line 4 | line 5 | line 6 | line 7 |
 marks:      1        1        0        0        0        1        0        0
                          \______ hole ______/            \___ hole ___/
-                          bump ──►  bump_lim  hole_end
+                          bump ──►  zero_lim  hole_end
 ```
 
-`bump` is the next free byte, `bump_lim` the end of the part already zeroed
+`bump` is the next free byte, `zero_lim` the end of the part already zeroed
 (holes are zeroed 2 KiB at a time ahead of the allocator, not object by
-object), and `hole_end` the end of the hole. The fast path is inline in
+object), and `hole_end` the end of the hole. The fast path checks one more
+pointer, `bump_lim`: `zero_lim`, or the point where the heap would reach
+`alloc_limit` if that is nearer. `alloc_limit` is one number that is both
+the next collection's threshold and the heap quota. The fast path is inline in
 every place that makes an object, `gc_alloc` in
 [src/heap/heap.h](../../src/heap/heap.h):
 
@@ -160,11 +163,10 @@ every place that makes an object, `gc_alloc` in
 static inline Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
     size_t n = (size + 15) & ~(size_t)15;
     unsigned char *b = p->bump;
-    uint64_t hb = p->heap_bytes + size;
     if (__builtin_expect(size <= GC_SMALL_MAX && !((1u << kind) & GC_OWNER_KINDS) &&
-                             (size_t)(p->bump_lim - b) >= n && hb < p->alloc_limit, 1)) {
+                             (uintptr_t)p->bump_lim - (uintptr_t)b >= n, 1)) {
         p->bump = b + n;
-        p->heap_bytes = hb;
+        p->heap_bytes += size;
         Obj *o = (Obj *)b;
         o->kind = kind;
         o->slab = (uint16_t)(n / 16);
@@ -177,16 +179,19 @@ static inline Obj *gc_alloc(Process *p, uint8_t kind, size_t size) {
 }
 ```
 
-There is no lock and no `malloc`. Two compares decide the fast path: is
-there room in the zeroed part of the hole, and is the heap still below
-`alloc_limit`, one number that is both the next collection's threshold and
-the heap quota. The 40-byte struct above takes 48 bytes, three 16-byte
+There is no lock and no `malloc`. One compare decides the fast path: does
+the object end at or before `bump_lim`. Keeping that one pointer right is
+the slow path's work: `clamp_bump_lim` in [src/heap/gc.c](../../src/heap/gc.c)
+sets it again whenever the hole, the heap's size outside the fast path or
+`alloc_limit` changes. A fast allocation cannot pass either limit, since it
+moves `bump` by at least the bytes it adds to `heap_bytes`. The 40-byte struct above takes 48 bytes, three 16-byte
 granules. The JIT emits the same sequence in machine code for `new`.
 
 When the hole runs out, `bump_refill` in
 [src/heap/gc.c](../../src/heap/gc.c) takes the slow path: it zeroes the next
-2 KiB of the hole, or finds the next hole in the chunk (`next_hole` scans
-the line marks for a run of zeros long enough), or moves to the next chunk
+2 KiB of the hole, or finds the next hole in the chunk (`next_hole` finds
+the next unmarked line with `memchr`, and checks that the run of them is
+long enough), or moves to the next chunk
 with free lines, or makes a new chunk.
 
 Chunks start at 1 KiB and double up to 64 KiB, so a process that holds a
@@ -241,12 +246,27 @@ static void mark(Process *p, Obj *o) {
         while (++l <= last);
         ...
     }
-    VEC_PUSH(p->markstack, o);
+    switch (o->kind) {
+    case OBJ_STRUCT:
+        if (((const ObjStruct *)o)->def->has_refs) VEC_PUSH(p->markstack, o);
+        break;
+    ...
+    case OBJ_LIST:
+        if (((const ObjList *)o)->len) VEC_PUSH(p->markstack, o);
+        break;
+    ...
+    default: break;
+    }
 }
 ```
 
 Marking an object sets its flags and also the mark bytes of every line it
-lies on (an object may cross a line boundary). `off` takes it straight to
+lies on (an object may cross a line boundary). Only an object with
+references to follow goes on the stack: a string, a number, an empty list
+or a struct whose type has no reference field is done once it is marked.
+Each struct type knows which of its fields are references (`has_refs` and
+the bit mask `ref_mask` in `StructDef`, worked out when its module is
+linked), so `scan` visits only those fields. `off` takes it straight to
 its chunk's header. The roots are walked by `mark_roots`; the first of them,
 the register windows, is `mark_frames`:
 

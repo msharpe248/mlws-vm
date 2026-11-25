@@ -31,6 +31,7 @@ static void builtins_init(void) {
         VM_BUILTIN_DEFS[i].nfields = b->nfields;
         VM_BUILTIN_DEFS[i].fields = (char **)b->fields;
         VM_BUILTIN_DEFS[i].types = (uint8_t *)b->types;
+        struct_def_init_refs(&VM_BUILTIN_DEFS[i]);
     }
 }
 

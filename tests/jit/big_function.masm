@@ -1,0 +1,39 @@
+; A function whose machine code would be larger than a conditional branch
+; reaches on arm64 (1 MiB): 14,000 compiled `mset`s in one block, each with a
+; side exit at the end of the code. arm64 leaves it to the interpreter;
+; x86-64's branches reach it, so it is compiled there.
+; option: --jit all
+; no-opt: expect-jit counts the instructions as written
+; expect-jit: compiled build 0 arm64
+; expect-jit: compiled build 28003 x86-64
+; expect-stdout: 14000
+; expect-stdout: 1
+; expect-stdout: 1
+; expect-stdout: 0
+.include "std/io.inc"
+
+.func build -> ref
+    mnew R0
+    mov.r R2, "v"
+.rept 14000, k
+    mov I1, \k
+    mset R0, I1, R2
+.endr
+    ret R0
+.endf
+
+.func main
+    call build -> R0
+    len I0, R0
+    PRINTLN_I I0
+    mov I1, 0
+    mhas I2, R0, I1
+    PRINTLN_I I2
+    mov I1, 13999
+    mhas I2, R0, I1
+    PRINTLN_I I2
+    mov I1, 14000
+    mhas I2, R0, I1
+    PRINTLN_I I2
+    ret 0
+.endf

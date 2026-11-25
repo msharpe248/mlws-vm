@@ -7,6 +7,8 @@
  *   ; skip: <reason>
  *   ; threads: <n>                                   (run on n worker threads)
  *   ; option: --<name> <value>                       (repeatable: a VM option, as on the command line)
+ *   ; args: <word> ...                               (the program's arguments, os.args: words split at spaces)
+ *   ; stdin: <one line of input>                     (repeatable: standard input is these lines, then its end)
  *   ; requires: ffi                                  (skipped in a build without libffi)
  *   ; requires: posix | windows                      (skipped on other systems)
  *   ; debug-script: <debugger command>                (repeatable: run under
@@ -23,6 +25,7 @@
  *   ; expect-jit: steps <n>                          (the machine code stepped n instructions)
  *   ; expect-jit: speculated <function> <n>          (n of its closure calls were compiled for the
  *                                                       function they called last)
+ *   ; expect-jit: hoisted <function> <n>             (n loop-invariant R guards and raw-P checks hoisted)
  *                                                    (each of these may end with an architecture,
  *                                                       arm64 or x86-64: checked only for its JIT)
  *
@@ -54,6 +57,9 @@ typedef struct {
     StrVec insns_want; /* "function n" */
     bool no_opt;
     StrVec jit_want; /* "compiled function n", "steps n" */
+    StrVec args;     /* `; args:` */
+    StrBuf input;    /* `; stdin:` lines */
+    bool has_input;
 } Expect;
 
 static void capture(void *ctx, const char *s, size_t n) { sb_putn(ctx, s, n); }
@@ -151,6 +157,17 @@ static void parse_expect(const char *text, Expect *e) {
             e->no_opt = true;
         } else if ((v = after_key(line, "debug-script:"))) {
             VEC_PUSH(e->script, xstrdup(v));
+        } else if ((v = after_key(line, "args:"))) {
+            for (const char *a = v; *a;) {
+                while (*a == ' ' || *a == '\t') a++;
+                size_t k = strcspn(a, " \t");
+                if (k) VEC_PUSH(e->args, xstrndup(a, k));
+                a += k;
+            }
+        } else if ((v = after_key(line, "stdin:"))) {
+            sb_puts(&e->input, v);
+            sb_putc(&e->input, '\n');
+            e->has_input = true;
         } else if ((v = after_key(line, "threads:"))) {
             e->threads = atoi(v);
         } else if ((v = after_key(line, "option:"))) {
@@ -234,7 +251,8 @@ static void check_jit(const Expect *e, VM *vm, StrBuf *why) {
         if (nf == 1 && strcmp(arch, interp_jit_arch())) continue; /* another architecture's */
         bool loops = sscanf(line, "loops %127s %lld", name, &want) == 2;
         bool spec = !loops && sscanf(line, "speculated %127s %lld", name, &want) == 2;
-        if (loops || spec || sscanf(line, "compiled %127s %lld", name, &want) == 2) {
+        bool hoisted = !loops && !spec && sscanf(line, "hoisted %127s %lld", name, &want) == 2;
+        if (loops || spec || hoisted || sscanf(line, "compiled %127s %lld", name, &want) == 2) {
             const Function *f = NULL;
             for (size_t i = 0; i < vm->mods.n && !f; i++) {
                 const LModule *lm = vm->mods.v[i];
@@ -248,13 +266,15 @@ static void check_jit(const Expect *e, VM *vm, StrBuf *why) {
             else if (spec && (long long)f->jit_spec != want)
                 sb_printf(why, "expect-jit: %s has %u closure calls compiled for a callee, expected %lld", name,
                           f->jit_spec, want);
-            else if (!loops && !spec && (long long)f->jit_native != want)
+            else if (hoisted && (long long)f->jit_hoisted != want)
+                sb_printf(why, "expect-jit: %s has %u hoisted loop guards, expected %lld", name, f->jit_hoisted, want);
+            else if (!loops && !spec && !hoisted && (long long)f->jit_native != want)
                 sb_printf(why, "expect-jit: %s has %u instructions with machine code, expected %lld", name, f->jit_native, want);
         } else if (sscanf(line, "steps %lld", &want) == 1) {
             if ((long long)interp_jit_steps(vm) != want)
                 sb_printf(why, "expect-jit: %llu instructions stepped, expected %lld", (unsigned long long)interp_jit_steps(vm), want);
         } else {
-            sb_printf(why, "bad '; expect-jit:' line: %s (expected compiled FUNCTION N, loops FUNCTION N, speculated FUNCTION N, or steps N)", line);
+            sb_printf(why, "bad '; expect-jit:' line: %s (expected compiled/loops/speculated/hoisted FUNCTION N, or steps N)", line);
         }
     }
 }
@@ -266,6 +286,9 @@ static void free_expect(Expect *e) {
     VEC_FREE(e->opt_want);
     for (size_t k = 0; k < e->insns_want.n; k++) free(e->insns_want.v[k]);
     VEC_FREE(e->insns_want);
+    for (size_t k = 0; k < e->args.n; k++) free(e->args.v[k]);
+    VEC_FREE(e->args);
+    sb_free(&e->input);
 }
 
 /* The watchdog: which test is running, and since when. */
@@ -353,6 +376,10 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         vm->err_out = capture;
         vm->err_ctx = &errs;
         tool_env_libpaths(env, vm);
+        for (size_t k = 0; k < e.args.n; k++) VEC_PUSH(vm->prog_args, xstrdup(e.args.v[k]));
+        bool fed = false;
+        if (e.has_input && !why.n && !(fed = plat_stdin_feed(e.input.s, e.input.n)))
+            sb_printf(&why, "'; stdin:' could not be given (%zu bytes: too many?)", e.input.n);
         RunResult r;
         memset(&r, 0, sizeof r);
         atomic_store(&wd_start, plat_now_ns());
@@ -361,6 +388,7 @@ int tool_test(int argc, char **argv, const ToolEnv *env) {
         } else if (e.script.n) run_debug_script(vm, path, &e, &out, &r);
         else vm_run_file(vm, path, &r);
         atomic_store(&wd_path, NULL);
+        if (fed) plat_stdin_restore();
         const char *got_code = r.status == RUN_OK ? "" : r.err.code;
         if (why.n) {
         } else if (e.error_want[0]) {

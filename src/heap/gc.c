@@ -71,6 +71,19 @@ static void note_peak(Process *p) {
 
 uint64_t gc_heap_peak(const Process *p) { return p->heap_bytes > p->heap_peak ? p->heap_bytes : p->heap_peak; }
 
+/* Keep bump_lim <= min(zero_lim, bump + headroom) so gc_alloc and jit_alloc
+ * need only one limit check (bump_lim - bump >= n) for both hole room and
+ * alloc_limit. Because n >= size, each fast-path allocation preserves this. */
+static inline void clamp_bump_lim(Process *p) {
+    if (!p->bump) {
+        p->bump_lim = NULL;
+        return;
+    }
+    uint64_t avail = (uint64_t)(p->zero_lim - p->bump);
+    uint64_t head = p->alloc_limit > p->heap_bytes ? p->alloc_limit - p->heap_bytes - 1 : 0;
+    p->bump_lim = p->bump + (avail < head ? avail : head);
+}
+
 /* What gc_alloc's fast path checks: below the next collection's threshold
  * (once one is due, it runs at the next safepoint: only the quota then),
  * and within the quota (none under GC stress, which collects at every
@@ -79,6 +92,7 @@ static void set_alloc_limit(Process *p) {
     uint64_t q = p->quota[QUOTA_HEAP], l = p->gc_pending ? UINT64_MAX : p->next_gc;
     if (q < l) l = q + 1;
     p->alloc_limit = p->vm->gc_stress ? 0 : l;
+    clamp_bump_lim(p);
 }
 
 void gc_account(Process *p, int64_t delta) {
@@ -86,6 +100,7 @@ void gc_account(Process *p, int64_t delta) {
     p->heap_bytes = (uint64_t)((int64_t)p->heap_bytes + delta);
     note_peak(p);
     if (p->heap_bytes >= p->next_gc || p->vm->gc_stress) p->gc_pending = true;
+    set_alloc_limit(p);
     if (delta > 0) quota_check(p, p->heap_bytes);
 }
 
@@ -185,11 +200,16 @@ static bool next_hole(Process *p, size_t n) {
     Chunk *c = p->bump_chunk;
     uint32_t l = p->bump_line;
     while (l < c->nlines) {
-        while (l < c->nlines && c->lines[l]) l++;
-        uint32_t start = l;
+        const uint8_t *z = memchr(c->lines + l, 0, c->nlines - l);
+        if (!z) {
+            l = c->nlines;
+            break;
+        }
+        uint32_t start = (uint32_t)(z - c->lines);
+        l = start + 1;
         while (l < c->nlines && !c->lines[l]) l++;
         if ((size_t)(l - start) << LINE_SHIFT >= n) {
-            p->bump = p->bump_lim = c->data + ((size_t)start << LINE_SHIFT);
+            p->bump = p->bump_lim = p->zero_lim = c->data + ((size_t)start << LINE_SHIFT);
             p->hole_end = c->data + ((size_t)l << LINE_SHIFT);
             p->bump_line = l;
             return true;
@@ -204,11 +224,14 @@ static bool next_hole(Process *p, size_t n) {
 static MLWS_NOINLINE unsigned char *bump_refill(Process *p, size_t n) {
     for (;;) {
         if (p->bump && (size_t)(p->hole_end - p->bump) >= n) {
-            unsigned char *lim = p->bump_lim + ZERO_STEP;
-            if (lim < p->bump + n) lim = p->bump + n;
-            if (lim > p->hole_end) lim = p->hole_end;
-            memset(p->bump_lim, 0, (size_t)(lim - p->bump_lim));
-            p->bump_lim = lim;
+            if ((size_t)(p->zero_lim - p->bump) < n) {
+                unsigned char *lim = p->zero_lim + ZERO_STEP;
+                if (lim < p->bump + n) lim = p->bump + n;
+                if (lim > p->hole_end) lim = p->hole_end;
+                memset(p->zero_lim, 0, (size_t)(lim - p->zero_lim));
+                p->zero_lim = lim;
+            }
+            clamp_bump_lim(p);
             return p->bump;
         }
         if (p->bump_chunk && next_hole(p, n)) continue;
@@ -223,7 +246,7 @@ static MLWS_NOINLINE unsigned char *bump_refill(Process *p, size_t n) {
         p->bump_chunk = c;
         p->bump_base = c->data;
         p->bump_line = 0;
-        p->bump = p->bump_lim = p->hole_end = NULL;
+        p->bump = p->bump_lim = p->zero_lim = p->hole_end = NULL;
     }
 }
 
@@ -240,8 +263,9 @@ Obj *gc_alloc_unaccounted(Process *p, uint8_t kind, size_t size) {
     if (p->slabs && size <= SLAB_MAX) {
         size_t n = (size + SLAB_GRAIN - 1) & ~(size_t)(SLAB_GRAIN - 1);
         unsigned char *b = p->bump;
-        if (__builtin_expect((size_t)(p->bump_lim - b) < n, 0)) b = bump_refill(p, n);
+        if (__builtin_expect((uintptr_t)p->zero_lim - (uintptr_t)b < n, 0)) b = bump_refill(p, n);
         p->bump = b + n;
+        if (p->bump_lim < p->bump) p->bump_lim = p->bump;
         o = (Obj *)b;
         o->kind = kind;
         o->slab = (uint16_t)(n / SLAB_GRAIN);
@@ -314,8 +338,7 @@ static void obj_release_buffers(Process *p, Obj *o) {
         break;
     }
     case OBJ_MAP:
-        free(((ObjMap *)o)->entries);
-        free(((ObjMap *)o)->index);
+        free(((ObjMap *)o)->entries); /* entries and index are one allocation (map_rebuild) */
         break;
     default: break;
     }
@@ -368,6 +391,7 @@ static bool shared_add(Process *p, ObjString *s) {
     p->shared_n++;
     p->shared_bytes += s->len;
     p->heap_bytes += s->len;
+    clamp_bump_lim(p);
     return true;
 }
 
@@ -465,11 +489,12 @@ void gc_adopt(Process *p, Obj *list, uint64_t bytes, uint64_t nobjs) {
         p->heap = list;
     }
     p->objects_allocated += nobjs;
-    if (!p->next_gc) p->next_gc = gc_threshold(p, 0), set_alloc_limit(p);
+    if (!p->next_gc) p->next_gc = gc_threshold(p, 0);
     /* Like gc_account, but never traps: a heap quota is caught at the next allocation. */
     p->heap_bytes += bytes;
     note_peak(p);
     if (p->heap_bytes >= p->next_gc || p->vm->gc_stress) p->gc_pending = true;
+    set_alloc_limit(p);
 }
 
 static void verify_reach(Process *p, Obj *o);
@@ -512,7 +537,28 @@ static void mark(Process *p, Obj *o) {
             if (p->vm->gc_verify && (fp + SLAB_GRAIN - 1) / SLAB_GRAIN != o->slab) footprint_drift(o, fp);
         }
     }
-    VEC_PUSH(p->markstack, o);
+    /* Skip pushing leaf objects that can hold no references onto the mark stack. */
+    switch (o->kind) {
+    case OBJ_STRUCT:
+        if (((const ObjStruct *)o)->def->has_refs) VEC_PUSH(p->markstack, o);
+        break;
+    case OBJ_ARRAY:
+        if (((const ObjArray *)o)->elem == T_R && ((const ObjArray *)o)->len) VEC_PUSH(p->markstack, o);
+        break;
+    case OBJ_LIST:
+        if (((const ObjList *)o)->len) VEC_PUSH(p->markstack, o);
+        break;
+    case OBJ_MAP:
+        if (((const ObjMap *)o)->count || ((const ObjMap *)o)->weak) VEC_PUSH(p->markstack, o);
+        break;
+    case OBJ_CLOSURE:
+        if (((const ObjClosure *)o)->nup) VEC_PUSH(p->markstack, o);
+        break;
+    case OBJ_CORO: case OBJ_WEAK:
+        VEC_PUSH(p->markstack, o);
+        break;
+    default: break;
+    }
 }
 void gc_remember(Process *p, Obj *o) {
     o->flags |= OBJF_REMEMBERED;
@@ -656,8 +702,16 @@ static void scan(Process *p, Obj *o) {
     }
     case OBJ_STRUCT: {
         ObjStruct *s = (ObjStruct *)o;
-        for (uint32_t i = 0; i < s->def->nfields; i++)
-            if (type_is_ref(s->def->types[i])) mark(p, s->fields[i].r);
+        const StructDef *def = s->def;
+        if (!def->has_refs) break;
+#if defined(__GNUC__) || defined(__clang__)
+        if (def->nfields <= 64) {
+            for (uint64_t m = def->ref_mask; m; m &= m - 1) mark(p, s->fields[__builtin_ctzll(m)].r);
+            break;
+        }
+#endif
+        for (uint32_t i = 0; i < def->nfields; i++)
+            if (type_is_ref(def->types[i])) mark(p, s->fields[i].r);
         break;
     }
     case OBJ_LIST: {
@@ -718,12 +772,12 @@ static void mark_segment(Process *p, const Segment *s, uint32_t from_word) {
  * that a use after a free goes wrong loudly: ASan cannot see inside the
  * chunks; the allocator zeroes them again). */
 static bool chunk_free_lines(Chunk *c, bool stress) {
+    if (!stress) return memchr(c->lines, 0, c->nlines) != NULL;
     bool any = false;
     for (uint32_t l = 0; l < c->nlines; l++) {
         if (c->lines[l]) continue;
         any = true;
-        if (stress) memset(c->data + ((size_t)l << LINE_SHIFT), 0xDB, LINE);
-        else break;
+        memset(c->data + ((size_t)l << LINE_SHIFT), 0xDB, LINE);
     }
     return any;
 }
@@ -755,7 +809,7 @@ static void recycle_chunks(Process *p, bool major) {
     }
     p->recycle_i = 0;
     p->bump_chunk = NULL;
-    p->bump = p->bump_lim = p->hole_end = NULL;
+    p->bump = p->bump_lim = p->zero_lim = p->hole_end = NULL;
 }
 /* The roots: what is live whatever the heap holds. but_global: a module's
  * global segment not to count (gc_holds_code), or UINT32_MAX. */
@@ -1051,7 +1105,7 @@ void heap_free_all(Process *p) {
     p->chunk_next = p->bchunk_next = 0;
     p->chunk_bytes = p->heap_bytes = 0;
     p->bump_chunk = NULL;
-    p->bump = p->bump_lim = p->hole_end = NULL;
+    p->bump = p->bump_lim = p->zero_lim = p->hole_end = NULL;
     VEC_FREE(p->recycle);
     p->recycle_i = 0;
     VEC_FREE(p->young_owners);

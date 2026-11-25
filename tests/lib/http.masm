@@ -1,0 +1,187 @@
+; std.http: a server and its client, on this machine. GET with a query, POST
+; with a body echoed, a handler's status and headers, a handler that raises
+; (500, and the server goes on), a large body; a response in chunks after a
+; 100 Continue, from a server written by hand; two requests on one
+; connection (keep-alive); a request that is not one (400), and one whose line
+; is too long (400); http.query; a URL that is not one.
+; expect-stdout: GET: 200 hello, x=1 y=a b
+; expect-stdout: POST: 200 echo: some data (POST, text/plain)
+; expect-stdout: 404: 404 no such page (x-why: none)
+; expect-stdout: raised: 500 internal server error
+; expect-stdout: after it: 200
+; expect-stdout: large: 200 100000 bytes
+; expect-stdout: chunked: 200 Wikipedia in chunks.
+; expect-stdout: keep-alive: 2 responses on one connection
+; expect-stdout: not a request: HTTP/1.1 400 Bad Request
+; expect-stdout: a line too long: HTTP/1.1 400 Bad Request
+; expect-stdout: query: a=1 b=x y c=
+; expect-stdout: not a URL: E_PARSE
+.include "std/test.inc"
+.include "std/io.inc"
+.import std.http as http
+
+; handler(request) -> response
+.func handler(ref req) -> ref
+    mget R1, req, "path"
+    strcmp I1, R1, "/hello"
+    bnz I1, 1f
+    mget R2, req, "query"
+    call http.query (R2) -> (R3)
+    mget R4, R3, "x", "?"
+    mget R5, R3, "y", "?"
+    strcat R6, "hello, x=", R4, " y=", R5
+    ret R6                             ; a string: 200 text
+1:  strcmp I1, R1, "/echo"
+    bnz I1, 2f
+    mget R2, req, "body"
+    mget R3, req, "method"
+    mget R4, req, "headers"
+    mget R5, R4, "content-type", "?"
+    strcat R6, "echo: ", R2, " (", R3, ", ", R5, ")"
+    mnew R7
+    mset R7, "body", R6
+    ret R7
+2:  strcmp I1, R1, "/boom"
+    bnz I1, 3f
+    mnew R2
+    mget I2, R2, "missing"             ; raises E_KEY
+3:  strcmp I1, R1, "/large"
+    bnz I1, 4f
+    ncall "text.repeat" ("x", 100000) -> (R2)
+    ret R2
+4:  mnew R7
+    mset R7, "status", 404
+    mnew R8
+    mset R8, "X-Why", "none"
+    mset R7, "headers", R8
+    mset R7, "body", "no such page"
+    ret R7
+.endf
+
+; one(port, path) -> the response to a GET of http://127.0.0.1:port/path
+.func get(i64 port, ref path) -> ref
+    tostr R2, port
+    strcat R3, "http://127.0.0.1:", R2, path
+    call http.get (R3, 5000) -> (R4)
+    ret R4
+.endf
+
+.func show(ref title, ref resp)
+    mget I2, resp, "status"
+    mget R3, resp, "body"
+    tostr R4, I2
+    strcat R5, title, ": ", R4, " ", R3
+    PRINTLN_S R5
+    ret
+.endf
+
+; chunky(ticket): a server by hand, for one connection: 100 Continue, then a
+; 200 in three chunks, with an extension and a trailer
+.func chunky(i64 ticket)
+    ncall "fs.take" (ticket) -> (R1)
+    ncall "net.accept" (R1) -> (R2)
+1:  ncall "fs.read_line" (R2) -> (R3)  ; the request, to its blank line
+    len I1, R3
+    bnz I1, 1b
+    ncall "fs.write" (R2, "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5;ext=1\r\npedia\r\nB\r\n in chunks.\r\n0\r\nX-Trailer: yes\r\n\r\n")
+    ncall "fs.close" (R2)
+    ret
+.endf
+
+; raw(port, text) -> the first line the server answers to text
+.func raw(i64 port, ref text) -> ref
+    ncall "net.connect" ("127.0.0.1", port, 5000) -> (R2)
+    ncall "fs.write" (R2, text)
+    ncall "fs.read_line" (R2) -> (R3)
+    ncall "fs.close" (R2)
+    ret R3
+.endf
+
+.func main
+    closure handler -> (R0)
+    call http.start ("127.0.0.1", 0, R0) -> (I0, I1)
+
+    call get (I1, "/hello?x=1&y=a+b") -> (R1)
+    call show ("GET", R1)
+
+    tostr R2, I1
+    strcat R3, "http://127.0.0.1:", R2, "/echo"
+    call http.post (R3, "text/plain", "some data", 5000) -> (R1)
+    call show ("POST", R1)
+
+    call get (I1, "/nowhere") -> (R1)
+    mget I2, R1, "status"
+    mget R4, R1, "body"
+    mget R5, R1, "headers"
+    mget R6, R5, "x-why", "?"
+    tostr R7, I2
+    strcat R7, "404: ", R7, " ", R4, " (x-why: ", R6, ")"
+    PRINTLN_S R7
+
+    call get (I1, "/boom") -> (R1)
+    mget I2, R1, "status"
+    mget R4, R1, "body"
+    ncall "text.trim" (R4) -> (R4)
+    tostr R7, I2
+    strcat R7, "raised: ", R7, " ", R4
+    PRINTLN_S R7
+    call get (I1, "/hello") -> (R1)
+    mget I2, R1, "status"
+    tostr R7, I2
+    strcat R7, "after it: ", R7
+    PRINTLN_S R7
+
+    call get (I1, "/large") -> (R1)
+    mget I2, R1, "status"
+    mget R4, R1, "body"
+    len I3, R4
+    lnew R8
+    lpush R8, I2, I3
+    ncall "text.format" ("large: {} {} bytes", R8) -> (R7)
+    PRINTLN_S R7
+
+    ncall "net.listen" ("127.0.0.1", 0) -> (R9)
+    ncall "net.port" (R9) -> (I4)
+    ncall "fs.give" (R9) -> (I5)
+    spawn chunky (I5)
+    call get (I4, "/") -> (R1)
+    strcat R10, "chunked"
+    call show (R10, R1)
+
+    ncall "net.connect" ("127.0.0.1", I1, 5000) -> (R11)  ; two requests, one connection
+    ncall "fs.write" (R11, "GET /hello HTTP/1.1\r\nHost: x\r\n\r\nGET /hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    ncall "fs.read_all" (R11) -> (R12)
+    strcat R12, R12
+    ncall "regex.compile" ("HTTP/1.1 200", "") -> (R13)
+    ncall "regex.find_all" (R13, R12) -> (R14)
+    len I6, R14
+    tostr R7, I6
+    strcat R7, "keep-alive: ", R7, " responses on one connection"
+    PRINTLN_S R7
+
+    call raw (I1, "nonsense\r\n\r\n") -> (R15)
+    strcat R7, "not a request: ", R15
+    PRINTLN_S R7
+    ncall "text.repeat" ("a", 20000) -> (R16)
+    strcat R16, "GET /", R16, " HTTP/1.1\r\n\r\n"
+    call raw (I1, R16) -> (R15)
+    strcat R7, "a line too long: ", R15
+    PRINTLN_S R7
+
+    call http.query ("a=1&b=x+y&c") -> (R17)
+    mget R18, R17, "a"
+    mget R19, R17, "b"
+    mget R20, R17, "c"
+    strcat R7, "query: a=", R18, " b=", R19, " c=", R20
+    PRINTLN_S R7
+
+.try 5f
+    call http.get ("ftp://example.org/", 1000) -> (R1)
+.endtry
+    PRINTLN_S "not raised"
+5:  catch R21
+    strcat R7, "not a URL: ", R21->Error.code
+    PRINTLN_S R7
+    kill I0
+    ret 0
+.endf

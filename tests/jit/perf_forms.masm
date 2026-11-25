@@ -1,0 +1,473 @@
+; Regression tests for the JIT forms and register-cache edge cases added on
+; perf-improvements:
+;   * multi-operand integer JX_ARITH (12+ register sources, exceeding both
+;     x86-64's 5 and arm64's 16 slots when combined with live/pinned regs);
+;   * multi-operand and element-operand JX_FARITH (15 float register sources,
+;     array/list OM_ELEM & OM_ELEMI sources and destinations, and 6+ distinct
+;     index registers);
+;   * Q_LPUSH_R with more register operands than x86-64's 5 integer cache slots;
+;   * Q_MNEW, Q_MSET, Q_MHAS (string constant and I/F/R register keys, overwrites,
+;     and non-map side exits);
+;   * raw indexed byte memory Q_LDMB_U8, Q_STMB_U8, Q_STMBK_U8, Q_BZ_MB_U8,
+;     Q_BNZ_MB_U8 (with non-zero pointer offsets, negative/positive OOB traps,
+;     and UAF traps);
+;   * constant div/rem strength reduction (1, +/-2, +/-4, +/-8, +/-3, +/-7,
+;     +/-10, 1<<62, INT64_MIN, with positive, negative, 0, INT64_MAX, INT64_MIN);
+;   * multi-return and self-tail-call register-swap cycles (jit_emit_vals);
+;   * inline Q_NEW/Q_LNEW fast path and slow-path refill inside a loop;
+;   * partial loop register allocation (loops using > 16 I regs and > 13 F regs).
+; option: --jit all
+; no-opt: expect-jit counts the instructions as written
+; expect-jit: compiled many_xor 14
+; expect-jit: compiled many_farith 23
+; expect-jit: compiled elem_farith 24
+; expect-jit: compiled wide_lpush 12
+; expect-jit: compiled map_ops 20
+; expect-jit: compiled raw_bytes 37
+; expect-jit: compiled div_edges 178
+; expect-jit: compiled ret_swap 7
+; expect-jit: compiled tcall_swap 5
+; expect-jit: compiled loop_alloc 14
+; expect-jit: compiled partial_loop 42
+; expect-stdout: many_xor 28 10085
+; expect-stdout: many_farith 120 3.75
+; expect-stdout: elem_farith 24.5 4.75
+; expect-stdout: wide_lpush 8 36
+; expect-stdout: map_ops 1 1 0 1 99 42 E_TYPE
+; expect-stdout: raw_bytes 5 117 E_BOUNDS E_BOUNDS E_UAF
+; expect-stdout: div_edges 0
+; expect-stdout: swaps 20 10 1 2 3 4 5 6 55
+; expect-stdout: loop_alloc 200 19900
+; expect-stdout: partial_loop 3080 2105
+.include "std/io.inc"
+
+.struct Pair
+    a: i64
+    b: i64
+.ends
+
+; 12 register sources in one xor (and 6 in one add): must unpin each source
+; as it is folded into S3 so jc_alloc never exhausts cache slots.
+.func many_xor(i64 seed) -> (i64, i64)
+    add I1, seed, 1
+    add I2, seed, 2
+    add I3, seed, 3
+    add I4, seed, 4
+    add I5, seed, 5
+    add I6, seed, 6
+    add I7, seed, 7
+    add I8, seed, 8
+    add I9, seed, 9
+    add I10, seed, 10
+    add I11, seed, 11
+    xor I14, seed, I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11
+    add I15, I1, I2, I3, I4, I5, I6, I7, I8, I9, I10
+    ret I14, I15
+.endf
+
+; 15 float register sources in one add.f64 (exceeds x86-64's 13 FP slots)
+; and 4-operand sub.f64/mul.f64.
+.func many_farith(f64 x) -> (f64, f64)
+    mov F1, 1.0
+    mov F2, 2.0
+    mov F3, 3.0
+    mov F4, 4.0
+    mov F5, 5.0
+    mov F6, 6.0
+    mov F7, 7.0
+    mov F8, 8.0
+    mov F9, 9.0
+    mov F10, 10.0
+    mov F11, 11.0
+    mov F12, 12.0
+    mov F13, 13.0
+    mov F14, 14.0
+    mov F15, 15.0
+    add.f64 F16, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15
+    mul.f64 F17, x, F1, F2, F3
+    sub.f64 F17, F17, F1, 0.5
+    div.f64 F17, F17, 2.0
+    sub.f64 F16, F16, F1, F2
+    add.f64 F16, F16, 3.0
+    add.f64 F16, F16, 0.0
+    ret F16, F17
+.endf
+
+; Element-operand JX_FARITH: arrays & lists with 6 distinct index registers.
+.func elem_farith(ref a, ref b) -> (f64, f64)
+    mov I0, 0
+    mov I1, 1
+    mov I2, 2
+    mov I3, 3
+    mov I4, 4
+    mov I5, 5
+    add.f64 F0, a[I0], a[I1], a[I2], a[I3], a[I4], a[I5]
+    mul.f64 F1, a[I1], b[I1]
+    sub.f64 b[I1], F1
+    add.f64 a[I1], b[I1]
+    add.f64 a[2], b[2], 1.5
+    mov.f64 F2, a[1]
+    add.f64 F2, F2, a[2]
+    add.f64 F0, F0, F2
+    ; also test 2-op element on a 3-iter loop
+    mov I6, 0
+1:  mul.f64 F3, a[I6], b[I6]
+    sub.f64 b[I6], F3
+    add.f64 a[I6], b[I6]
+    inc I6
+    blt I6, 2, 1b
+    mov.f64 F4, a[0]
+    add.f64 F4, F4, a[1]
+    add.f64 F4, F4, a[2]
+    ret F0, F4
+.endf
+
+; Q_LPUSH_R with 8 distinct integer registers (exceeds x86-64's 5 slots).
+.func wide_lpush(ref lst) -> (i64, i64)
+    mov I0, 1
+    mov I1, 2
+    mov I2, 3
+    mov I3, 4
+    mov I4, 5
+    mov I5, 6
+    mov I6, 7
+    mov I7, 8
+    lpush lst, I0, I1, I2, I3, I4, I5, I6, I7
+    len I8, lst
+    add I9, I0, I1, I2, I3, I4, I5, I6, I7
+    ret I8, I9
+.endf
+
+; Q_MNEW, Q_MSET, Q_MHAS (constant & register keys, overwrite, non-map side exit).
+.func map_ops -> (i64, i64, i64, i64, i64, i64, ref)
+    mnew R0
+    mov I0, 10
+    mov I1, 42
+    mov F0, 2.5
+    mset R0, "alpha", I1
+    mset R0, I0, I1
+    mset R0, F0, I1
+    mov I2, 99
+    mset R0, "alpha", I2
+    mhas I3, R0, "alpha"
+    mhas I4, R0, I0
+    mhas I5, R0, "missing"
+    mhas I6, R0, F0
+    mget I7, R0, "alpha"
+    mget I8, R0, I0
+    mov R1, "not-a-map"
+.try h
+    mset R1, "k", I0
+.endtry
+    mov R2, "none"
+    jmp done
+h:
+    catch R3
+    mov R2, R3->Error.code
+done:
+    ret I3, I4, I5, I6, I7, I8, R2
+.endf
+
+; Raw indexed byte memory (P{I}, .u8): load, store reg, store const, bz, bnz,
+; non-zero pointer offset, bounds & UAF traps.
+.func raw_bytes(ptr p, i64 n) -> (i64, i64, ref, ref, ref)
+    mov I10, 0
+1:  bge I10, n, 2f
+    mov.u8 p{I10}, 0
+    inc I10
+    jmp 1b
+2:  mov I1, 1
+    mov.u8 p{I1}, 7
+    mov I2, 3
+    mov.u8 p{I2}, 10
+    add.p P1, p, 2
+    mov I3, 2
+    mov I4, 100
+    mov.u8 P1{I3}, I4
+    mov I5, 0
+    mov I6, 0
+    mov I10, 0
+3:  bge I10, n, 5f
+    bz.u8 p{I10}, 4f
+    mov.u8 I7, p{I10}
+    add I6, I7
+4:  bnz.u8 p{I10}, 6f
+    inc I5
+6:  inc I10
+    jmp 3b
+5:
+    mov I8, -1
+.try h1
+    mov.u8 I9, p{I8}
+.endtry
+    mov R0, "ok"
+    jmp t2
+h1:
+    catch R3
+    mov R0, R3->Error.code
+t2:
+.try h2
+    bnz.u8 p{n}, 5b
+.endtry
+    mov R1, "ok"
+    jmp t3
+h2:
+    catch R3
+    mov R1, R3->Error.code
+t3:
+    free p
+.try h3
+    mov.u8 p{I1}, 1
+.endtry
+    mov R2, "ok"
+    jmp out
+h3:
+    catch R3
+    mov R2, R3->Error.code
+out:
+    ret I5, I6, R0, R1, R2
+.endf
+
+; Constant div/rem edge cases: compare every JIT constant div/rem against
+; dynamic (register) div/rem so any mismatch produces a non-zero error count.
+.macro CHECK_DIV val, k
+    mov I1, \val
+    mov I2, \k
+    div I3, I1, \k
+    div I4, I1, I2
+    sne I5, I3, I4
+    add I0, I5
+    rem I3, I1, \k
+    rem I4, I1, I2
+    sne I5, I3, I4
+    add I0, I5
+.endm
+
+.func div_edges -> i64
+    mov I0, 0
+    CHECK_DIV -9223372036854775808, 2
+    CHECK_DIV -9223372036854775808, -2
+    CHECK_DIV -9223372036854775808, 3
+    CHECK_DIV -9223372036854775808, -3
+    CHECK_DIV -9223372036854775808, 7
+    CHECK_DIV -9223372036854775808, -7
+    CHECK_DIV -9223372036854775808, 4611686018427387904
+    CHECK_DIV -9223372036854775808, -4611686018427387904
+    CHECK_DIV -9223372036854775808, -9223372036854775808
+    CHECK_DIV 9223372036854775807, 3
+    CHECK_DIV 9223372036854775807, -3
+    CHECK_DIV 9223372036854775807, 4
+    CHECK_DIV 9223372036854775807, -4
+    CHECK_DIV 9223372036854775807, 100000000
+    CHECK_DIV -17, 1
+    CHECK_DIV -17, 4
+    CHECK_DIV -17, -4
+    CHECK_DIV -17, 7
+    CHECK_DIV -17, -7
+    CHECK_DIV 0, -3
+    CHECK_DIV 6, -3
+    CHECK_DIV -6, -3
+    ret I0
+.endf
+
+; Multi-return register swap cycle (I1, I0) + > JRES_N values via Ctx.retv.
+.func ret_swap(i64 a, i64 b) -> (i64, i64, i64, i64, i64, i64, i64, i64)
+    mov I2, 1
+    mov I3, 2
+    mov I4, 3
+    mov I5, 4
+    mov I6, 5
+    mov I7, 6
+    ret b, a, I2, I3, I4, I5, I6, I7
+.endf
+
+; Self-tail-call with swapped register arguments (tests jit_emit_vals cycle break).
+.func tcall_swap(i64 n, i64 a, i64 b) -> i64
+    bz n, 1f
+    dec n
+    add I3, a, b
+    tcall tcall_swap (n, b, I3)
+1:  ret a
+.endf
+
+; Inline Q_NEW / Q_LNEW inside a loop (hits both bump fast path and refill stub).
+.func loop_alloc(i64 n) -> (i64, i64)
+    mov I1, 0
+    mov I2, 0
+    lnew R2, 4
+1:  bge I1, n, 2f
+    new R0, Pair
+    mov R0->Pair.a, I1
+    mov R0->Pair.b, I2
+    lnew R1, 4
+    lpush R1, I1
+    mov I3, R1[0]
+    add I2, I3
+    inc I1
+    jmp 1b
+2:  ret I1, I2
+.endf
+
+; Partial loop register allocation: loop touches 18 I registers and 15 F registers.
+.func partial_loop(i64 n) -> (i64, f64)
+    mov I1, 1
+    mov I2, 2
+    mov I3, 3
+    mov I4, 4
+    mov I5, 5
+    mov I6, 6
+    mov I7, 7
+    mov I8, 8
+    mov I9, 9
+    mov I10, 10
+    mov I11, 11
+    mov I12, 12
+    mov I13, 13
+    mov I14, 14
+    mov I15, 15
+    mov I16, 16
+    mov I17, 17
+    mov I18, 0
+    mov I19, 0
+    mov F1, 1.0
+    mov F2, 2.0
+    mov F3, 3.0
+    mov F4, 4.0
+    mov F5, 5.0
+    mov F6, 6.0
+    mov F7, 7.0
+    mov F8, 8.0
+    mov F9, 9.0
+    mov F10, 10.0
+    mov F11, 11.0
+    mov F12, 12.0
+    mov F13, 13.0
+    mov F14, 14.0
+    mov F15, 0.0
+1:  bge I19, n, 2f
+    add I18, I18, I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12, I13, I14, I15, I16, I17
+    add.f64 F15, F15, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14
+    inc I19
+    jmp 1b
+2:  add I18, I18, I19
+    add.f64 F15, F15, 5.0
+    ret I18, F15
+.endf
+
+.func main
+    call many_xor (1003) -> (I0, I1)
+    ncall "io.print_s" ("many_xor ")
+    ncall "io.print_i" (I0)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I1)
+    ncall "io.nl" ()
+
+    call many_farith (1.5) -> (F0, F1)
+    ncall "io.print_s" ("many_farith ")
+    ncall "io.print_f" (F0)
+    ncall "io.print_c" (' ')
+    ncall "io.print_f" (F1)
+    ncall "io.nl" ()
+
+    anew.f64 R0, 6
+    anew.f64 R1, 6
+    mov R0[0], 1.0
+    mov R0[1], 2.0
+    mov R0[2], 3.0
+    mov R0[3], 4.0
+    mov R0[4], 5.0
+    mov R0[5], 6.0
+    mov R1[0], 0.5
+    mov R1[1], 0.5
+    mov R1[2], 0.5
+    mov R1[3], 0.5
+    mov R1[4], 0.5
+    mov R1[5], 0.5
+    call elem_farith (R0, R1) -> (F2, F3)
+    ncall "io.print_s" ("elem_farith ")
+    ncall "io.print_f" (F2)
+    ncall "io.print_c" (' ')
+    ncall "io.print_f" (F3)
+    ncall "io.nl" ()
+
+    lnew R2, 2
+    call wide_lpush (R2) -> (I2, I3)
+    ncall "io.print_s" ("wide_lpush ")
+    ncall "io.print_i" (I2)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I3)
+    ncall "io.nl" ()
+
+    call map_ops () -> (I4, I5, I6, I7, I8, I9, R3)
+    ncall "io.print_s" ("map_ops ")
+    ncall "io.print_i" (I4)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I5)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I6)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I7)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I8)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I9)
+    ncall "io.print_c" (' ')
+    ncall "io.print_s" (R3)
+    ncall "io.nl" ()
+
+    alloc P0, 8
+    call raw_bytes (P0, 8) -> (I10, I11, R4, R5, R6)
+    ncall "io.print_s" ("raw_bytes ")
+    ncall "io.print_i" (I10)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I11)
+    ncall "io.print_c" (' ')
+    ncall "io.print_s" (R4)
+    ncall "io.print_c" (' ')
+    ncall "io.print_s" (R5)
+    ncall "io.print_c" (' ')
+    ncall "io.print_s" (R6)
+    ncall "io.nl" ()
+
+    call div_edges () -> (I12)
+    ncall "io.print_s" ("div_edges ")
+    ncall "io.print_i" (I12)
+    ncall "io.nl" ()
+
+    call ret_swap (10, 20) -> (I13, I14, I15, I16, I17, I18, I19, I20)
+    call tcall_swap (10, 0, 1) -> (I21)
+    ncall "io.print_s" ("swaps ")
+    ncall "io.print_i" (I13)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I14)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I15)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I16)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I17)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I18)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I19)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I20)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I21)
+    ncall "io.nl" ()
+
+    call loop_alloc (200) -> (I22, I23)
+    ncall "io.print_s" ("loop_alloc ")
+    ncall "io.print_i" (I22)
+    ncall "io.print_c" (' ')
+    ncall "io.print_i" (I23)
+    ncall "io.nl" ()
+
+    call partial_loop (20) -> (I24, F4)
+    ncall "io.print_s" ("partial_loop ")
+    ncall "io.print_i" (I24)
+    ncall "io.print_c" (' ')
+    ncall "io.print_f" (F4)
+    ncall "io.nl" ()
+    ret 0
+.endf
