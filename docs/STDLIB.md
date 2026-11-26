@@ -13,7 +13,7 @@ restricts them.
 | `path` | names of files as text: joining, normalizing, the directory, name and extension |
 | `os` | arguments, the environment, exit, running commands |
 | `net`, `tls` | TCP, UDP, DNS, TLS |
-| `std.http` | HTTP/1.1: a server with a handler, its parts, and a client |
+| `std.http` | HTTP/1.1: a server with a handler, its parts, and a client, both streaming if asked |
 | `text`, `json`, `regex` | formatting, string utilities, UTF-8, JSON, regular expressions |
 | `proc`, `std.supervisor`, `std.server`, `std.pool` | the process count, a name registry, request/reply calls, supervisors, generic servers, worker pools |
 | `std.node` | processes on other VMs |
@@ -844,8 +844,32 @@ It is MLWSVM assembly (`lib/std/pool.masm`), built on `proc.call` and
   reads a body by `Content-Length`, in chunks, or up to the connection's end,
   and skips `100 Continue`. `request(method, url, headers, body, timeout)`
   does any method.
-* `http.read_request` and `http.write_response` are the server's parts, for
-  a server of your own (one that hands a connection over to WebSocket, say).
+* **Streams.** A body can be written as it is made, and read as it comes:
+  * A handler whose response has a `stream`, a closure, gets its body
+    written in chunks (`Transfer-Encoding: chunked`). The closure is called
+    with the connection, after the head is written, and calls
+    `http.write_chunk(conn, data)` for each piece, which goes at once (from
+    the closure's own process, the connection's). When it
+    returns, the last chunk ends the body, and the connection goes on to its
+    next request. If it raises, the body is left unended, so the client sees
+    it cut short, and its error goes to the monitor's log unless the client
+    went away (`E_RESET`, `E_CLOSED`).
+  * An HTTP/1.0 client knows no chunks: it gets the pieces as they are, and
+    the connection closed after them. A HEAD request gets the head alone.
+  * `http.open(method, url, headers, body, timeout)` sends a request and reads
+    the response's status and headers, but not its body: a map of `status`,
+    `headers` and `connection`. `http.read_chunk(stream)` reads the next piece
+    of the body as a string, what has come up to 64 KiB, and null at its end,
+    which closes the connection. `http.close(stream)` closes it sooner, and
+    again does nothing. Its timeout is for each wait, as for `request`, and
+    there is no limit to a body read this way.
+  * A piece is what has arrived, not what the server wrote as a chunk: a proxy
+    or TLS may split or join them. Text in lines or events (server-sent
+    events, JSON Lines) is to be split by its own ends of line.
+* `http.read_request`, `http.write_response`, and `http.write_head` (the head
+  of a response in chunks), `http.write_chunk` and `http.end_chunks` (the last
+  chunk) are the server's parts, for a server of your own (one that hands a
+  connection over to WebSocket, say).
 
 It is MLWSVM assembly (`lib/std/http.masm`). [`examples/web.masm`](../examples/web.masm)
 is a small service built on it.

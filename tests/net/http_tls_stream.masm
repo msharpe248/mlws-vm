@@ -1,0 +1,83 @@
+; std.http's chunks over TLS. A server by hand puts TLS on its connection and
+; writes a response with http.write_head and http.write_chunk, each chunk
+; read by the client before the next is written (it waits for the client in
+; between), so TLS holds nothing back either. http.open on an https URL puts
+; TLS on its connection with the system's authorities, which refuse this
+; self-signed certificate. Skipped where no TLS library is installed: it
+; passes as a program that does nothing.
+.include "std/test.inc"
+.import std.http as http
+
+.func server(i64 parent)
+    ncall "net.listen" ("127.0.0.1", 0) -> (R1)
+    ncall "net.port" (R1) -> (I1)
+    send parent, I1
+    ncall "net.accept" (R1) -> (R2)
+.try refused
+    ncall "tls.accept" (R2, "tests/net/_tls/cert.pem", "tests/net/_tls/key.pem")
+.endtry
+1:  ncall "fs.read_line" (R2) -> (R3)  ; the request, to its blank line
+    len I2, R3
+    bnz I2, 1b
+    call http.write_head (R2, 200, null)
+    call http.write_chunk (R2, "secure")
+    recv I3
+    call http.write_chunk (R2, "stream")
+    recv I3
+    call http.end_chunks (R2)
+    ncall "fs.close" (R2)
+    ret
+refused:                               ; (the client would not have it)
+    catch R4
+    ncall "fs.close" (R2)
+    ret
+.endf
+
+; line(conn, expected): the next line is that
+.func line(ref conn, ref expected)
+    ncall "fs.read_line" (conn) -> (R2)
+    strcmp I1, R2, expected
+    ASSERT_EQ I1, 0
+    ret
+.endf
+
+.func main
+    ncall "tls.available" () -> (I0)
+    bnz I0, 1f
+    ret 0
+1:  spawn server (PID) -> (I1)
+    recv I2                            ; the port
+    ncall "net.connect" ("127.0.0.1", I2, 5000) -> (R0)
+    ncall "fs.set_timeout" (R0, 5000)
+    ncall "tls.connect" (R0, "localhost", "tests/net/_tls/cert.pem")
+    ncall "fs.write" (R0, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+    call line (R0, "HTTP/1.1 200 OK")
+    call line (R0, "Transfer-Encoding: chunked")
+    call line (R0, "")
+    call line (R0, "6")
+    call line (R0, "secure")
+    send I1, 1                         ; the next, please
+    call line (R0, "6")
+    call line (R0, "stream")
+    send I1, 1
+    call line (R0, "0")
+    call line (R0, "")
+    ncall "fs.read_line" (R0) -> (R1)  ; and the end
+    ASSERT_FALSE R1, r
+    ncall "fs.close" (R0)
+
+    ; https: TLS with the system's authorities, which do not know this one.
+    spawn server (PID)
+    recv I3
+    tostr R2, I3
+    strcat R3, "https://127.0.0.1:", R2, "/"
+.try refused
+    call http.open ("GET", R3, null, null, 5000) -> (R4)
+.endtry
+    FAIL "a certificate no authority signed was taken"
+refused:
+    catch R5
+    strcmp I4, R5->Error.code, "E_TLS"
+    ASSERT_EQ I4, 0
+    ret 0
+.endf
