@@ -153,6 +153,16 @@ bool plat_spawn(char *const argv[], int pipes, PlatChild *c, int *err); /* searc
 bool plat_wait_child(int64_t pid, int *exit_code, int *err);           /* blocks; 128+N for signal N */
 bool plat_signal_child(int64_t pid, int sig);                          /* 9 = kill, else terminate */
 
+/* Signals to this program that it may take as messages (os.trap): SIGINT,
+ * SIGTERM, SIGHUP; on Windows, Ctrl+C and Ctrl+Break are SIGINT and closing
+ * the console (or logging off, or shutting down) SIGTERM. While one is
+ * trapped, its arrival calls deliver(which), on a thread of its own, not in
+ * the signal handler; deliver returns false if nobody took it, and then the
+ * signal does what it would have done (usually, the program ends). Let go
+ * (on false), it does what it did before it was trapped. */
+enum { PLAT_SIGINT = 1, PLAT_SIGTERM = 2, PLAT_SIGHUP = 3, PLAT_SIG__COUNT };
+bool plat_signal_trap(int which, bool on, bool (*deliver)(int which));
+
 /* Sockets (std.net). Listening and accepted sockets are non-blocking; connect
  * blocks (run it on the I/O pool). Hosts may be names unless noted. */
 void plat_ignore_sigpipe(void);

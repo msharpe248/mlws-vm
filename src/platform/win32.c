@@ -640,6 +640,38 @@ bool plat_mkdir_private(const char *path) {
 }
 
 bool plat_restrict_writes(const char *path) { return set_private_acl(path, true); }
+
+/* ---- trapped signals ---------------------------------------------------------- */
+
+/* Windows calls the handler on a thread of its own, so it delivers there. */
+static bool (*sig_deliver)(int);
+static volatile LONG sig_on[PLAT_SIG__COUNT];
+static INIT_ONCE sig_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL WINAPI sig_handler(DWORD ev) {
+    int which = ev == CTRL_C_EVENT || ev == CTRL_BREAK_EVENT ? PLAT_SIGINT
+                : ev == CTRL_CLOSE_EVENT || ev == CTRL_LOGOFF_EVENT || ev == CTRL_SHUTDOWN_EVENT ? PLAT_SIGTERM
+                                                                                                 : 0;
+    if (!which || !InterlockedCompareExchange(&sig_on[which], 0, 0) || !sig_deliver(which)) return FALSE; /* as before */
+    if (which == PLAT_SIGTERM) Sleep(INFINITE); /* the program ends when it returns: let it end itself, in the time Windows gives */
+    return TRUE;
+}
+
+static BOOL CALLBACK sig_start(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    (void)once, (void)param, (void)ctx;
+    return SetConsoleCtrlHandler(sig_handler, TRUE);
+}
+
+bool plat_signal_trap(int which, bool on, bool (*deliver)(int which)) {
+    if (which <= 0 || which >= PLAT_SIG__COUNT) return false;
+    if (which == PLAT_SIGHUP) return true; /* (there is none: it never comes) */
+    if (on) {
+        sig_deliver = deliver;
+        if (!InitOnceExecuteOnce(&sig_once, sig_start, NULL, NULL)) return false;
+    }
+    InterlockedExchange(&sig_on[which], on ? 1 : 0);
+    return true;
+}
 #else
 typedef int mlwsvm_win32_unused; /* ISO C forbids an empty translation unit */
 #endif

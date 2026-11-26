@@ -11,7 +11,7 @@ restricts them.
 | `io`, `str`, `gc`, `test` | printing, string bytes, the collector, test failures |
 | `fs` | files, standard streams, directories, metadata, copies, temporary directories |
 | `path` | names of files as text: joining, normalizing, the directory, name and extension |
-| `os` | arguments, the environment, exit, running commands |
+| `os` | arguments, the environment, exit, running commands, signals |
 | `net`, `tls` | TCP, UDP, DNS, TLS |
 | `std.http` | HTTP/1.1: a server with a handler, its parts, and a client, both streaming if asked |
 | `text`, `json`, `regex` | formatting, string utilities, UTF-8, JSON, regular expressions |
@@ -1051,6 +1051,38 @@ explicitly.
 `os.kill(process, force)` asks it to terminate, or kills it outright. A command
 whose handle is dropped without `os.wait` keeps running; it is reaped by the OS
 when MLWSVM exits.
+
+## Signals
+
+```asm
+    ncall "os.trap" ("SIGTERM", PID)    ; SIGTERM comes to this process as a message
+    recv R0                             ; a Signal: R0->Signal.name is "SIGTERM"
+```
+
+`os.trap(name, pid)` traps a signal to the program, `"SIGINT"`, `"SIGTERM"` or
+`"SIGHUP"`: when it comes, process `pid` gets a built-in `Signal` struct,
+`{name}`, instead of the program ending, so a server can close its
+connections and write what it holds before it ends. `os.trap(name, 0)` lets
+it go.
+
+* **A trap is for one signal.** Once one has come, the signal does again
+  what it did before it was trapped (usually, it ends the program) until
+  `os.trap` is called once more: so a second Ctrl+C stops a program whose
+  shutdown is stuck. To take every SIGHUP, say, trap it again after each.
+* **A trap goes with its process:** when `pid` ends, or the VM does, the
+  signal is as it was. A process waiting for a trapped signal is not in a
+  deadlock (`E_DEADLOCK`).
+* **On Windows,** Ctrl+C and Ctrl+Break are SIGINT, and closing the console
+  window, logging off and shutting down are SIGTERM: for those, Windows ends
+  the program a few seconds after asking, whatever it does. SIGHUP never
+  comes.
+* Signals belong to the operating system's process, so one trap holds for
+  each signal: trapping it again moves it to the new pid. It is an OS call
+  (quota 5), and a restricted process (`cap.restrict`) may not make it
+  (`E_PERMISSION`). An unknown name is `E_RANGE`, and a pid that is not
+  running `E_NOPROC`.
+* The handler does nothing but note the signal; a thread of the VM's own
+  delivers it. A call interrupted by the signal is resumed.
 
 ## The program's view
 

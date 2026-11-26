@@ -1,0 +1,17 @@
+; A trap ends with the process it was for (check_tools.sh): a child traps
+; SIGTERM and ends, and then SIGTERM ends the program, as it does untrapped.
+.include "std/io.inc"
+
+.func trapper
+    ncall "os.trap" ("SIGTERM", PID)
+    ret
+.endf
+
+.func main
+    spawnm trapper
+    recv R0                            ; its Down: the trap has gone with it
+    PRINTLN_S "ready"
+    ncall "io.flush" ()
+    sleep 60000
+    ret 0
+.endf

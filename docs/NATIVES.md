@@ -158,6 +158,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `os.env` | r | r | An environment variable, or null. |
 | `os.environ` | - | r | The whole environment, as a map of strings. |
 | `os.exit` | i64 | - | End the whole program now, from any process, with this exit code. |
+| `os.trap` | r, i64 | - | Trap a signal, "SIGINT", "SIGTERM" or "SIGHUP": when it comes, process pid gets a Signal{name} message instead of the program ending, once (then trap it again). pid 0 lets it end the program again, and so does the end of pid. E_PERMISSION in a restricted process. |
 | `os.platform` | - | r | "macos", "linux", "freebsd", ... or "windows". |
 | `os.spawn` | r, i64 | r, r, r, r | Start a command (a list: the program, found on PATH, then its arguments). Pipes: 1 stdin, 2 stdout, 4 stderr, 8 stderr into stdout. Returns the process and its piped streams (null if not piped). |
 | `os.wait` | r | i64 | Wait for a command to finish; its exit code (128 + N if killed by signal N). |

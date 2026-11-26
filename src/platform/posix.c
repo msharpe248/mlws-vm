@@ -137,7 +137,10 @@ int plat_sock_dup(int fd, int *err) {
 long plat_stdin_read(void *buf, size_t n, uint64_t timeout_ns) {
     if (timeout_ns != UINT64_MAX) {
         struct pollfd pf = {0, POLLIN, 0};
-        if (poll(&pf, 1, (int)(timeout_ns / 1000000)) <= 0) return -1;
+        int got;
+        while ((got = poll(&pf, 1, (int)(timeout_ns / 1000000))) < 0 && errno == EINTR) { /* a trapped signal */
+        }
+        if (got <= 0) return -1;
     }
     ssize_t r = read(0, buf, n);
     return r < 0 ? 0 : (long)r;
@@ -262,8 +265,10 @@ int plat_tcp_connect(const char *host, int port) {
 
 bool plat_wait_readable(int fd, uint64_t timeout_ns) {
     struct pollfd pf = {fd, POLLIN, 0};
-    int ms = (int)((timeout_ns + 999999) / 1000000);
-    return poll(&pf, 1, ms) > 0;
+    int ms = (int)((timeout_ns + 999999) / 1000000), n;
+    while ((n = poll(&pf, 1, ms)) < 0 && errno == EINTR) { /* a trapped signal */
+    }
+    return n > 0;
 }
 
 long plat_sock_read(int fd, void *buf, size_t n, uint64_t timeout_ns) {
@@ -490,6 +495,81 @@ bool plat_code_write(void *at, const void *src, size_t n) {
 }
 
 void plat_code_free(void *region, size_t size) { munmap(region, size); }
+
+/* ---- trapped signals ---------------------------------------------------------- */
+
+/* The handler only writes the signal's number to a pipe, which is all a
+ * handler may safely do; a thread of its own reads it and delivers it. */
+static int sig_pipe[2] = {-1, -1};
+static bool (*sig_deliver)(int);
+static pthread_once_t sig_once = PTHREAD_ONCE_INIT;
+static const int SIG_OF[PLAT_SIG__COUNT] = {0, SIGINT, SIGTERM, SIGHUP};
+static struct sigaction sig_old[PLAT_SIG__COUNT]; /* what it did before it was trapped (ignored, say, in the background) */
+static bool sig_trapped[PLAT_SIG__COUNT];
+
+static void sig_handler(int sig) {
+    int saved = errno;
+    unsigned char b = 0;
+    for (int w = 1; w < PLAT_SIG__COUNT; w++)
+        if (SIG_OF[w] == sig) b = (unsigned char)w;
+    if (write(sig_pipe[1], &b, 1) < 0) { /* (the pipe is full: one is waiting to be read already) */
+    }
+    errno = saved;
+}
+
+/* Nobody took it: it does what it did before it was trapped (deliver has put
+ * that back), which usually ends the program. */
+static void sig_default(int which) { raise(SIG_OF[which]); }
+
+static void *sig_main(void *arg) {
+    (void)arg;
+    for (;;) {
+        unsigned char b;
+        ssize_t n = read(sig_pipe[0], &b, 1);
+        if (n < 0 && errno == EINTR) continue;
+        if (n != 1) return NULL;
+        if (b > 0 && b < PLAT_SIG__COUNT && !sig_deliver(b)) sig_default(b);
+    }
+}
+
+static void sig_start(void) {
+    if (pipe(sig_pipe) != 0) return;
+    fcntl(sig_pipe[0], F_SETFD, FD_CLOEXEC);
+    fcntl(sig_pipe[1], F_SETFD, FD_CLOEXEC);
+    fcntl(sig_pipe[1], F_SETFL, fcntl(sig_pipe[1], F_GETFL) | O_NONBLOCK);
+    pthread_t t;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&t, &at, sig_main, NULL) != 0) {
+        close(sig_pipe[0]);
+        close(sig_pipe[1]);
+        sig_pipe[0] = sig_pipe[1] = -1;
+    }
+    pthread_attr_destroy(&at);
+}
+
+/* (Its caller serializes calls.) */
+bool plat_signal_trap(int which, bool on, bool (*deliver)(int which)) {
+    if (which <= 0 || which >= PLAT_SIG__COUNT) return false;
+    if (!on) { /* as it was */
+        if (sig_trapped[which]) sigaction(SIG_OF[which], &sig_old[which], NULL);
+        sig_trapped[which] = false;
+        return true;
+    }
+    if (sig_trapped[which]) return true;
+    sig_deliver = deliver;
+    pthread_once(&sig_once, sig_start);
+    if (sig_pipe[1] < 0) return false;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = sig_handler;
+    sa.sa_flags = SA_RESTART;
+    if (sigaction(SIG_OF[which], &sa, &sig_old[which]) != 0) return false;
+    sig_trapped[which] = true;
+    return true;
+}
 #else
 typedef int mlwsvm_posix_unused; /* ISO C forbids an empty translation unit */
 #endif

@@ -25,6 +25,7 @@ enum {
     BUILTIN_NODEEVENT = 6,
     BUILTIN_RELOADED = 7,
     BUILTIN_ENVCHANGE = 8,
+    BUILTIN_SIGNAL = 9,
     BUILTIN__COUNT
 };
 enum { ERRF_CODE = 0, ERRF_MESSAGE = 1, ERRF_TRACE = 2 };
@@ -38,6 +39,8 @@ enum { NEF_NODE = 0, NEF_NAME = 1, NEF_UP = 2 };
 enum { RLF_MODULE = 0 };
 /* EnvChange: a value of the environment was set or deleted (env.watch). */
 enum { ECF_KEY = 0 };
+/* Signal: a signal the program trapped came (os.trap). */
+enum { SIGF_NAME = 0 };
 /* Callback: C called an async .callback; its arguments, as a list. */
 enum { CBF_NAME = 0, CBF_ARGS = 1 };
 /* Date: a time as a calendar date (time.date); offset in minutes east of UTC. */

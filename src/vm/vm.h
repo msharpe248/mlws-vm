@@ -385,6 +385,7 @@ typedef struct VM {
     StrMap ffi_structs;          /* .cstruct name -> its C layout (ffi.c) */
     StrMap ffi_callbacks;        /* .callback name -> its C function type (ffi.c) */
     _Atomic int64_t async_sources; /* live async callbacks and extension holds: messages may come from C */
+    _Atomic int sig_traps;         /* signals trapped for its processes (os.trap; osio.c) */
     /* the program's view of the OS (std.os) */
     StrVec prog_args;            /* os.args: the arguments after the program file */
     _Atomic bool exit_requested; /* os.exit was called: the program ends with exit_code */
@@ -1069,6 +1070,7 @@ bool text_json_parse(Process *heap, const char *s, size_t n, Word *v, uint8_t *t
 void natives_register_util(VM *vm);
 const NativeDef *natives_util_table(size_t *n);
 void natives_register_vec(VM *vm);
+void natives_signals_ended(VM *vm, uint64_t pid); /* its traps for pid (0: all) are let go */
 const NativeDef *natives_vec_table(size_t *n);
 const NativeDef *natives_text_table(size_t *n);
 /* sched.c: os.exit: end the whole program now with this exit code. */

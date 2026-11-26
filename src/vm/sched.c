@@ -1020,6 +1020,7 @@ static void end_program(Sched *s, const Program *prog) {
 static void finish(Sched *s, Process *p, bool failed) {
     VM *vm = p->vm;
     if (p->quota[QUOTA_WALL] != UINT64_MAX) deadline_drop(s, p); /* (dl_slot is read under dl_lock: others move it) */
+    if (atomic_load_explicit(&vm->sig_traps, memory_order_relaxed)) natives_signals_ended(vm, p->pid); /* its traps go */
     proc_write_line_out(p); /* (it is not running: this thread may) */
     plat_lock(p->lock);
     p->state = failed ? PROC_FAILED : PROC_DONE;
