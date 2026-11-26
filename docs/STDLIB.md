@@ -187,6 +187,11 @@ shares it between the two handles, a call at a time.
   authority.
 * **A server** gives PEM files of a certificate chain and its key.
 * **Versions:** TLS 1.2 and later. `tls.version` says which a connection got.
+* **In a sandbox** (`cap.restrict`), a process that may connect somewhere may
+  put TLS on that connection with the system's authorities (`""`), with no
+  `read` grant: loading the library and the system's authorities needs none. A
+  file named as the authorities, or a server's certificate and key, needs a
+  `read` grant like any other file.
 * Failures are `E_TLS`, and a failed handshake leaves the connection to be
   closed.
 
@@ -1018,7 +1023,7 @@ executable.
 
 | Kind | What it limits | An entry |
 |---|---|---|
-| `read` | reading files and directories, `fs.stat`, `fs.exists`, TLS certificates | a path: it and what is under it |
+| `read` | reading files and directories, `fs.stat`, `fs.exists`, and the files of certificates, keys and authorities named to `tls.*` | a path: it and what is under it |
 | `write` | creating, changing, renaming and removing | a path, the same |
 | `connect` | `net.connect`, `net.resolve`, `net.send_to` | `host:port`, `host:*`, `*:port`, or `*` |
 | `listen` | `net.listen`, `net.udp` | the same |
