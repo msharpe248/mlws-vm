@@ -68,7 +68,8 @@ base:
   thread per core with work stealing, `spawn`/`send`/`recv` with deep-copied
   messages (large strings go by reference, so sending one costs the same at
   any size), timeouts, Erlang-style `link`/`monitor` supervision, and per-process
-  quotas on heap, raw memory, mailbox size and CPU. A waiting process takes
+  quotas on heap, raw memory, mailbox size, CPU and wall-clock time (a deadline
+  that every process it starts shares). A waiting process takes
   about 4 KB, and spawning, waking and ending one takes one to two
   microseconds.
 * **Processes across machines** (`std.node`): VMs connect as nodes, `send` works on
@@ -86,6 +87,7 @@ base:
   waits in `recv`, holding no thread, so 10,000 open connections are 10,000 small
   processes. File I/O runs on a thread pool. Sandboxes can deny OS access with a
   quota, or grant it by name (`cap.restrict`, `--cap`): these paths, those hosts.
+  SIGINT, SIGTERM and SIGHUP can come to a process as messages (`os.trap`).
 * **Text and JSON**: a typed, safe `text.format` (`{:>8.2f}`), regular expressions
   in linear time (`regex.*`, Unicode-aware), string utilities,
   UTF-8 iteration, and JSON that maps onto maps and lists with exact integers.
@@ -94,8 +96,10 @@ base:
   properties (categories, identifiers), passing the Unicode Consortium's own
   normalization and segmentation tests.
 * **Standard library**: dates and ISO 8601 times, CRC-32 / SHA-256 / SipHash,
-  random numbers, hex / base64 / URL / CSV, and sorting and searching with
-  comparator closures.
+  random numbers, hex / base64 / URL / CSV, sorting and searching with
+  comparator closures, vector maths on float arrays (`vec.*`: products,
+  distances, the best k rows of a matrix), and HTTP with bodies streamed
+  both ways (`std.http`).
 * **Embeddable**: `libmlwsvm` and `include/mlwsvm/embed.h` let a C or C++ program
   load MLWSVM code from files or memory, call it, give it host functions, and
   run background services it feeds with messages.
@@ -137,7 +141,7 @@ base:
   milliseconds on later runs.
 * **Safe by construction**: bounds-checked memory, use-after-free detection,
   unforgeable references, and stable error codes with source backtraces.
-* **Tested in its own assembly**: 390 test programs, also run under
+* **Tested in its own assembly**: 397 test programs, also run under
   AddressSanitizer and UBSan, under ThreadSanitizer on several threads, with a
   garbage collection at every allocation, with every module optimized, and
   with every function compiled by the JIT. A differential fuzzer (`mlwsvm
@@ -355,7 +359,7 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 
 ## Status
 
-The current release is 0.29.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
+The current release is 0.30.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
 on GitHub. Everything described in `docs/` is implemented and tested on macOS, Linux and
 Windows ([Platforms](#platforms) has the details).
 [docs/ROADMAP.md](docs/ROADMAP.md) lists the milestones and what remains.
