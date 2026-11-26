@@ -1,8 +1,8 @@
 ; Quota 6, a wall-clock deadline: `quota 6, ms` stops the process ms from
 ; now with E_QUOTA, whatever it is doing: sleeping, waiting in recv, waiting
 ; for a socket that never answers, or running. A child inherits the same
-; moment, so one spawned 40 ms into a 100 ms deadline ends with its parent,
-; 60 ms later. A deadline can only move earlier. proc.deadline_ms says what
+; moment, so one spawned 40 ms into a 400 ms deadline ends with its parent,
+; 360 ms later. A deadline can only move earlier. proc.deadline_ms says what
 ; is left (-1: none). Processes that share a deadline and are linked all end
 ; with E_QUOTA, not E_LINKED, in whatever order they are stopped. And a
 ; process that ends before its deadline ends as usual.
@@ -77,12 +77,15 @@
     ret
 .endf
 
-; The parent: a child 40 ms in, which ends at the same moment.
+; The parent: a child 40 ms in, which ends at the same moment. (400 ms: a
+; slow machine's sleep of 40 can take more than 100.)
 .func parent(i64 main)
-    quota 6, 100
+    quota 6, 400
     sleep 40
     spawn receiver (1000000) -> (I1)   ; (its own deadline is later: the inherited one counts)
-    send main, I1
+    lnew R0
+    lpush R0, I1
+    send main, R0
     sleep 5000
     ret
 .endf
@@ -133,10 +136,14 @@
     call ends_by_quota (I1, I10) -> (I2)
     call on_time (I2, 100)
 
-    ; A child spawned 40 ms in ends at the parent's 100 ms.
+    ; A child spawned 40 ms in ends at the parent's 400 ms.
     ncall "time.monotonic" () -> (I10)
     spawnm parent (PID) -> (I1)
-    recv I4                            ; the child
+    recv R2                            ; the child, in a list
+    isa I9, R2, Down
+    bz I9, 3f
+    FAIL "the parent's deadline passed before it could spawn its child: a machine this slow needs more"
+3:  mov I4, R2[0]
     monitor I4
     recv R0                            ; the two Downs, in either order
     recv R1
@@ -147,7 +154,7 @@
     ncall "time.monotonic" () -> (I6)
     sub I6, I6, I10
     div I6, I6, 1000000
-    call on_time (I6, 100)
+    call on_time (I6, 400)
 
     ; Linked scopes sharing a deadline: each ends with E_QUOTA.
     mov I7, 0
