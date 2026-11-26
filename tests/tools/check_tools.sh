@@ -1601,7 +1601,7 @@ if command -v curl >/dev/null 2>&1; then
 fi
 # os.trap: signals to programs of their own (tests/tools/_signals). A server
 # shuts down cleanly on SIGTERM, exit code 0; a trap is for one signal, so a
-# second SIGHUP ends the program as SIGHUP does (129); a trap goes with its
+# second SIGTERM ends the program as SIGTERM does (143); a trap goes with its
 # process, after which SIGTERM ends the program (143). (Windows has no kill.)
 case "$(uname -s)" in
 MINGW* | MSYS* | CYGWIN*) ;;
@@ -1623,12 +1623,12 @@ MINGW* | MSYS* | CYGWIN*) ;;
     $BIN run tests/tools/_signals/once.masm > "$SIGD/once" 2> "$SIGD/once.err" &
     SP=$!
     ready_then "$SIGD/once" || fail "signals: once never got ready"
-    kill -HUP $SP
-    for _ in $(seq 1 80); do grep -q '^first: SIGHUP$' "$SIGD/once" && break; perl -e 'select(undef, undef, undef, 0.1)'; done
-    grep -q '^first: SIGHUP$' "$SIGD/once" || fail "signals: the first SIGHUP was not a message ($(cat "$SIGD/once"))"
-    kill -HUP $SP
+    kill -TERM $SP
+    for _ in $(seq 1 80); do grep -q '^first: SIGTERM$' "$SIGD/once" && break; perl -e 'select(undef, undef, undef, 0.1)'; done
+    grep -q '^first: SIGTERM$' "$SIGD/once" || fail "signals: the first SIGTERM was not a message ($(cat "$SIGD/once"))"
+    kill -TERM $SP
     RC=0; wait $SP || RC=$?
-    [ $RC = 129 ] || fail "signals: the second SIGHUP did not end it ($RC)"
+    [ $RC = 143 ] || fail "signals: the second SIGTERM did not end it ($RC)"
     $BIN run tests/tools/_signals/ended.masm > "$SIGD/ended" 2> "$SIGD/ended.err" &
     SP=$!
     ready_then "$SIGD/ended" || fail "signals: ended never got ready"
