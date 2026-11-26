@@ -1,0 +1,17 @@
+; A server that shuts down cleanly when it is asked to (check_tools.sh): it
+; traps SIGTERM, says it is ready, and when the signal comes as a message,
+; says so and ends with exit code 0.
+.include "std/io.inc"
+
+.func main
+    ncall "os.trap" ("SIGTERM", PID)
+    PRINTLN_S "ready"
+    ncall "io.flush" ()
+    recv R0                            ; nothing else will come: not a deadlock
+    isa I0, R0, Signal
+    bz I0, 1f
+    strcat R1, "shutting down: ", R0->Signal.name
+    PRINTLN_S R1
+    ret 0
+1:  ret 1
+.endf

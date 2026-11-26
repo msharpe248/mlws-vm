@@ -137,6 +137,7 @@ void vm_mlog_put(VM *vm, const Process *p, int level, const char *name, const ch
 
 void vm_free(VM *vm) {
     if (!vm) return;
+    if (atomic_load(&vm->sig_traps)) natives_signals_ended(vm, 0);
     if (vm->tools_free) vm->tools_free(vm);
     if (vm->opt_report) {
         if (vm->opt_report_path) {

@@ -1,0 +1,175 @@
+; Quota 6, a wall-clock deadline: `quota 6, ms` stops the process ms from
+; now with E_QUOTA, whatever it is doing: sleeping, waiting in recv, waiting
+; for a socket that never answers, or running. A child inherits the same
+; moment, so one spawned 40 ms into a 100 ms deadline ends with its parent,
+; 60 ms later. A deadline can only move earlier. proc.deadline_ms says what
+; is left (-1: none). Processes that share a deadline and are linked all end
+; with E_QUOTA, not E_LINKED, in whatever order they are stopped. And a
+; process that ends before its deadline ends as usual.
+.include "std/test.inc"
+
+.const LATE = 2000                     ; generous, for slow machines and sanitizers
+
+; Each way of waiting, with a deadline of `ms`.
+.func sleeper(i64 ms)
+    quota 6, ms
+    sleep 5000
+    ret
+.endf
+
+.func receiver(i64 ms)
+    quota 6, ms
+    recv I1
+    ret
+.endf
+
+.func reader(i64 ms, i64 port)
+    quota 6, ms
+    ncall "net.connect" ("127.0.0.1", port, 5000) -> (R0)
+    ncall "fs.read" (R0, 10) -> (R1)   ; nothing ever comes
+    ret
+.endf
+
+.func spinner(i64 ms)
+    quota 6, ms
+1:  inc I1
+    jmp 1b
+.endf
+
+; A deadline lowered, then raised: the raise does nothing.
+.func lowered(i64 ms)
+    quota 6, ms
+    quota 6, 100000
+    sleep 5000
+    ret
+.endf
+
+; Listens, takes one connection, and says nothing on it.
+.func silent(i64 parent)
+    ncall "net.listen" ("127.0.0.1", 0) -> (R0)
+    ncall "net.port" (R0) -> (I1)
+    send parent, I1
+    ncall "net.accept" (R0) -> (R1)
+    recv I2
+    ret
+.endf
+
+; Waits for the Down of `pid` (monitored): its code, which must be E_QUOTA,
+; and the milliseconds since `start` it took.
+.func ends_by_quota(i64 pid, i64 start) -> i64
+    recv R0
+    isa I2, R0, Down
+    ASSERT_EQ I2, 1
+    mov I3, R0->Down.pid
+    ASSERT_EQ I3, pid
+    strcmp I4, R0->Down.code, "E_QUOTA"
+    ASSERT_EQ I4, 0
+    ncall "time.monotonic" () -> (I5)
+    sub I5, I5, start
+    div I5, I5, 1000000
+    ret I5
+.endf
+
+; A deadline of 100 ms from `start`: ended by it, no sooner and not long after.
+.func on_time(i64 ms, i64 lo)
+    ASSERT_GE ms, lo
+    ASSERT_LT ms, LATE
+    ret
+.endf
+
+; The parent: a child 40 ms in, which ends at the same moment.
+.func parent(i64 main)
+    quota 6, 100
+    sleep 40
+    spawn receiver (1000000) -> (I1)   ; (its own deadline is later: the inherited one counts)
+    send main, I1
+    sleep 5000
+    ret
+.endf
+
+; A scope: linked children that share its deadline.
+.func scope(i64 ms)
+    quota 6, ms
+    mov I1, 0
+1:  spawnl receiver (1000000)
+    inc I1
+    blt I1, 3, 1b
+    recv I2
+    ret
+.endf
+
+; What deadline_ms says without a deadline, and with one.
+.func asks(i64 main)
+    ncall "proc.deadline_ms" () -> (I1)
+    send main, I1
+    quota 6, 5000
+    ncall "proc.deadline_ms" () -> (I2)
+    send main, I2
+    ret
+.endf
+
+.func main
+    ; Asleep, in recv, on a socket, running, and a deadline raised.
+    ncall "time.monotonic" () -> (I10)
+    spawnm sleeper (100) -> (I1)
+    call ends_by_quota (I1, I10) -> (I2)
+    call on_time (I2, 100)
+    ncall "time.monotonic" () -> (I10)
+    spawnm receiver (100) -> (I1)
+    call ends_by_quota (I1, I10) -> (I2)
+    call on_time (I2, 100)
+    spawn silent (PID) -> (I20)
+    recv I3                            ; its port
+    ncall "time.monotonic" () -> (I10)
+    spawnm reader (100, I3) -> (I1)
+    call ends_by_quota (I1, I10) -> (I2)
+    call on_time (I2, 100)
+    ncall "time.monotonic" () -> (I10)
+    spawnm spinner (50) -> (I1)
+    call ends_by_quota (I1, I10) -> (I2)
+    call on_time (I2, 50)
+    ncall "time.monotonic" () -> (I10)
+    spawnm lowered (100) -> (I1)
+    call ends_by_quota (I1, I10) -> (I2)
+    call on_time (I2, 100)
+
+    ; A child spawned 40 ms in ends at the parent's 100 ms.
+    ncall "time.monotonic" () -> (I10)
+    spawnm parent (PID) -> (I1)
+    recv I4                            ; the child
+    monitor I4
+    recv R0                            ; the two Downs, in either order
+    recv R1
+    strcmp I5, R0->Down.code, "E_QUOTA"
+    ASSERT_EQ I5, 0
+    strcmp I5, R1->Down.code, "E_QUOTA"
+    ASSERT_EQ I5, 0
+    ncall "time.monotonic" () -> (I6)
+    sub I6, I6, I10
+    div I6, I6, 1000000
+    call on_time (I6, 100)
+
+    ; Linked scopes sharing a deadline: each ends with E_QUOTA.
+    mov I7, 0
+1:  spawnm scope (30)
+    inc I7
+    blt I7, 10, 1b
+    mov I7, 0
+2:  recv R2
+    strcmp I8, R2->Down.code, "E_QUOTA"
+    ASSERT_EQ I8, 0
+    inc I7
+    blt I7, 10, 2b
+
+    ; deadline_ms, and a process that ends before its deadline.
+    spawnm asks (PID) -> (I1)
+    recv I11
+    ASSERT_EQ I11, -1
+    recv I12
+    ASSERT_GT I12, 4000
+    ASSERT_LE I12, 5000
+    recv R3
+    ASSERT_FALSE R3->Down.code, r
+    kill I20
+    ret 0
+.endf

@@ -165,7 +165,7 @@ Program *vm_start_program(VM *vm, const char *path, const StrVec *args, const ch
         p->caps = caps;
         q[QUOTA_FOREIGN] = 0;
     }
-    memcpy(p->quota, q, sizeof q);
+    proc_take_quotas(p, q);
     plat_lock(vm->lock); /* (vm->progs: the monitor reads it) */
     Program *pr = vm_program_add(vm, p, path, args);
     pr->free_main = true; /* (its result is kept; the VM may run for ever) */

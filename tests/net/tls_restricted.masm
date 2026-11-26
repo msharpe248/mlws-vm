@@ -1,0 +1,113 @@
+; TLS in a process limited by cap.restrict. Loading the TLS library and the
+; system's authorities ("") need no grant: a process allowed only to connect
+; somewhere can put TLS on that connection. Here the server's certificate is
+; self-signed, so the system's authorities refuse it with E_TLS, which shows
+; the handshake ran; it is not E_PERMISSION. An authorities file named
+; explicitly is read like any other file, so it needs a read grant: refused
+; without one, and with one the connection works. The library is first loaded
+; inside the restricted process. Skipped where no TLS library is installed.
+.include "std/test.inc"
+
+; Answers one connection: each line back. A client that gave up is no error.
+.func echo(i64 ticket)
+    ncall "fs.take" (ticket) -> (R0)
+.try gone
+    ncall "tls.accept" (R0, "tests/net/_tls/cert.pem", "tests/net/_tls/key.pem")
+1:  ncall "fs.read_line" (R0) -> (R1)
+    bz R1, 2f
+    strcat R2, R1, "\n"
+    ncall "fs.write" (R0, R2)
+    jmp 1b
+.endtry
+2:  ncall "fs.close" (R0)
+    ret
+gone:
+    catch R3
+    ncall "fs.close" (R0)
+    ret
+.endf
+
+.func server(i64 parent)
+    ncall "net.listen" ("127.0.0.1", 0) -> (R0)
+    ncall "net.port" (R0) -> (I1)
+    send parent, I1
+1:  ncall "net.accept" (R0) -> (R1)
+    ncall "fs.give" (R1) -> (I2)
+    spawn echo (I2)
+    jmp 1b
+.endf
+
+; What tls.connect raises on a new connection, with these authorities: "" if
+; nothing, after a line has gone there and back.
+.func tls_error(i64 port, ref ca) -> ref
+    ncall "net.connect" ("127.0.0.1", port, 5000) -> (R1)
+.try h
+    ncall "tls.connect" (R1, "localhost", ca)
+    ncall "fs.write" (R1, "hello\n")
+    ncall "fs.read_line" (R1) -> (R2)
+    strcmp I1, R2, "hello"
+    ASSERT_EQ I1, 0
+.endtry
+    ncall "fs.close" (R1)
+    ret ""
+h:
+    catch R3
+    ncall "fs.close" (R1)
+    mov R4, R3->Error.code
+    ret R4
+.endf
+
+; Restricted to connecting to the server (and, if `dir` is not "", reading
+; under it), sends the parent whether TLS is there, then what the system's
+; authorities and the named file give.
+.func client(i64 parent, i64 port, ref dir)
+    mnew R1
+    lnew R2
+    tostr R3, port
+    strcat R4, "127.0.0.1:", R3
+    lpush R2, R4
+    mset R1, "connect", R2
+    strcmp I2, dir, ""
+    bz I2, 1f
+    lnew R5
+    lpush R5, dir
+    mset R1, "read", R5
+1:  ncall "cap.restrict" (R1)
+    ncall "tls.available" () -> (I3)
+    send parent, I3
+    bz I3, 2f
+    call tls_error (port, "") -> (R6)
+    send parent, R6
+    call tls_error (port, "tests/net/_tls/cert.pem") -> (R7)
+    send parent, R7
+2:  ret
+.endf
+
+.func main
+    spawn server (PID)
+    recv I1                            ; the port
+
+    ; Allowed only to connect.
+    spawn client (PID, I1, "")
+    recv I2
+    bnz I2, 1f
+    ret 0                              ; no TLS library
+1:  recv R0                            ; the system's authorities: refused, by TLS
+    strcmp I3, R0, "E_TLS"
+    ASSERT_EQ I3, 0
+    recv R1                            ; the named file: not to be read
+    strcmp I3, R1, "E_PERMISSION"
+    ASSERT_EQ I3, 0
+
+    ; Allowed to read the file too: a connection that works.
+    spawn client (PID, I1, "tests/net/_tls")
+    recv I2
+    ASSERT_EQ I2, 1
+    recv R0
+    strcmp I3, R0, "E_TLS"
+    ASSERT_EQ I3, 0
+    recv R1
+    strcmp I3, R1, ""
+    ASSERT_EQ I3, 0
+    ret 0
+.endf

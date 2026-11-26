@@ -1,0 +1,52 @@
+; os.trap's errors, and a trap set and let go (check_tools.sh sends the
+; signals themselves, to programs of their own: here they would reach every
+; test). A name that is not SIGINT, SIGTERM or SIGHUP is E_RANGE; a process
+; that is not there, E_NOPROC; a restricted process may not trap signals
+; (E_PERMISSION). A signal trapped and let go (pid 0) is as it was.
+.include "std/test.inc"
+
+; error(name, pid) -> what os.trap raises, or ""
+.func error(ref name, i64 pid) -> ref
+.try h
+    ncall "os.trap" (name, pid)
+.endtry
+    ret ""
+h:
+    catch R1
+    mov R2, R1->Error.code
+    ret R2
+.endf
+
+.func restricted(i64 parent)
+    mnew R0
+    ncall "cap.restrict" (R0)
+    call error ("SIGTERM", PID) -> (R1)
+    send parent, R1
+    ret
+.endf
+
+.func nothing
+    ret
+.endf
+
+.func main
+    call error ("SIGKILL", PID) -> (R0)
+    strcmp I0, R0, "E_RANGE"
+    ASSERT_EQ I0, 0
+    spawnm nothing -> (I1)
+    recv R1
+    call error ("SIGTERM", I1) -> (R0)
+    strcmp I0, R0, "E_NOPROC"
+    ASSERT_EQ I0, 0
+    spawn restricted (PID)
+    recv R0
+    strcmp I0, R0, "E_PERMISSION"
+    ASSERT_EQ I0, 0
+    call error ("SIGHUP", PID) -> (R0)   ; set, and let go
+    strcmp I0, R0, ""
+    ASSERT_EQ I0, 0
+    call error ("SIGHUP", 0) -> (R0)
+    strcmp I0, R0, ""
+    ASSERT_EQ I0, 0
+    ret 0
+.endf

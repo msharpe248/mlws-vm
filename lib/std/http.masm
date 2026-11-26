@@ -31,9 +31,19 @@
 ; reads a body by Content-Length, chunked, or up to the end of the
 ; connection, and gives a map of "status", "headers" and "body". Each request
 ; has a connection of its own.
+;
+; Streams: a handler's response with a "stream", a closure, has its body
+; written as it is made. The closure gets the connection, after the head, and
+; calls write_chunk(conn, data) for each piece; when it returns, end_chunks
+; ends the body (an HTTP/1.0 client gets the pieces as they are, and the
+; connection closed). A client reads a body as it comes with open(method, url,
+; headers, body, timeout_ms), a map of "status", "headers" and "connection";
+; then read_chunk(stream), the next piece up to 64 KiB, or null at the end;
+; and close(stream).
 
 .module std.http
-.export start, read_request, write_response, query, request, get, post
+.export start, read_request, write_response, write_head, write_chunk, end_chunks, query
+.export request, get, post, open, read_chunk, close
 
 .const MAX_LINE = 16384
 .const MAX_HEADERS = 100
@@ -96,24 +106,40 @@
 2:  ret R2
 .endf
 
-; read_chunked(conn) -> the body in chunks (RFC 9112 7.1), as a byte buffer
+; chunk_size(conn) -> the size on the line that starts a chunk (RFC 9112
+; 7.1); at 0, the last, the trailer after it has been read too
+.func chunk_size(ref conn) -> i64
+    ncall "fs.read_line" (conn) -> (R2)
+    bnz.r R2, 1f
+    call fail ("E_PARSE", "the connection ended in a chunked body")
+1:  ncall "text.find" (R2, ";", 0) -> (I1)  ; (a chunk's extensions: ignored)
+    blt I1, 0, 2f
+    substr R2, R2, 0, I1
+2:  ncall "text.trim" (R2) -> (R2)
+    strcat R2, "0x", R2
+.try bad
+    parse.i64 I2, R2
+.endtry
+    blt I2, 0, bad
+    bnz I2, 4f
+trailer:                               ; (trailer fields: read past)
+    ncall "fs.read_line" (conn) -> (R3)
+    bz.r R3, 4f
+    len I3, R3
+    bnz I3, trailer
+4:  ret I2
+bad:
+    call fail ("E_PARSE", "a chunk's size is not hexadecimal")
+    ret 0                              ; (not reached: fail raises)
+.endf
+
+; read_chunked(conn) -> the body in chunks, as a byte buffer
 .func read_chunked(ref conn) -> ref
     .alias body, R2
     bufnew body, 0
 next:
-    ncall "fs.read_line" (conn) -> (R3)
-    bnz.r R3, 1f
-    call fail ("E_PARSE", "the connection ended in a chunked body")
-1:  ncall "text.find" (R3, ";", 0) -> (I2)  ; (a chunk's extensions: ignored)
-    blt I2, 0, 2f
-    substr R3, R3, 0, I2
-2:  ncall "text.trim" (R3) -> (R3)
-    strcat R3, "0x", R3
-.try bad
-    parse.i64 I3, R3
-.endtry
-    blt I3, 0, bad
-    bz I3, trailer
+    call chunk_size (conn) -> (I3)
+    bz I3, 3f
     len I4, body
     add I5, I4, I3
     bgt I5, MAX_BODY, big
@@ -121,14 +147,7 @@ next:
     bufcat body, R4
     ncall "fs.read_line" (conn) -> (R5)  ; the line's end after a chunk
     jmp next
-trailer:                               ; (trailer fields: read past)
-    ncall "fs.read_line" (conn) -> (R5)
-    bz.r R5, 3f
-    len I6, R5
-    bnz I6, trailer
 3:  ret body
-bad:
-    call fail ("E_PARSE", "a chunk's size is not hexadecimal")
 big:
     call fail ("E_RANGE", "a body of more than 16 MiB")
     ret null                           ; (not reached: fail raises)
@@ -299,14 +318,10 @@ big:
 2:  ret 0
 .endf
 
-; write_response(conn, status, headers, body): a response, its Content-Length
-; added (and a text Content-Type, if a body has none); headers may be null,
-; and body a string, a byte buffer or null.
-.func write_response(ref conn, i64 status, ref headers, ref body)
+; head_lines(status, headers) -> the status line and a line per header
+.func head_lines(i64 status, ref headers) -> ref
     .alias head, R4
-    bnz.r body, 1f
-    mov body, ""
-1:  call reason (status) -> (R5)
+    call reason (status) -> (R5)
     lnew R6
     lpush R6, status, R5
     ncall "text.format" ("HTTP/1.1 {} {}\r\n", R6) -> (head)
@@ -320,7 +335,18 @@ big:
     mget R9, headers, R8
     strcat head, head, R8, ": ", R9, "\r\n"
     jmp 2b
-3:  len I3, body
+3:  ret head
+.endf
+
+; write_response(conn, status, headers, body): a response, its Content-Length
+; added (and a text Content-Type, if a body has none); headers may be null,
+; and body a string, a byte buffer or null.
+.func write_response(ref conn, i64 status, ref headers, ref body)
+    .alias head, R4
+    bnz.r body, 1f
+    mov body, ""
+1:  call head_lines (status, headers) -> (head)
+    len I3, body
     tostr R10, I3
     strcat head, head, "Content-Length: ", R10, "\r\n"
     bz I3, 4f
@@ -332,6 +358,48 @@ big:
     bz I3, 5f
     ncall "fs.write" (conn, body)
 5:  ret
+.endf
+
+; Set while a stream's response goes to an HTTP/1.0 client, which knows no
+; chunks: its body is written as it is, and ends with the connection.
+unchunked: .i64 0
+
+; write_head(conn, status, headers): a response's status line and headers,
+; with Transfer-Encoding: chunked; its body follows with write_chunk, and
+; end_chunks ends it
+.func write_head(ref conn, i64 status, ref headers)
+    call head_lines (status, headers) -> (R2)
+    mov I2, @unchunked
+    bnz I2, 1f
+    strcat R2, R2, "Transfer-Encoding: chunked\r\n"
+1:  strcat R2, R2, "\r\n"
+    ncall "fs.write" (conn, R2)
+    ret
+.endf
+
+; write_chunk(conn, data): a piece of the body, a string or byte buffer, sent
+; at once as a chunk; an empty one sends nothing, since it would end the body
+.func write_chunk(ref conn, ref data)
+    len I1, data
+    bz I1, 2f
+    mov I2, @unchunked
+    bz I2, 1f
+    ncall "fs.write" (conn, data)
+    ret
+1:  lnew R2
+    lpush R2, I1
+    ncall "text.format" ("{:x}\r\n", R2) -> (R3)
+    strcat R3, R3, data, "\r\n"
+    ncall "fs.write" (conn, R3)
+2:  ret
+.endf
+
+; end_chunks(conn): the last chunk, which ends the body
+.func end_chunks(ref conn)
+    mov I1, @unchunked
+    bnz I1, 1f
+    ncall "fs.write" (conn, "0\r\n\r\n")
+1:  ret
 .endf
 
 ; ---- the server ----
@@ -392,7 +460,9 @@ next:
     mov R8, "keep-alive"
     bnz I4, 3f
     mov R8, "close"
-3:  mset R6, "Connection", R8
+3:  mget R12, resp, "stream", null
+    bnz.r R12, stream
+    mset R6, "Connection", R8
     call write_response (conn, I3, R6, R7)
     bnz I4, next
 done:
@@ -421,6 +491,37 @@ failed:                                ; the handler raised
     ncall "monitor.log" (3, R10)
     call refuse (conn, 500, "internal server error\n")
     jmp done
+stream:                                ; a body written as it is made
+    mget R13, req, "version"
+    strcmp I11, R13, "HTTP/1.0"
+    bnz I11, 7f
+    mov I4, 0                          ; 1.0: the body ends with the connection
+    mov R8, "close"
+    mov @unchunked, 1
+7:  mset R6, "Connection", R8
+    call write_head (conn, I3, R6)
+    mget R14, req, "method"
+    strcmp I12, R14, "HEAD"
+    bz I12, 8f                         ; HEAD: the head alone
+.try broke
+    calli R12 (conn)
+.endtry
+    call end_chunks (conn)
+8:  mov @unchunked, 0
+    bnz I4, next
+    jmp done
+broke:                                 ; the stream raised, its head sent: the
+    catch R9                           ; body left unended, so the client knows
+    mov @unchunked, 0
+    mov R15, R9->Error.code
+    strcmp I13, R15, "E_RESET"         ; (the client went: nothing to say)
+    bz I13, done
+    strcmp I13, R15, "E_CLOSED"
+    bz I13, done
+    mget R11, req, "path"
+    strcat R10, "std.http: a stream failed on ", R11, ": ", R15, " ", R9->Error.message
+    ncall "monitor.log" (3, R10)
+    jmp done
 .endtry
 gone:                                  ; the client went, or was idle too long
     catch R9
@@ -431,6 +532,43 @@ gone:                                  ; the client went, or was idle too long
 
 ; request(method, url, headers, body, timeout_ms) -> {"status", "headers", "body"}
 .func request(ref method, ref url, ref headers, ref body, i64 timeout_ms) -> ref
+    .alias stream, R5
+    .alias conn, R6
+    call open (method, url, headers, body, timeout_ms) -> (stream)
+    mget conn, stream, "connection"
+    mget I2, stream, "how"
+    mov R7, ""
+.try failed
+    bz I2, 1f                          ; no body
+    mget R8, stream, "headers"
+    call read_body (conn, R8, 1) -> (R7)
+.endtry
+1:  ncall "fs.close" (conn)
+    mnew R9
+    mget I3, stream, "status"
+    mset R9, "status", I3
+    mget R10, stream, "headers"
+    mset R9, "headers", R10
+    mset R9, "body", R7
+    ret R9
+failed:
+    catch R11
+    ncall "fs.close" (conn)
+    throw R11
+.endf
+
+; How a stream's body is read ("how"): none, chunked, by Content-Length, up
+; to the connection's end.
+.const NO_BODY = 0
+.const CHUNKED = 1
+.const BY_LENGTH = 2
+.const TO_END = 3
+.const PIECE = 65536                   ; the most read_chunk reads at a time
+
+; open(method, url, headers, body, timeout_ms) -> a stream: the request sent,
+; and the response's status and headers read, but not its body. A map of
+; "status", "headers" and "connection", and how much of the body is left.
+.func open(ref method, ref url, ref headers, ref body, i64 timeout_ms) -> ref
     .alias conn, R6
     .alias head, R7
     ncall "regex.compile" ("^(https?)://(\\[[^\\]]+\\]|[^/:?#]+)(?::([0-9]+))?([^#]*)", "i") -> (R5)
@@ -503,23 +641,90 @@ status:
     call read_headers (conn) -> (R23)
     blt I12, 100, 14f
     blt I12, 200, status               ; (100 Continue and the like: the real one follows)
-14: mov R24, ""
-    beq I12, 204, 15f                  ; no body for these, nor for HEAD
-    beq I12, 304, 15f
+14: mov I14, NO_BODY                   ; none for these, nor for HEAD
+    mov I15, 0                         ; what is left of it, by length
+    beq I12, 204, 17f
+    beq I12, 304, 17f
     strcmp I13, method, "HEAD"
-    bz I13, 15f
-    call read_body (conn, R23, 1) -> (R24)
-15: ncall "fs.close" (conn)
-    mnew R25
+    bz I13, 17f
+    mov I14, CHUNKED
+    mget R24, R23, "transfer-encoding", null
+    bz.r R24, 15f
+    ncall "text.lower" (R24) -> (R24)
+    ncall "text.find" (R24, "chunked", 0) -> (I16)
+    bge I16, 0, 17f
+15: mov I14, TO_END
+    mget R24, R23, "content-length", null
+    bz.r R24, 17f
+    mov I14, BY_LENGTH
+    ncall "text.trim" (R24) -> (R24)
+.try bad
+    parse.i64 I15, R24
+.endtry
+    blt I15, 0, bad
+17: mnew R25
     mset R25, "status", I12
     mset R25, "headers", R23
-    mset R25, "body", R24
+    mset R25, "connection", conn
+    mset R25, "how", I14
+    mset R25, "left", I15
     ret R25
+bad:
+    call fail ("E_PARSE", "Content-Length is not a number")
 .endtry
 failed:
     catch R26
     ncall "fs.close" (conn)
     throw R26
+.endf
+
+; read_chunk(stream) -> the body's next piece, as a string, or null at its
+; end, where the connection is closed. A piece is what has come, up to 64
+; KiB: its bounds are not the sender's chunks.
+.func read_chunk(ref stream) -> ref
+    .alias conn, R2
+    mget I1, stream, "how"
+    bz I1, eof
+    mget conn, stream, "connection"
+    mov I3, PIECE
+    beq I1, TO_END, piece
+    mget I2, stream, "left"
+    bnz I2, 1f
+    bne I1, CHUNKED, end               ; by length: all read
+    call chunk_size (conn) -> (I2)
+    bz I2, end                         ; the last chunk
+1:  bge I2, I3, piece
+    mov I3, I2                         ; no more than is left
+piece:
+    ncall "fs.read" (conn, I3) -> (R3)
+    len I4, R3
+    bnz I4, 2f
+    beq I1, TO_END, end
+    call fail ("E_PARSE", "the connection ended in a body")
+2:  beq I1, TO_END, 3f
+    sub I2, I2, I4
+    mset stream, "left", I2
+    bnz I2, 3f
+    bne I1, CHUNKED, 3f
+    ncall "fs.read_line" (conn) -> (R4)  ; the line's end after a chunk
+3:  strcat R5, R3
+    ret R5
+end:
+    call close (stream)
+eof:
+    ret null
+.endf
+
+; close(stream): closes its connection, if read_chunk has not; again does
+; nothing
+.func close(ref stream)
+    mget I2, stream, "closed", 0
+    bnz I2, 1f
+    mget R1, stream, "connection"
+    mset stream, "closed", 1
+    mset stream, "how", NO_BODY
+    ncall "fs.close" (R1)
+1:  ret
 .endf
 
 ; get(url, timeout_ms) -> the response

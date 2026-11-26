@@ -58,6 +58,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `proc.whereis` | r | i64 | The pid with a name, or 0. |
 | `proc.call` | i64, r, i64 | r | Send Call{from, id, body} and wait for proc.reply's answer, up to a timeout in ms (negative: none; E_TIMEOUT). The answer does not go through the mailbox. |
 | `proc.reply` | r, r | - | Answer a Call. |
+| `proc.deadline_ms` | - | i64 | The milliseconds left before this process's wall-clock deadline (quota 6): 0 if it has passed, -1 if it has none. For the timeouts of what it waits for. |
 | `proc.alive` | i64, i64 | b | Whether a process runs, as alive says, on this VM or another node, which is asked, up to a timeout in ms (negative: none; E_TIMEOUT). False for a node that is not connected. |
 | `cap.restrict` | r | - | From now on this process, and those it spawns, may reach only what a map grants: from read, write, connect, listen, run or env to a list of what each allows. What is not granted is denied, foreign code too, and a process can only narrow what it has. |
 | `cap.allowed` | r, r | b | Whether this process may reach something: a kind, and a path, host:port, command or variable. |
@@ -157,6 +158,7 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `os.env` | r | r | An environment variable, or null. |
 | `os.environ` | - | r | The whole environment, as a map of strings. |
 | `os.exit` | i64 | - | End the whole program now, from any process, with this exit code. |
+| `os.trap` | r, i64 | - | Trap a signal, "SIGINT", "SIGTERM" or "SIGHUP": when it comes, process pid gets a Signal{name} message instead of the program ending, once (then trap it again). pid 0 lets it end the program again, and so does the end of pid. E_PERMISSION in a restricted process. |
 | `os.platform` | - | r | "macos", "linux", "freebsd", ... or "windows". |
 | `os.spawn` | r, i64 | r, r, r, r | Start a command (a list: the program, found on PATH, then its arguments). Pipes: 1 stdin, 2 stdout, 4 stderr, 8 stderr into stdout. Returns the process and its piped streams (null if not piped). |
 | `os.wait` | r | i64 | Wait for a command to finish; its exit code (128 + N if killed by signal N). |
@@ -287,6 +289,27 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `monitor.on` | - | b | Whether a monitor (--monitor) is watching, so that monitor.log and monitor.event keep what they are given. |
 | `monitor.log` | i64, r | - | A line for the monitor's log (GET /api/log), at a level: 0 debug, 1 info, 2 warn, 3 error. Up to 4 KiB is kept, of the last 1,000 entries. Without a monitor, nothing is kept. |
 | `monitor.event` | r, r | - | A named event for the monitor's log, with a value kept as JSON (E_JSON if it has no JSON form). Without a monitor, nothing is kept. |
+
+## Vector maths (`vec.*`)
+
+> Generated from `src/native/vec.c`. See [STDLIB.md](STDLIB.md#vector-maths).
+
+| Name | Parameters | Results | Description |
+|---|---|---|---|
+| `vec.dot` | r, r | f64 | The inner product of two f32 or f64 arrays of one type and length. |
+| `vec.norm` | r | f64 | The Euclidean (L2) norm of an f32 or f64 array. |
+| `vec.cosine` | r, r | f64 | The cosine of the angle between two arrays: a . b / (|a| |b|), or 0 if either is all zeros. |
+| `vec.l2` | r, r | f64 | The Euclidean distance between two arrays. |
+| `vec.normalize` | r | r | A new array of the same type, scaled to a norm of 1 (all zeros stay zeros). |
+| `vec.add` | r, r | r | A new array of the same type: a + b, element by element. |
+| `vec.scale` | r, f64 | r | A new array of the same type: each element times s. |
+| `vec.normalize_into` | r, r | - | normalize(a) into dst, an array of a's type and length (which may be a). |
+| `vec.add_into` | r, r, r | - | a + b into dst (which may be a or b). |
+| `vec.scale_into` | r, r, f64 | - | a times s into dst (which may be a). |
+| `vec.dot_rows` | r, i64, r, r, r | - | (matrix, dim, query, rows, out): the inner product of the query with each row of a matrix kept as one array of rows of dim elements, into out (a float array): every row if rows is null, else those an i64 array names, in its order. |
+| `vec.cosine_rows` | r, i64, r, r, r | - | As dot_rows, the cosine with each row. |
+| `vec.l2_rows` | r, i64, r, r, r | - | As dot_rows, the Euclidean distance to each row. |
+| `vec.top_k` | r, i64, r, i64, r, r | r, r | (matrix, dim, query, k, metric, rows) -> (indices, scores): the k rows closest to the query, best first, by "dot" or "cosine" (highest) or "l2" (lowest), among all rows or those rows names; an i64 array of their indices and an f64 array of their scores. Equal scores: the lower row first. |
 
 ## Loading modules at run time (`module.*`)
 

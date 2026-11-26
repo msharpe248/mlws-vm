@@ -1,0 +1,231 @@
+; std.http's streams. A handler's "stream" closure writes a response's body
+; as it is made, in chunks; http.open reads a response's status and headers,
+; and http.read_chunk its body a piece at a time, as it comes. Here each
+; chunk is read before the next is even written (the server waits for the
+; client between them), so nothing is held back for the end. Then: another
+; request on the connection after a stream (keep-alive); an HTTP/1.0 client,
+; which gets the body as it is and the connection closed; HEAD, the head
+; alone; a stream that raises, whose body is left unended; and the client
+; reading bodies by Content-Length, up to the connection's end, and none.
+; expect-stdout: status 200, chunked
+; expect-stdout: piece: one
+; expect-stdout: piece: two
+; expect-stdout: piece: three
+; expect-stdout: end: null, closed twice
+; expect-stdout: keep-alive after a stream: 2 responses, chunks 1
+; expect-stdout: HTTP/1.0: HTTP/1.0 client, body "ab", no chunks 1
+; expect-stdout: HEAD: body of 0 bytes
+; expect-stdout: a stream that raised: "a", then E_PARSE
+; expect-stdout: by length: 0123456789
+; expect-stdout: to the end: to the end
+; expect-stdout: 204: null
+.include "std/test.inc"
+.include "std/io.inc"
+.import std.http as http
+
+; Three lines, each sent once the client says it has the last: UP[0] is the
+; client's pid, told this process's own first.
+.func lockstep(ref conn)
+    mov I1, UP[0]
+    send I1, PID
+    call http.write_chunk (conn, "one")
+    recv I2
+    sleep 50
+    call http.write_chunk (conn, "two")
+    recv I2
+    sleep 50
+    call http.write_chunk (conn, "three")
+    recv I2
+    ret
+.endf
+
+.func fixed(ref conn)
+    call http.write_chunk (conn, "a")
+    call http.write_chunk (conn, "")   ; nothing: it would end the body
+    call http.write_chunk (conn, "b")
+    ret
+.endf
+
+.func broken(ref conn)
+    call http.write_chunk (conn, "a")
+    mnew R1
+    mget I1, R1, "missing"             ; raises E_KEY
+    ret
+.endf
+
+; handler(request) -> a stream's response, or a page
+.func handler(ref req) -> ref
+    mnew R1
+    mset R1, "status", 200
+    mget R2, req, "path"
+    strcmp I1, R2, "/lockstep"
+    bnz I1, 1f
+    mget R3, req, "query"
+    call http.query (R3) -> (R4)
+    mget R5, R4, "pid"
+    parse.i64 I2, R5
+    closure lockstep (I2) -> (R6)
+    jmp 3f
+1:  strcmp I1, R2, "/fixed"
+    bnz I1, 2f
+    closure fixed -> (R6)
+    jmp 3f
+2:  strcmp I1, R2, "/broken"
+    bnz I1, 4f
+    closure broken -> (R6)
+3:  mset R1, "stream", R6
+    ret R1
+4:  ret "hello"
+.endf
+
+; answer(ticket, text): a server by hand, for one connection: text, then
+; the connection closed
+.func answer(i64 ticket, ref text)
+    ncall "fs.take" (ticket) -> (R1)
+    ncall "net.accept" (R1) -> (R2)
+1:  ncall "fs.read_line" (R2) -> (R3)  ; the request, to its blank line
+    len I1, R3
+    bnz I1, 1b
+    ncall "fs.write" (R2, text)
+    ncall "fs.close" (R2)
+    ret
+.endf
+
+; body_of(text) -> a response's body as read by http.open and read_chunk,
+; from a server that answers with text; "null" if read_chunk gives null at once
+.func body_of(ref text) -> ref
+    ncall "net.listen" ("127.0.0.1", 0) -> (R1)
+    ncall "net.port" (R1) -> (I1)
+    ncall "fs.give" (R1) -> (I2)
+    spawn answer (I2, text)
+    tostr R2, I1
+    strcat R3, "http://127.0.0.1:", R2, "/"
+    call http.open ("GET", R3, null, null, 5000) -> (R4)
+    call http.read_chunk (R4) -> (R5)
+    bnz.r R5, 1f
+    ret "null"
+1:  call http.read_chunk (R4) -> (R6)
+    bz.r R6, 2f
+    strcat R5, R5, R6
+    jmp 1b
+2:  ret R5
+.endf
+
+; raw(port, text) -> all the server answers to text
+.func raw(i64 port, ref text) -> ref
+    ncall "net.connect" ("127.0.0.1", port, 5000) -> (R2)
+    ncall "fs.write" (R2, text)
+    ncall "fs.read_all" (R2) -> (R3)
+    ncall "fs.close" (R2)
+    strcat R4, R3
+    ret R4
+.endf
+
+; has(text, part) -> 1 if text has it
+.func has(ref text, ref part) -> i64
+    ncall "text.find" (text, part, 0) -> (I1)
+    sge I2, I1, 0
+    ret I2
+.endf
+
+.func main
+    closure handler -> (R0)
+    call http.start ("127.0.0.1", 0, R0) -> (I0, I1)
+    tostr R1, I1
+    strcat R2, "http://127.0.0.1:", R1
+
+    ; Each piece read before the next is written.
+    tostr R3, PID
+    strcat R4, R2, "/lockstep?pid=", R3
+    call http.open ("GET", R4, null, null, 5000) -> (R5)
+    mget I2, R5, "status"
+    mget R6, R5, "headers"
+    mget R7, R6, "transfer-encoding", "?"
+    tostr R8, I2
+    strcat R8, "status ", R8, ", ", R7
+    PRINTLN_S R8
+    recv I3                            ; the server's process
+    lnew R9
+    lpush R9, "one", "two", "three"
+    mov I4, 0
+1:  mov R10, ""                        ; (a chunk may come in pieces)
+2:  call http.read_chunk (R5) -> (R11)
+    bnz.r R11, 3f
+    FAIL "the body ended early"
+3:  strcat R10, R10, R11
+    mov R12, R9[I4]
+    strcmp I5, R10, R12
+    bnz I5, 2b
+    strcat R13, "piece: ", R10
+    PRINTLN_S R13
+    send I3, 1                         ; the next, please
+    inc I4
+    blt I4, 3, 1b
+    call http.read_chunk (R5) -> (R14)
+    ASSERT_FALSE R14, r
+    call http.close (R5)
+    call http.close (R5)
+    PRINTLN_S "end: null, closed twice"
+
+    ; A request after a stream, on its connection.
+    call raw (I1, "GET /fixed HTTP/1.1\r\nHost: x\r\n\r\nGET /hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n") -> (R15)
+    ncall "regex.compile" ("HTTP/1.1 200", "") -> (R16)
+    ncall "regex.find_all" (R16, R15) -> (R17)
+    len I6, R17
+    call has (R15, "\r\n\r\n1\r\na\r\n1\r\nb\r\n0\r\n\r\nHTTP/1.1 200") -> (I7)
+    lnew R18
+    lpush R18, I6, I7
+    ncall "text.format" ("keep-alive after a stream: {} responses, chunks {}", R18) -> (R19)
+    PRINTLN_S R19
+
+    ; HTTP/1.0: no chunks, and the connection closed.
+    call raw (I1, "GET /fixed HTTP/1.0\r\n\r\n") -> (R15)
+    call has (R15, "\r\n\r\nab") -> (I8)
+    call has (R15, "Transfer-Encoding") -> (I9)
+    seq I9, I9, 0
+    call has (R15, "Connection: close") -> (I10)
+    and I8, I8, I9
+    lnew R18
+    lpush R18, I8
+    ncall "text.format" ("HTTP/1.0: HTTP/1.0 client, body \"ab\", no chunks {}", R18) -> (R19)
+    ASSERT_EQ I10, 1
+    PRINTLN_S R19
+
+    ; HEAD: the head alone.
+    call raw (I1, "HEAD /fixed HTTP/1.1\r\nConnection: close\r\n\r\n") -> (R15)
+    ncall "text.find" (R15, "\r\n\r\n", 0) -> (I11)
+    ASSERT_GE I11, 0
+    len I12, R15
+    sub I12, I12, I11
+    sub I12, I12, 4
+    lnew R18
+    lpush R18, I12
+    ncall "text.format" ("HEAD: body of {} bytes", R18) -> (R19)
+    PRINTLN_S R19
+
+    ; A stream that raises: its first chunk, then a body that never ends.
+    strcat R4, R2, "/broken"
+    call http.open ("GET", R4, null, null, 5000) -> (R5)
+    call http.read_chunk (R5) -> (R20)
+.try bad
+    call http.read_chunk (R5) -> (R21)
+.endtry
+    FAIL "a broken stream ended well"
+bad:
+    catch R22
+    strcat R19, "a stream that raised: \"", R20, "\", then ", R22->Error.code
+    PRINTLN_S R19
+    call http.close (R5)
+
+    ; The client, by Content-Length, up to the end, and with no body.
+    call body_of ("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789") -> (R23)
+    strcat R19, "by length: ", R23
+    PRINTLN_S R19
+    call body_of ("HTTP/1.0 200 OK\r\n\r\nto the end") -> (R23)
+    strcat R19, "to the end: ", R23
+    PRINTLN_S R19
+    call body_of ("HTTP/1.1 204 No Content\r\n\r\n") -> (R23)
+    strcat R19, "204: ", R23
+    PRINTLN_S R19
+    ret 0
+.endf

@@ -120,9 +120,9 @@ static void native_rows(StrBuf *b, const NativeDef *t, size_t n) {
 }
 
 static void gen_natives(StrBuf *b) {
-    size_t n, nos, ntext, nproc, nutil, nmod, ncap, nnode, nenv;
+    size_t n, nos, ntext, nproc, nutil, nvec, nmod, ncap, nnode, nenv;
     const NativeDef *t = natives_builtin_table(&n), *os = natives_os_table(&nos), *text = natives_text_table(&ntext),
-                    *procs = natives_proc_table(&nproc), *util = natives_util_table(&nutil),
+                    *procs = natives_proc_table(&nproc), *util = natives_util_table(&nutil), *vecs = natives_vec_table(&nvec),
                     *mods = natives_modules_table(&nmod), *caps = natives_caps_table(&ncap), *nodes = natives_node_table(&nnode),
                     *envs = natives_env_table(&nenv);
     sb_puts(b, "# MLWSVM Built-in Natives\n\n"
@@ -150,6 +150,10 @@ static void gen_natives(StrBuf *b) {
                "> Generated from `src/native/util.c`. See [STDLIB.md](STDLIB.md#time-and-dates).\n\n"
                "| Name | Parameters | Results | Description |\n|---|---|---|---|\n");
     native_rows(b, util, nutil);
+    sb_puts(b, "\n## Vector maths (`vec.*`)\n\n"
+               "> Generated from `src/native/vec.c`. See [STDLIB.md](STDLIB.md#vector-maths).\n\n"
+               "| Name | Parameters | Results | Description |\n|---|---|---|---|\n");
+    native_rows(b, vecs, nvec);
     sb_puts(b, "\n## Loading modules at run time (`module.*`)\n\n"
                "> Generated from `src/native/modload.c`. See [ABI.md](ABI.md#9-loading-modules-at-run-time).\n\n"
                "| Name | Parameters | Results | Description |\n|---|---|---|---|\n");

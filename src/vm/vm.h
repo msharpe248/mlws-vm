@@ -255,6 +255,7 @@ typedef void (*PollHook)(struct VM *vm, uint64_t wait_ns);
 /* Per-process resource limits (the `quota` instruction kinds). */
 enum {
     QUOTA_HEAP = 0, QUOTA_RAW = 1, QUOTA_MAILBOX = 2, QUOTA_INSNS = 3, QUOTA_FOREIGN = 4, QUOTA_OS = 5,
+    QUOTA_WALL = 6, /* a process's: the monotonic time (ns) it is stopped at; the VM's and a program's: ms from its start */
     QUOTA__COUNT
 };
 
@@ -384,6 +385,7 @@ typedef struct VM {
     StrMap ffi_structs;          /* .cstruct name -> its C layout (ffi.c) */
     StrMap ffi_callbacks;        /* .callback name -> its C function type (ffi.c) */
     _Atomic int64_t async_sources; /* live async callbacks and extension holds: messages may come from C */
+    _Atomic int sig_traps;         /* signals trapped for its processes (os.trap; osio.c) */
     /* the program's view of the OS (std.os) */
     StrVec prog_args;            /* os.args: the arguments after the program file */
     _Atomic bool exit_requested; /* os.exit was called: the program ends with exit_code */
@@ -666,6 +668,7 @@ struct Process {
     bool raising;                /* building an Error: exempt from the heap quota */
     bool sandboxed;              /* a debugger's formatter: may not reach other processes (proc_reach) */
     bool killed;                 /* [L] a kill with E_KILLED was asked for: an end with it is not reported */
+    bool wall_stopped;           /* [L] stopped by its wall-clock deadline (quota 6): not reported either */
     char kill_code[32];          /* [L] why kill_req was set */
     char kill_msg[256];
     PidVec links;                /* [L] */
@@ -687,6 +690,7 @@ struct Process {
     bool busy_sleep;             /* [L] sleeping for it (SLICE_BUSY) */
     struct Process *pending_spawn; /* child being set up by spawn (freed if that traps) */
     uint64_t quota[QUOTA__COUNT]; /* the mailbox quota is [L] */
+    uint32_t dl_slot;             /* its place in the scheduler's deadlines + 1, or 0 (under its dl_lock) */
     /* native calls (extapi.c) */
     const NativeDef *cur_native; /* the foreign native being called */
     bool in_foreign;             /* inside foreign code: allocation never traps */
@@ -975,6 +979,7 @@ void sched_node_down(VM *vm, uint32_t node);
 void sched_node_event(VM *vm, uint32_t node, bool up); /* a NodeEvent to each watcher */
 void sched_module_event(VM *vm, const char *name);     /* a Reloaded to each watcher of the module */
 void sched_set_quota(Process *p, int kind, uint64_t limit);
+void proc_take_quotas(Process *p, const uint64_t q[QUOTA__COUNT]);
 bool sched_alive(VM *vm, uint64_t pid);
 /* The monitor's log channel (vm.c): keep the last cap entries from now on; add
  * one (text of n bytes, cut to MLOG_TEXT_MAX at a character's start). */
@@ -1064,6 +1069,9 @@ bool text_utf8_valid(const char *s, size_t n);
 bool text_json_parse(Process *heap, const char *s, size_t n, Word *v, uint8_t *tag, char *err, size_t errlen);
 void natives_register_util(VM *vm);
 const NativeDef *natives_util_table(size_t *n);
+void natives_register_vec(VM *vm);
+void natives_signals_ended(VM *vm, uint64_t pid); /* its traps for pid (0: all) are let go */
+const NativeDef *natives_vec_table(size_t *n);
 const NativeDef *natives_text_table(size_t *n);
 /* sched.c: os.exit: end the whole program now with this exit code. */
 void sched_request_exit(VM *vm, int64_t code);

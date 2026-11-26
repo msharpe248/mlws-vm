@@ -1,0 +1,296 @@
+; vec.*: vector maths on f32 and f64 arrays. Inner products, norms, cosines
+; and distances, with whole numbers whose sums are exact; a long vector
+; against a sum taken here, element by element (the natives keep several
+; partial sums, so the last bits may differ); lengths 0 and odd ones; zero
+; vectors; new arrays and arrays written in place, an f32 one rounded as mov
+; rounds; the rows of a matrix, all or some, and the best k by each metric,
+; with ties to the lower row; the errors; and a call that would pass the
+; instruction quota, which stops its process there.
+; expect-stdout: dot 455, norm 5, l2 5, cosine 1, cosine 0, empty 0 0
+; expect-stdout: zeros: cosine 0, normalize 0 0
+; expect-stdout: long: within 1e-12
+; expect-stdout: normalize f32: 0.6000000238418579 0.800000011920929
+; expect-stdout: add 4 6, scale 1.5 2, f32 third 0.3333333432674408
+; expect-stdout: into: 7 10, 0.6 0.8, 6 8
+; expect-stdout: dot_rows: 11 5 -4
+; expect-stdout: cosine_rows: 1 -0.6
+; expect-stdout: l2_rows: 5 4
+; expect-stdout: top 2 by dot: 0 1, 17 7
+; expect-stdout: top 3 by l2: 1 0 2, 0.0000 2.8284 5.3852
+; expect-stdout: top by cosine among 0, 2: 0 1
+; expect-stdout: ties: 0 2, k 0: 0, k 9: 3
+; expect-stdout: E_TYPE E_TYPE E_RANGE E_RANGE E_RANGE E_RANGE E_TYPE E_RANGE
+; expect-stdout: quota: E_QUOTA, nothing after it
+.include "std/test.inc"
+.include "std/io.inc"
+
+; vec2(x, y) -> an f64 array of the two
+.func vec2(f64 x, f64 y) -> ref
+    anew.f64 R0, 2
+    mov R0[0], F0
+    mov R0[1], F1
+    ret R0
+.endf
+
+.func fvec2(f64 x, f64 y) -> ref
+    anew.f32 R0, 2
+    mov R0[0], F0
+    mov R0[1], F1
+    ret R0
+.endf
+
+; iota(n, from, step) -> an f64 array: from, from + step, ...
+.func iota(i64 n, f64 from, f64 step) -> ref
+    anew.f64 R0, n
+    mov I1, 0
+1:  bge I1, n, 2f
+    mov R0[I1], F0
+    add F0, F0, F1
+    inc I1
+    jmp 1b
+2:  ret R0
+.endf
+
+; fmt(format, values...) printed
+.func say(ref format, ref values)
+    ncall "text.format" (format, values) -> (R2)
+    PRINTLN_S R2
+    ret
+.endf
+
+; error(which) -> the code vec raises for a bad call
+.func error(i64 which) -> ref
+    call vec2 (1.0, 2.0) -> (R1)
+    anew.i64 R2, 2
+    call fvec2 (1.0, 2.0) -> (R3)
+    anew.f64 R4, 3
+.try h
+    beq which, 0, 10f
+    beq which, 1, 11f
+    beq which, 2, 12f
+    beq which, 3, 13f
+    beq which, 4, 14f
+    beq which, 5, 15f
+    beq which, 6, 16f
+    jmp 17f
+10: ncall "vec.dot" (R1, R2) -> (F0)                  ; not floats
+11: ncall "vec.dot" (R1, R3) -> (F0)                  ; f64 with f32
+12: ncall "vec.dot" (R1, R4) -> (F0)                  ; lengths
+13: ncall "vec.dot_rows" (R4, 2, R1, null, R4)        ; 3 is not rows of 2
+14: ncall "vec.add_into" (R4, R1, R1)                 ; the destination's length
+15: anew.i64 R5, 1                                    ; a row that is not there
+    mov R5[0], 5
+    ncall "vec.top_k" (R1, 2, R1, 1, "dot", R5) -> (R6, R7)
+16: ncall "vec.top_k" (R1, 2, R1, 1, "dot", R4) -> (R6, R7)  ; rows not i64
+17: ncall "vec.top_k" (R1, 2, R1, 1, "manhattan", null) -> (R6, R7)
+.endtry
+    ret "none"
+h:
+    catch R8
+    mov R9, R8->Error.code
+    ret R9
+.endf
+
+; spends(parent, long): a little instruction quota, a call that fits in it,
+; and one that needs more
+.func spends(i64 parent, ref long)
+    quota 3, 1000
+    call vec2 (1.0, 2.0) -> (R1)
+    ncall "vec.dot" (R1, R1) -> (F0)
+    send parent, 0
+    ncall "vec.dot" (long, long) -> (F0)
+    send parent, 1                     ; (not reached)
+    ret
+.endf
+
+.func main
+    ; Exact sums.
+    call iota (13, 1.0, 1.0) -> (R0)  ; 1..13
+    call iota (13, 13.0, -1.0) -> (R1) ; 13..1
+    ncall "vec.dot" (R0, R1) -> (F0)
+    call vec2 (3.0, 4.0) -> (R2)
+    ncall "vec.norm" (R2) -> (F1)
+    call vec2 (0.0, 0.0) -> (R3)
+    ncall "vec.l2" (R2, R3) -> (F2)
+    call vec2 (6.0, 8.0) -> (R4)
+    ncall "vec.cosine" (R2, R4) -> (F3)
+    call vec2 (1.0, 0.0) -> (R5)
+    call vec2 (0.0, 1.0) -> (R6)
+    ncall "vec.cosine" (R5, R6) -> (F4)
+    anew.f64 R7, 0
+    ncall "vec.dot" (R7, R7) -> (F5)
+    ncall "vec.norm" (R7) -> (F6)
+    lnew R8
+    lpush R8, F0, F1, F2, F3, F4, F5, F6
+    call say ("dot {}, norm {}, l2 {}, cosine {}, cosine {}, empty {} {}", R8)
+
+    ; Zero vectors.
+    ncall "vec.cosine" (R3, R2) -> (F0)
+    ncall "vec.normalize" (R3) -> (R9)
+    lnew R8
+    mov F1, R9[0]
+    mov F2, R9[1]
+    lpush R8, F0, F1, F2
+    call say ("zeros: cosine {}, normalize {} {}", R8)
+
+    ; A long vector, against a sum taken in order.
+    call iota (1537, 0.001, 0.37) -> (R10)
+    call iota (1537, 5.0, -0.0071) -> (R11)
+    ncall "vec.dot" (R10, R11) -> (F0)
+    mov F1, 0.0
+    mov I1, 0
+1:  mov F2, R10[I1]
+    mov F3, R11[I1]
+    mul F2, F2, F3
+    add F1, F1, F2
+    inc I1
+    blt I1, 1537, 1b
+    sub F2, F0, F1
+    mul F2, F2, F2
+    mul F3, F1, 1e-12
+    mul F3, F3, F3
+    ASSERT_LE F2, F3
+    PRINTLN_S "long: within 1e-12"
+
+    ; New arrays: f32 rounds as mov does.
+    call fvec2 (3.0, 4.0) -> (R12)
+    ncall "vec.normalize" (R12) -> (R13)
+    lnew R8
+    mov F0, R13[0]
+    mov F1, R13[1]
+    lpush R8, F0, F1
+    call say ("normalize f32: {} {}", R8)
+    call vec2 (1.0, 2.0) -> (R14)
+    ncall "vec.add" (R14, R2) -> (R15)
+    ncall "vec.scale" (R2, 0.5) -> (R16)
+    call fvec2 (1.0, 1.0) -> (R17)
+    ncall "vec.scale" (R17, 0.3333333333333333) -> (R18)
+    lnew R8
+    mov F0, R15[0]
+    mov F1, R15[1]
+    mov F2, R16[0]
+    mov F3, R16[1]
+    mov F4, R18[0]
+    lpush R8, F0, F1, F2, F3, F4
+    call say ("add {} {}, scale {} {}, f32 third {}", R8)
+
+    ; In place, into a or b itself.
+    call vec2 (1.0, 2.0) -> (R14)
+    ncall "vec.add_into" (R14, R14, R4)  ; 7 10
+    call vec2 (3.0, 4.0) -> (R19)
+    ncall "vec.normalize_into" (R19, R19)
+    call vec2 (3.0, 4.0) -> (R20)
+    ncall "vec.scale_into" (R20, R20, 2.0)
+    lnew R8
+    mov F0, R14[0]
+    mov F1, R14[1]
+    mov F2, R19[0]
+    mov F3, R19[1]
+    mov F4, R20[0]
+    mov F5, R20[1]
+    lpush R8, F0, F1, F2, F3, F4, F5
+    call say ("into: {} {}, {} {}, {} {}", R8)
+
+    ; Rows of 2: (3, 4), (1, 2), (-4, 0); the query (1, 2).
+    anew.f64 R21, 6
+    mov R21[0], 3.0
+    mov R21[1], 4.0
+    mov R21[2], 1.0
+    mov R21[3], 2.0
+    mov R21[4], -4.0
+    mov R21[5], 0.0
+    call vec2 (1.0, 2.0) -> (R22)
+    anew.f64 R23, 3
+    ncall "vec.dot_rows" (R21, 2, R22, null, R23)
+    lnew R8
+    mov F0, R23[0]
+    mov F1, R23[1]
+    mov F2, R23[2]
+    lpush R8, F0, F1, F2
+    call say ("dot_rows: {} {} {}", R8)
+    anew.i64 R24, 2                    ; some rows: 0 and 2
+    mov R24[0], 0
+    mov R24[1], 2
+    anew.f64 R25, 2
+    ncall "vec.cosine_rows" (R21, 2, R2, R24, R25)  ; (3, 4) against them
+    lnew R8
+    mov F0, R25[0]
+    mov F1, R25[1]
+    lpush R8, F0, F1
+    call say ("cosine_rows: {} {}", R8)
+    ncall "vec.l2_rows" (R21, 2, R3, R24, R25)      ; (0, 0) to them
+    lnew R8
+    mov F0, R25[0]
+    mov F1, R25[1]
+    lpush R8, F0, F1
+    call say ("l2_rows: {} {}", R8)
+
+    ; The best k.
+    call vec2 (3.0, 2.0) -> (R27)
+    ncall "vec.top_k" (R21, 2, R27, 2, "dot", null) -> (R28, R29)
+    lnew R8
+    mov I2, R28[0]
+    mov I3, R28[1]
+    mov F0, R29[0]
+    mov F1, R29[1]
+    lpush R8, I2, I3, F0, F1
+    call say ("top 2 by dot: {} {}, {} {}", R8)
+    ncall "vec.top_k" (R21, 2, R22, 3, "l2", null) -> (R28, R29)
+    lnew R8
+    mov I2, R28[0]
+    mov I3, R28[1]
+    mov I4, R28[2]
+    mov F0, R29[0]
+    mov F1, R29[1]
+    mov F2, R29[2]
+    lpush R8, I2, I3, I4, F0, F1, F2
+    call say ("top 3 by l2: {} {} {}, {:.4f} {:.4f} {:.4f}", R8)
+    anew.i64 R30, 2
+    mov R30[0], 0
+    mov R30[1], 2
+    ncall "vec.top_k" (R21, 2, R27, 1, "cosine", R30) -> (R28, R29)
+    len I5, R28
+    mov I6, R28[0]
+    lnew R8
+    lpush R8, I6, I5
+    call say ("top by cosine among 0, 2: {} {}", R8)
+
+    ; Ties go to the lower row; k of 0, and more than there are.
+    anew.f64 R31, 6                    ; (1, 0), (0, 1), (1, 0)
+    mov R31[0], 1.0
+    mov R31[3], 1.0
+    mov R31[4], 1.0
+    call vec2 (1.0, 0.0) -> (R10)
+    ncall "vec.top_k" (R31, 2, R10, 2, "dot", null) -> (R28, R29)
+    mov I7, R28[0]
+    mov I8, R28[1]
+    ncall "vec.top_k" (R31, 2, R10, 0, "dot", null) -> (R28, R29)
+    len I9, R28
+    ncall "vec.top_k" (R31, 2, R10, 9, "dot", null) -> (R28, R29)
+    len I10, R28
+    lnew R8
+    lpush R8, I7, I8, I9, I10
+    call say ("ties: {} {}, k 0: {}, k 9: {}", R8)
+
+    ; Errors.
+    lnew R8
+    mov I11, 0
+2:  call error (I11) -> (R11)
+    lpush R8, R11
+    inc I11
+    blt I11, 8, 2b
+    call say ("{} {} {} {} {} {} {} {}", R8)
+
+    ; The quota: the call does nothing, and the process stops there.
+    call iota (100000, 0.0, 1.0) -> (R15)
+    spawnm spends (PID, R15) -> (I12)
+    recv I14
+    ASSERT_EQ I14, 0
+    recv R12
+    isa I13, R12, Down
+    ASSERT_EQ I13, 1
+    mov R13, R12->Down.code
+    strcat R14, "quota: ", R13, ", nothing after it"
+    PRINTLN_S R14
+    ret 0
+.endf

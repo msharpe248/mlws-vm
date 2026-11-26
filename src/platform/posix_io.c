@@ -407,7 +407,9 @@ int plat_sock_connect(const char *host, int port, int64_t timeout_ms, int *err) 
         int rc = connect(fd, a->ai_addr, a->ai_addrlen);
         if (rc != 0 && errno == EINPROGRESS) {
             struct pollfd pf = {fd, POLLOUT, 0};
-            int n = poll(&pf, 1, timeout_ms < 0 ? -1 : (int)timeout_ms);
+            int n;
+            while ((n = poll(&pf, 1, timeout_ms < 0 ? -1 : (int)timeout_ms)) < 0 && errno == EINTR) { /* a trapped signal */
+            }
             int soerr = 0;
             socklen_t len = sizeof soerr;
             if (n == 0) soerr = ETIMEDOUT;

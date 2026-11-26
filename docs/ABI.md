@@ -106,8 +106,9 @@ exactly one process.
 ### 1.3 Failure: links and monitors
 
 A process **fails** when an exception escapes it, when it is killed (`kill pid`,
-`E_KILLED`), or when it exceeds its instruction quota. Otherwise it exits normally
-when its entry function returns or it executes `halt`.
+`E_KILLED`), or when it exceeds its instruction quota or its wall-clock deadline
+(§1.4). Otherwise it exits normally when its entry function returns or it
+executes `halt`.
 
 * `monitor pid`: when that process ends, this one receives a `Down` struct with
   fields `pid`, `exit` (the exit code), and `code` / `message`, which are null for a
@@ -117,9 +118,13 @@ when its entry function returns or it executes `halt`.
 * `link pid`: the two processes fail together. When one fails, the other is
   killed with `E_LINKED`, and so on along chains of links. A normal exit just
   removes the link. If a failure reaches `main`, the program ends with that error.
+  A process whose own wall-clock deadline has passed ends with `E_QUOTA`
+  instead, however it was stopped: processes that share a deadline all end
+  with it, in whatever order.
   `spawnl` (`spawnil`) starts a process already linked.
 * A child process that fails with nobody monitoring or linked prints a crash
-  report on stderr, so failures are never silent.
+  report on stderr, so failures are never silent; one stopped on purpose, by
+  `kill` or by its deadline, does not.
 * By the time a `Down` arrives (or a linked process is killed), the process's
   files, sockets and other foreign handles are closed and its registered names
   are gone. So a supervisor can restart a server at once, on the same port and
@@ -146,6 +151,24 @@ it.
 | 3 | instructions executed in total | the process is stopped with `E_QUOTA` (a hard CPU limit) |
 | 4 | foreign calls (natives from extensions and `.extern`); 0 shuts out native code | catchable `E_QUOTA` at the call |
 | 5 | OS calls (`fs.*`, `os.*`, `net.*`; [STDLIB.md](STDLIB.md)); 0 shuts out files, commands, the network and the environment | catchable `E_QUOTA` at the call |
+| 6 | milliseconds of wall-clock time from now: a deadline | the process is stopped with `E_QUOTA`, as `kill` stops it, whatever it is doing |
+
+**The wall-clock deadline** (kind 6) is a moment, not a length of time: `quota
+6, 100` stops the process 100 ms from now, and a process it spawns, even 40 ms
+later, inherits the same moment, so a parent's deadline holds for everything
+it starts. Like the other kinds it only moves earlier. A process waiting
+(`sleep`, `recv`, `proc.call`, a socket in the poller) stops at once when it
+passes; one running, at the end of its time slice; one in a call on the I/O
+thread pool (a regular file), when the call returns. `proc.deadline_ms()` says
+how much is left ([STDLIB.md](STDLIB.md#request-and-reply)), to pass on as the
+timeout of what it waits for. A deadline costs nothing until it passes: no
+check on any instruction, and one entry in the scheduler's timers for each
+live process that has one.
+
+Since quotas cannot be raised, a deadline for part of a program is a process:
+spawn one (`spawnm`) that sets the deadline and does the work, its helpers
+spawned with `spawnl`, and wait for its `Down`. `E_QUOTA` in it means the time
+ran out; `kill` stops it, and all it linked, sooner.
 
 `mlwsvm run --stats` reports processes spawned, the most alive at once, time
 slices, and instructions across all processes. `proc.count` returns the number
@@ -285,7 +308,7 @@ encoding, the pointer layout or the object headers.
 | Data stack | 131,072 words (1 MiB) per process, allocated when first used; *option* `--stack-words` |
 | Coroutine data stack | 1,024 words (8 KiB) by default; 16 to 2^29 − 1 words (2^27 on a 32-bit host), set by `conew`'s third operand (§8) |
 | Time slice | 2,000 instructions; *option* `--slice` |
-| Starting quotas | unlimited; *option* `--quota heap=…,raw=…,mailbox=…,insns=…,foreign=…,os=…` (§1.4) |
+| Starting quotas | unlimited; *option* `--quota heap=…,raw=…,mailbox=…,insns=…,foreign=…,os=…,wall=…` (§1.4) |
 | Raw block size | < 4 GiB (1 GiB on a 32-bit host) |
 | Modules per VM | 4,094 |
 | Elements in a string or buffer | < 2^31 |

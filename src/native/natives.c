@@ -348,6 +348,7 @@ void natives_register_builtin(VM *vm) {
     natives_register_os(vm);
     natives_register_text(vm);
     natives_register_util(vm);
+    natives_register_vec(vm);
     natives_register_proc(vm);
     natives_register_modules(vm);
 }

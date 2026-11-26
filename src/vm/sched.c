@@ -37,6 +37,14 @@ typedef struct {
     uint64_t at, pid; /* wake process `pid` at `at` (ns), if still applicable */
 } Timer;
 
+typedef struct {
+    uint64_t at;  /* a process's wall-clock deadline (quota 6), in ns */
+    Process *p;   /* which: its entry goes when it ends (dl_slot says where) */
+} Deadline;
+
+struct Sched;
+static void deadline_arm(struct Sched *s, Process *p);
+
 typedef struct Worker {
     VM *vm;
     int id;
@@ -66,6 +74,9 @@ typedef struct Sched {
     bool running;
     VEC(Timer) timers; /* min-heap by wake time */
     _Atomic uint64_t next_timer; /* earliest timer, 0 = none (a hint read without the lock) */
+    PlatMutex *dl_lock;             /* the deadlines (taken alone, or after a process's lock) */
+    VEC(Deadline) deadlines;        /* min-heap by time, each process's own entry (Process.dl_slot) */
+    _Atomic uint64_t next_deadline; /* the earliest, 0 = none (a hint: sched_fast_continue ignores it) */
     _Atomic int nidle;           /* workers that found no work */
     _Atomic bool waking;         /* an idle worker has been signalled and is not yet back */
     int nwaiting;                /* workers waiting on work_cv (under lock) */
@@ -132,6 +143,7 @@ static Sched *sched_of(VM *vm) {
     Sched *s = xcalloc(1, sizeof *s);
     for (unsigned i = 0; i < PT_STRIPES; i++) s->stripes[i] = plat_lock_new();
     s->lock = plat_mutex_new();
+    s->dl_lock = plat_mutex_new();
     s->work_cv = plat_cond_new();
     s->stw_cv = plat_cond_new();
     s->resume_cv = plat_cond_new();
@@ -338,6 +350,7 @@ void sched_start(VM *vm, Process *p) {
     *sl = p;
     p->published = true;
     plat_unlock(s->stripes[p->pid % PT_STRIPES]);
+    if (p->quota[QUOTA_WALL] != UINT64_MAX) deadline_arm(s, p);
     plat_lock(p->lock);
     ready_locked(s, p);
     plat_unlock(p->lock);
@@ -412,6 +425,134 @@ static uint64_t timers_service(Sched *s, uint64_t now) {
         if (io) s->io_waiting--;            /* only once it is queued: see idle() */
         if (p) plat_unlock(p->lock);
     }
+}
+
+/* ---- wall-clock deadlines (quota 6) -------------------------------------------------
+ *
+ * A process with a deadline has an entry in a min-heap of its own, which it
+ * leaves when it ends, so a deadline costs one entry for each live process
+ * that has one. When it passes, the process is killed with E_QUOTA, as
+ * `kill` kills: at once if it waits, at the end of its time slice if it runs
+ * (a slice that goes straight on into the next, sched_fast_continue, does so
+ * at most 64 times), when its call returns if it is in one on the I/O pool. */
+
+static void deadlines_changed(Sched *s) {
+    atomic_store(&s->next_deadline, s->deadlines.n ? s->deadlines.v[0].at : 0);
+}
+
+static void dl_set(Sched *s, size_t i, Deadline d) {
+    s->deadlines.v[i] = d;
+    d.p->dl_slot = (uint32_t)i + 1;
+}
+
+static void dl_up(Sched *s, size_t i) {
+    Deadline d = s->deadlines.v[i];
+    while (i > 0) {
+        size_t parent = (i - 1) / 2;
+        if (s->deadlines.v[parent].at <= d.at) break;
+        dl_set(s, i, s->deadlines.v[parent]);
+        i = parent;
+    }
+    dl_set(s, i, d);
+}
+
+static void dl_down(Sched *s, size_t i) {
+    Deadline d = s->deadlines.v[i];
+    for (;;) {
+        size_t l = 2 * i + 1, r = l + 1, m = l;
+        if (l >= s->deadlines.n) break;
+        if (r < s->deadlines.n && s->deadlines.v[r].at < s->deadlines.v[l].at) m = r;
+        if (d.at <= s->deadlines.v[m].at) break;
+        dl_set(s, i, s->deadlines.v[m]);
+        i = m;
+    }
+    dl_set(s, i, d);
+}
+
+/* Takes entry i out (under dl_lock). */
+static void dl_remove(Sched *s, size_t i) {
+    s->deadlines.v[i].p->dl_slot = 0;
+    Deadline last = s->deadlines.v[--s->deadlines.n];
+    if (i == s->deadlines.n) return;
+    dl_set(s, i, last);
+    dl_down(s, i);
+    dl_up(s, last.p->dl_slot - 1);
+}
+
+/* Enters p's deadline, quota[QUOTA_WALL], or moves its entry earlier. */
+static void deadline_arm(Sched *s, Process *p) {
+    plat_mutex_lock(s->dl_lock);
+    uint64_t at = p->quota[QUOTA_WALL];
+    if (p->dl_slot) {
+        s->deadlines.v[p->dl_slot - 1].at = at;
+        dl_up(s, p->dl_slot - 1);
+    } else {
+        Deadline d = {at, p};
+        VEC_PUSH(s->deadlines, d);
+        dl_up(s, s->deadlines.n - 1);
+    }
+    bool first = p->dl_slot == 1;
+    deadlines_changed(s);
+    plat_mutex_unlock(s->dl_lock);
+    if (!first) return;
+    plat_mutex_lock(s->lock); /* a new earliest: an idle worker re-arms (idle reads next_deadline under this lock) */
+    if (s->nidle > 0) plat_cond_signal(s->work_cv);
+    if (s->wpolling) plat_poller_wake(atomic_load(&s->poller));
+    plat_mutex_unlock(s->lock);
+}
+
+/* An ending process leaves the heap. */
+static void deadline_drop(Sched *s, Process *p) {
+    plat_mutex_lock(s->dl_lock);
+    if (p->dl_slot) {
+        dl_remove(s, p->dl_slot - 1);
+        deadlines_changed(s);
+    }
+    plat_mutex_unlock(s->dl_lock);
+}
+
+static bool kill_locked(Process *t, const char *code, const char *msg);
+static void finish(Sched *s, Process *p, bool failed);
+
+static void deadline_kill_msg(const Process *t, char *msg, size_t n) {
+    snprintf(msg, n, "its wall-clock deadline (quota 6) passed");
+    (void)t;
+}
+
+/* Kills each process whose deadline has passed. */
+static void deadlines_service(Sched *s, uint64_t now) {
+    for (;;) {
+        plat_mutex_lock(s->dl_lock);
+        if (!s->deadlines.n || s->deadlines.v[0].at > now) {
+            plat_mutex_unlock(s->dl_lock);
+            return;
+        }
+        uint64_t pid = s->deadlines.v[0].p->pid; /* (valid while it is in the heap) */
+        dl_remove(s, 0);
+        deadlines_changed(s);
+        plat_mutex_unlock(s->dl_lock);
+        Process *t = pin(s, pid);
+        if (!t) continue;
+        char msg[96];
+        deadline_kill_msg(t, msg, sizeof msg);
+        bool live = is_live(t) && !t->kill_req;
+        if (live) t->wall_stopped = true;
+        bool claimed = live && kill_locked(t, "E_QUOTA", msg);
+        plat_unlock(t->lock);
+        if (claimed) finish(s, t, true);
+    }
+}
+
+/* What a process killed because one linked to it failed ends with: E_LINKED,
+ * or E_QUOTA if its own deadline has passed too (processes that share a
+ * deadline end at once, in any order, and each should say why). */
+static const char *linked_code(Process *t, char *msg, size_t n) {
+    if (t->quota[QUOTA_WALL] != UINT64_MAX && plat_now_ns() >= t->quota[QUOTA_WALL]) {
+        deadline_kill_msg(t, msg, n);
+        t->wall_stopped = true;
+        return "E_QUOTA";
+    }
+    return "E_LINKED";
 }
 
 /* ---- messages ---------------------------------------------------------------- */
@@ -878,6 +1019,8 @@ static void end_program(Sched *s, const Program *prog) {
  * mlwsvm serve's programs, with how it ended kept in its Program). */
 static void finish(Sched *s, Process *p, bool failed) {
     VM *vm = p->vm;
+    if (p->quota[QUOTA_WALL] != UINT64_MAX) deadline_drop(s, p); /* (dl_slot is read under dl_lock: others move it) */
+    if (atomic_load_explicit(&vm->sig_traps, memory_order_relaxed)) natives_signals_ended(vm, p->pid); /* its traps go */
     proc_write_line_out(p); /* (it is not running: this thread may) */
     plat_lock(p->lock);
     p->state = failed ? PROC_FAILED : PROC_DONE;
@@ -917,7 +1060,7 @@ static void finish(Sched *s, Process *p, bool failed) {
         if (failed && is_live(l)) {
             char msg[256];
             snprintf(msg, sizeof msg, "linked process %llu failed: %s", (unsigned long long)p->pid, p->err.code);
-            claimed = kill_locked(l, "E_LINKED", msg);
+            claimed = kill_locked(l, linked_code(l, msg, sizeof msg), msg);
         }
         plat_unlock(l->lock);
         if (claimed) finish(s, l, true);
@@ -927,10 +1070,10 @@ static void finish(Sched *s, Process *p, bool failed) {
     VEC_FREE(rlinks);
     VEC_FREE(rmons);
     bool is_main = p->prog && p->prog->main == p;
-    /* Killed (E_KILLED): stopped from outside on purpose, not a failure of its
-     * own to bring to anyone's notice. A link's E_LINKED is still told: it
+    /* Killed (E_KILLED), or stopped by its deadline: stopped on purpose, not
+     * a failure of its own to bring to anyone's notice. A link's E_LINKED is still told: it
      * carries the failure that began it. */
-    bool killed = p->killed && !strcmp(p->err.code, "E_KILLED");
+    bool killed = (p->killed && !strcmp(p->err.code, "E_KILLED")) || (p->wall_stopped && !strcmp(p->err.code, "E_QUOTA"));
     if (failed && !observed && !is_main && !killed) report_unobserved(vm, p);
     if (!is_main) {
         proc_free(p);
@@ -1128,7 +1271,7 @@ void sched_node_down(VM *vm, uint32_t node) {
         if (linked && !t->kill_req) {
             char msg[160];
             snprintf(msg, sizeof msg, "a linked process was on node %u, which went down", node);
-            claimed = kill_locked(t, "E_LINKED", msg);
+            claimed = kill_locked(t, linked_code(t, msg, sizeof msg), msg);
         }
         plat_unlock(t->lock);
         for (size_t i = 0; i < gone.n; i++) down_far(s, pid, gone.v[i], 0, "E_NODE_DOWN", 11, why, strlen(why));
@@ -1249,7 +1392,7 @@ void sched_node_control(Process *p, const ObjList *l) {
             char msg[256];
             snprintf(msg, sizeof msg, "linked process %llu on node %u failed: %.*s", (unsigned long long)(a & PID_LOCAL),
                      (unsigned)(a >> NODE_SHIFT), code ? (int)code->len : 1, code ? code->data : "?");
-            claimed = kill_locked(t, "E_LINKED", msg);
+            claimed = kill_locked(t, linked_code(t, msg, sizeof msg), msg);
         }
         if (t) plat_unlock(t->lock);
         if (claimed) finish(s, t, true);
@@ -1368,8 +1511,10 @@ void sched_node_deliver(Process *p, uint64_t pid, Word v, uint8_t tag) {
 
 void sched_set_quota(Process *p, int kind, uint64_t limit) {
     plat_lock(p->lock);
-    if (limit < p->quota[kind]) p->quota[kind] = limit;
+    bool lower = limit < p->quota[kind];
+    if (lower) p->quota[kind] = limit;
     plat_unlock(p->lock);
+    if (lower && kind == QUOTA_WALL) deadline_arm(sched_of(p->vm), p);
 }
 
 /* ---- std.proc: the registry and request/reply calls ------------------------------- */
@@ -1652,6 +1797,14 @@ static void n_reply(Process *p, Word *a, Word *r) {
     gc_free_list(m.objs); /* the caller gave up, or has gone */
 }
 
+/* proc.deadline_ms() -> the milliseconds left before this process's
+ * wall-clock deadline (quota 6), 0 if it has passed, or -1 if it has none */
+static void n_deadline_ms(Process *p, Word *a, Word *r) {
+    (void)a;
+    uint64_t at = p->quota[QUOTA_WALL], now = plat_now_ns();
+    r[0].i = at == UINT64_MAX ? -1 : at <= now ? 0 : (int64_t)((at - now) / 1000000);
+}
+
 #define PN(name, np, pt, nr, rt, fn, flags, doc) {name, np, pt, nr, rt, fn, doc, flags, NULL, NULL, NULL}
 #define PT(...) {__VA_ARGS__}
 static const NativeDef PROC_NATIVES[] = {
@@ -1663,6 +1816,9 @@ static const NativeDef PROC_NATIVES[] = {
        "Send Call{from, id, body} and wait for proc.reply's answer, up to a timeout in ms (negative: none; "
        "E_TIMEOUT). The answer does not go through the mailbox."),
     PN("proc.reply", 2, PT(T_R, T_R), 0, PT(0), n_reply, 0, "Answer a Call."),
+    PN("proc.deadline_ms", 0, PT(0), 1, PT(T_I64), n_deadline_ms, 0,
+       "The milliseconds left before this process's wall-clock deadline (quota 6): 0 if it has passed, -1 if it has "
+       "none. For the timeouts of what it waits for."),
     PN("proc.alive", 2, PT(T_I64, T_I64), 1, PT(T_B), n_alive, NF_CHECKED,
        "Whether a process runs, as alive says, on this VM or another node, which is asked, up to a timeout in ms "
        "(negative: none; E_TIMEOUT). False for a node that is not connected."),
@@ -1789,6 +1945,7 @@ static void idle(Worker *w) {
     VM *vm = w->vm;
     Sched *s = vm->sched;
     timers_service(s, plat_now_ns()); /* also drops stale timers, so `next_timer` is real */
+    if (atomic_load_explicit(&s->next_deadline, memory_order_relaxed)) deadlines_service(s, plat_now_ns());
     vm_flush(vm); /* nothing to run: let output reach the terminal or file (servers log while idle) */
     bool poller = w->id == 0 && vm->poll;
     bool deadlock = false;
@@ -1809,7 +1966,8 @@ static void idle(Worker *w) {
          * E_DEADLOCK.) */
         bool quiet = !s->io_inflight && !s->io_waiting && !s->npaused && !vm->external_input && !atomic_load(&vm->async_sources);
         if (work_available(s)) break;
-        uint64_t nt = s->next_timer, now = plat_now_ns();
+        uint64_t nt = s->next_timer, now = plat_now_ns(), nd = s->next_deadline;
+        if (nd && (!nt || nd < nt)) nt = nd; /* the earliest of either */
         if (nt && nt <= now) break;
         if (!nt && s->nidle == s->nrun && quiet) {
             /* nothing can ever run again */
@@ -2172,8 +2330,9 @@ static bool worker_loop(Worker *w) {
             w->last_io = now; /* nobody waits in the poller: someone must look */
             io_look(s);
         }
-        uint64_t nt = s->next_timer;
+        uint64_t nt = s->next_timer, nd = s->next_deadline;
         if (nt && nt <= now) timers_service(s, now);
+        if (nd && nd <= now) deadlines_service(s, now);
         Process *p = NULL;
         if (vm->stopped) { /* a process stopped by a tool resumes first */
             Process *q = vm->stopped;
@@ -2280,6 +2439,8 @@ void sched_shutdown(VM *vm, Process *keep) {
     }
     s->timers.n = 0;
     timers_changed(s);
+    s->deadlines.n = 0; /* (their processes are freed) */
+    deadlines_changed(s);
     smap_free(&vm->registry); /* every named process is gone */
 }
 
@@ -2376,6 +2537,7 @@ void sched_free(VM *vm) {
     free(s->workers);
     for (unsigned i = 0; i < PT_STRIPES; i++) plat_lock_free(s->stripes[i]);
     plat_mutex_free(s->lock);
+    plat_mutex_free(s->dl_lock);
     plat_cond_free(s->work_cv);
     plat_cond_free(s->stw_cv);
     plat_cond_free(s->resume_cv);

@@ -902,7 +902,12 @@
             int64_t kind = ops[0].imm, limit = rd(CX, &ops[1], T_I64).i;
             if (kind >= QUOTA__COUNT) vm_trap(p, "E_QUOTA", "unknown quota kind %lld", (long long)kind);
             if (limit < 0) vm_trap(p, "E_QUOTA", "a quota cannot be negative");
-            sched_set_quota(p, (int)kind, (uint64_t)limit); /* only ever lowered */
+            uint64_t q = (uint64_t)limit;
+            if (kind == QUOTA_WALL) { /* ms from now: the time it ends */
+                uint64_t now = plat_now_ns();
+                q = q > (UINT64_MAX - 1 - now) / 1000000 ? UINT64_MAX - 1 : now + q * 1000000;
+            }
+            sched_set_quota(p, (int)kind, q); /* only ever lowered */
             if (kind == QUOTA_HEAP) p->next_gc = p->alloc_limit = 0, p->bump_lim = p->bump, p->gc_pending = true; /* re-derive the GC threshold */
             break;
         }

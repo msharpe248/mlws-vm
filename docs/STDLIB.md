@@ -11,9 +11,9 @@ restricts them.
 | `io`, `str`, `gc`, `test` | printing, string bytes, the collector, test failures |
 | `fs` | files, standard streams, directories, metadata, copies, temporary directories |
 | `path` | names of files as text: joining, normalizing, the directory, name and extension |
-| `os` | arguments, the environment, exit, running commands |
+| `os` | arguments, the environment, exit, running commands, signals |
 | `net`, `tls` | TCP, UDP, DNS, TLS |
-| `std.http` | HTTP/1.1: a server with a handler, its parts, and a client |
+| `std.http` | HTTP/1.1: a server with a handler, its parts, and a client, both streaming if asked |
 | `text`, `json`, `regex` | formatting, string utilities, UTF-8, JSON, regular expressions |
 | `proc`, `std.supervisor`, `std.server`, `std.pool` | the process count, a name registry, request/reply calls, supervisors, generic servers, worker pools |
 | `std.node` | processes on other VMs |
@@ -26,6 +26,7 @@ restricts them.
 | `hex`, `base64`, `url`, `csv` | encodings |
 | `list`, `map` | sorting and searching, set operations |
 | `math` | floating-point and integer maths |
+| `vec` | vector maths on float arrays: products, norms, distances, and the best rows of a matrix |
 
 ## How I/O waits
 
@@ -187,6 +188,11 @@ shares it between the two handles, a call at a time.
   authority.
 * **A server** gives PEM files of a certificate chain and its key.
 * **Versions:** TLS 1.2 and later. `tls.version` says which a connection got.
+* **In a sandbox** (`cap.restrict`), a process that may connect somewhere may
+  put TLS on that connection with the system's authorities (`""`), with no
+  `read` grant: loading the library and the system's authorities needs none. A
+  file named as the authorities, or a server's certificate and key, needs a
+  `read` grant like any other file.
 * Failures are `E_TLS`, and a failed handshake leaves the connection to be
   closed.
 
@@ -513,6 +519,47 @@ raises `E_OVERFLOW` when the result does not fit in an `i64`. `std.math`
 (`lib/std/math.masm`) has more, written in assembly: `ipow`, `isqrt`,
 `fact` and `clamp`.
 
+## Vector maths
+
+```asm
+    ncall "vec.cosine" (a, b) -> (F0)                         ; a . b / (|a| |b|)
+    ncall "vec.top_k" (m, 1536, q, 10, "cosine", null) -> (R0, R1)  ; the 10 best rows
+```
+
+The `vec.*` natives do arithmetic on `f32` and `f64` arrays several elements
+at a time, as a loop of instructions cannot: for embeddings, numerics,
+signals. Two arrays given together must be of one type (`E_TYPE`) and one
+length (`E_RANGE`).
+
+* **One or two vectors:** `vec.dot`, `vec.norm` (Euclidean), `vec.cosine` (0
+  if either is all zeros) and `vec.l2` (the distance) give an `f64`.
+  `vec.normalize`, `vec.add` and `vec.scale(a, s)` give a new array of the same
+  type; `vec.normalize_into(dst, a)`, `vec.add_into(dst, a, b)` and
+  `vec.scale_into(dst, a, s)` write into one there is already (which may be
+  `a` or `b`), so a loop need make none.
+* **The rows of a matrix:** a matrix is one array of rows of `dim` elements,
+  so 10,000 vectors are one object, scanned in one call.
+  `vec.dot_rows(m, dim, q, rows, out)`, `vec.cosine_rows` and `vec.l2_rows`
+  write the query's score with each row into `out`, a float array. `rows` is
+  null for every row, or an `i64` array naming the rows to score, in its
+  order: those a filter on their metadata has left, say.
+* **The best k:** `vec.top_k(m, dim, q, k, metric, rows)` gives the k rows
+  closest to the query, best first: an `i64` array of their indices and an
+  `f64` array of their scores. The metric is `"dot"` or `"cosine"` (the
+  highest first) or `"l2"` (the lowest); between equal scores the lower row
+  comes first. Fewer than k rows: all of them.
+* **Results.** Each element of an array is a `double` (an `f32` one rounded),
+  and the sums are taken in `double`. They keep several partial sums at once
+  and add them in a fixed order, and no multiply and add are fused, so a
+  result is the same on every platform and in every mode; it may differ in its
+  last bits from a sum taken one element after another. A result stored in an
+  `f32` array is rounded, as `mov` rounds.
+* **Quotas.** The work counts towards the instruction quota, one instruction
+  for every 8 elements, since a native cannot be preempted. A call that would
+  pass it raises `E_QUOTA`, as a regex match does, and the process stops at
+  its next time slice. They are pure arithmetic, so they work in a sandbox
+  (`cap.restrict`, `quota 5, 0`) and are not foreign code (quota 4).
+
 ## The monitor's log
 
 `monitor.log(level, text)` and `monitor.event(name, value)` write to the log that
@@ -549,6 +596,13 @@ answer to a later call. A call to a process that does not exist raises
 `E_NOPROC`. A call that can never be answered (every process waiting) raises
 `E_DEADLOCK`, as `recv` does, and so does a process calling itself. Requests and replies are references (wrap
 numbers in a list or struct), deep-copied like any message.
+
+`proc.deadline_ms()` gives the milliseconds left before the process's
+wall-clock deadline (quota 6, [ABI.md §1.4](ABI.md#14-quotas)): 0 if it has
+passed, -1 if it has none. A process with a deadline passes it on as the
+timeout of what it waits for, `proc.call`'s, a socket's (`fs.set_timeout`) or
+an HTTP request's, so that each gives up in time, with an error it can
+handle, before the deadline stops it.
 
 `proc.alive(pid, timeout_ms)` says whether a process runs, as the `alive`
 instruction does, for a pid of this VM or of another node, which it asks,
@@ -839,8 +893,32 @@ It is MLWSVM assembly (`lib/std/pool.masm`), built on `proc.call` and
   reads a body by `Content-Length`, in chunks, or up to the connection's end,
   and skips `100 Continue`. `request(method, url, headers, body, timeout)`
   does any method.
-* `http.read_request` and `http.write_response` are the server's parts, for
-  a server of your own (one that hands a connection over to WebSocket, say).
+* **Streams.** A body can be written as it is made, and read as it comes:
+  * A handler whose response has a `stream`, a closure, gets its body
+    written in chunks (`Transfer-Encoding: chunked`). The closure is called
+    with the connection, after the head is written, and calls
+    `http.write_chunk(conn, data)` for each piece, which goes at once (from
+    the closure's own process, the connection's). When it
+    returns, the last chunk ends the body, and the connection goes on to its
+    next request. If it raises, the body is left unended, so the client sees
+    it cut short, and its error goes to the monitor's log unless the client
+    went away (`E_RESET`, `E_CLOSED`).
+  * An HTTP/1.0 client knows no chunks: it gets the pieces as they are, and
+    the connection closed after them. A HEAD request gets the head alone.
+  * `http.open(method, url, headers, body, timeout)` sends a request and reads
+    the response's status and headers, but not its body: a map of `status`,
+    `headers` and `connection`. `http.read_chunk(stream)` reads the next piece
+    of the body as a string, what has come up to 64 KiB, and null at its end,
+    which closes the connection. `http.close(stream)` closes it sooner, and
+    again does nothing. Its timeout is for each wait, as for `request`, and
+    there is no limit to a body read this way.
+  * A piece is what has arrived, not what the server wrote as a chunk: a proxy
+    or TLS may split or join them. Text in lines or events (server-sent
+    events, JSON Lines) is to be split by its own ends of line.
+* `http.read_request`, `http.write_response`, and `http.write_head` (the head
+  of a response in chunks), `http.write_chunk` and `http.end_chunks` (the last
+  chunk) are the server's parts, for a server of your own (one that hands a
+  connection over to WebSocket, say).
 
 It is MLWSVM assembly (`lib/std/http.masm`). [`examples/web.masm`](../examples/web.masm)
 is a small service built on it.
@@ -974,6 +1052,38 @@ explicitly.
 whose handle is dropped without `os.wait` keeps running; it is reaped by the OS
 when MLWSVM exits.
 
+## Signals
+
+```asm
+    ncall "os.trap" ("SIGTERM", PID)    ; SIGTERM comes to this process as a message
+    recv R0                             ; a Signal: R0->Signal.name is "SIGTERM"
+```
+
+`os.trap(name, pid)` traps a signal to the program, `"SIGINT"`, `"SIGTERM"` or
+`"SIGHUP"`: when it comes, process `pid` gets a built-in `Signal` struct,
+`{name}`, instead of the program ending, so a server can close its
+connections and write what it holds before it ends. `os.trap(name, 0)` lets
+it go.
+
+* **A trap is for one signal.** Once one has come, the signal does again
+  what it did before it was trapped (usually, it ends the program) until
+  `os.trap` is called once more: so a second Ctrl+C stops a program whose
+  shutdown is stuck. To take every SIGHUP, say, trap it again after each.
+* **A trap goes with its process:** when `pid` ends, or the VM does, the
+  signal is as it was. A process waiting for a trapped signal is not in a
+  deadlock (`E_DEADLOCK`).
+* **On Windows,** Ctrl+C and Ctrl+Break are SIGINT, and closing the console
+  window, logging off and shutting down are SIGTERM: for those, Windows ends
+  the program a few seconds after asking, whatever it does. SIGHUP never
+  comes.
+* Signals belong to the operating system's process, so one trap holds for
+  each signal: trapping it again moves it to the new pid. It is an OS call
+  (quota 5), and a restricted process (`cap.restrict`) may not make it
+  (`E_PERMISSION`). An unknown name is `E_RANGE`, and a pid that is not
+  running `E_NOPROC`.
+* The handler does nothing but note the signal; a thread of the VM's own
+  delivers it. A call interrupted by the signal is resumed.
+
 ## The program's view
 
 * `os.args()`: the arguments after the program file:
@@ -1018,7 +1128,7 @@ executable.
 
 | Kind | What it limits | An entry |
 |---|---|---|
-| `read` | reading files and directories, `fs.stat`, `fs.exists`, TLS certificates | a path: it and what is under it |
+| `read` | reading files and directories, `fs.stat`, `fs.exists`, and the files of certificates, keys and authorities named to `tls.*` | a path: it and what is under it |
 | `write` | creating, changing, renaming and removing | a path, the same |
 | `connect` | `net.connect`, `net.resolve`, `net.send_to` | `host:port`, `host:*`, `*:port`, or `*` |
 | `listen` | `net.listen`, `net.udp` | the same |

@@ -22,6 +22,8 @@ static const char *const RELOADED_FIELDS[] = {"module"};
 static const uint8_t RELOADED_TYPES[] = {T_R};
 static const char *const ENVCHANGE_FIELDS[] = {"key"};
 static const uint8_t ENVCHANGE_TYPES[] = {T_R};
+static const char *const SIGNAL_FIELDS[] = {"name"};
+static const uint8_t SIGNAL_TYPES[] = {T_R};
 
 const BuiltinStruct BUILTIN_STRUCTS[BUILTIN__COUNT] = {
     {"Error", 3, ERROR_FIELDS, ERROR_TYPES},
@@ -33,6 +35,7 @@ const BuiltinStruct BUILTIN_STRUCTS[BUILTIN__COUNT] = {
     {"NodeEvent", 3, NODEEVENT_FIELDS, NODEEVENT_TYPES},
     {"Reloaded", 1, RELOADED_FIELDS, RELOADED_TYPES},
     {"EnvChange", 1, ENVCHANGE_FIELDS, ENVCHANGE_TYPES},
+    {"Signal", 1, SIGNAL_FIELDS, SIGNAL_TYPES},
 };
 
 int builtin_struct_find(const char *name) {

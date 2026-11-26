@@ -408,8 +408,9 @@ Each worker thread (one per core by default, `--threads N`) runs this loop,
 ```c
     while (!s->done) {
         ...
-        uint64_t nt = s->next_timer;
+        uint64_t nt = s->next_timer, nd = s->next_deadline;
         if (nt && nt <= now) timers_service(s, now);
+        if (nd && nd <= now) deadlines_service(s, now);
         Process *p = NULL;
         ...
         if (!p) p = take(w);
@@ -513,6 +514,16 @@ is used only if the process is still waiting for that same deadline
 (`p->wake_at == t.at`). Stale entries are simply dropped, which saves
 finding and removing an entry in the middle of the heap.
 
+**Deadlines.** A wall-clock deadline (quota 6) lasts as long as its process,
+and every process it spawns has one too, so stale entries would pile up:
+a server with a deadline of an hour that spawns a process per request
+would hold an entry for each request of the hour. So deadlines have a
+min-heap of their own, `{at, p}`, and each process knows its place in it
+(`dl_slot`), which `finish` takes out (`deadline_drop`). When one passes,
+`deadlines_service` kills the process with `E_QUOTA` as `kill` would.
+`next_deadline` is not one of the things `sched_fast_continue` checks, so
+a process may run up to 64 slices past its deadline before a worker looks.
+
 **Deadlock.** When a worker finds nothing to do, `idle` checks whether
 anything could ever make work again
 ([DESIGN.md §13.6](../DESIGN.md#136-deadlock)). Every worker idle, no
@@ -573,13 +584,13 @@ deliberate ([DESIGN.md §13.5](../DESIGN.md#135-ending-links-and-monitors)):
         ...
         if (failed && is_live(l)) {
             ...
-            claimed = kill_locked(l, "E_LINKED", msg);
+            claimed = kill_locked(l, linked_code(l, msg, sizeof msg), msg);
         }
         plat_unlock(l->lock);
         if (claimed) finish(s, l, true);
     }
     ...
-    bool killed = p->killed && !strcmp(p->err.code, "E_KILLED");
+    bool killed = (p->killed && !strcmp(p->err.code, "E_KILLED")) || (p->wall_stopped && !strcmp(p->err.code, "E_QUOTA"));
     if (failed && !observed && !is_main && !killed) report_unobserved(vm, p);
 ```
 

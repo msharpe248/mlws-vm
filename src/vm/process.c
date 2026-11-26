@@ -71,7 +71,7 @@ Process *proc_new(VM *vm) {
     p->globals = xcalloc(p->nglobals + 1, sizeof(Segment));
     for (uint32_t i = 0; i < p->nglobals; i++) global_init(&p->globals[i], vm->mods.v[i]->m);
     plat_unlock(vm->mods_lock);
-    memcpy(p->quota, vm->default_quota, sizeof p->quota);
+    proc_take_quotas(p, vm->default_quota);
     p->caps = vm->default_caps;
     caps_retain(p->caps);
     /* The pid is assigned now; the process joins the table in sched_start. */
@@ -82,6 +82,17 @@ Process *proc_new(VM *vm) {
     if (vm->live > vm->max_live) vm->max_live = vm->live;
     plat_unlock(vm->lock);
     return p;
+}
+
+/* A process's quotas from the VM's or a program's: a wall-clock limit there
+ * is milliseconds from now, here the time it ends. */
+void proc_take_quotas(Process *p, const uint64_t q[QUOTA__COUNT]) {
+    memcpy(p->quota, q, sizeof p->quota);
+    uint64_t ms = q[QUOTA_WALL];
+    if (ms != UINT64_MAX) {
+        uint64_t now = plat_now_ns(), ns = ms > (UINT64_MAX - now) / 1000000 ? UINT64_MAX - 1 - now : ms * 1000000;
+        p->quota[QUOTA_WALL] = now + ns;
+    }
 }
 
 void proc_start(Process *p, Function *fn, Obj *closure, const Word *args, int nargs) {

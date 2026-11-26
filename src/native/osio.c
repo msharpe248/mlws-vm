@@ -910,6 +910,107 @@ static void os_platform(Process *p, Word *a, Word *r) {
     r[0].r = str_new(p, n, strlen(n));
 }
 
+/* ---- trapped signals (os.trap) ----------------------------------------------------- *
+ *
+ * Signals belong to the operating system's process, so the traps are kept
+ * here, for whichever VM set them. A trap is good for one signal: once one is
+ * delivered, the signal ends the program again until os.trap is called once
+ * more, so a second Ctrl+C stops a program whose shutdown is stuck. A trap
+ * also ends when its process does. While one is set, its VM counts it as a
+ * source of messages (async_sources), so a process waiting for it is not in a
+ * deadlock. */
+static const char *const SIG_NAMES[PLAT_SIG__COUNT] = {NULL, "SIGINT", "SIGTERM", "SIGHUP"};
+static struct {
+    VM *vm;
+    uint64_t pid;
+} sig_trap[PLAT_SIG__COUNT];
+static _Atomic(PlatMutex *) sig_mutex_p;
+
+static PlatMutex *sig_mutex(void) {
+    PlatMutex *m = atomic_load(&sig_mutex_p);
+    if (m) return m;
+    PlatMutex *made = plat_mutex_new(), *none = NULL;
+    if (atomic_compare_exchange_strong(&sig_mutex_p, &none, made)) return made;
+    plat_mutex_free(made);
+    return none;
+}
+
+/* Under sig_mutex. */
+static void trap_clear(int which) {
+    VM *vm = sig_trap[which].vm;
+    if (!vm) return;
+    atomic_fetch_sub(&vm->async_sources, 1);
+    atomic_fetch_sub(&vm->sig_traps, 1);
+    sig_trap[which].vm = NULL;
+    sig_trap[which].pid = 0;
+    plat_signal_trap(which, false, NULL);
+}
+
+static Word signal_msg(Process *heap, void *name) {
+    ObjStruct *m = struct_new(heap, &VM_BUILTIN_DEFS[BUILTIN_SIGNAL]);
+    m->fields[SIGF_NAME].r = &str_new(heap, name, strlen(name))->h;
+    return (Word){.r = &m->h};
+}
+
+/* On the platform's signal thread: false if nobody took it. */
+static bool sig_deliver(int which) {
+    PlatMutex *m = sig_mutex();
+    plat_mutex_lock(m);
+    VM *vm = sig_trap[which].vm;
+    uint64_t pid = sig_trap[which].pid;
+    trap_clear(which);
+    bool taken = vm && sched_post_build(vm, pid, signal_msg, (void *)SIG_NAMES[which]);
+    plat_mutex_unlock(m);
+    return taken;
+}
+
+void natives_signals_ended(VM *vm, uint64_t pid) {
+    PlatMutex *m = sig_mutex();
+    plat_mutex_lock(m);
+    for (int w = 1; w < PLAT_SIG__COUNT; w++)
+        if (sig_trap[w].vm == vm && (!pid || sig_trap[w].pid == pid)) trap_clear(w);
+    plat_mutex_unlock(m);
+}
+
+/* os.trap(name, pid): the signal comes to pid as a Signal message; pid 0 lets
+ * it end the program again. */
+static void os_trap(Process *p, Word *a, Word *r) {
+    (void)r;
+    const char *name = get_str(p, a[0], "the signal");
+    if (!name) return;
+    proc_reach(p, "os.trap");
+    if (p->caps) {
+        native_fail(p, "E_PERMISSION", "os.trap: a restricted process may not trap signals");
+        return;
+    }
+    int which = 0;
+    for (int w = 1; w < PLAT_SIG__COUNT; w++)
+        if (!strcmp(name, SIG_NAMES[w])) which = w;
+    if (!which) {
+        native_fail(p, "E_RANGE", "os.trap: \"%s\" is not SIGINT, SIGTERM or SIGHUP", name);
+        return;
+    }
+    uint64_t pid = a[1].u;
+    if (pid && !sched_alive(p->vm, pid)) {
+        native_fail(p, "E_NOPROC", "os.trap: process %llu does not exist or has finished", (unsigned long long)pid);
+        return;
+    }
+    PlatMutex *m = sig_mutex();
+    plat_mutex_lock(m);
+    trap_clear(which);
+    bool ok = true;
+    if (pid) {
+        sig_trap[which].vm = p->vm;
+        sig_trap[which].pid = pid;
+        atomic_fetch_add(&p->vm->async_sources, 1);
+        atomic_fetch_add(&p->vm->sig_traps, 1);
+        ok = plat_signal_trap(which, true, sig_deliver);
+        if (!ok) trap_clear(which);
+    }
+    plat_mutex_unlock(m);
+    if (!ok) native_fail(p, "E_IO", "os.trap: %s cannot be trapped here", name);
+}
+
 /* Child processes. */
 typedef struct {
     int64_t pid;
@@ -1364,6 +1465,10 @@ static const NativeDef OS_NATIVES[] = {
     N("os.environ", 0, T(0), 1, T(T_R), os_environ, F, "The whole environment, as a map of strings."),
     N("os.exit", 1, T(T_I64), 0, T(0), os_exit, F,
       "End the whole program now, from any process, with this exit code."),
+    N("os.trap", 2, T(T_R, T_I64), 0, T(0), os_trap, F,
+      "Trap a signal, \"SIGINT\", \"SIGTERM\" or \"SIGHUP\": when it comes, process pid gets a Signal{name} message "
+      "instead of the program ending, once (then trap it again). pid 0 lets it end the program again, and so does "
+      "the end of pid. E_PERMISSION in a restricted process."),
     N("os.platform", 0, T(0), 1, T(T_R), os_platform, F, "\"macos\", \"linux\", \"freebsd\", ... or \"windows\"."),
     N("os.spawn", 2, T(T_R, T_I64), 4, T(T_R, T_R, T_R, T_R), os_spawn, F,
       "Start a command (a list: the program, found on PATH, then its arguments). Pipes: 1 stdin, 2 stdout, "
