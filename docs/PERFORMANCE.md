@@ -192,6 +192,22 @@ requests, 40 handlers were made to fail (20 `GET /crash`, 20 `GET /hog`, which
 exhausts its heap quota): every other request was still answered, at 173,000
 requests per second.
 
+### Vector maths
+
+The inner product of two `f64` arrays of 1,536 elements (an embedding's
+size), as a loop of instructions with `--jit all` and as `vec.dot`, in
+nanoseconds per element; and a scan of 10,000 such rows of an `f32` matrix
+by `vec.cosine_rows`:
+
+| | M5 (Clang) | i7 (GCC) | Ryzen (Clang) |
+|---|---|---|---|
+| A loop, with the JIT | 1.15 | 1.77 | 1.52 |
+| `vec.dot` | 0.09 | 0.31 | 0.17 |
+| `vec.cosine_rows`, 10,000 × 1,536 | 2 ms | 8 ms | 6 ms |
+
+The natives keep 8 partial sums, which the compilers put in vector registers:
+NEON's on the M5, and SSE2's on x86-64, whose baseline has no wider ones.
+
 ### Between nodes
 
 `bench/nodes/run.sh` runs two VMs on one machine, connected over TCP on the

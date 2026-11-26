@@ -288,6 +288,27 @@ wrappers in `lib/std/*.masm` instead of directly.
 | `monitor.log` | i64, r | - | A line for the monitor's log (GET /api/log), at a level: 0 debug, 1 info, 2 warn, 3 error. Up to 4 KiB is kept, of the last 1,000 entries. Without a monitor, nothing is kept. |
 | `monitor.event` | r, r | - | A named event for the monitor's log, with a value kept as JSON (E_JSON if it has no JSON form). Without a monitor, nothing is kept. |
 
+## Vector maths (`vec.*`)
+
+> Generated from `src/native/vec.c`. See [STDLIB.md](STDLIB.md#vector-maths).
+
+| Name | Parameters | Results | Description |
+|---|---|---|---|
+| `vec.dot` | r, r | f64 | The inner product of two f32 or f64 arrays of one type and length. |
+| `vec.norm` | r | f64 | The Euclidean (L2) norm of an f32 or f64 array. |
+| `vec.cosine` | r, r | f64 | The cosine of the angle between two arrays: a . b / (|a| |b|), or 0 if either is all zeros. |
+| `vec.l2` | r, r | f64 | The Euclidean distance between two arrays. |
+| `vec.normalize` | r | r | A new array of the same type, scaled to a norm of 1 (all zeros stay zeros). |
+| `vec.add` | r, r | r | A new array of the same type: a + b, element by element. |
+| `vec.scale` | r, f64 | r | A new array of the same type: each element times s. |
+| `vec.normalize_into` | r, r | - | normalize(a) into dst, an array of a's type and length (which may be a). |
+| `vec.add_into` | r, r, r | - | a + b into dst (which may be a or b). |
+| `vec.scale_into` | r, r, f64 | - | a times s into dst (which may be a). |
+| `vec.dot_rows` | r, i64, r, r, r | - | (matrix, dim, query, rows, out): the inner product of the query with each row of a matrix kept as one array of rows of dim elements, into out (a float array): every row if rows is null, else those an i64 array names, in its order. |
+| `vec.cosine_rows` | r, i64, r, r, r | - | As dot_rows, the cosine with each row. |
+| `vec.l2_rows` | r, i64, r, r, r | - | As dot_rows, the Euclidean distance to each row. |
+| `vec.top_k` | r, i64, r, i64, r, r | r, r | (matrix, dim, query, k, metric, rows) -> (indices, scores): the k rows closest to the query, best first, by "dot" or "cosine" (highest) or "l2" (lowest), among all rows or those rows names; an i64 array of their indices and an f64 array of their scores. Equal scores: the lower row first. |
+
 ## Loading modules at run time (`module.*`)
 
 > Generated from `src/native/modload.c`. See [ABI.md](ABI.md#9-loading-modules-at-run-time).

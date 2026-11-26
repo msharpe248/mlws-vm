@@ -1064,6 +1064,8 @@ bool text_utf8_valid(const char *s, size_t n);
 bool text_json_parse(Process *heap, const char *s, size_t n, Word *v, uint8_t *tag, char *err, size_t errlen);
 void natives_register_util(VM *vm);
 const NativeDef *natives_util_table(size_t *n);
+void natives_register_vec(VM *vm);
+const NativeDef *natives_vec_table(size_t *n);
 const NativeDef *natives_text_table(size_t *n);
 /* sched.c: os.exit: end the whole program now with this exit code. */
 void sched_request_exit(VM *vm, int64_t code);

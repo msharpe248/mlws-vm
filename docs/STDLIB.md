@@ -26,6 +26,7 @@ restricts them.
 | `hex`, `base64`, `url`, `csv` | encodings |
 | `list`, `map` | sorting and searching, set operations |
 | `math` | floating-point and integer maths |
+| `vec` | vector maths on float arrays: products, norms, distances, and the best rows of a matrix |
 
 ## How I/O waits
 
@@ -517,6 +518,47 @@ after that, so a finalizer can still look the object up in a weak-keyed map.
 raises `E_OVERFLOW` when the result does not fit in an `i64`. `std.math`
 (`lib/std/math.masm`) has more, written in assembly: `ipow`, `isqrt`,
 `fact` and `clamp`.
+
+## Vector maths
+
+```asm
+    ncall "vec.cosine" (a, b) -> (F0)                         ; a . b / (|a| |b|)
+    ncall "vec.top_k" (m, 1536, q, 10, "cosine", null) -> (R0, R1)  ; the 10 best rows
+```
+
+The `vec.*` natives do arithmetic on `f32` and `f64` arrays several elements
+at a time, as a loop of instructions cannot: for embeddings, numerics,
+signals. Two arrays given together must be of one type (`E_TYPE`) and one
+length (`E_RANGE`).
+
+* **One or two vectors:** `vec.dot`, `vec.norm` (Euclidean), `vec.cosine` (0
+  if either is all zeros) and `vec.l2` (the distance) give an `f64`.
+  `vec.normalize`, `vec.add` and `vec.scale(a, s)` give a new array of the same
+  type; `vec.normalize_into(dst, a)`, `vec.add_into(dst, a, b)` and
+  `vec.scale_into(dst, a, s)` write into one there is already (which may be
+  `a` or `b`), so a loop need make none.
+* **The rows of a matrix:** a matrix is one array of rows of `dim` elements,
+  so 10,000 vectors are one object, scanned in one call.
+  `vec.dot_rows(m, dim, q, rows, out)`, `vec.cosine_rows` and `vec.l2_rows`
+  write the query's score with each row into `out`, a float array. `rows` is
+  null for every row, or an `i64` array naming the rows to score, in its
+  order: those a filter on their metadata has left, say.
+* **The best k:** `vec.top_k(m, dim, q, k, metric, rows)` gives the k rows
+  closest to the query, best first: an `i64` array of their indices and an
+  `f64` array of their scores. The metric is `"dot"` or `"cosine"` (the
+  highest first) or `"l2"` (the lowest); between equal scores the lower row
+  comes first. Fewer than k rows: all of them.
+* **Results.** Each element of an array is a `double` (an `f32` one rounded),
+  and the sums are taken in `double`. They keep several partial sums at once
+  and add them in a fixed order, and no multiply and add are fused, so a
+  result is the same on every platform and in every mode; it may differ in its
+  last bits from a sum taken one element after another. A result stored in an
+  `f32` array is rounded, as `mov` rounds.
+* **Quotas.** The work counts towards the instruction quota, one instruction
+  for every 8 elements, since a native cannot be preempted. A call that would
+  pass it raises `E_QUOTA`, as a regex match does, and the process stops at
+  its next time slice. They are pure arithmetic, so they work in a sandbox
+  (`cap.restrict`, `quota 5, 0`) and are not foreign code (quota 4).
 
 ## The monitor's log
 
