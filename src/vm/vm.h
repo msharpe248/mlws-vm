@@ -255,6 +255,7 @@ typedef void (*PollHook)(struct VM *vm, uint64_t wait_ns);
 /* Per-process resource limits (the `quota` instruction kinds). */
 enum {
     QUOTA_HEAP = 0, QUOTA_RAW = 1, QUOTA_MAILBOX = 2, QUOTA_INSNS = 3, QUOTA_FOREIGN = 4, QUOTA_OS = 5,
+    QUOTA_WALL = 6, /* a process's: the monotonic time (ns) it is stopped at; the VM's and a program's: ms from its start */
     QUOTA__COUNT
 };
 
@@ -666,6 +667,7 @@ struct Process {
     bool raising;                /* building an Error: exempt from the heap quota */
     bool sandboxed;              /* a debugger's formatter: may not reach other processes (proc_reach) */
     bool killed;                 /* [L] a kill with E_KILLED was asked for: an end with it is not reported */
+    bool wall_stopped;           /* [L] stopped by its wall-clock deadline (quota 6): not reported either */
     char kill_code[32];          /* [L] why kill_req was set */
     char kill_msg[256];
     PidVec links;                /* [L] */
@@ -687,6 +689,7 @@ struct Process {
     bool busy_sleep;             /* [L] sleeping for it (SLICE_BUSY) */
     struct Process *pending_spawn; /* child being set up by spawn (freed if that traps) */
     uint64_t quota[QUOTA__COUNT]; /* the mailbox quota is [L] */
+    uint32_t dl_slot;             /* its place in the scheduler's deadlines + 1, or 0 (under its dl_lock) */
     /* native calls (extapi.c) */
     const NativeDef *cur_native; /* the foreign native being called */
     bool in_foreign;             /* inside foreign code: allocation never traps */
@@ -975,6 +978,7 @@ void sched_node_down(VM *vm, uint32_t node);
 void sched_node_event(VM *vm, uint32_t node, bool up); /* a NodeEvent to each watcher */
 void sched_module_event(VM *vm, const char *name);     /* a Reloaded to each watcher of the module */
 void sched_set_quota(Process *p, int kind, uint64_t limit);
+void proc_take_quotas(Process *p, const uint64_t q[QUOTA__COUNT]);
 bool sched_alive(VM *vm, uint64_t pid);
 /* The monitor's log channel (vm.c): keep the last cap entries from now on; add
  * one (text of n bytes, cut to MLOG_TEXT_MAX at a character's start). */

@@ -1,0 +1,26 @@
+; --quota wall=MS gives the program a wall-clock deadline (quota 6): main,
+; and every process it spawns, is stopped MS milliseconds after main starts.
+; Here main waits for a message that never comes, and the program ends with
+; E_QUOTA.
+; option: --quota wall=200
+; expect-error: E_QUOTA
+.include "std/test.inc"
+
+.func child(i64 main)
+    ncall "proc.deadline_ms" () -> (I1)
+    send main, I1
+    sleep 60000
+    ret
+.endf
+
+.func main
+    ncall "proc.deadline_ms" () -> (I0)
+    ASSERT_GT I0, 0
+    ASSERT_LE I0, 200
+    spawn child (PID)
+    recv I1                            ; the child's: the same deadline
+    ASSERT_LE I1, I0
+    ASSERT_GE I1, 0
+    recv I2                            ; nothing more comes
+    ret 0
+.endf

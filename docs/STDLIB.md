@@ -597,6 +597,13 @@ answer to a later call. A call to a process that does not exist raises
 `E_DEADLOCK`, as `recv` does, and so does a process calling itself. Requests and replies are references (wrap
 numbers in a list or struct), deep-copied like any message.
 
+`proc.deadline_ms()` gives the milliseconds left before the process's
+wall-clock deadline (quota 6, [ABI.md §1.4](ABI.md#14-quotas)): 0 if it has
+passed, -1 if it has none. A process with a deadline passes it on as the
+timeout of what it waits for, `proc.call`'s, a socket's (`fs.set_timeout`) or
+an HTTP request's, so that each gives up in time, with an error it can
+handle, before the deadline stops it.
+
 `proc.alive(pid, timeout_ms)` says whether a process runs, as the `alive`
 instruction does, for a pid of this VM or of another node, which it asks,
 waiting for the answer in the reply slot, as `proc.call` does (`E_TIMEOUT`

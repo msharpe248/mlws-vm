@@ -225,11 +225,14 @@ static void proc_json(StrBuf *b, const Monitor *mon, VM *vm, Process *p, bool de
     far_pids_json(b, "far_monitors", &p->rmonitors);
     far_pids_json(b, "far_watching", &p->rwatch);
     if (detail) {
-        static const char *const qn[] = {"heap", "raw", "mailbox", "insns", "foreign", "os"};
+        static const char *const qn[] = {"heap", "raw", "mailbox", "insns", "foreign", "os", "wall"};
         sb_puts(b, ",\"quota\":{");
         for (int q = 0; q < QUOTA__COUNT; q++) {
             sb_printf(b, "%s\"%s\":", q ? "," : "", qn[q]);
+            uint64_t now = q == QUOTA_WALL ? plat_now_ns() : 0;
             if (p->quota[q] == UINT64_MAX) sb_puts(b, "null");
+            else if (q == QUOTA_WALL) /* the milliseconds left */
+                sb_printf(b, "%llu", (unsigned long long)(p->quota[q] > now ? (p->quota[q] - now) / 1000000 : 0));
             else sb_printf(b, "%llu", (unsigned long long)p->quota[q]);
         }
         /* The first messages waiting: taken into its heap, then delivered. */

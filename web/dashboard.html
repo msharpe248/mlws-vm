@@ -460,7 +460,7 @@ async function loadDetail() {
       ["Links", [...p.links, ...p.far_links.map(farName)].join(", ") || "none"],
       ["Monitored by", [...p.monitors, ...p.far_monitors.map(farName)].join(", ") || "none"],
       ["Watches elsewhere", p.far_watching.map(farName).join(", ") || "none"],
-      ["Quotas", `heap ${q(p.quota.heap, bytes)} · raw ${q(p.quota.raw, bytes)} · mailbox ${q(p.quota.mailbox, String)} · insns ${q(p.quota.insns, human)} · foreign calls ${q(p.quota.foreign, human)} · OS calls ${q(p.quota.os, human)}`],
+      ["Quotas", `heap ${q(p.quota.heap, bytes)} · raw ${q(p.quota.raw, bytes)} · mailbox ${q(p.quota.mailbox, String)} · insns ${q(p.quota.insns, human)} · foreign calls ${q(p.quota.foreign, human)} · OS calls ${q(p.quota.os, human)}${p.quota.wall != null ? ` · wall clock ${human(p.quota.wall)} ms left` : ""}`],
     ];
     $("detail-stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
     $("detail-bt").textContent = p.backtrace.join("\n") || "(no frames)";

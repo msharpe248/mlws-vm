@@ -98,9 +98,9 @@ static bool parse_cap(VM *vm, const char *value, MlwsError *err) {
     return true;
 }
 
-/* heap=64M,raw=1G,mailbox=1000,insns=5000000 (any subset; "unlimited" resets one). */
+/* heap=64M,raw=1G,mailbox=1000,insns=5000000,wall=30000 (any subset; "unlimited" resets one; wall in ms). */
 bool vm_parse_quota(VM *vm, const char *value, uint64_t q[QUOTA__COUNT], MlwsError *err) {
-    static const char *const KINDS[QUOTA__COUNT] = {"heap", "raw", "mailbox", "insns", "foreign", "os"};
+    static const char *const KINDS[QUOTA__COUNT] = {"heap", "raw", "mailbox", "insns", "foreign", "os", "wall"};
     memcpy(q, vm->default_quota, QUOTA__COUNT * sizeof *q);
     const char *s = value;
     while (*s) {
@@ -113,7 +113,7 @@ bool vm_parse_quota(VM *vm, const char *value, uint64_t q[QUOTA__COUNT], MlwsErr
                 if ((size_t)(eq - s) == strlen(KINDS[k]) && !strncmp(s, KINDS[k], (size_t)(eq - s))) kind = k;
         if (kind < 0)
             return mlws_err(err, "E_BAD_OPTION",
-                            "--quota: expected heap=, raw=, mailbox=, insns=, foreign= or os= (comma-separated), got '%.*s'",
+                            "--quota: expected heap=, raw=, mailbox=, insns=, foreign=, os= or wall= (comma-separated), got '%.*s'",
                             (int)len, s),
                    false;
         const char *v = eq + 1;
