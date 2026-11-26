@@ -101,6 +101,17 @@
     ret
 .endf
 
+; A Down of the parent or its child: E_QUOTA, or for the child E_NOPROC if
+; the deadline had stopped it already when it was monitored (on a slow enough
+; machine); either way, after the deadline (on_time).
+.func stopped(ref down)
+    strcmp I1, down->Down.code, "E_QUOTA"
+    bz I1, 1f
+    strcmp I1, down->Down.code, "E_NOPROC"
+    ASSERT_EQ I1, 0
+1:  ret
+.endf
+
 ; What deadline_ms says without a deadline, and with one.
 .func asks(i64 main)
     ncall "proc.deadline_ms" () -> (I1)
@@ -147,10 +158,8 @@
     monitor I4
     recv R0                            ; the two Downs, in either order
     recv R1
-    strcmp I5, R0->Down.code, "E_QUOTA"
-    ASSERT_EQ I5, 0
-    strcmp I5, R1->Down.code, "E_QUOTA"
-    ASSERT_EQ I5, 0
+    call stopped (R0)
+    call stopped (R1)
     ncall "time.monotonic" () -> (I6)
     sub I6, I6, I10
     div I6, I6, 1000000
