@@ -1,15 +1,16 @@
-; A trap is for one signal (check_tools.sh): the first SIGHUP comes as a
-; message, and the second ends the program, as SIGHUP does untrapped.
+; A trap is for one signal (check_tools.sh): the first SIGTERM comes as a
+; message, and the second ends the program, as SIGTERM does untrapped. (Not
+; SIGHUP: under nohup it was ignored before, and so it is again after.)
 .include "std/io.inc"
 
 .func main
-    ncall "os.trap" ("SIGHUP", PID)
+    ncall "os.trap" ("SIGTERM", PID)
     PRINTLN_S "ready"
     ncall "io.flush" ()
     recv R0
     strcat R1, "first: ", R0->Signal.name
     PRINTLN_S R1
     ncall "io.flush" ()
-    sleep 60000                        ; (the second SIGHUP ends it first)
+    sleep 60000                        ; (the second SIGTERM ends it first)
     ret 0
 .endf

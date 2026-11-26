@@ -2546,6 +2546,7 @@ void sched_free(VM *vm) {
     free(s->host_frag);
     plat_lock_free(s->host_lock);
     VEC_FREE(s->timers);
+    VEC_FREE(s->deadlines);
     free(s);
     vm->sched = NULL;
 }
