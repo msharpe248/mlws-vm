@@ -347,7 +347,7 @@ src/tools/      test runner, doc generator, debugger, the DAP server, bundle, pr
 src/platform/   the only OS-specific code (POSIX and Windows)
 include/mlwsvm/ public C headers: the extension API (mlwsvm.h) and the embedding API (embed.h)
 web/            the monitor's dashboard and its debugger's page (compiled into the binary)
-editors/        a VS Code extension that declares `mlwsvm dap`
+editors/        a VS Code extension (highlighting, and `mlwsvm dap`) and a Vim plugin (highlighting, indentation)
 build-tools/    build helpers: the monitor's pages compiled into C, the Unicode tables generated from the UCD
 extensions/     an example native extension (also a test fixture)
 lib/std/        standard library and macro files, written in MLWSVM assembly (std.node: distribution)

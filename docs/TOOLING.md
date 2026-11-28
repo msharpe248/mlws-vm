@@ -411,6 +411,30 @@ vimspector#Launch()` (F5 with its mappings) in a `.masm` file:
 }
 ```
 
+`editors/vim/` does for Vim what the extension does for VS Code. It provides:
+- filetype detection;
+- highlighting of the same elements as the grammar (and results written
+  without parentheses, `-> i64`);
+- `;` comments;
+- indentation in the repository's layout (four spaces; `let
+  g:mlwsvm_recommended_style = 0` keeps your own settings);
+- `%` between a block's directives, with matchit;
+- folding of `.func`, `.struct`, `.macro`, `.try`, `.if` and `.rept` blocks,
+  off until `:setlocal foldmethod=expr` (`let g:mlwsvm_folding = 1` for
+  every file).
+
+It takes `.masm` from Vim's own `masm` filetype, Microsoft's assembler. An
+`.inc` file is MLWSVM assembly when `.masm` files sit in its directory or the
+one above it. Install it as a package:
+
+```
+ln -s /path/to/mlws-vm/editors/vim ~/.vim/pack/mlwsvm/start/mlwsvm
+```
+
+For Neovim, link it into `~/.local/share/nvim/site/pack/mlwsvm/start/mlwsvm`.
+Alternatively, put `set runtimepath+=/path/to/mlws-vm/editors/vim` in
+`.vimrc` before `filetype plugin indent on`.
+
 ## Monitor: `--monitor`
 
 ```

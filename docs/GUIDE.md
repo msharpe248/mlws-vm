@@ -274,7 +274,8 @@ arguments. `std/test.inc` has `ASSERT_EQ` and its kind for checks inside.
   and its **Debug** starts one paused before its first instruction.
 * **`mlwsvm debug prog.masm`** is a debugger in the terminal, and **`mlwsvm
   dap`** one for editors: `editors/vscode` gives VS Code highlighting and
-  debugging of `.masm` files.
+  debugging of `.masm` files, and `editors/vim` gives Vim highlighting and
+  indentation.
 
 [TOOLING.md](TOOLING.md) describes each.
 
