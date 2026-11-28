@@ -45,7 +45,9 @@ base:
   arguments and results: `call f (a, b) -> (q, r)`. Tail calls are supported.
 * **An assembler that is easy to hand-write and easy to target**: labels, numeric local
   labels, constants and expressions, macros with defaults, varargs and unique labels,
-  `.rept`/`.irp`, conditional assembly, includes, and register aliases.
+  `.rept`/`.irp`, conditional assembly, includes, and register aliases. `null`
+  and `true`/`false` keep their types where a value is stored with its own, and
+  `mlwsvm asm -W` warns of a parameter's register overwritten before it is read.
 * **A loader with libraries**: `.import std.math as math`, a library search path,
   `.masm` or binary `.mlwso`, cycle detection, and a load-time verifier.
   A program ships as one executable (`mlwsvm bundle`).
@@ -359,7 +361,7 @@ assembler, disassembler, verifier and `docs/ISA.md` are all derived from it.
 
 ## Status
 
-The current release is 0.30.0 (`mlwsvm version`); releases are tagged `vX.Y.Z`
+The current release is 0.30.1 (`mlwsvm version`); releases are tagged `vX.Y.Z`
 on GitHub. Everything described in `docs/` is implemented and tested on macOS, Linux and
 Windows ([Platforms](#platforms) has the details).
 [docs/ROADMAP.md](docs/ROADMAP.md) lists the milestones and what remains.
