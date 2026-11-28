@@ -19,5 +19,7 @@ Module *assemble_text(const char *name, const char *text, const char *default_na
                       size_t nlib, MlwsError *err);
 /* Run only the preprocessor and write the expanded source (for `mlwsvm asm -E`). */
 bool preprocess_file(const char *path, const char *const *libpaths, size_t nlib, StrBuf *out, MlwsError *err);
+/* Report likely mistakes on stderr as warnings (for `mlwsvm asm -W`; off by default). */
+void asm_set_warnings(bool on);
 
 #endif

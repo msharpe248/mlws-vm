@@ -360,7 +360,9 @@ so hostile input cannot exhaust the stack.
 typed arrays, structs (as objects of their fields), strings, numbers,
 BigInts and decimals (exactly), booleans and null. `indent` 0 gives compact
 output, and n > 0 indents by n spaces per level. NaN, infinity, non-UTF-8 text
-and cycles are refused with `E_JSON`.
+and cycles are refused with `E_JSON`. A boolean is a value of type `b`, as
+`mset m, "stream", true` and `lpush l, false` store
+([ASSEMBLY.md §4.1](ASSEMBLY.md#41-type-inference)); the integer 1 is written `1`.
 
 ## Time and dates
 

@@ -152,10 +152,10 @@ gr:     .i64 0
 
 ; mget of a constant key: present, and missing with a default.
 .func lookup(ref m, ref want) -> (i64, i64)
-    mget.r R1, m, "k"
-    seq.r I1, R1, want
-    mget.r R2, m, "nothing", null
-    seq.r I2, R2, null
+    mget.r R2, m, "k"
+    seq.r I1, R2, want
+    mget.r R3, m, "nothing", null
+    seq.r I2, R3, null
     ret I1, I2
 .endf
 

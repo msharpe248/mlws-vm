@@ -23,6 +23,9 @@ typedef struct AsmOp {
     char *sym;           /* unresolved label / function / global name */
     bool localref;       /* numeric local label reference (1b / 1f) */
     uint8_t ckind;       /* OM_CONST: CONST_STRING / CONST_BIG / CONST_DEC */
+    uint8_t ltype;       /* OM_IMM written as null (T_R) or a bare true or false (T_B) */
+    bool by_name;        /* its register (the base, for memory) was named by an alias */
+    bool iby_name;       /* OM_ELEM: its index register was named by an alias */
     int64_t lnum;
     char ldir;
     struct AsmOp *inner; /* OM_MIND* */
@@ -69,6 +72,8 @@ typedef struct AsmFunc {
     int regs_min[NBANKS];
     int local_min[NBANKS]; /* what .local names: the window holds it, used or not */
     int nparam_bank[NBANKS];
+    char *param_names[MAX_PARAMS]; /* each parameter's name, or NULL (for mlwsvm asm -W) */
+    int param_regs[MAX_PARAMS];
     VEC(AsmHandler) handlers;
     VEC(MVar) vars; /* end UINT32_MAX: still open */
 } AsmFunc;
@@ -148,6 +153,27 @@ static bool aerr(Asm *A, const PLine *pl, int col, const char *code, const char 
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
     return pp_line_error(A->err, pl, col, code, "%s", buf);
+}
+
+/* Warnings, for `mlwsvm asm -W` only: off, they cost nothing. */
+static bool g_asm_warn;
+void asm_set_warnings(bool on) { g_asm_warn = on; }
+
+static void awarn(const PLine *pl, int col, const char *code, const char *fmt, ...) MLWS_PRINTF(4, 5);
+static void awarn(const PLine *pl, int col, const char *code, const char *fmt, ...) {
+    if (!g_asm_warn) return;
+    char msg[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    StrBuf b = {0};
+    sb_printf(&b, "warning[%s]: %s:%d", code, pl->loc.file, pl->loc.line);
+    if (col > 0) sb_printf(&b, ":%d", col);
+    sb_printf(&b, ": %s", msg);
+    if (pl->macro) sb_printf(&b, " (in macro '%s' expanded at %s:%d)", pl->macro, pl->origin.file, pl->origin.line);
+    fprintf(stderr, "%s\n", b.s);
+    sb_free(&b);
 }
 
 static bool expect_eol(Asm *A, Cur *c) {
@@ -486,6 +512,7 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
         return true;
     }
     int r = resolve_reg(A, t);
+    bool by_name = r >= 0 && parse_reg_name(t->start, (size_t)t->len) < 0;
     /* R2->Type.field is a field; `calli R2 -> (I0)` is a call result list. */
     bool field = tok_is(peekn(c, 1), "->") && peekn(c, 2)->kind == TK_IDENT &&
                  memchr(peekn(c, 2)->start, '.', (size_t)peekn(c, 2)->len);
@@ -499,6 +526,7 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
                 return aerr(A, c->pl, ft->col, "E_ASM_SYNTAX", "expected Type.field after '->'");
             op_init_mode(out, OM_FIELD, col);
             out->o.reg = (uint8_t)r;
+            out->by_name = by_name;
             out->sym = tokdup(ft);
             c->pos++;
             return true;
@@ -508,9 +536,11 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
         if (ir >= 0) {
             if (REG_BANK(ir) != BANK_I)
                 return aerr(A, c->pl, cur(c)->col, "E_ASM_BAD_OPERAND", "an element index must be an I register");
+            bool iby = parse_reg_name(cur(c)->start, (size_t)cur(c)->len) < 0;
             c->pos++;
             op_init_mode(out, OM_ELEM, col);
             out->o.ireg = (uint8_t)ir;
+            out->iby_name = iby;
             /* "+ d" / "- d": a constant number of elements past the index (as
              * in parse_index, the expression parser takes the sign as unary) */
             if (tok_is(cur(c), "+") || tok_is(cur(c), "-")) {
@@ -527,6 +557,7 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
             out->o.index = (uint64_t)idx;
         }
         out->o.reg = (uint8_t)r;
+        out->by_name = by_name;
         if (!tok_is(cur(c), "]"))
             return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX",
                         "expected ']' (an element index is an I register, with an optional + or - constant, or a constant)");
@@ -547,12 +578,14 @@ static bool parse_location(Asm *A, Cur *c, AsmOp *out, bool *handled) {
             out->o.ireg = ireg;
             out->o.scale = scale;
             out->o.imm = disp;
+            out->by_name = by_name;
             return true;
         }
         if (tok_is(cur(c), "->") && peekn(c, 1)->kind == TK_IDENT && memchr(peekn(c, 1)->start, '.', (size_t)peekn(c, 1)->len))
             return aerr(A, c->pl, cur(c)->col, "E_ASM_BAD_OPERAND", "field access needs an R register: R0->Type.field");
         op_init_mode(out, OM_REG, col);
         out->o.reg = (uint8_t)r;
+        out->by_name = by_name;
         return true;
     }
     *handled = false;
@@ -617,6 +650,7 @@ static bool parse_operand(Asm *A, Cur *c, char pat, AsmOp *out) {
     }
     if (tok_ident(t, "null")) {
         op_init_mode(out, OM_IMM, col);
+        out->ltype = T_R;
         c->pos++;
         return true;
     }
@@ -641,6 +675,9 @@ static bool parse_operand(Asm *A, Cur *c, char pat, AsmOp *out) {
                     t->len, t->start);
     }
     if (!expr_can_start(t)) return aerr(A, c->pl, col, "E_ASM_SYNTAX", "expected an operand");
+    Token *after = peekn(c, 1);
+    bool bare_bool = (tok_ident(t, "true") || tok_ident(t, "false")) &&
+                     (after->kind == TK_EOF || tok_is(after, ",") || tok_is(after, ")"));
     ExprVal v;
     if (!eval_expr(A, c, &v)) return false;
     if (v.is_float) {
@@ -649,6 +686,7 @@ static bool parse_operand(Asm *A, Cur *c, char pat, AsmOp *out) {
     } else {
         op_init_mode(out, OM_IMM, col);
         out->o.imm = v.i;
+        if (bare_bool) out->ltype = T_B;
     }
     return true;
 }
@@ -821,9 +859,10 @@ static bool dir_func(Asm *A, Cur *c) {
                 }
                 smap_put(&f->aliases, pn, IV((size_t)reg));
                 var_from_here1(f, pn, reg);
-                free(pn);
+                f->param_names[f->mf.nparams] = pn;
                 c->pos++;
             }
+            f->param_regs[f->mf.nparams] = reg;
             f->mf.params[f->mf.nparams++] = (uint8_t)t;
             if (tok_is(cur(c), ",")) c->pos++;
             else if (!tok_is(cur(c), ")")) return aerr(A, c->pl, cur(c)->col, "E_ASM_SYNTAX", "expected ',' or ')'");
@@ -979,6 +1018,93 @@ static bool dir_debug_format(Asm *A, Cur *c) {
     return expect_eol(A, c);
 }
 
+/* Is operand k of ai a register the instruction writes? */
+static bool writes_reg(const AsmInsn *ai, int k) {
+    const OpInfo *oi = &op_info[ai->op];
+    if (ai->ops[k].o.mode != OM_REG) return false;
+    if (oi->flags & OPF_CALL) return k >= 2 + (int)ai->ops[1].o.imm; /* its results */
+    char p = op_pattern_at(oi, k);
+    return p && strchr("DWBEXJH", p);
+}
+
+/* Does operand k of ai use register reg by an alias's name? */
+static bool uses_by_name(const AsmOp *o, int reg) {
+    switch (o->o.mode) {
+    case OM_REG: case OM_FIELD: case OM_ELEMI: case OM_DISP: case OM_DISPB: case OM_IDX: case OM_IDXB:
+        return o->by_name && o->o.reg == reg;
+    case OM_ELEM: return (o->by_name && o->o.reg == reg) || (o->iby_name && o->o.ireg == reg);
+    default: return false;
+    }
+}
+
+/* How instruction j uses reg by an alias's name: 1 reads it, 2 only writes it. */
+static int use_by_name(const AsmInsn *bj, int reg) {
+    bool read = false, written = false;
+    for (int k = 0; k < bj->nops; k++) {
+        if (!uses_by_name(&bj->ops[k], reg)) continue;
+        /* a destination is also read in the two-operand form: add n, 1 */
+        bool both = op_pattern_at(&op_info[bj->op], k) == 'D' && bj->nops == 2 && bj->op != OP_MOV &&
+                    !(op_info[bj->op].flags & OPF_CALL);
+        if (writes_reg(bj, k) && !both) written = true;
+        else read = true;
+    }
+    return read ? 1 : written ? 2 : 0;
+}
+
+/* -W: a parameter's register written by its register's name, where control
+ * can then reach a read of the parameter by its own name with no write of it
+ * by name between: (ref a, i64 b) puts b in I0. */
+static void lint_params(AsmFunc *f) {
+    size_t n = f->insns.n;
+    uint8_t *seen = xcalloc(n ? n : 1, 1);
+    size_t *work = xmalloc((n ? n : 1) * sizeof *work);
+    for (uint32_t pi = 0; pi < f->mf.nparams; pi++) {
+        const char *pname = f->param_names[pi];
+        int reg = f->param_regs[pi];
+        if (!pname) continue;
+        for (size_t i = 0; i < n; i++) {
+            const AsmInsn *ai = &f->insns.v[i];
+            int wk = -1;
+            for (int k = 0; k < ai->nops && wk < 0; k++)
+                if (writes_reg(ai, k) && !ai->ops[k].by_name && ai->ops[k].o.reg == reg) wk = k;
+            if (wk < 0) continue;
+            if (ai->op == OP_MOV && ai->ops[1].o.mode == OM_REG && ai->ops[1].o.reg == reg) continue; /* mov I0, I0 */
+            memset(seen, 0, n);
+            size_t nw = 0;
+            const AsmInsn *rd = NULL;
+            for (size_t from = i;; from = work[--nw]) {
+                const AsmInsn *bf = &f->insns.v[from];
+                size_t next[MAX_OPERANDS + 8];
+                int nn = 0;
+                if (!(op_info[bf->op].flags & OPF_TERM) && from + 1 < n) next[nn++] = from + 1;
+                for (int k = 0; k < bf->nops; k++)
+                    if (bf->ops[k].o.mode == OM_LABEL && nn < MAX_OPERANDS + 4) next[nn++] = (size_t)bf->ops[k].o.index;
+                for (uint32_t h = 0; h < f->mf.nhandlers && nn < MAX_OPERANDS + 8; h++)
+                    if (from >= f->mf.handlers[h].start && from < f->mf.handlers[h].end) next[nn++] = f->mf.handlers[h].target;
+                for (int x = 0; x < nn && !rd; x++) {
+                    size_t j = next[x];
+                    if (j >= n || seen[j]) continue;
+                    seen[j] = 1;
+                    int u = use_by_name(&f->insns.v[j], reg);
+                    if (u == 1) rd = &f->insns.v[j];
+                    else if (u == 0) work[nw++] = j; /* u == 2: set again by name, this way is fine */
+                }
+                if (rd || !nw) break;
+            }
+            if (rd) {
+                char rn[8];
+                snprintf(rn, sizeof rn, "%c%d", "IFRPS"[REG_BANK(reg)], REG_IDX(reg));
+                awarn(ai->pl, ai->ops[wk].col, "W_PARAM_REG",
+                      "this writes %s, which holds parameter '%s', and line %d can then read '%s'", rn, pname,
+                      rd->pl->macro ? rd->pl->origin.line : rd->pl->loc.line, pname);
+                break; /* once for each parameter */
+            }
+        }
+    }
+    free(seen);
+    free(work);
+}
+
 static bool dir_endf(Asm *A, Cur *c) {
     AsmFunc *f = A->cur;
     if (!f) return aerr(A, c->pl, c->t[0].col, "E_ASM_SYNTAX", ".endf without .func");
@@ -1036,6 +1162,10 @@ static bool dir_endf(Asm *A, Cur *c) {
         }
         if (idx[0] > idx[1]) return aerr(A, h->pl, 0, "E_ASM_SYNTAX", ".try region ends before it starts");
         if (idx[2] >= f->insns.n) return aerr(A, h->pl, 0, "E_ASM_SYNTAX", ".try handler is at the end of %s", f->name);
+        if (f->insns.v[idx[2]].op != OP_CATCH)
+            awarn(f->insns.v[idx[2]].pl, 0, "W_NO_CATCH",
+                  "the handler of the .try at line %d does not start with catch, so the exception is dropped",
+                  h->pl->loc.line);
         h->start = idx[0];
         h->end = idx[1];
         MHandler mh = {idx[0], idx[1], idx[2]};
@@ -1069,6 +1199,7 @@ static bool dir_endf(Asm *A, Cur *c) {
         f->vars.v[k++] = v;
     }
     f->vars.n = k;
+    if (g_asm_warn) lint_params(f);
     A->cur = NULL;
     return true;
 }
@@ -2015,6 +2146,140 @@ static bool parse_call(Asm *A, Cur *c, AsmInsn *ai, AsmOpVec *ops) {
     return expect_eol(A, c);
 }
 
+/* ---- null and the booleans where an operand takes its own type ----------- */
+
+/* An immediate carries no type in the encoding, so an untyped instruction
+ * reads one as i64. Where an operand takes its own type, the assembler gives
+ * null the type r and a bare true or false the type b with the instruction's
+ * suffix, and splits a push or lpush whose values differ into runs. */
+static MlwsType lit_type(const AsmOp *o) { return o->o.mode == OM_IMM ? (MlwsType)o->ltype : T_NONE; }
+
+/* The type an untyped instruction reads an operand as, if known before it runs. */
+static MlwsType known_natural(const AsmOp *o) {
+    MlwsType l = lit_type(o);
+    if (l) return l;
+    switch (o->o.mode) {
+    case OM_REG: return reg_natural_type(o->o.reg);
+    case OM_IMM: return T_I64;
+    case OM_FIMM: return T_F64;
+    case OM_CONST: return T_R;
+    default: return T_NONE; /* memory: the tag it holds when it runs */
+    }
+}
+
+/* A word that keeps a tag: on the stack, in globals, an element or a capture.
+ * Not memory through a P register, which may be raw (no references there),
+ * nor bytes. */
+static bool tagged_word(const AsmOp *o) {
+    switch (o->o.mode) {
+    case OM_DISP: case OM_IDX: case OM_IND: case OM_POSTINC: case OM_PREDEC: return REG_BANK(o->o.reg) == BANK_S;
+    case OM_GLOBAL: case OM_GLOBALIDX: case OM_ELEM: case OM_ELEMI: case OM_UPVAL: return true;
+    default: return false;
+    }
+}
+
+static void warn_untyped_literals(const AsmInsn *ai, int from, int to, const char *where) {
+    for (int k = from; k < to; k++)
+        if (lit_type(&ai->ops[k]))
+            awarn(ai->pl, ai->ops[k].col, "W_LITERAL_INT",
+                  "%s takes no type suffix, so this %s is the integer %lld (copy it through a register%s)", where,
+                  ai->ops[k].ltype == T_R ? "null" : "boolean", (long long)ai->ops[k].o.imm,
+                  ai->op == OP_RET ? ", or declare the function's results" : "");
+}
+
+/* Fills pieces with the instruction(s) to emit: ai typed, or runs of it. */
+static int literal_types(Asm *A, AsmInsn *ai, AsmInsn *pieces) {
+    int val = -1;
+    switch (ai->op) {
+    case OP_MOV: /* null into a tagged word, when no register or field said which type. Not a
+                  * boolean: memory is bytes, so mov.b would write one byte of the word. */
+        if (ai->type == T_NONE && ai->nops == 2 && lit_type(&ai->ops[1]) == T_R && tagged_word(&ai->ops[0])) val = 1;
+        break;
+    case OP_TOSTR:
+    case OP_SEND: val = 1; break;
+    case OP_LINS:
+    case OP_MSET: val = 2; break; /* the value; a key keeps its own type */
+    case OP_TAGOF: /* known now */
+        if (ai->nops == 2 && lit_type(&ai->ops[1])) {
+            ai->op = OP_MOV;
+            ai->type = T_I64;
+            ai->ops[1].o.imm = ai->ops[1].ltype;
+            ai->ops[1].ltype = 0;
+        }
+        break;
+    case OP_RET:
+        if (!(A->cur->mf.flags & MF_RETS_DECLARED)) warn_untyped_literals(ai, 0, ai->nops, "an undeclared function's ret");
+        break;
+    case OP_CLOSURE:
+    case OP_COYIELD:
+    case OP_CORESUME: {
+        int argc = (int)ai->ops[1].o.imm;
+        warn_untyped_literals(ai, 2, 2 + argc,
+                              ai->op == OP_CLOSURE ? "a closure's capture" : ai->op == OP_COYIELD ? "coyield" : "coresume (into a coyield's results)");
+        break;
+    }
+    case OP_PUSH:
+    case OP_LPUSH: {
+        int first = ai->op == OP_LPUSH ? 1 : 0;
+        bool any = false, same = true;
+        MlwsType all = known_natural(&ai->ops[first]);
+        for (int k = first; k < ai->nops; k++) {
+            any = any || lit_type(&ai->ops[k]);
+            same = same && known_natural(&ai->ops[k]) == all;
+        }
+        if (!any) break;
+        if (same) { /* one type for all: lpush.r R0, R1, null */
+            ai->type = (uint8_t)all;
+            break;
+        }
+        if (first && ai->ops[0].o.mode != OM_REG) { /* the list operand once only: as it was */
+            warn_untyped_literals(ai, first, ai->nops, "an lpush of values of several types into a list not in a register");
+            break;
+        }
+        int np = 0;
+        for (int k = first; k < ai->nops;) {
+            MlwsType key = lit_type(&ai->ops[k]);
+            int e = k + 1;
+            while (e < ai->nops && lit_type(&ai->ops[e]) == key) e++;
+            AsmInsn piece = *ai;
+            piece.type = (uint8_t)key;
+            piece.nops = first + (e - k);
+            piece.ops = xmalloc((size_t)piece.nops * sizeof *piece.ops);
+            if (first) piece.ops[0] = ai->ops[0]; /* a register: nothing of it to free twice */
+            memcpy(piece.ops + first, ai->ops + k, (size_t)(e - k) * sizeof *piece.ops);
+            pieces[np++] = piece;
+            k = e;
+        }
+        free(ai->ops);
+        return np;
+    }
+    default: break;
+    }
+    if (val >= 0 && val < ai->nops && lit_type(&ai->ops[val])) ai->type = (uint8_t)lit_type(&ai->ops[val]);
+    pieces[0] = *ai;
+    return 1;
+}
+
+static bool emit_insn(Asm *A, Cur *c, const Token *m, AsmInsn *ai) {
+    Operand tmp[MAX_OPERANDS];
+    Insn in = {.op = ai->op, .xop = ai->op, .type = ai->type, .type2 = ai->type2, .nops = (uint8_t)ai->nops, .ops = tmp};
+    for (int k = 0; k < ai->nops; k++) tmp[k] = ai->ops[k].o;
+    CheckErr ce;
+    if (!check_insn(&in, &ce)) {
+        int col = ce.operand >= 0 && ce.operand < ai->nops ? ai->ops[ce.operand].col : m->col;
+        const char *code = strstr(ce.msg, "operand(s)") || strstr(ce.msg, "operands, got") ? "E_ASM_OPERAND_COUNT"
+                           : strstr(ce.msg, "type") && ce.operand < 0                     ? "E_ASM_BAD_TYPE"
+                                                                                          : "E_ASM_BAD_OPERAND";
+        for (int k = 0; k < ai->nops; k++) asmop_free(&ai->ops[k]);
+        free(ai->ops);
+        return aerr(A, c->pl, col, code, "%s", ce.msg);
+    }
+    ai->loc_file = A->loc_file;
+    ai->loc_line = A->loc_line;
+    VEC_PUSH(A->cur->insns, *ai);
+    return true;
+}
+
 static bool instruction(Asm *A, Cur *c) {
     Token *m = cur(c);
     const char *dot = memchr(m->start, '.', (size_t)m->len);
@@ -2080,23 +2345,18 @@ static bool instruction(Asm *A, Cur *c) {
     ai.ops = ops.v;
     ai.nops = (int)ops.n;
     infer_type(A, &ai, has_type, has_type2);
-
-    Operand tmp[MAX_OPERANDS];
-    Insn in = {.op = ai.op, .xop = ai.op, .type = ai.type, .type2 = ai.type2, .nops = (uint8_t)ai.nops, .ops = tmp};
-    for (int k = 0; k < ai.nops; k++) tmp[k] = ai.ops[k].o;
-    CheckErr ce;
-    if (!check_insn(&in, &ce)) {
-        int col = ce.operand >= 0 && ce.operand < ai.nops ? ai.ops[ce.operand].col : m->col;
-        const char *code = strstr(ce.msg, "operand(s)") || strstr(ce.msg, "operands, got") ? "E_ASM_OPERAND_COUNT"
-                           : strstr(ce.msg, "type") && ce.operand < 0                     ? "E_ASM_BAD_TYPE"
-                                                                                          : "E_ASM_BAD_OPERAND";
-        for (int k = 0; k < ai.nops; k++) asmop_free(&ai.ops[k]);
-        free(ai.ops);
-        return aerr(A, c->pl, col, code, "%s", ce.msg);
+    AsmInsn pieces[MAX_OPERANDS];
+    int np = 1;
+    pieces[0] = ai;
+    if (!has_type) np = literal_types(A, &ai, pieces);
+    for (int i = 0; i < np; i++) {
+        if (emit_insn(A, c, m, &pieces[i])) continue;
+        for (int j = i + 1; j < np; j++) { /* not emitted: only their arrays are theirs alone */
+            for (int k = 0; k < pieces[j].nops; k++) asmop_free(&pieces[j].ops[k]);
+            free(pieces[j].ops);
+        }
+        return false;
     }
-    ai.loc_file = A->loc_file;
-    ai.loc_line = A->loc_line;
-    VEC_PUSH(A->cur->insns, ai);
     return true;
 }
 
@@ -2501,6 +2761,7 @@ static void asm_free(Asm *A) {
         VEC_FREE(af->vars);
         smap_free(&af->labels);
         smap_free(&af->aliases);
+        for (int k = 0; k < MAX_PARAMS; k++) free(af->param_names[k]);
         free(af->name);
         free(af);
     }

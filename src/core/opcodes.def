@@ -42,7 +42,7 @@ OP(SWAP,   0x0011, "swap",   "Data movement", "DD", TS_ANY, OPF_NATURAL,
 OP(LEA,    0x0012, "lea",    "Data movement", "EM", 0, 0,
    "dst = the address of a memory operand, as a pointer. `lea P0, SP[2]` makes P0 point 2 words above SP.")
 OP(PUSH,   0x0013, "push",   "Data movement", "V+", TS_ANY, OPF_PERVAL,
-   "Push each operand onto the data stack, left to right: for each, SP -= 1 word, then [SP] = value. Untyped pushes use each operand's natural type (I=i64, F=f64, R=r, P=p, int literal=i64, float literal=f64, string=r, memory=its tag).")
+   "Push each operand onto the data stack, left to right: for each, SP -= 1 word, then [SP] = value. Untyped pushes use each operand's natural type (I=i64, F=f64, R=r, P=p, int literal=i64, float literal=f64, string=r, null=r, true and false=b, memory=its tag).")
 OP(POP,    0x0014, "pop",    "Data movement", "W+", TS_ANY, OPF_PERVAL,
    "Pop into each operand, left to right: for each, dst = [SP], then SP += 1 word. `push a, b` is undone by `pop b, a`.")
 OP(DROP,   0x0015, "drop",   "Data movement", "I?", 0, 0,
@@ -226,7 +226,7 @@ OP(BUFPUSH,0x00B8, "bufpush","Strings", "OQ+", 0, 0,
 OP(LNEW,   0x00C0, "lnew",   "Lists and maps", "XQ?", 0, 0,
    "New empty list, with an optional initial capacity.")
 OP(LPUSH,  0x00C1, "lpush",  "Lists and maps", "OV+", TS_ANY, OPF_PERVAL,
-   "Append values to a list. Each element remembers its type: untyped operands use their natural type, typed ones (lpush.i32) the instruction type.")
+   "Append values to a list. Each element remembers its type: untyped operands use their natural type (null as r, true and false as b), typed ones (lpush.i32) the instruction type.")
 OP(LPOP,   0x00C2, "lpop",   "Lists and maps", "WO", TS_ANY, OPF_PERVAL,
    "Remove the last element of a list into dst: `lpop dst, list`. Traps E_BOUNDS on an empty list.")
 OP(LINS,   0x00C3, "lins",   "Lists and maps", "OQV", TS_ANY, OPF_PERVAL,

@@ -1,0 +1,129 @@
+; null, true and false where an operand takes its own type (ASSEMBLY.md §4.1).
+;
+; An immediate's encoding has no type, and an untyped instruction reads one
+; as i64. So the assembler gives null the type r and a bare true or false
+; the type b by the instruction's suffix: a map's value (not its key), a
+; list element, a message, tostr's value, a pushed word, and null moved into
+; a word that keeps a tag. A push or lpush whose values differ in type is
+; split into runs, each with its own suffix. Elsewhere they are the integers
+; 0 and 1 as before: in expressions, where a register's bank decides, and
+; where an instruction takes no suffix (ret, closure captures, coroutines;
+; `mlwsvm asm -W` warns there).
+.include "std/test.inc"
+
+g: .i64 0
+
+.func main
+    ; ---- maps: JSON sees a boolean and a null ----
+    mnew R0
+    mset R0, "stream", true
+    mset R0, "none", null
+    mset R0, "off", false
+    mset R0, 1, true                    ; a key keeps its own type: the integer 1
+    mhas I0, R0, 1
+    ASSERT_EQ I0, 1
+    mdel R0, 1
+    ncall "json.stringify" (R0, 0) -> (R1)
+    strcmp I0, R1, "{\"stream\":true,\"none\":null,\"off\":false}"
+    ASSERT_EQ I0, 0
+    mget R2, R0, "none"
+    ASSERT_EQ R2, null, r
+    mget I1, R0, "stream"               ; a boolean reads as an integer
+    ASSERT_EQ I1, 1
+    mset.i64 R0, "n", true              ; a suffix of your own wins
+    ncall "json.stringify" (R0, 0) -> (R1)
+    strcmp I0, R1, "{\"stream\":true,\"none\":null,\"off\":false,\"n\":1}"
+    ASSERT_EQ I0, 0
+
+    ; ---- lists: mixed values split into runs ----
+    lnew R3
+    lpush R3, 7, null, null, true, "s", false
+    len I0, R3
+    ASSERT_EQ I0, 6
+    tagof I0, R3[0]
+    ASSERT_EQ I0, 6                     ; i64
+    tagof I0, R3[1]
+    ASSERT_EQ I0, 13                    ; r
+    tagof I0, R3[2]
+    ASSERT_EQ I0, 13
+    tagof I0, R3[3]
+    ASSERT_EQ I0, 1                     ; b
+    tagof I0, R3[4]
+    ASSERT_EQ I0, 13
+    tagof I0, R3[5]
+    ASSERT_EQ I0, 1
+    mov R4, R3[1]
+    ASSERT_EQ R4, null, r
+    lins R3, 0, null
+    tagof I0, R3[0]
+    ASSERT_EQ I0, 13
+    ncall "json.stringify" (R3, 0) -> (R1)
+    strcmp I0, R1, "[null,7,null,null,true,\"s\",false]"
+    ASSERT_EQ I0, 0
+
+    ; ---- tostr and tagof ----
+    tostr R1, true
+    strcmp I0, R1, "true"
+    ASSERT_EQ I0, 0
+    tostr R1, false
+    strcmp I0, R1, "false"
+    ASSERT_EQ I0, 0
+    tagof I0, null
+    ASSERT_EQ I0, 13
+    tagof I0, true
+    ASSERT_EQ I0, 1
+
+    ; ---- messages ----
+    send PID, null
+    send PID, true
+    recv R5
+    ASSERT_EQ R5, null, r
+    recv I2
+    ASSERT_EQ I2, 1
+
+    ; ---- the stack: push splits too; pop takes each word's type ----
+    push 5, null, true
+    tagof I0, [SP]
+    ASSERT_EQ I0, 1                     ; true, pushed last
+    tagof I0, SP[1]
+    ASSERT_EQ I0, 13
+    tagof I0, SP[2]
+    ASSERT_EQ I0, 6
+    pop I3, R6, I4                      ; true, null, 5
+    ASSERT_EQ I3, 1
+    ASSERT_EQ R6, null, r
+    ASSERT_EQ I4, 5
+
+    ; ---- mov: null into a tagged word is a reference ----
+    enter 2
+    mov LOC[0], 9
+    mov LOC[0], null
+    tagof I0, LOC[0]
+    ASSERT_EQ I0, 13
+    mov R7, LOC[0]
+    ASSERT_EQ R7, null, r
+    mov @g, null
+    tagof I0, @g
+    ASSERT_EQ I0, 13
+    anew.r R8, 2
+    mov.r R8[1], "x"
+    mov R8[1], null
+    mov R9, R8[1]
+    ASSERT_EQ R9, null, r
+    ; a boolean moved into memory stays the integer: mov.b writes one byte
+    mov LOC[1], -1
+    mov LOC[1], true
+    tagof I0, LOC[1]
+    ASSERT_EQ I0, 6
+    mov I0, LOC[1]
+    ASSERT_EQ I0, 1
+
+    ; ---- in expressions and registers they are integers ----
+    mov I0, true
+    ASSERT_EQ I0, 1
+    lnew R3
+    lpush R3, true + 0
+    tagof I0, R3[0]
+    ASSERT_EQ I0, 6
+    ret 0
+.endf

@@ -11,8 +11,8 @@
 ; keeps it on its data stack meanwhile, and recurses a little, so that both
 ; its stacks grow.
 .func waiter(i64 parent, i64 k)
-    rem I1, k, 100
-    bnz I1, 1f
+    rem I5, k, 100
+    bnz I5, 1f
     enter 1                              ; the first use of this process's data stack
     mov LOC[0], k
     call depth (20) -> (I2)              ; 20 frames deep: past the first 8

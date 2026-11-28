@@ -134,7 +134,8 @@ that it relies on are these:
   it is not a copy. Where an instruction stores a value with its own type (an
   untyped `push`, `lpush`, `send`, `ret` without declared results), a
   register is replaced only by a constant of the same natural type. A `null`
-  never replaces one there, since its natural type is an integer. A `ret`
+  never replaces one there, since in the code it is the immediate 0, with the
+  type `i64`. A `ret`
   with declared results, and a call to a function of the same module, read
   their values as the declared types, so any constant of that type will do.
 * **New windows read as zero.** A function's registers other than its

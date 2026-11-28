@@ -59,7 +59,8 @@ static void usage(FILE *f) {
           "                                        a VM that stays up, starting programs from DIR when its\n"
           "                                        monitor is asked to (the token printed; 127.0.0.1:7070)\n"
           , f);
-    fputs("  asm  [-L dir] [-o out.mlwso] [-E] file.masm                   assemble (-E: preprocess only)\n"
+    fputs("  asm  [-L dir] [-o out.mlwso] [-E] [-W] file.masm              assemble (-E: preprocess only;\n"
+          "                                                                -W: warn of likely mistakes)\n"
           "  dis  [-L dir] file.(masm|mlwso)                               disassemble\n"
           "  test [-L dir] [-v] [VM options] [paths...]                  run assembly tests (default: tests/)\n"
           "  doc  isa|natives [-o file]                                  generate reference docs\n"
@@ -496,6 +497,7 @@ static int cmd_asm(int argc, char **argv) {
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
         else if (!strcmp(argv[i], "-E")) pre = true;
+        else if (!strcmp(argv[i], "-W")) asm_set_warnings(true);
         else file = argv[i];
     }
     if (!file) {

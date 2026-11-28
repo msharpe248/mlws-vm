@@ -51,7 +51,7 @@ The language is line-oriented: one statement per line.
 | Decimal | `19.99d`, `0.1d`, `1.5e-3d` (exact, base 10; `-2.50d`) |
 | Character | `'a'`, `'\n'`, `'\x41'`, `'\u{1F600}'`. The value is the Unicode scalar value |
 | String | `"text"` with the same escapes. `\xHH` inserts a raw byte; `\u{...}` inserts UTF-8 |
-| Booleans / null | `true` (1), `false` (0), `null` (0, valid for `r` and `p` types) |
+| Booleans / null | `true` (1), `false` (0), `null` (0, valid for `r` and `p` types); where an operand takes its own type, `null` is `r` and `true`/`false` are `b` (§4.1) |
 | Registers | `I0`–`I31`, `F0`–`F31`, `R0`–`R31`, `P0`–`P31`, `SP`, `FP`, `PID`. Uppercase only |
 
 Escapes: `\n \t \r \0 \\ \" \' \xHH \u{HEX}`.
@@ -153,6 +153,31 @@ The **natural type** of an operand: a register's bank type; `i64` for an integer
 literal; `f64` for a float literal; `r` for a string; and for memory, the type tag
 of the word (see [ABI.md §5](ABI.md#5-memory)), or `i64` if it has none.
 
+**`null`, `true` and `false`** are the integers 0, 1 and 0 in the code, which
+gives an immediate no type of its own. Where an operand takes its own type, the
+assembler gives `null` the type `r` and a bare `true` or `false` the type `b`, by
+the instruction's suffix, so `mset m, "stream", true` stores a boolean (JSON
+`true`) and `lpush l, null` a null reference:
+
+* the value of `mset` and `lins` (a key keeps its own type), of `send` and of
+  `tostr` (`"true"`);
+* each value of `push` and `lpush`: values of several types are split into runs,
+  one instruction each, so `lpush l, 7, null, "s"` is `lpush l, 7`,
+  `lpush.r l, null`, `lpush l, "s"` (if the list is in a register: otherwise
+  they stay integers);
+* `null` moved into a word that keeps a tag with no register or field to say the
+  type (`mov LOC[0], null`, `mov @g, null`, `mov R1[I2], null`). A boolean moved
+  into memory stays the integer, since memory is bytes and `mov.b` writes one;
+  memory through a `P` register gets the integer 0, as raw memory holds no
+  references;
+* `tagof I0, null` is 13 and `tagof I0, true` 1.
+
+A suffix of your own wins (`mset.i64 m, k, true` stores 1). In an expression
+(`true + 0`) and where a register's bank decides (`mov I0, true`) they are
+integers. `ret` in a function without declared results, closure captures and the
+values of `coyield` and `coresume` take no suffix, so there they stay the
+integers; `mlwsvm asm -W` (§11) warns of each.
+
 Mismatches are assembly errors: `add.f64 I0, I1, I2` fails with
 `register I0 cannot hold a value of type f64`. To move between banks, convert
 with `cvt` or reinterpret with `bitcast`.
@@ -189,6 +214,8 @@ how arguments are bound, and [ABI.md §8](ABI.md#8-coroutines) for coroutines.
 
 * Parameters are bound per bank, in order. Here `i64 a, f64 x, i64 b` puts `a` in
   `I0`, `x` in `F0` and `b` in `I1`. Parameter names are register aliases.
+  `mlwsvm asm -W` (§11) warns of a parameter's register written by its register's
+  name where the parameter is then read by its own.
 * A declared result list (`-> ...`) is checked by the verifier: every `ret` must
   return exactly those types. Without one, `ret` returns its operands with their
   natural types.
@@ -251,7 +278,7 @@ bad:
   form suits compilers that lay out code themselves. Numeric local labels
   (`1f`) work in both forms.
 * `throw R0` raises any non-null reference. `catch dst`, at the start of a handler,
-  receives it. Rethrow by throwing the caught value again; a "finally" block is a
+  receives it; a handler without one drops it (`mlwsvm asm -W` warns of that). Rethrow by throwing the caught value again; a "finally" block is a
   catch-all handler that cleans up and rethrows.
 * **Every runtime fault is catchable.** It arrives as a built-in `Error` struct with
   three string fields: `R0->Error.code` (for example `"E_DIV_ZERO"`), `R0->Error.message`
@@ -832,7 +859,7 @@ macro-only files use the `.inc` extension and are not modules.
 mlwsvm run  [-L dir] [--stats] [--profile] [--trace FILE] [--monitor PORT] [VM options] prog.masm|prog.mlwso [args...]
 mlwsvm debug [-L dir] [VM options] prog.masm|prog.mlwso
 mlwsvm top  [HOST:PORT] [--once]
-mlwsvm asm  [-L dir] [-o out.mlwso] [-E] prog.masm
+mlwsvm asm  [-L dir] [-o out.mlwso] [-E] [-W] prog.masm
 mlwsvm dis  [-L dir] prog.masm|prog.mlwso
 mlwsvm test [-L dir] [-v] [VM options] [paths...]
 mlwsvm doc  isa|natives [-o file]
@@ -841,6 +868,17 @@ mlwsvm opt  [-L dir] [-O0|-O1|-O2|-O3] [--passes LIST] [-o out.mlwso] [-S] [-v] 
 mlwsvm bindgen [-l LIB] [-p PREFIX] [-o OUT] [--all] header.h
 mlwsvm version
 ```
+
+`mlwsvm asm -W` also warns, on standard error, of likely mistakes, without
+changing the result or the exit code:
+
+* `W_PARAM_REG`: a parameter's register written by its register's name (`mov I0,
+  2` in `.func f(ref s, i64 scale)`, where `scale` is `I0`) when control can then
+  reach a read of the parameter by its own name with no write of it between;
+* `W_NO_CATCH`: a `.try` handler that does not start with `catch`, so the
+  exception is dropped;
+* `W_LITERAL_INT`: `null`, `true` or `false` where an instruction takes no suffix
+  (§4.1), so it is the integer.
 
 `mlwsvm test` runs every `.masm` file under the given paths (default `tests/`),
 skipping directories whose names start with `_` (use those for helper modules).

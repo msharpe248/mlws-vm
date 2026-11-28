@@ -1,7 +1,8 @@
 #!/bin/sh
 # Smoke test for the tools that cannot be exercised from inside an assembly
 # test: --monitor (HTTP API and dashboard), `mlwsvm top`, --profile, --trace,
-# `mlwsvm opt`, `mlwsvm bundle`, `mlwsvm dap`, std.node and `mlwsvm fuzz`.
+# `mlwsvm opt`, `mlwsvm asm -W`, `mlwsvm bundle`, `mlwsvm dap`, std.node and
+# `mlwsvm fuzz`.
 # Usage: tests/tools/check_tools.sh [path/to/mlwsvm]      (run by `make check-tools`)
 set -eu
 BIN=${1:-./mlwsvm}
@@ -84,6 +85,20 @@ EOF
 done
 rm -f "$TMPD/unused.masm" "$TMPD/unused.mlwso" "$TMPD/unused.dis"
 rm -f "$TMPD/loc.mlwso"
+
+# mlwsvm asm -W: each likely mistake in _warn/lint.masm once, at its line, and
+# nothing at all without -W
+WD=$(mktemp -d)
+$BIN asm -W -o "$WD/w.mlwso" tests/tools/_warn/lint.masm 2> "$WD/err" || fail "asm -W"
+for w in 'W_PARAM_REG\]: [^ ]*lint.masm:8:9: this writes I0, which holds parameter .scale., and line 10' \
+         'W_NO_CATCH\]: [^ ]*lint.masm:39: ' 'W_LITERAL_INT\]: [^ ]*lint.masm:43:14: coyield' \
+         'W_LITERAL_INT\]: [^ ]*lint.masm:44:9: an undeclared' 'W_LITERAL_INT\]: [^ ]*lint.masm:51:18: a closure'; do
+    grep -q "^warning\[$w" "$WD/err" || fail "asm -W: no $w ($(cat "$WD/err"))"
+done
+[ "$(grep -c '^warning\[' "$WD/err")" = 5 ] || fail "asm -W: other warnings ($(cat "$WD/err"))"
+$BIN asm -o "$WD/w.mlwso" tests/tools/_warn/lint.masm 2> "$WD/err" || fail "asm without -W"
+[ ! -s "$WD/err" ] || fail "asm without -W printed $(cat "$WD/err")"
+rm -rf "${WD:?}"
 
 # mlwsvm bundle: one executable that runs with no lib/ beside it, whose command
 # line is the program's. It keeps VM options (the environment still overrides
@@ -1642,4 +1657,4 @@ MINGW* | MSYS* | CYGWIN*) ;;
     ;;
 esac
 
-echo "check-tools: profile, .loc, bundle, dap, node, names, cache, lib, --also, opt, fuzz, trace, jit, monitor, top, signals OK"
+echo "check-tools: profile, .loc, asm -W, bundle, dap, node, names, cache, lib, --also, opt, fuzz, trace, jit, monitor, top, signals OK"
