@@ -1,0 +1,53 @@
+; What `mlwsvm asm -W` warns of (tests/tools/check_tools.sh): each warning
+; below once, at the line its comment marks, and nothing else.
+.struct Box
+    w: i64
+.ends
+
+.func area(ref shape, i64 scale) -> i64
+    mov I0, 2               ; W_PARAM_REG: I0 is scale, read on the next line but one
+    mov I1, shape->Box.w
+    mul I1, scale
+    ret I1
+.endf
+
+; Not warned of: the write comes after the last read on its way, a write by
+; name sets the parameter again, and mov I0, I0 changes nothing.
+.func fib(i64 n) -> i64
+    blt n, 2, 1f
+    sub I1, n, 1
+    call fib (I1) -> (I2)
+    sub I1, n, 2
+    call fib (I1) -> (I3)
+    add I0, I2, I3
+    ret I0
+1:  ret n
+.endf
+.func again(i64 a) -> i64
+    mov I0, a
+    mov I0, 1
+    mov a, 7
+    ret a
+.endf
+
+.func parse_or_zero(ref s) -> i64
+.try bad
+    parse.i64 I0, s
+.endtry
+    ret I0
+bad:
+    ret 0                   ; W_NO_CATCH
+.endf
+
+.func gen
+    coyield (null)          ; W_LITERAL_INT
+    ret null                ; W_LITERAL_INT: an undeclared function's ret
+.endf
+.func declared -> ref
+    ret null                ; not warned of: the declared result says r
+.endf
+
+.func main
+    closure gen (true) -> (R0)  ; W_LITERAL_INT
+    ret 0
+.endf

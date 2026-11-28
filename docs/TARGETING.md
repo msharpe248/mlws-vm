@@ -471,6 +471,7 @@ the line of your source program as well as the assembly line
 |---|---|
 | `mlwsvm asm -E out.masm` | See the source after macro expansion, with line numbers |
 | `mlwsvm dis out.masm` | See exactly what was encoded: types, operand forms, register windows |
+| `mlwsvm asm -W runtime.masm` | Warnings for hand-written runtime code: a parameter's register overwritten before the parameter is read, a handler without `catch`, a `null` or boolean that stays an integer |
 | `mlwsvm run --stats out.masm` | Instruction count, speed, call depth, stack peak, heap and GC use, processes |
 | `mlwsvm run --profile out.masm` | Which generated functions, lines and opcodes dominate (exact counts) |
 | `mlwsvm run --trace - --trace-limit N out.masm` | Every executed instruction, to compare against what the compiler meant |

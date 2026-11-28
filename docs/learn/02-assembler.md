@@ -176,8 +176,10 @@ instruction's *pattern* gives for that position:
 ```
 
 After the operands, `infer_type` gives an instruction without a suffix its
-type (from the first register operand, else the first literal), and
-`check_insn` checks the whole instruction, the same function the verifier
+type (from the first register operand, else the first literal),
+`literal_types` gives `null`, `true` and `false` their types where an operand
+takes its own (an immediate has none in the code), and `check_insn` checks the
+whole instruction, the same function the verifier
 calls later. An error then points at the operand's column:
 
 ```text

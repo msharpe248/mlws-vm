@@ -46,7 +46,7 @@ Type codes, as `tagof` reports them: 0 for a slot never written, 1 `b`, 2 `c`, 3
 | `0x0010` | `mov` | `dst, src` | int float r p | dst = src. Untyped memory-to-memory moves copy the source word together with its type tag. |
 | `0x0011` | `swap` | `dst, dst` | int float r p | Exchange the contents of two locations. |
 | `0x0012` | `lea` | `ptr_dst, mem` | - | dst = the address of a memory operand, as a pointer. `lea P0, SP[2]` makes P0 point 2 words above SP. |
-| `0x0013` | `push` | `val, ...` | int float r p | Push each operand onto the data stack, left to right: for each, SP -= 1 word, then [SP] = value. Untyped pushes use each operand's natural type (I=i64, F=f64, R=r, P=p, int literal=i64, float literal=f64, string=r, memory=its tag). |
+| `0x0013` | `push` | `val, ...` | int float r p | Push each operand onto the data stack, left to right: for each, SP -= 1 word, then [SP] = value. Untyped pushes use each operand's natural type (I=i64, F=f64, R=r, P=p, int literal=i64, float literal=f64, string=r, null=r, true and false=b, memory=its tag). |
 | `0x0014` | `pop` | `dst, ...` | int float r p | Pop into each operand, left to right: for each, dst = [SP], then SP += 1 word. `push a, b` is undone by `pop b, a`. |
 | `0x0015` | `drop` | `[n]` | - | Discard n words (default 1) from the top of the data stack: SP += n words. |
 | `0x0016` | `enter` | `n` | - | Reserve n zeroed words of locals: SP -= n words. Locals are then addressed as LOC[0]..LOC[n-1] (FP[-1]..FP[-n]). |
@@ -178,7 +178,7 @@ Type codes, as `tagof` reports them: 0 for a slot never written, 1 `b`, 2 `c`, 3
 | Opcode | Mnemonic | Operands | Types | Description |
 |---|---|---|---|---|
 | `0x00C0` | `lnew` | `obj_dst, [int]` | - | New empty list, with an optional initial capacity. |
-| `0x00C1` | `lpush` | `obj, val, ...` | int float r p | Append values to a list. Each element remembers its type: untyped operands use their natural type, typed ones (lpush.i32) the instruction type. |
+| `0x00C1` | `lpush` | `obj, val, ...` | int float r p | Append values to a list. Each element remembers its type: untyped operands use their natural type (null as r, true and false as b), typed ones (lpush.i32) the instruction type. |
 | `0x00C2` | `lpop` | `dst, obj` | int float r p | Remove the last element of a list into dst: `lpop dst, list`. Traps E_BOUNDS on an empty list. |
 | `0x00C3` | `lins` | `obj, int, val` | int float r p | Insert a value before index i (0..len): `lins list, i, value`. |
 | `0x00C4` | `ldel` | `obj, int` | - | Delete the element at index i, shifting later elements down. |

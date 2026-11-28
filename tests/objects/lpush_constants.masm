@@ -1,11 +1,13 @@
 ; An untyped lpush may mix constants with registers: `lpush R0, "x", 0.5,
-; R1, I1` appends each value with its natural type, an integer literal (or
-; null) as i64, a float literal as f64 and a string as a reference, exactly
-; as the same values from registers. That is how a compiler builds a table
-; constructor's keys and values in one instruction. With room in the list it
-; is a quickened form (Q_LPUSH_RK in src/vm/interp.c, each constant's word
-; and type worked out at load time); a list that must grow, or a typed lpush,
-; takes the generic instruction.
+; R1, I1` appends each value with its natural type, an integer literal as
+; i64, a float literal as f64, a string and null as references and true and
+; false as booleans, exactly as the same values from registers. That is how a
+; compiler builds a table constructor's keys and values in one instruction.
+; With room in the list it is a quickened form (Q_LPUSH_RK in
+; src/vm/interp.c, each constant's word and type worked out at load time); a
+; list that must grow, or a typed lpush, takes the generic instruction. An
+; immediate's encoding has no type, so the assembler gives a null or a boolean
+; among other values an lpush of its own, .r or .b, between the others.
 .include "std/test.inc"
 
 ; 0 if the elements a[i] and b[i] hold the same type and the same word.
@@ -43,9 +45,9 @@
     mov.r R3, "x"
     mov.f64 F3, 0.5
     mov I3, -3
-    mov I4, 0                            ; null, untyped: the integer 0
+    mov.r R6, null
     mov.f64 F4, 2.0
-    lpush R2, R3, F3, R1, I1, I3, I4, F4, R3
+    lpush R2, R3, F3, R1, I1, I3, R6, F4, R3
     mov I5, 0
 1:  call same (R0, R2, I5) -> (I6)
     ASSERT_EQ I6, 0
@@ -57,6 +59,8 @@
     ASSERT_EQ I6, 6                      ; i64
     tagof I6, R0[0]
     ASSERT_EQ I6, 13                     ; r
+    tagof I6, R0[5]
+    ASSERT_EQ I6, 13                     ; null: r
 
     ; ---- no room: the generic instruction grows the list, with the same result ----
     lnew R4, 1
@@ -66,6 +70,22 @@
     ASSERT_EQ I6, 0
     inc I5
     blt I5, 8, 2b
+
+    ; ---- booleans: b, read back as integers ----
+    lnew R7, 4
+    lpush R7, 1, true, false, 2
+    tagof I6, R7[0]
+    ASSERT_EQ I6, 6                      ; i64
+    tagof I6, R7[1]
+    ASSERT_EQ I6, 1                      ; b
+    tagof I6, R7[2]
+    ASSERT_EQ I6, 1
+    tagof I6, R7[3]
+    ASSERT_EQ I6, 6
+    mov I6, R7[1]
+    ASSERT_EQ I6, 1
+    len I6, R7
+    ASSERT_EQ I6, 4
 
     ; ---- typed: the instruction type, not the constants' ----
     lnew R5, 4
